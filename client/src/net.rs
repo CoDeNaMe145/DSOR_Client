@@ -837,10 +837,14 @@ fn move_remotes(time: Res<Time>, mut remotes: Query<(&mut Transform, &mut Remote
             tf.translation = r.target;
         } else if moving {
             tf.translation += to * (step / flat).min(1.0);
-            tf.rotation = Quat::from_rotation_y(to.x.atan2(to.z));
-        } else {
-            tf.rotation = Quat::from_rotation_y(r.facing);
         }
+        // The body faces its record's facing byte, walking or not: the client's
+        // orientation is the record's (GameActor::GetOrientation 0x8F5F6F reads
+        // +0x28; the MoveCommand reader 0x9CE976 decodes both angle bytes the same
+        // way). FAILURE: turned toward each step while walking and to the facing
+        // between steps, a chasing creature (walking to its ring slot, facing the
+        // player) flickered between the two ("ils recalculent en boucle l'angle").
+        tf.rotation = Quat::from_rotation_y(r.facing);
         // CONTRACT: a short grace before standing: records arrive 25 a second and a
         //   remote player reaches each one a little early, so without it the run
         //   restarted at every record ("les animations ne se jouent pas entierement").
