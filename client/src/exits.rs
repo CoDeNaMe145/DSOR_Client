@@ -150,7 +150,9 @@ fn click_exit(
     buttons: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
     windows: Query<&Window, With<PrimaryWindow>>,
-    cameras: Query<(&Camera, &GlobalTransform)>,
+    // The 3D view's camera: the UI has its own (crate::ui::UiCamera), and with
+    // two, single() failed and no click walked ("je ne peux pas me déplacer").
+    cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     nav: Option<Res<CurrentNav>>,
     meshes: Res<Assets<NavMesh>>,
     exits: Query<&Exit>,

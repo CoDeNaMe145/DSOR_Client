@@ -411,8 +411,15 @@ fn screenshot_when_loaded(
     let Some(path) = &opts.screenshot else { return };
     *frames += 1;
     if let Some(at) = *taken {
+        // DSOR_SHOT_BURST=<n>: n more shots, one per frame (<path>.<i>.png), to
+        // see what changes from frame to frame (a flicker).
+        let burst = std::env::var("DSOR_SHOT_BURST").ok().and_then(|n| n.parse::<u32>().ok()).unwrap_or(0);
+        let i = *frames - at;
+        if i <= burst {
+            commands.spawn(Screenshot::primary_window()).observe(save_to_disk(format!("{path}.{i}.png")));
+        }
         // save_to_disk completes a few frames after the request; then quit.
-        if *frames > at + 30 {
+        if *frames > at + 30 + burst {
             commands.write_message(AppExit::Success);
         }
         return;
