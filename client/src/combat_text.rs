@@ -135,6 +135,10 @@ struct Floating {
 }
 
 const LAYOUT_HEIGHT: f32 = 1040.0;
+/// See the spawn: the drop (metres per second) and lifetime of a damage text.
+const FALL: f32 = 0.4;
+const QUICK: f32 = 1.2;
+const QUICK_FADE: f32 = 0.5;
 const BOX: f32 = 300.0;
 
 pub struct CombatTextPlugin;
@@ -205,6 +209,15 @@ fn spawn_texts(
         if t.offset_x_var != 0.0 {
             ox += if heads(&mut seed) { -t.offset_x_var } else { t.offset_x_var };
         }
+        // The damage and critical rows move along x only (CombatTextVelocity
+        // 1,0,0): read as metres per second along the screen they slid sideways,
+        // where the 2018 client drops them a little and lets them go quickly
+        // ("ils devraient tomber un tout petit peu et disparaitre assez
+        // rapidement"). UNVERIFIED: the UI element's motion (slot +0xDC of
+        // UI::Element's vtable 0xF37DD8 stores offset +0x1B0, velocity +0x1C0,
+        // time +0x1D0) is not traced to where it is drawn; FALL, QUICK and
+        // QUICK_FADE follow the user's account, not the table.
+        let sideways = t.velocity[1] == 0.0 && t.velocity[0] != 0.0;
         let vh = t.size * 96.0 / 72.0 / LAYOUT_HEIGHT * 100.0;
         commands.spawn((
             Floating {
@@ -214,10 +227,10 @@ fn spawn_texts(
                 // 2.25 over the feet put them over the head.
                 from: at.translation(),
                 offset: Vec2::new(ox, t.offset_y[1]),
-                velocity: Vec2::new(vx, t.velocity[1]),
+                velocity: if sideways { Vec2::new(0.0, -FALL) } else { Vec2::new(vx, t.velocity[1]) },
                 age: 0.0,
-                duration: t.duration.max(0.1),
-                fade: t.fade,
+                duration: if sideways { QUICK.min(t.duration) } else { t.duration.max(0.1) },
+                fade: if sideways { QUICK_FADE } else { t.fade },
                 color: t.color,
             },
             Node { position_type: PositionType::Absolute, width: Val::Px(BOX), justify_content: JustifyContent::Center, ..default() },
