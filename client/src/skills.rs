@@ -1122,7 +1122,11 @@ fn play_sequences(
                         // On a character (not a joint): into its entity frame.
                         let mut place = track_transform(&curved(at, &curves_of(&track), "graphicstrans", frame));
                         let mut base = Mat4::IDENTITY;
-                        if joint.is_empty() && characters.contains(p.anchor) {
+                        // CONTRACT: every actor, dressed character or whole-model
+                        //   monster (RemotePlayer without Character).
+                        // FAILURE: monsters were left out: their effects burst behind
+                        //   them ("certains fx sont dans leur dos").
+                        if joint.is_empty() && (characters.contains(p.anchor) || remotes.contains(p.anchor)) {
                             base = Transform::from_rotation(entity_rotation(0.0)).to_matrix();
                             place = Transform::from_matrix(base * place.to_matrix());
                         }
@@ -1156,7 +1160,7 @@ fn play_sequences(
                                 // As the level's lights: Nebula's colour x intensity, falling
                                 // off linearly to its range (crate::lighting::point_light).
                                 crate::lighting::point_light(*color, *intensity, *range),
-                                if characters.contains(p.anchor) {
+                                if characters.contains(p.anchor) || remotes.contains(p.anchor) {
                                     Transform::from_rotation(entity_rotation(0.0)) * track_transform(at)
                                 } else {
                                     track_transform(at)
