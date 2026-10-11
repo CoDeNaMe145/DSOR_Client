@@ -170,6 +170,8 @@ pub struct SkillEvent {
     pub wire: u16,
     pub heading: f32,
     pub points: Vec<[f32; 3]>,
+    /// The game tick the skill starts at (the command's own).
+    pub start_tick: u32,
 }
 
 /// One NewNPCCommand: the template, the level Guid (hex) and where.
@@ -441,7 +443,7 @@ impl Net {
         if Some(actor) == self.local_actor {
             return;
         }
-        self.skill_events.push(SkillEvent { actor, wire: base.skill_id, heading: base.heading, points });
+        self.skill_events.push(SkillEvent { actor, wire: base.skill_id, heading: base.heading, points, start_tick: base.start_tick });
     }
 
     /// Put the local player (back) on the map: spawned by spawn_local, the old one
