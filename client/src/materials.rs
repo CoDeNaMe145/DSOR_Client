@@ -679,7 +679,7 @@ impl GltfExtensionHandler for NebulaStates {
 /// 9.7: 1 / (1.2 x 2^9.7) ~ 1/1000) shows ~1000 nits as 1.0.
 /// EVIDENCE: shaders_sm30 "particle" ps_3_0: colour x (1 + MatEmissiveIntensity);
 ///   the intensities themselves are the n3 nodes' (tools/embed_animators.py).
-const EMISSIVE_NITS: f32 = 1000.0;
+const EMISSIVE_NITS: f32 = 1.0;
 
 /// A factor Nebula applies to a gamma-space colour, as the factor to apply to
 /// bevy's linear one: (k x c)^2.2 = k^2.2 x c^2.2. Nebula adds emission and
