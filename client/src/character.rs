@@ -388,6 +388,8 @@ pub struct CharacterLibrary {
     pub item_skins: Handle<ItemSkins>,
     parts: HashMap<&'static str, Handle<PartList>>,
     skeletons: HashMap<&'static str, Handle<Gltf>>,
+    /// The skeletons' body shapes, for the players' own (see body_variation).
+    variations: HashMap<&'static str, Handle<crate::npc::Variations>>,
 }
 
 pub struct CharacterPlugin;
@@ -413,16 +415,34 @@ impl Plugin for CharacterPlugin {
 fn load_library(mut commands: Commands, assets: Res<AssetServer>) {
     let mut parts = HashMap::new();
     let mut skeletons = HashMap::new();
+    let mut variations = HashMap::new();
     for skel in ["uniskel", "uniskel_dwarf"] {
         parts.insert(skel, assets.load(format!("characters/{skel}/parts.json")));
         skeletons.insert(skel, assets.load(format!("characters/{skel}/__animations.glb")));
+        variations.insert(skel, assets.load(format!("characters/{skel}/variations.json")));
     }
     commands.insert_resource(CharacterLibrary {
         anims: assets.load("characters/anims.json"),
         item_skins: assets.load("characters/item_skins.json"),
         parts,
         skeletons,
+        variations,
     });
+}
+
+/// A player's body shape: its class and gender's body set's variation.
+/// EVIDENCE: _Template_Player.CharacterSet (warrior_male_body_00, mage_male_body_00,
+///   ranger_male_body_00, dwarf_male_body_01) and every <class>_<gender>_body_0N of
+///   outfits.json carry var_<class>_<gender>_00 (variations.json).
+/// FAILURE: without it the players kept the bare skeleton's proportions ("mon
+///   perso semble moins gros que l'officiel").
+fn body_variation(desc: &CharacterDesc, library: Option<&CharacterLibrary>, variations: &Assets<crate::npc::Variations>) -> Vec<(String, Vec3, Vec3)> {
+    let Some(all) = library.and_then(|l| l.variations.get(desc.skeleton())).and_then(|h| variations.get(h)) else { return Vec::new() };
+    let name = format!("var_{}_{}_00", desc.class_name(), desc.gender_name());
+    all.variations
+        .get(&name)
+        .map(|shape| shape.iter().map(|j| (j.bone.clone(), Vec3::from(j.t), Vec3::from(j.s))).collect())
+        .unwrap_or_default()
 }
 
 /// Spawn a character; it dresses and animates itself once its assets are in.
@@ -444,6 +464,7 @@ fn build_characters(
     library: Option<Res<CharacterLibrary>>,
     part_lists: Res<Assets<PartList>>,
     assets: Res<AssetServer>,
+    variations: Res<Assets<crate::npc::Variations>>,
 ) {
     let Some(library) = library else { return };
     for (entity, mut character) in &mut characters {
@@ -453,6 +474,12 @@ fn build_characters(
         let skel = character.desc.skeleton().to_owned();
         let skel = skel.as_str();
         let Some(list) = library.parts.get(skel).and_then(|h| part_lists.get(h)) else { continue };
+        // A player's body shape comes from its skeleton's variations (body_variation).
+        if character.desc.look.is_none()
+            && library.variations.get(skel).is_some_and(|h| variations.get(h).is_none() && !assets.load_state(h).is_failed())
+        {
+            continue;
+        }
         let names: std::collections::HashSet<&str> = list.0.iter().map(String::as_str).collect();
         let parts = character.desc.parts(&|n| names.contains(n));
         character.built = true;
@@ -498,6 +525,7 @@ struct SkeletonCtx<'w, 's> {
     graphs: ResMut<'w, Assets<AnimationGraph>>,
     joints: Query<'w, 's, (&'static Transform, Option<&'static ChildOf>)>,
     parents: Query<'w, 's, &'static ChildOf>,
+    variations: Res<'w, Assets<crate::npc::Variations>>,
 }
 
 /// Give the joints a body variation (VariedJoint): (joint, translation, scale) per
@@ -576,7 +604,10 @@ fn adopt_skeleton(ctx: &mut SkeletonCtx, entity: Entity, owner: Entity, generati
             warn!("no animation set {set} (or its skeleton is not loaded yet)");
         }
     }
-    let variation = character.desc.look.as_ref().map(|l| l.variation.clone()).unwrap_or_default();
+    let variation = match &character.desc.look {
+        Some(l) => l.variation.clone(),
+        None => body_variation(&character.desc, ctx.library.as_deref(), &ctx.variations),
+    };
     if !variation.is_empty() {
         let scaled_bones = vary_joints(commands, &ctx.joints, &bones, &variation);
         bones.extend(scaled_bones);
