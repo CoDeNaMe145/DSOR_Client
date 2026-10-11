@@ -771,6 +771,10 @@ fn remote_skills(
         let Some((e, mut tf, mut r, character)) = remotes.iter_mut().find(|(_, _, r, _)| r.actor == ev.actor) else { continue };
         let facing = aim_to_facing(ev.heading);
         r.facing = facing;
+        // Movement off until its unblock frame (see RemotePlayer::held), where it
+        // stands now.
+        r.held = skill.unblock.max(skill.motion_unblock) as f32 / FPS;
+        r.target = tf.translation;
         tf.rotation = Quat::from_rotation_y(facing);
         let point = ev
             .points

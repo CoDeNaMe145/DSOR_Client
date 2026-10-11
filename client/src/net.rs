@@ -200,6 +200,16 @@ pub struct RemotePlayer {
     /// Seconds since this player last moved, so the run cycle is not cut between
     /// two of their records.
     pub still_for: f32,
+    /// Seconds left of its own skill, during which movement records are ignored:
+    /// it stands where and as it cast.
+    /// EVIDENCE: HandleMoveCommand 0x518E80 applies a record whole only while the
+    ///   actor's feature 0 is on (FUN_004abd74(0)); otherwise it keeps the record's
+    ///   start and end ticks alone (0x9FB92E, 0x9FB8CA). The skill runner turns
+    ///   Movement off until start + the unblock frames (0xA005A7, per the
+    ///   experimental server's World.held_until notes).
+    /// FAILURE: applied, a creature's standing records (facing byte 0) turned it
+    ///   away while it struck ("ils tapent a 180 dans le mauvais sens").
+    pub held: f32,
 }
 
 /// The player this client controls.
@@ -793,12 +803,12 @@ fn apply_remotes(
         let e = spawn_character(&mut commands, desc, Transform::from_translation(at).with_rotation(Quat::from_rotation_y(heading)));
         commands.entity(e).insert((
             Nameplate::player(name, admin),
-            RemotePlayer { actor, target: at, facing: heading, still_for: 1.0 },
+            RemotePlayer { actor, target: at, facing: heading, still_for: 1.0, held: 0.0 },
         ));
     }
     for (actor, at, facing, _moving) in std::mem::take(&mut net.remote_moves) {
         for (_, mut r) in &mut remotes {
-            if r.actor == actor {
+            if r.actor == actor && r.held <= 0.0 {
                 let at = mesh.and_then(|m| m.ground(at.x, at.z, at.y, 3.0).map(|h| Vec3::new(at.x, h, at.z))).unwrap_or(at);
                 r.target = at;
                 r.facing = facing;
@@ -812,6 +822,11 @@ fn apply_remotes(
 fn move_remotes(time: Res<Time>, mut remotes: Query<(&mut Transform, &mut RemotePlayer, &mut CharacterAnim)>) {
     for (mut tf, mut r, mut anim) in &mut remotes {
         if anim.dead {
+            continue;
+        }
+        if r.held > 0.0 {
+            r.held -= time.delta_secs();
+            tf.rotation = Quat::from_rotation_y(r.facing);
             continue;
         }
         let to = r.target - tf.translation;
