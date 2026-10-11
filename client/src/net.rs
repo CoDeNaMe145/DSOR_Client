@@ -311,6 +311,18 @@ pub fn start_offline(world: &mut World, class: u8, gender: u8) {
     });
 }
 
+/// The announcements of one batch, the last one per actor.
+/// FAILURE: the server announces each actor several times ("npc vicinity ...
+///   repeat 6 of 6"), and a batch held until the outfits loaded spawned every
+///   copy (the despawn of the existing one sees no entity spawned in the same
+///   loop): 246 dressed NPCs for Kingshill's 41, 1 FPS online against 60 offline.
+pub fn last_per_actor<T>(batch: Vec<T>, actor: impl Fn(&T) -> u32) -> Vec<T> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out: Vec<T> = batch.into_iter().rev().filter(|x| seen.insert(actor(x))).collect();
+    out.reverse();
+    out
+}
+
 /// Marks that `Net` exists, for run conditions.
 /// CONTRACT: run conditions must not read the NonSend `Net` itself: bevy 0.19 runs
 ///   them on worker threads, and the game aborted at random ("Attempted to access
@@ -764,7 +776,7 @@ fn apply_remotes(
             }
         }
     }
-    for (actor, desc, at, heading, name, admin) in std::mem::take(&mut net.remote_spawns) {
+    for (actor, desc, at, heading, name, admin) in last_per_actor(std::mem::take(&mut net.remote_spawns), |x| x.0) {
         for (e, r) in &remotes {
             if r.actor == actor {
                 commands.entity(e).despawn();

@@ -237,7 +237,7 @@ fn spawn_npcs(
         return;
     }
     let placed = placed.and_then(|h| placements.get(h));
-    for spawn in std::mem::take(queue) {
+    for spawn in crate::net::last_per_actor(std::mem::take(queue), |s| s.actor) {
         for (e, n) in &existing {
             if n.actor == spawn.actor {
                 commands.entity(e).despawn();

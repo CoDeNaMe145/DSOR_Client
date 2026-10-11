@@ -296,7 +296,7 @@ fn spawn_monsters(
     if !data.outfits.values().all(ready) {
         return;
     }
-    for spawn in std::mem::take(queue) {
+    for spawn in crate::net::last_per_actor(std::mem::take(queue), |s| s.actor) {
         for (e, r) in &existing {
             if r.actor == spawn.actor {
                 commands.entity(e).despawn();
