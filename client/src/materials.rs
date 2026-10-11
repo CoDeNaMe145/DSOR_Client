@@ -528,7 +528,7 @@ impl GltfExtensionHandler for NebulaStates {
                     params.p0.y = f("Intensity1", 0.0);
                     params.p1 = Vec4::new(f("Intensity0", 1.0), f("Scale", 1.0), f("Intensity3", 0.0), f("Intensity2", 0.0));
                     params.p2 = Vec4::new(f("Amplitude", 0.0), f("BumpScale", 0.0), 0.0, 0.0);
-                    base.perceptual_roughness = 0.3;
+                    base.perceptual_roughness = 1.0;
                     base.metallic = 0.0;
                 }
                 Kind::VolumeFog => {
