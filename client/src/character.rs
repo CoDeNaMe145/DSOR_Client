@@ -154,7 +154,7 @@ struct VariedJoint {
 }
 
 impl CharacterDesc {
-    fn class_name(&self) -> &'static str {
+    pub(crate) fn class_name(&self) -> &'static str {
         CLASSES.get(self.class as usize).copied().unwrap_or("warrior")
     }
     fn gender_name(&self) -> &'static str {

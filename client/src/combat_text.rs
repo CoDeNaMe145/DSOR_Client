@@ -18,7 +18,7 @@
 //!   (and the variation's) flips half the time; with DynamicXOffsetEnabled the x
 //!   offset too (0x5880FC).
 //! UNVERIFIED: offsets and velocities are taken as world units (x along the
-//!   screen, y up) from 2.25 units over the actor's feet, as the names; the size
+//!   screen, y up) from the actor's feet, as the names; the size
 //!   as points at the 1040-pixel layout height, as NameLabel's.
 
 use std::collections::HashMap;
@@ -134,7 +134,6 @@ struct Floating {
     color: [f32; 4],
 }
 
-const HEAD: f32 = 2.25;
 const LAYOUT_HEIGHT: f32 = 1040.0;
 const BOX: f32 = 300.0;
 
@@ -209,7 +208,11 @@ fn spawn_texts(
         let vh = t.size * 96.0 / 72.0 / LAYOUT_HEIGHT * 100.0;
         commands.spawn((
             Floating {
-                from: at.translation() + Vec3::Y * HEAD,
+                // From the actor's feet: the table's OffsetYBase (1.0 for damage)
+                // puts it on the body. EVIDENCE: the user's view of the 2018 client
+                // ("les degats ... devraient etre sur mon perso pas au dessus");
+                // 2.25 over the feet put them over the head.
+                from: at.translation(),
                 offset: Vec2::new(ox, t.offset_y[1]),
                 velocity: Vec2::new(vx, t.velocity[1]),
                 age: 0.0,

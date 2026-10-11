@@ -73,6 +73,22 @@ for row in db.execute(f"select {','.join(COLS)} from _Template_Monster"):
 with open(os.path.join(chars, "monster_templates.json"), "w") as f:
     json.dump(templates, f, separators=(",", ":"), ensure_ascii=False)
 
+# The players' own hit sequences (_Template_Player, one row per class:
+# human_male_<class>), played as a monster's are: default_hit_player flashes the
+# body red (HitColor).
+PCOLS = ["Id", "CriticalHitSequence", "HeavyHitSequence", "DeathSequence"] + list(HIT.values())
+players = {}
+for row in db.execute(f"select {','.join(PCOLS)} from _Template_Player"):
+    r = dict(zip(PCOLS, row))
+    players[r["Id"].rsplit("_", 1)[-1]] = {
+        "hit": {k: r[c] for k, c in HIT.items() if r[c]},
+        "critical": r["CriticalHitSequence"] or "",
+        "heavy": r["HeavyHitSequence"] or "",
+        "death": r["DeathSequence"] or "",
+    }
+with open(os.path.join(chars, "player_hits.json"), "w") as f:
+    json.dump(players, f, separators=(",", ":"))
+
 # --- animation sets --------------------------------------------------------
 NS = {"ss": "urn:schemas-microsoft-com:office:spreadsheet"}
 IDX = "{urn:schemas-microsoft-com:office:spreadsheet}Index"

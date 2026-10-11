@@ -118,10 +118,37 @@ json_loader!(MonsterTemplatesLoader, MonsterTemplates, "monster_templates.json")
 json_loader!(MonsterAnimsLoader, MonsterAnims, "monster_anims.json");
 json_loader!(ModelSetsLoader, ModelSets, "sets.json");
 
+/// A class's own hit sequences (_Template_Player, tools/export_monsters.py).
+#[derive(Deserialize, Debug, Clone)]
+pub struct PlayerHit {
+    pub hit: HashMap<String, String>,
+    pub critical: String,
+    pub heavy: String,
+}
+
+/// Class name -> its hit sequences (`characters/player_hits.json`).
+#[derive(Asset, TypePath, Deserialize, Debug)]
+#[serde(transparent)]
+pub struct PlayerHits(pub HashMap<String, PlayerHit>);
+
+json_loader!(PlayerHitsLoader, PlayerHits, "player_hits.json");
+
+/// A player's hit sequence slots, as a monster's (Monster::hits, ::heavy).
+#[derive(Component, Default)]
+pub struct HitSlots {
+    rows: [[(Option<u32>, Option<Entity>); INSTANCES]; 7],
+    heavy: Option<Entity>,
+}
+
+/// A player's mesh whose material is its own copy (own_player_materials).
+#[derive(Component)]
+struct OwnMaterial;
+
 #[derive(Resource)]
 struct MonsterData {
     templates: Handle<MonsterTemplates>,
     anims: Handle<MonsterAnims>,
+    player_hits: Handle<PlayerHits>,
     outfits: HashMap<&'static str, Handle<Outfits>>,
     variations: HashMap<&'static str, Handle<Variations>>,
 }
@@ -232,11 +259,13 @@ impl Plugin for MonstersPlugin {
             .register_asset_loader(MonsterTemplatesLoader)
             .register_asset_loader(MonsterAnimsLoader)
             .register_asset_loader(ModelSetsLoader)
+            .init_asset::<PlayerHits>()
+            .register_asset_loader(PlayerHitsLoader)
             .init_resource::<OfflineMonster>()
             .init_resource::<Hovered>()
             .init_resource::<ShaderColors>()
             .init_resource::<DebugMonsters>()
-            .add_systems(PostUpdate, apply_shader_colors)
+            .add_systems(PostUpdate, (own_player_materials, apply_shader_colors).chain())
             .add_systems(PreUpdate, hover)
             .add_systems(Startup, load)
             .add_systems(Update, (spawn_monsters, setup_models, monster_health, hits_and_kills).chain());
@@ -246,6 +275,7 @@ impl Plugin for MonstersPlugin {
 fn load(mut commands: Commands, assets: Res<AssetServer>) {
     commands.insert_resource(MonsterData {
         templates: assets.load("characters/monster_templates.json"),
+        player_hits: assets.load("characters/player_hits.json"),
         anims: assets.load("characters/monster_anims.json"),
         outfits: ["uniskel", "uniskel_dwarf"].into_iter().map(|s| (s, assets.load(format!("characters/{s}/outfits.json")))).collect(),
         variations: ["uniskel", "uniskel_dwarf"].into_iter().map(|s| (s, assets.load(format!("characters/{s}/variations.json")))).collect(),
@@ -539,6 +569,10 @@ fn hits_and_kills(
         ResMut<DebugMonsters>,
         Query<&GlobalTransform>,
     ),
+    (mut players, player_hits): (
+        Query<(&crate::character::Character, Option<&mut HitSlots>), Without<Monster>>,
+        Res<Assets<PlayerHits>>,
+    ),
 ) {
     let (Some(sequences), Some(templates)) = (seqs.get(skills.sequences()), templates.get(&data.templates)) else { return };
     let mut blows = Vec::new();
@@ -712,6 +746,26 @@ fn hits_and_kills(
                 texts.0.push((e, crate::combat_text::HEALING_SELF, crate::combat_text::Say::Healing((blow.damage as f32 * blow.value) as i32)));
             }
         }
+        // A player struck: its class's own hit sequences (default_hit_player: the
+        // body flashes red), as a monster's (ActorSequenceProperty 0x4BAF2A).
+        if let (Some(v), None) = (victim_entity, monsters.iter().find(|(_, m, _)| m.actor == blow.victim)) {
+            let row = player_hits.get(&data.player_hits).zip(players.get_mut(v).ok());
+            if let Some((table, (c, slots))) = row {
+                if let Some(h) = table.0.get(c.desc.class_name()) {
+                    let mut fresh = HitSlots::default();
+                    let has = slots.is_some();
+                    let slots = match slots {
+                        Some(s) => s.into_inner(),
+                        None => &mut fresh,
+                    };
+                    play_blow(&mut commands, sequences, v, &mut slots.rows, &mut slots.heavy, &blow, &h.hit, &h.critical, &h.heavy, &playing);
+                    if !has {
+                        commands.entity(v).insert(fresh);
+                    }
+                }
+            }
+            continue;
+        }
         let Some((e, mut m, anim)) = monsters.iter_mut().find(|(_, m, _)| m.actor == blow.victim) else { continue };
         if let Some((health, max)) = blow.health {
             m.health = health;
@@ -721,30 +775,8 @@ fn hits_and_kills(
             continue;
         }
         let Some(t) = templates.0.get(&m.template) else { continue };
-        let rows: Vec<(usize, &str)> = if blow.critical {
-            vec![(CRITICAL_ROW, t.critical.as_str())]
-        } else {
-            blow.damage_types
-                .iter()
-                .filter_map(|&d| DAMAGE_TYPES.get(d as usize).map(|name| (d as usize, t.hit.get(*name).map(String::as_str).unwrap_or(""))))
-                .collect()
-        };
-        for (row, name) in rows {
-            let Some(seq) = sequences.0.get(name) else { continue };
-            let slots = &mut m.hits[row];
-            // The same blow twice: nothing new.
-            if slots.iter().any(|(tick, _)| *tick == Some(blow.tick)) {
-                continue;
-            }
-            let Some(free) = slots.iter().position(|(_, p)| p.is_none_or(|p| !playing.contains(p))) else { continue };
-            let player = play(&mut commands, seq.clone(), Some(e), e, false);
-            slots[free] = (Some(blow.tick), Some(player));
-        }
-        if blow.heavy && !m.heavy.is_some_and(|p| playing.contains(p)) {
-            if let Some(seq) = sequences.0.get(&t.heavy) {
-                m.heavy = Some(play(&mut commands, seq.clone(), Some(e), e, false));
-            }
-        }
+        let Monster { hits, heavy, .. } = &mut *m;
+        play_blow(&mut commands, sequences, e, hits, heavy, &blow, &t.hit, &t.critical, &t.heavy, &playing);
     }
     for victim in deaths {
         let Some((e, m, mut anim)) = monsters.iter_mut().find(|(_, m, _)| m.actor == victim) else { continue };
@@ -816,6 +848,82 @@ fn hover(
     let now = best.map(|(_, e, a)| (e, a));
     if hovered.0 != now {
         hovered.0 = now;
+    }
+}
+
+/// A blow's hit sequences on its victim `e`: one per damage type it carries (the
+/// critical row instead on a critical), each in a free instance of its row, the
+/// same blow never twice; the heavy hit's own when none is playing.
+/// EVIDENCE: ActorSequenceProperty's hit handler 0x4BAF2A and
+///   FindUnoccupiedSequenceForDamageType 0x4B9FA0 (4 instances per row).
+#[allow(clippy::too_many_arguments)]
+fn play_blow(
+    commands: &mut Commands,
+    sequences: &SequenceTable,
+    e: Entity,
+    hits: &mut [[(Option<u32>, Option<Entity>); INSTANCES]; 7],
+    heavy: &mut Option<Entity>,
+    blow: &Blow,
+    hit: &HashMap<String, String>,
+    critical: &str,
+    heavy_seq: &str,
+    playing: &Query<(), With<SequencePlayer>>,
+) {
+    let rows: Vec<(usize, &str)> = if blow.critical {
+        vec![(CRITICAL_ROW, critical)]
+    } else {
+        blow.damage_types
+            .iter()
+            .filter_map(|&d| DAMAGE_TYPES.get(d as usize).map(|name| (d as usize, hit.get(*name).map(String::as_str).unwrap_or(""))))
+            .collect()
+    };
+    for (row, name) in rows {
+        let Some(seq) = sequences.0.get(name) else { continue };
+        let slots = &mut hits[row];
+        // The same blow twice: nothing new.
+        if slots.iter().any(|(tick, _)| *tick == Some(blow.tick)) {
+            continue;
+        }
+        let Some(free) = slots.iter().position(|(_, p)| p.is_none_or(|p| !playing.contains(p))) else { continue };
+        let player = play(commands, seq.clone(), Some(e), e, false);
+        slots[free] = (Some(blow.tick), Some(player));
+    }
+    if blow.heavy && !heavy.is_some_and(|p| playing.contains(p)) {
+        if let Some(seq) = sequences.0.get(heavy_seq) {
+            *heavy = Some(play(commands, seq.clone(), Some(e), e, false));
+        }
+    }
+}
+
+/// Each player's character surfaces get their own material copy, gathered in its
+/// ActorMaterials, so its HitColor (the hit sequences' red flash) colours that
+/// player alone; monsters get theirs in setup_models.
+#[allow(clippy::type_complexity)]
+fn own_player_materials(
+    mut commands: Commands,
+    meshes: Query<(Entity, &MeshMaterial3d<crate::surfaces::NebulaMaterial>), (Added<MeshMaterial3d<crate::surfaces::NebulaMaterial>>, Without<OwnMaterial>)>,
+    parents: Query<&ChildOf>,
+    players: Query<(), (With<crate::character::Character>, Or<(With<crate::net::LocalPlayer>, With<RemotePlayer>)>, Without<Monster>)>,
+    mut owned: Query<&mut ActorMaterials>,
+    mut materials: ResMut<Assets<crate::surfaces::NebulaMaterial>>,
+) {
+    let mut fresh: HashMap<Entity, Vec<Handle<crate::surfaces::NebulaMaterial>>> = HashMap::new();
+    for (e, h) in &meshes {
+        let Some(player) = parents.iter_ancestors(e).find(|a| players.contains(*a)) else { continue };
+        let Some(m) = materials.get(&h.0).cloned() else { continue };
+        commands.entity(e).insert(OwnMaterial);
+        if m.extension.params.p0.x as u32 != crate::surfaces::Kind::Character as u32 {
+            continue;
+        }
+        let copy = materials.add(m);
+        commands.entity(e).insert(MeshMaterial3d(copy.clone()));
+        match owned.get_mut(player) {
+            Ok(mut o) => o.0.push(copy),
+            Err(_) => fresh.entry(player).or_default().push(copy),
+        }
+    }
+    for (player, list) in fresh {
+        commands.entity(player).insert(ActorMaterials(list));
     }
 }
 
