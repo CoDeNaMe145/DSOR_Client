@@ -408,6 +408,7 @@ impl Plugin for LightingPlugin {
                     (follow_level, apply_look, place_level_lights.run_if(resource_exists::<CurrentMap>)).chain(),
                     flicker,
                     player_light,
+                    shift_fog.after(apply_look),
                 ),
             );
     }
@@ -732,5 +733,33 @@ fn refresh_values(lighting: Res<Lighting>, mut texts: Query<(&ValueText, &mut Te
     for (ValueText(i), mut t) in &mut texts {
         let v = (FIELDS[*i].get)(&lighting);
         t.0 = if FIELDS[*i].step >= 1.0 { format!("{v:.0}") } else { format!("{v:.2}") };
+    }
+}
+
+/// The fog's distances follow the zoom: Nebula adds a fog plane shift to both
+/// (FogDistances = near + shift, far + shift, .., far - near: 0x849D6F; the
+/// shift comes in PostEffect::UpdateParams::SetFogPlaneShift, 0x847889, sent by
+/// 0x84716A), so the haze around the player stays the same however far the
+/// camera is.
+/// UNVERIFIED: the shift as the camera's distance less its farthest zoom
+///   (crate::net::CAM_HEIGHT_MAX); its producer is not traced.
+/// FAILURE: unshifted, zooming in brought the scene nearer than FogNearDist and
+///   the haze faded ("quand je zoom elle s'estompe").
+fn shift_fog(
+    zoom: Option<Res<crate::net::CameraZoom>>,
+    level: Res<Level>,
+    mut fogs: Query<&mut DistanceFog, With<Camera3d>>,
+) {
+    let Some(zoom) = zoom else { return };
+    let b = &level.bubble;
+    let shift = zoom.0 - crate::net::CAM_HEIGHT_MAX;
+    let start = b.fog_near_dist + shift;
+    let end = (b.fog_far_dist + shift).max(start + 0.1);
+    for mut fog in &mut fogs {
+        if let FogFalloff::Linear { start: s, end: e } = fog.falloff {
+            if (s - start).abs() > 1e-3 || (e - end).abs() > 1e-3 {
+                fog.falloff = FogFalloff::Linear { start, end };
+            }
+        }
     }
 }

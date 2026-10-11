@@ -551,10 +551,11 @@ fn spawn_windows(
                 ));
                 let mut e = commands.spawn((
                     Text2d::new(if value.is_some() { String::new() } else { label.text.clone() }),
-                    // Every label of the 2018 layouts is font "tahoma", bold or not:
-                    // Wine's Tahoma (assets/fonts, copied by hand).
+                    // Every label of the 2018 layouts is font "tahoma", drawn thin
+                    // whatever its "bold" flag (recorded): Wine's Tahoma
+                    // (assets/fonts/tahoma.ttf, copied by hand).
                     TextFont {
-                        font: assets.load(if label.bold { "fonts/tahomabd.ttf" } else { "fonts/tahoma.ttf" }).into(),
+                        font: assets.load("fonts/tahoma.ttf").into(),
                         font_size: bevy::text::FontSize::Px(label.size * FONT_SCALE * screen.scale),
                         ..default()
                     },

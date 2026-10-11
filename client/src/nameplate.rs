@@ -54,10 +54,10 @@ fn place(
     assets: Res<AssetServer>,
     mut font: Local<Option<Handle<Font>>>,
 ) {
-    // EVIDENCE: ui/overheadtext.bxml NameLabel: font "tahoma", bold. Wine's Tahoma
-    // Bold (assets/fonts/tahomabd.ttf, copied by hand: not shipped with the game
-    // data), what the 2018 client shows under Proton.
-    let font = font.get_or_insert_with(|| assets.load("fonts/tahomabd.ttf")).clone();
+    // EVIDENCE: ui/overheadtext.bxml NameLabel: font "tahoma"; drawn thin by the
+    // 2018 client (recorded), so Wine's regular Tahoma (assets/fonts/tahoma.ttf,
+    // copied by hand: not shipped with the game data).
+    let font = font.get_or_insert_with(|| assets.load("fonts/tahoma.ttf")).clone();
     if crate::flag("nonames") {
         return;
     }

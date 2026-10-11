@@ -216,11 +216,12 @@ fn spawn_texts(
     if *seed == 0 {
         *seed = 0x9E37_79B9;
     }
-    // EVIDENCE: ui/overheadtext.bxml: every combat label (DamageLabel,
-    //   CriticalDamageLabel, BlockLabel...) is font "tahoma", bold. Wine's own
-    //   Tahoma Bold (tahomabd.ttf), what the 2018 client shows under Proton, is
-    //   copied into assets/fonts by hand (not shipped with the game data).
-    let font = font.get_or_insert_with(|| assets.load("fonts/tahomabd.ttf")).clone();
+    // EVIDENCE: ui/overheadtext.bxml: every combat label is font "tahoma" (its
+    //   "bold" flag set); the 2018 client draws them thin (recorded: names, map
+    //   name, money), so the regular face: Wine's Tahoma (assets/fonts/tahoma.ttf,
+    //   copied by hand, not shipped with the game data). FAILURE: Tahoma Bold
+    //   was "trop grasse".
+    let font = font.get_or_insert_with(|| assets.load("fonts/tahoma.ttf")).clone();
     for (actor, kind, say) in std::mem::take(&mut queue.0) {
         let Some(t) = table.types.get(type_name(kind)) else { continue };
         let Ok(at) = actors.get(actor) else { continue };
