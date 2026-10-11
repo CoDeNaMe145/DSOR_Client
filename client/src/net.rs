@@ -138,7 +138,8 @@ pub struct Net {
     pub named_status_events: Vec<(u32, String, f32)>,
     pub location_gone: Vec<u32>,
     remote_gone: Vec<u32>,
-    remote_moves: Vec<(u32, Vec3, f32, bool)>,
+    /// (actor, where, facing, the record's own start tick).
+    remote_moves: Vec<(u32, Vec3, f32, u32)>,
     /// What this player wears, as the inventory names it: (slots, item template).
     local_worn: Option<Vec<(Vec<i8>, String)>>,
     /// Another player re-dressed (RemotePlayerInfo): actor, skins, armament.
@@ -212,6 +213,16 @@ pub struct RemotePlayer {
     /// FAILURE: applied, a creature's standing records (facing byte 0) turned it
     ///   away while it struck ("ils tapent a 180 dans le mauvais sens").
     pub held: f32,
+    /// The game tick its skill's hold ends at (the skill command's start tick plus
+    /// its unblock frames): its movement records up to then are not applied.
+    /// EVIDENCE: HandleMoveCommand 0x518E80 keeps only a record's ticks while the
+    ///   actor's movement is off; recorded online (a0302 swamp thing,
+    ///   ThingSwampStrike, unblock 41): the server's facing-0 records span the
+    ///   skill's start - 2 .. start + 41 ticks exactly. Measured in the records'
+    ///   own ticks: the client's clock (Net::server_tick) is on another scale.
+    /// FAILURE: held by time from the command's arrival, the hold ended before
+    ///   those records did, and the creature looked away before striking again.
+    pub held_until_tick: Option<u32>,
 }
 
 /// The player this client controls.
@@ -772,7 +783,7 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
                 if Some(a) != net.local_actor {
                     let at = net.wire_to_game(m.x, m.elevation, m.y);
                     let facing = m.facing as f32 / 256.0 * TAU;
-                    net.remote_moves.push((a, at, facing, m.duration > 0));
+                    net.remote_moves.push((a, at, facing, m.start_tick));
                 }
             }
         }
@@ -805,12 +816,15 @@ fn apply_remotes(
         let e = spawn_character(&mut commands, desc, Transform::from_translation(at).with_rotation(Quat::from_rotation_y(heading)));
         commands.entity(e).insert((
             Nameplate::player(name, admin),
-            RemotePlayer { actor, target: at, facing: heading, still_for: 1.0, held: 0.0 },
+            RemotePlayer { actor, target: at, facing: heading, still_for: 1.0, held: 0.0, held_until_tick: None },
         ));
     }
-    for (actor, at, facing, _moving) in std::mem::take(&mut net.remote_moves) {
+    for (actor, at, facing, tick) in std::mem::take(&mut net.remote_moves) {
         for (_, mut r) in &mut remotes {
-            if r.actor == actor && r.held <= 0.0 {
+            // A record from before the end of its skill's hold: its ticks only
+            // (RemotePlayer::held_until_tick).
+            let held = r.held_until_tick.is_some_and(|end| end.wrapping_sub(tick) as i32 >= 0);
+            if r.actor == actor && !held {
                 let at = mesh.and_then(|m| m.ground(at.x, at.z, at.y, 3.0).map(|h| Vec3::new(at.x, h, at.z))).unwrap_or(at);
                 r.target = at;
                 r.facing = facing;

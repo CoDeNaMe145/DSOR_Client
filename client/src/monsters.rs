@@ -401,7 +401,7 @@ fn spawn_monsters(
                 hits: Default::default(),
                 heavy: None,
             },
-            RemotePlayer { actor: spawn.actor, target: spawn.position, facing: 0.0, still_for: 1.0, held: 0.0 },
+            RemotePlayer { actor: spawn.actor, target: spawn.position, facing: 0.0, still_for: 1.0, held: 0.0, held_until_tick: None },
         ));
     }
 }
@@ -943,3 +943,4 @@ fn apply_shader_colors(
         }
     }
 }
+

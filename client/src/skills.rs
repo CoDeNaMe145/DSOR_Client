@@ -760,28 +760,23 @@ fn remote_skills(
     seqs: Res<Assets<SequenceTable>>,
     // Monsters too (crate::monsters): they move as remote actors, without a Character.
     mut remotes: Query<(Entity, &mut Transform, &mut RemotePlayer, Option<&Character>)>,
-    real: Res<Time<Real>>,
 ) {
     let Some(mut net) = net else { return };
     if net.skill_events.is_empty() {
         return;
     }
     let (Some(table), Some(sequences)) = (tables.get(&data.skills), seqs.get(&data.sequences)) else { return };
-    let now_tick = net.server_tick(now_ms(&real));
     for ev in std::mem::take(&mut net.skill_events) {
         let Some(skill) = table.0.get(&(ev.wire as u32)) else { continue };
         let Some((e, mut tf, mut r, character)) = remotes.iter_mut().find(|(_, _, r, _)| r.actor == ev.actor) else { continue };
         let facing = aim_to_facing(ev.heading);
         r.facing = facing;
-        // Movement off until its unblock frame (see RemotePlayer::held), where it
-        // stands now: from the skill's START tick, which the command sets ahead
-        // (the server's skill_lead), on the server's clock.
-        // FAILURE: counted from the command's arrival, the hold ended a few ticks
-        //   early and the creature's standing records (facing byte 0) turned it
-        //   away for a tenth of a second before it struck ("ils regardent derriere
-        //   avant de me taper"); the 2018 client holds it through them.
-        let ahead = (ev.start_tick as i64 - now_tick as i64).max(0) as f32 / FPS;
-        r.held = ahead + skill.unblock.max(skill.motion_unblock) as f32 / FPS;
+        // Movement off until its unblock frame, where it stands now: its records
+        // are ignored up to the skill's start tick plus the unblock frames
+        // (RemotePlayer::held_until_tick); `held` keeps its body still meanwhile.
+        let unblock = skill.unblock.max(skill.motion_unblock);
+        r.held = unblock as f32 / FPS;
+        r.held_until_tick = Some(ev.start_tick.wrapping_add(unblock));
         r.target = tf.translation;
         tf.rotation = Quat::from_rotation_y(facing);
         let point = ev
