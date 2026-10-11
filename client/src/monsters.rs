@@ -249,6 +249,11 @@ struct OfflineMonster {
 #[derive(Resource, Default)]
 pub struct Hovered(pub Option<(Entity, u32)>);
 
+/// What the hovered monster's info window shows (crate::ui, interactinfo): its
+/// title, level and health.
+#[derive(Resource, Default, Clone, PartialEq)]
+pub struct HoverInfo(pub Option<(String, u32, u32, u32)>);
+
 pub struct MonstersPlugin;
 
 impl Plugin for MonstersPlugin {
@@ -263,6 +268,8 @@ impl Plugin for MonstersPlugin {
             .register_asset_loader(PlayerHitsLoader)
             .init_resource::<OfflineMonster>()
             .init_resource::<Hovered>()
+            .init_resource::<HoverInfo>()
+            .add_systems(Update, hover_info)
             .init_resource::<ShaderColors>()
             .init_resource::<DebugMonsters>()
             .add_systems(PostUpdate, (own_player_materials, apply_shader_colors).chain())
@@ -944,3 +951,20 @@ fn apply_shader_colors(
     }
 }
 
+/// The hovered monster's title (_Template_Monster title, language/fr), level and
+/// health, for its info window.
+fn hover_info(
+    hovered: Res<Hovered>,
+    monsters: Query<&Monster>,
+    data: Res<MonsterData>,
+    templates: Res<Assets<MonsterTemplates>>,
+    mut info: ResMut<HoverInfo>,
+) {
+    let now = hovered.0.and_then(|(e, _)| monsters.get(e).ok()).map(|m| {
+        let title = templates.get(&data.templates).and_then(|t| t.0.get(&m.template)).map(|t| t.title.clone()).unwrap_or_default();
+        (title, m.level, m.health, m.max_health)
+    });
+    if info.0 != now {
+        info.0 = now;
+    }
+}

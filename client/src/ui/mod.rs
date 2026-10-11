@@ -42,7 +42,24 @@ const LAYER: usize = 7;
 const FONT_SCALE: f32 = 1.5;
 
 /// Windows shown from the start, and their depth (later ones over earlier ones).
-const HUD_WINDOWS: [(&str, f32); 3] = [("bottombar", 10.0), ("currencybar", 20.0), ("gamebar", 30.0)];
+const HUD_WINDOWS: [(&str, f32); 4] = [("bottombar", 10.0), ("currencybar", 20.0), ("gamebar", 30.0), ("interactinfo", 40.0)];
+
+/// The hovered monster's info window (top of the screen): shown while a monster
+/// is under the cursor, with only its monster parts -- the frame, the health bar
+/// and its name, the level ring.
+/// UNVERIFIED: which of interactinfo's parts the 2018 client shows for a monster
+///   (its window code is not traced): the object, player, map and drop variants
+///   are left out.
+const HOVER_WINDOW: &str = "interactinfo";
+fn hover_part(id: &str) -> bool {
+    id == "Canvas"
+        || id == "Canvas/Label_bg"
+        || id.starts_with("Canvas/Label_bg/Healthbar")
+        || id == "Canvas/Label_bg/ActorInfo"
+        || id == "Canvas/Label_bg/ActorInfo/ActorInfo"
+        || id.starts_with("Canvas/Label_bg/ActorInfo/ActorInfo/LevelLabel")
+        || id.starts_with("Canvas/Label_bg/ActorInfo/ActorInfo/gothic_panel")
+}
 /// Windows the player opens: (window, key, depth).
 const MENU_WINDOWS: [(&str, KeyCode, f32); 3] = [
     ("inventory", KeyCode::KeyI, 100.0),
@@ -219,6 +236,8 @@ enum Gauge {
     Health,
     Resource,
     Xp,
+    /// The hovered monster's health (interactinfo Healthbar/progress).
+    TargetHealth,
 }
 
 /// A text the game sets: what it shows.
@@ -234,6 +253,9 @@ enum ValueKind {
     Level,
     Name,
     Page,
+    /// The hovered monster's title and level (interactinfo).
+    TargetName,
+    TargetLevel,
     /// A character sheet figure (crate::stats::Sheet, by widget name).
     Sheet(&'static str),
 }
@@ -294,7 +316,7 @@ impl Plugin for UiPlugin {
             .add_systems(Startup, setup)
             .add_systems(
                 Update,
-                (match_scene_camera, spawn_windows, follow_screen, read_figures, (update_fills, update_values, update_slots), toggle_windows).chain(),
+                (match_scene_camera, spawn_windows, follow_screen, read_figures, (update_fills, update_values, update_slots), toggle_windows, show_hover_window).chain(),
             );
     }
 }
@@ -331,6 +353,9 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>) {
 /// Which dynamic part a widget is, if any.
 fn gauge_of(id: &str) -> Option<Gauge> {
     let parent = id.rsplit('/').nth(1).unwrap_or("");
+    if parent == "Healthbar" && id.ends_with("/progress") {
+        return Some(Gauge::TargetHealth);
+    }
     match parent {
         "ProgressBar_health" => Some(Gauge::Health),
         "ProgressBar_rage" | "ProgressBar_mana" | "ProgressBar_stamina" | "ProgressBar_mechanicResource" => Some(Gauge::Resource),
@@ -364,6 +389,8 @@ fn value_of(id: &str) -> Option<ValueKind> {
         "copper_display" => ValueKind::Copper,
         "andermant_display" => ValueKind::Andermant,
         "Level" if id.contains("ProgressBar_xp") => ValueKind::Level,
+        "ActorName" if id.contains("/Healthbar/") => ValueKind::TargetName,
+        "Level" if id.contains("/Levelcircle4/") => ValueKind::TargetLevel,
         "CharacterName" => ValueKind::Name,
         "PageNumText" => ValueKind::Page,
         _ => return None,
@@ -458,7 +485,7 @@ fn spawn_windows(
             .spawn((
                 Window2018(layout.window.clone()),
                 Transform::from_xyz(0.0, 0.0, z),
-                if key.is_some() && !open { Visibility::Hidden } else { Visibility::Inherited },
+                if (key.is_some() || layout.window == HOVER_WINDOW) && !open { Visibility::Hidden } else { Visibility::Inherited },
             ))
             .id();
         // One artwork parent (y flipped) and one text parent per k.
@@ -496,6 +523,9 @@ fn spawn_windows(
             }
         }
         for w in &layout.widgets {
+            if layout.window == HOVER_WINDOW && !hover_part(&w.id) {
+                continue;
+            }
             if let Some(slot) = quick_slot_of(&w.id) {
                 let p = parent(&mut commands, w.k, true);
                 commands.spawn((QuickSlot { slot, k: w.k, rect: w.rect, shown: None }, Transform::from_xyz(0.0, 0.0, depth + 0.005), Visibility::Inherited, ChildOf(p)));
@@ -698,6 +728,7 @@ fn fraction(v: (f32, f32)) -> f32 {
 
 fn update_fills(
     figures: Res<Figures>,
+    hover: Res<crate::monsters::HoverInfo>,
     screen: Res<Screen>,
     mut fills: Query<(&mut Fill, &MeshMaterial2d<UiMaterial>)>,
     mut materials: ResMut<Assets<UiMaterial>>,
@@ -707,6 +738,7 @@ fn update_fills(
             Gauge::Health => fraction(figures.health),
             Gauge::Resource => fraction(figures.resource),
             Gauge::Xp => figures.xp.clamp(0.0, 1.0),
+            Gauge::TargetHealth => hover.0.as_ref().map(|h| fraction((h.2 as f32, h.3 as f32))).unwrap_or(0.0),
         };
         if (v - f.shown).abs() < 1e-3 {
             continue;
@@ -715,7 +747,7 @@ fn update_fills(
         let [l, t, r, b] = f.rect;
         // Globes fill from the bottom; the XP bar from the left.
         let (min, max) = match f.which {
-            Gauge::Xp => (screen.world(f.k, l, b), screen.world(f.k, l + (r - l) * v, t)),
+            Gauge::Xp | Gauge::TargetHealth => (screen.world(f.k, l, b), screen.world(f.k, l + (r - l) * v, t)),
             _ => (screen.world(f.k, l, b), screen.world(f.k, r, b - (b - t) * v)),
         };
         if let Some(mut mat) = materials.get_mut(&m.0) {
@@ -724,8 +756,13 @@ fn update_fills(
     }
 }
 
-fn update_values(figures: Res<Figures>, sheet: Res<crate::stats::Sheet>, mut texts: Query<(&Value, &mut Text2d)>) {
-    if !figures.is_changed() && !sheet.is_changed() {
+fn update_values(
+    figures: Res<Figures>,
+    sheet: Res<crate::stats::Sheet>,
+    hover: Res<crate::monsters::HoverInfo>,
+    mut texts: Query<(&Value, &mut Text2d)>,
+) {
+    if !figures.is_changed() && !sheet.is_changed() && !hover.is_changed() {
         return;
     }
     for (v, mut t) in &mut texts {
@@ -740,6 +777,8 @@ fn update_values(figures: Res<Figures>, sheet: Res<crate::stats::Sheet>, mut tex
             ValueKind::Level => figures.level.map(|l| l.to_string()).unwrap_or_else(|| "-".to_owned()),
             ValueKind::Name => figures.name.clone(),
             ValueKind::Page => "1/1".to_owned(),
+            ValueKind::TargetName => hover.0.as_ref().map(|h| h.0.clone()).unwrap_or_default(),
+            ValueKind::TargetLevel => hover.0.as_ref().map(|h| h.1.to_string()).unwrap_or_default(),
             ValueKind::Sheet(w) => match sheet.0.get(w) {
                 Some(v) => v.clone(),
                 None => continue,
@@ -787,6 +826,21 @@ fn update_slots(
             commands.spawn((Mesh2d(meshes.add(run.mesh())), MeshMaterial2d(m), Transform::IDENTITY, RenderLayers::layer(LAYER), ChildOf(e)));
         }
         s.shown = want;
+    }
+}
+
+/// The hovered monster's info window, shown while one is under the cursor.
+fn show_hover_window(hover: Res<crate::monsters::HoverInfo>, mut windows: Query<(&Window2018, &mut Visibility)>) {
+    if !hover.is_changed() {
+        return;
+    }
+    for (w, mut v) in &mut windows {
+        if w.0 == HOVER_WINDOW {
+            let want = if hover.0.is_some() { Visibility::Inherited } else { Visibility::Hidden };
+            if *v != want {
+                *v = want;
+            }
+        }
     }
 }
 
