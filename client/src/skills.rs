@@ -856,6 +856,10 @@ fn run_pending(
     }
 }
 
+/// A player's collision for monster bullets (see fly_bullets). UNVERIFIED.
+const PLAYER_RADIUS: f32 = 0.5;
+const PLAYER_HEIGHT: f32 = 2.0;
+
 fn fly_bullets(
     mut commands: Commands,
     time: Res<Time>,
@@ -864,6 +868,7 @@ fn fly_bullets(
     navmeshes: Res<Assets<NavMesh>>,
     monsters: Query<(&GlobalTransform, &crate::monsters::Monster, &CharacterAnim)>,
     is_monster: Query<(), With<crate::monsters::Monster>>,
+    players: Query<(Entity, &GlobalTransform), (With<Character>, Or<(With<LocalPlayer>, With<RemotePlayer>)>)>,
     net: Option<NonSend<Net>>,
     mut debug_monsters: ResMut<crate::monsters::DebugMonsters>,
 ) {
@@ -898,6 +903,18 @@ fn fly_bullets(
                 if !a.dead && Vec2::new(p.x - here.x, p.z - here.z).length() <= b.radius + m.radius && here.y >= p.y - 0.5 && here.y <= p.y + m.height + 0.5 {
                     ending = 2;
                     struck = Some(m.actor);
+                    break;
+                }
+            }
+        }
+        // A monster's bullet stops on the players in its way ("les projectiles
+        // devraient exploser sur moi": they flew through).
+        // UNVERIFIED: the player's radius (PLAYER_RADIUS) and height, not traced.
+        if ending == 0 && is_monster.contains(b.caster) {
+            for (pe, at) in &players {
+                let p = at.translation();
+                if pe != b.caster && Vec2::new(p.x - here.x, p.z - here.z).length() <= b.radius + PLAYER_RADIUS && here.y >= p.y - 0.5 && here.y <= p.y + PLAYER_HEIGHT + 0.5 {
+                    ending = 2;
                     break;
                 }
             }
