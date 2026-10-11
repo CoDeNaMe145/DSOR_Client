@@ -1119,16 +1119,13 @@ fn play_sequences(
                                 .or(Some(p.anchor))
                         };
                         let path = format!("{graphics}.glb");
-                        // On a character: in the character's own frame, as the effect
-                        // model is drawn (forward +Z, the characters' too).
-                        // EVIDENCE: warrior_mightyswing_fast's emitters stand at
-                        //   z +1.03 (in front, by the swing); beast_hound's head is at
-                        //   z +1.11 of its hips.
-                        // FAILURE: turned half a turn into Nebula's entity frame, they
-                        //   burst behind the warrior ("les 3 effets de particule sont
-                        //   places a l'oppose").
-                        let place = track_transform(&curved(at, &curves_of(&track), "graphicstrans", frame));
+                        // On a character (not a joint): into its entity frame.
+                        let mut place = track_transform(&curved(at, &curves_of(&track), "graphicstrans", frame));
                         let mut base = Mat4::IDENTITY;
+                        if joint.is_empty() && characters.contains(p.anchor) {
+                            base = Transform::from_rotation(entity_rotation(0.0)).to_matrix();
+                            place = Transform::from_matrix(base * place.to_matrix());
+                        }
                         let mut fx = commands.spawn((
                             WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(path.clone()))),
                             FxModel { gltf: assets.load(path), started: false, looping: p.looping },
@@ -1159,8 +1156,11 @@ fn play_sequences(
                                 // As the level's lights: Nebula's colour x intensity, falling
                                 // off linearly to its range (crate::lighting::point_light).
                                 crate::lighting::point_light(*color, *intensity, *range),
-                                // The same frame as the effects (above).
-                                track_transform(at),
+                                if characters.contains(p.anchor) {
+                                    Transform::from_rotation(entity_rotation(0.0)) * track_transform(at)
+                                } else {
+                                    track_transform(at)
+                                },
                                 ChildOf(p.anchor),
                             ))
                             .id();

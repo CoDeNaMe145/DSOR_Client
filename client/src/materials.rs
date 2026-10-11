@@ -571,11 +571,6 @@ impl GltfExtensionHandler for NebulaStates {
                 m.alpha_mode = AlphaMode::Add;
                 m.unlit = true;
                 m.cull_mode = None;
-                // No fog, as the additive particles (crate::particles): fogged, an
-                // additive surface adds the fog's colour wherever it is drawn --
-                // warrior_mightyswing's swoosh, a whole ring under a dark emissive
-                // map, showed as a pale disc ("un genre de cercle blanc").
-                m.fog_enabled = false;
                 // The glow is EmsvMap0 x MatEmissiveIntensity (the fireball's big
                 // halo is 0.1: a faint red haze, not a white disc).
                 if let Some(i) = intensity {
