@@ -19,6 +19,9 @@ const HEAD: f32 = 2.25;
 const MAX_DISTANCE: f32 = 45.0;
 /// Width of the box a name is centred in, pixels.
 const BOX: f32 = 400.0;
+/// NameLabel's top over the overhead window's centre, as a share of the screen
+/// height (41.26 / 768: ui/overheadtext.bxml).
+const NAME_OVER_CENTRE: f32 = 41.26 / 768.0;
 
 #[derive(Component, Clone)]
 pub struct Nameplate {
@@ -66,7 +69,6 @@ fn place(
     // Points to pixels at the layout height, then as a share of the window
     // height, so the name scales with the window as the game's layout does.
     let vh = FONT_PT * 96.0 / 72.0 / LAYOUT_HEIGHT * 100.0;
-    let size = vh * height / 100.0;
     for (entity, plate, at, visible, label) in &actors {
         let Some(Label(node)) = label else {
             let node = commands
@@ -96,7 +98,12 @@ fn place(
         };
         *vis = Visibility::Inherited;
         style.left = Val::Px(p.x - BOX / 2.0);
-        style.top = Val::Px(p.y - size * 1.2);
+        // EVIDENCE: ui/overheadtext.bxml: NameLabel's top (354.74) is 41.26 of the
+        //   768 reference pixels over its canvas's centre (396.56), the point the
+        //   window is placed on. UNVERIFIED: that point as HEAD over the feet.
+        // FAILURE: 1.2 font heights over the head drew the name too low ("le
+        //   pseudo devrait etre plus haut").
+        style.top = Val::Px(p.y - NAME_OVER_CENTRE * height);
         if color.0 != plate.color {
             color.0 = plate.color;
         }
