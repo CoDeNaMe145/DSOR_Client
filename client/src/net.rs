@@ -462,6 +462,7 @@ fn pump(
     left_behind: Query<Entity, Or<(With<crate::npc::Npc>, With<RemotePlayer>)>>,
 ) {
     let now = now_ms(&time);
+    let mut changed_map = false;
     let net = &mut *net;
     if net.offline {
         if net.centre.is_none() {
@@ -535,6 +536,7 @@ fn pump(
                 // the first mesh it sees); crate::nav loads the new one.
                 commands.remove_resource::<CurrentNav>();
                 net.centre = None;
+                changed_map = true;
                 commands.insert_resource(CurrentMap::new(name.clone(), assets.load(format!("maps/{name}.map.json"))));
             }
             SessionEvent::Clock(tick) => {
@@ -552,7 +554,12 @@ fn pump(
             SessionEvent::Disconnected(reason) => warn!("disconnected: {reason:?}"),
         }
     }
-    if net.centre.is_none() {
+    // CONTRACT: not in the pass that changed map: `current` is still the OLD map
+    //   (the new CurrentMap is inserted at the end of this system).
+    // FAILURE: the old map's centre was taken at once and kept: every wire position
+    //   on the new map was off by the difference of the two centres (Kingshill to
+    //   a0302_wildforest: monsters 16 units up in the air, out of view).
+    if net.centre.is_none() && !changed_map {
         if let Some(manifest) = current.as_ref().and_then(|c| manifests.get(&c.manifest)) {
             net.centre = Some(Vec3::from(manifest.center));
         }

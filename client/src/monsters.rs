@@ -191,6 +191,10 @@ pub struct ShaderColors(pub Vec<(Entity, Vec4)>);
 #[derive(Component, Default)]
 pub struct ActorMaterials(pub Vec<Handle<crate::surfaces::NebulaMaterial>>);
 
+/// Keeps the monster's model file loaded (see setup_models).
+#[derive(Component)]
+struct ModelFile(#[allow(dead_code)] Handle<Gltf>);
+
 /// A whole model waiting for its scene: skins, variation, animations.
 #[derive(Component)]
 struct ModelSetup {
@@ -479,7 +483,11 @@ fn setup_models(
             .entity(player)
             .insert((AnimationGraphHandle(graphs.add(graph)), crate::anim_cull::ManagedAnimation));
         anim.bind_model(player, nodes);
-        commands.entity(e).insert(ModelBones(bones)).remove::<ModelSetup>();
+        // The file stays loaded while the monster stands: dropped with ModelSetup,
+        // the next monster of its kind loaded it again, the reload replaced its
+        // scene (AssetEvent::Modified), and bevy spawned every instance of it
+        // anew, without its hidden skins.
+        commands.entity(e).insert((ModelBones(bones), ModelFile(setup.gltf.clone()))).remove::<ModelSetup>();
     }
 }
 
