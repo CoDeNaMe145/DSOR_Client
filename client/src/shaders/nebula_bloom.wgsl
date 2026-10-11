@@ -35,7 +35,8 @@ fn shown(c: vec3<f32>) -> vec3<f32> {
 fn fs_bright(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     // The 2x2 average (pe_downsample2x2) by the bilinear sampler between texels.
     let s = shown(textureSample(source, source_sampler, in.uv).rgb);
-    let over = max(s - vec3<f32>(params.p.x), vec3<f32>(0.0));
+    let threshold = params.p.x * 0.5;
+    let over = max(s - vec3<f32>(threshold), vec3<f32>(0.0));
     return vec4<f32>(s * params.color.rgb * dot(over, LUM), 1.0);
 }
 
@@ -55,10 +56,22 @@ fn fs_blur(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     return c * 1.1;
 }
 
+fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
+    let low = c * 12.92;
+    let high = 1.055 * pow(max(c, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.4)) - vec3<f32>(0.055);
+    return select(low, high, c > vec3<f32>(0.0031308));
+}
+
+fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
+    let low = c / 12.92;
+    let high = pow(max((c + vec3<f32>(0.055)) / 1.055, vec3<f32>(0.0)), vec3<f32>(2.4));
+    return select(low, high, c > vec3<f32>(0.04045));
+}
+
 @fragment
 fn fs_compose(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let scene = textureSample(source, source_sampler, in.uv);
     let b = textureSample(bloom, source_sampler, in.uv).rgb;
-    let g = pow(max(scene.rgb, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2)) + b * params.p.y;
-    return vec4<f32>(pow(g, vec3<f32>(2.2)), scene.a);
+    let display = min(linear_to_srgb(max(scene.rgb, vec3<f32>(0.0))) + b * params.p.y * 2.0, vec3<f32>(1.0));
+    return vec4<f32>(srgb_to_linear(display), scene.a);
 }

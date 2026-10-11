@@ -49,7 +49,7 @@ impl Plugin for NebulaBloomPlugin {
                 Core3d,
                 bloom_compose
                     .after(crate::clamp::clamp)
-                    .before(bevy::core_pipeline::tonemapping::tonemapping)
+                    .after(bevy::core_pipeline::tonemapping::tonemapping)
                     .in_set(Core3dSystems::PostProcess),
             );
     }
