@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Close the looping clips of the converted models: one more key at the end.
 
-Usage: close_loops.py <assets> [glb ...]   (every assets/**/*.glb when none given)
+Usage: close_loops.py [--undo] <assets> [glb ...]   (assets/characters/**/*.glb when none
+given; --undo reopens every closed clip under <assets>)
 
 A Nebula clip of n keys, key duration dt, that loops (post-infinity loop) lasts
 n * dt and interpolates from its last key back to its first over the last dt.
@@ -141,6 +142,18 @@ def close(path):
             continue
         new_inputs = {}
         changed = False
+        # CONTRACT: one closing time for every sampler of the clip, n * dt of its
+        #   keyed tracks. A constant track is two keys (first and last time); closed
+        #   one dt after ITS last key it reached twice the clip's length, and the
+        #   whole run cycle waited on it, frozen ("j'ai 2s ou l'anim est freeze").
+        end = None
+        for s in an["samplers"]:
+            t = read(g, blob, s["input"])
+            if t is not None and len(t) >= 3:
+                close_at = float(t[-1][0] + (t[1][0] - t[0][0]))
+                end = close_at if end is None else max(end, close_at)
+        if end is None:
+            continue
         for s in an["samplers"]:
             if s.get("interpolation", "LINEAR") != "LINEAR":
                 continue
@@ -148,15 +161,14 @@ def close(path):
             v = read(g, blob, s["output"])
             if t is None or v is None or len(t) < 2 or len(v) != len(t):
                 continue
-            dt = float(t[1][0] - t[0][0])
-            if dt <= 0:
+            if end <= float(t[-1][0]):
                 continue
             first = v[0].copy()
             path_kind = g["accessors"][s["output"]]["type"]
             if path_kind == "VEC4" and float(np.dot(first, v[-1])) < 0:
                 first = -first
             if s["input"] not in new_inputs:
-                times = np.vstack([t, [[t[-1][0] + dt]]])
+                times = np.vstack([t, [[end]]])
                 new_inputs[s["input"]] = append(g, blob, times, "SCALAR", minmax=True)
             s["input"] = new_inputs[s["input"]]
             s["output"] = append(g, blob, np.vstack([v, [first]]), path_kind)
@@ -171,13 +183,57 @@ def close(path):
     return done
 
 
+def reopen(path):
+    """Undo close(): drop the key it appended to each sampler of a closed clip."""
+    got = read_glb(path)
+    if got is None:
+        return 0
+    g, blob = got
+    done = 0
+    for an in g.get("animations", []):
+        if not (an.get("extras") or {}).get("dsor_closed"):
+            continue
+        new_inputs = {}
+        for s in an["samplers"]:
+            t = read(g, blob, s["input"])
+            v = read(g, blob, s["output"])
+            if t is None or v is None or len(t) < 3 or len(v) != len(t):
+                continue
+            if s["input"] not in new_inputs:
+                new_inputs[s["input"]] = append(g, blob, t[:-1], "SCALAR", minmax=True)
+            s["input"] = new_inputs[s["input"]]
+            s["output"] = append(g, blob, v[:-1], g["accessors"][s["output"]]["type"])
+        del an["extras"]["dsor_closed"]
+        done += 1
+    if done:
+        blob = compact(g, blob)
+        g["buffers"][0]["byteLength"] = len(blob) + (4 - len(blob) % 4) % 4
+        write_glb(path, g, blob)
+    return done
+
+
 if __name__ == "__main__":
-    assets = sys.argv[1]
-    files = sys.argv[2:] or glob.glob(os.path.join(assets, "**", "*.glb"), recursive=True)
+    # CONTRACT: characters only (skeleton and monster clips, which the client
+    #   repeats). An effect model's clip plays ONCE (crate::skills
+    #   start_fx_animations) whatever its "-loop" name: closed, its tracks ended
+    #   back on their first key -- warrior_mightyswing's emitters went back behind
+    #   the warrior before emitting and its swoosh swept twice ("les 3 effets ...
+    #   a l'oppose", "le FX clignote 2x").
+    # --undo: reopen every clip this closed (anywhere under <assets>).
+    args = sys.argv[1:]
+    undo = "--undo" in args
+    args = [a for a in args if a != "--undo"]
+    assets = args[0]
+    if args[1:]:
+        files = args[1:]
+    elif undo:
+        files = glob.glob(os.path.join(assets, "**", "*.glb"), recursive=True)
+    else:
+        files = glob.glob(os.path.join(assets, "characters", "**", "*.glb"), recursive=True)
     total = files_changed = 0
     for f in files:
-        n = close(f)
+        n = reopen(f) if undo else close(f)
         if n:
             total += n
             files_changed += 1
-    print(f"close_loops: {total} looping clip(s) closed in {files_changed} file(s)")
+    print(f"close_loops: {total} clip(s) {'reopened' if undo else 'closed'} in {files_changed} file(s)")
