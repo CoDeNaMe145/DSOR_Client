@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """Floating combat texts (damage numbers, "Parade !"...), from the 2018 client's data.
 
-Usage: export_combat_text.py <export_win32> <assets>
+Usage: export_combat_text.py <export_win32> <assets> [<DSO_Godot>]
 
 Writes interface/combat_text.json:
   types: CombatTextType name -> {color [r,g,b,a], duration, fade, offset_y [x,y,z],
          offset_x [x,y,z], offset_x_var, dynamic_x, velocity [x,y,z], velocity_var,
          size, label}   (static.db4 _Template_CombatText, one row per type)
+  labels: overhead label name -> {dt, y [...], scale [...], alpha [...], outline,
+          size}: the label's UI animation (ui/overheadtext.bxml AnimRes
+          anims:ui/overheadtext.nax3, AnimGroup = clip, AnimDuration), one key per
+          dt seconds -- translation y (UI units, y down), scale, alpha (the scale
+          curve's w); its outline (TextEffectSize) and fontSize. Needs DSO_Godot.
   texts: block, critical ("{0:i} !"), immunity, low_health
          (language/fr/gui.window.xml floatingBlock, floatingCritical,
          floatingDamageImmunity, lowhealthhit)
@@ -49,7 +54,35 @@ texts = {
     "immunity": loca.get("floatingDamageImmunity", "Immune"),
     "low_health": loca.get("lowhealthhit", ""),
 }
+labels = {}
+if len(sys.argv) > 3:
+    sys.path.insert(0, sys.argv[3])
+    from dsoexp import bxml, nax
+    doc = bxml.parse(open(os.path.join(export, "ui", "overheadtext.bxml"), "rb").read())
+    clips = nax.load(os.path.join(export, "anims", "ui", "overheadtext.nax3"))
+    clips = clips if isinstance(clips, list) else clips.clips
+
+    def walk(n):
+        a = n.attrs
+        if a.get("AnimGroup") is not None and a.get("id"):
+            c = clips[int(a["AnimGroup"])]
+            dt = c.duration / max(1, c.num_keys)
+            kinds = {cv.curve_type: i for i, cv in enumerate(c.curves)}
+            tr, sc = kinds.get(nax.TRANSLATION), kinds.get(nax.SCALE)
+            keys = range(c.num_keys)
+            labels[a["id"]] = {
+                "dt": round(dt, 6),
+                "y": [round(c.sample(tr, f)[1], 5) for f in keys] if tr is not None else [],
+                "scale": [round(c.sample(sc, f)[0], 5) for f in keys] if sc is not None else [],
+                "alpha": [round(c.sample(sc, f)[3], 5) for f in keys] if sc is not None else [],
+                "outline": float(a.get("TextEffectSize", "0") or 0) if a.get("TextEffect") == "1" else 0.0,
+                "size": float(a.get("fontSize", "10") or 10),
+            }
+        for ch in n.children:
+            walk(ch)
+
+    walk(doc if hasattr(doc, "children") else doc.root)
 out = os.path.join(assets, "interface", "combat_text.json")
 with open(out, "w") as f:
-    json.dump({"types": types, "texts": texts}, f, ensure_ascii=False, separators=(",", ":"))
-print({"types": len(types), "texts": texts})
+    json.dump({"types": types, "texts": texts, "labels": labels}, f, ensure_ascii=False, separators=(",", ":"))
+print({"types": len(types), "labels": sorted(labels), "texts": texts})

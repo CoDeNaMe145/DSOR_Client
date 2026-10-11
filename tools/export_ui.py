@@ -23,7 +23,8 @@ Writes <assets>/interface/<name>.ui.json:
                 "rect": [l, t, r, b], "hidden": bool,
                 "art": {"tex": "textures/ui/x.png" | null, "pos": [x, y, ...],
                         "uv": [u, v, ...], "color": [r, g, b, a, ...], "idx": [...]},
-                "text": {"text", "key", "size", "color", "align": [h, v], "bold"}}]}
+                "text": {"text", "key", "size", "color", "align": [h, v], "bold",
+                         "outline": [size, r, g, b, a] (optional)}}]}
 in drawing order (parents first), positions in reference pixels (y down), the
 artwork as the mesh group's own triangles, UVs and vertex colours (the engine
 draws them as they are: quads, nine-slices, the globes' polygons), plus the
@@ -198,6 +199,10 @@ def export(name):
                     "align": [gx.H_ALIGN.get(a.get("HorizontalAlignment"), 0), gx.V_ALIGN.get(a.get("VerticalAlignment"), 0)],
                     "bold": a.get("bold") == "true",
                 }
+                # TextEffect 1: an outline of TextEffectSize pixels in TextEffectColor
+                # (every combat, name and money label).
+                if a.get("TextEffect") == "1" and float(a.get("TextEffectSize", "0") or 0) > 0:
+                    entry["text"]["outline"] = [float(a.get("TextEffectSize"))] + gx.fvals(a.get("TextEffectColor", "0,0,0,1"), 4, 1.0)
                 stats["texts"] += 1
             widgets.append(entry)
             stats["widgets"] += 1

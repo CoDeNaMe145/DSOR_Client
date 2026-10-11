@@ -39,6 +39,9 @@ pub struct TextType {
     pub velocity: [f32; 3],
     pub velocity_var: f32,
     pub size: f32,
+    /// Its overhead label (DamageLabel, CriticalDamageLabel...).
+    #[serde(default)]
+    pub label: String,
 }
 
 #[derive(Deserialize, Debug, Clone, Default)]
@@ -53,6 +56,38 @@ pub struct Texts {
 pub struct CombatTextTable {
     pub types: HashMap<String, TextType>,
     pub texts: Texts,
+    /// The overhead labels' own animations (tools/export_combat_text.py).
+    #[serde(default)]
+    pub labels: HashMap<String, LabelAnim>,
+}
+
+/// A label's UI animation: one key per `dt` seconds.
+/// EVIDENCE: ui/overheadtext.bxml: DamageLabel AnimRes anims:ui/overheadtext.nax3,
+///   AnimGroup 3, AnimDuration 880 (CriticalDamageLabel 2/760, BlockLabel 1/1040,
+///   HealingLabel 0/1640, ImmunityLabel 4/760, InterceptLabel 5/1040); the clip
+///   moves it (translation y), pops it (scale 0.8 -> 1.8 -> 1.06) and fades it
+///   (the scale curve's w, ~1 -> 0 over the clip).
+#[derive(Deserialize, Debug, Clone)]
+pub struct LabelAnim {
+    pub dt: f32,
+    pub y: Vec<f32>,
+    pub scale: Vec<f32>,
+    pub alpha: Vec<f32>,
+}
+
+impl LabelAnim {
+    fn duration(&self) -> f32 {
+        self.dt * self.alpha.len().max(self.y.len()).max(1) as f32
+    }
+    fn at(keys: &[f32], dt: f32, t: f32, default: f32) -> f32 {
+        if keys.is_empty() {
+            return default;
+        }
+        let k = (t / dt.max(1e-4)).max(0.0);
+        let i = (k.floor() as usize).min(keys.len() - 1);
+        let j = (i + 1).min(keys.len() - 1);
+        keys[i] + (keys[j] - keys[i]) * (k - i as f32).min(1.0)
+    }
 }
 
 #[derive(Default, TypePath)]
@@ -132,13 +167,13 @@ struct Floating {
     duration: f32,
     fade: f32,
     color: [f32; 4],
+    /// Its label's animation, when it has one: then it drives the motion, the
+    /// size and the fade.
+    anim: Option<LabelAnim>,
 }
 
 const LAYOUT_HEIGHT: f32 = 1040.0;
-/// See the spawn: the drop (metres per second) and lifetime of a damage text.
-const FALL: f32 = 0.4;
-const QUICK: f32 = 1.2;
-const QUICK_FADE: f32 = 0.5;
+
 const BOX: f32 = 300.0;
 
 pub struct CombatTextPlugin;
@@ -209,15 +244,7 @@ fn spawn_texts(
         if t.offset_x_var != 0.0 {
             ox += if heads(&mut seed) { -t.offset_x_var } else { t.offset_x_var };
         }
-        // The damage and critical rows move along x only (CombatTextVelocity
-        // 1,0,0): read as metres per second along the screen they slid sideways,
-        // where the 2018 client drops them a little and lets them go quickly
-        // ("ils devraient tomber un tout petit peu et disparaitre assez
-        // rapidement"). UNVERIFIED: the UI element's motion (slot +0xDC of
-        // UI::Element's vtable 0xF37DD8 stores offset +0x1B0, velocity +0x1C0,
-        // time +0x1D0) is not traced to where it is drawn; FALL, QUICK and
-        // QUICK_FADE follow the user's account, not the table.
-        let sideways = t.velocity[1] == 0.0 && t.velocity[0] != 0.0;
+        let anim = table.labels.get(&t.label).cloned();
         let vh = t.size * 96.0 / 72.0 / LAYOUT_HEIGHT * 100.0;
         commands.spawn((
             Floating {
@@ -227,13 +254,18 @@ fn spawn_texts(
                 // 2.25 over the feet put them over the head.
                 from: at.translation(),
                 offset: Vec2::new(ox, t.offset_y[1]),
-                velocity: if sideways { Vec2::new(0.0, -FALL) } else { Vec2::new(vx, t.velocity[1]) },
+                // UNVERIFIED: with a label animation the table's velocity is not
+                //   applied (read as world units it slid the damage sideways, which
+                //   the 2018 client does not).
+                velocity: if anim.is_some() { Vec2::ZERO } else { Vec2::new(vx, t.velocity[1]) },
                 age: 0.0,
-                duration: if sideways { QUICK.min(t.duration) } else { t.duration.max(0.1) },
-                fade: if sideways { QUICK_FADE } else { t.fade },
+                duration: anim.as_ref().map(|a| a.duration()).unwrap_or(t.duration.max(0.1)),
+                fade: t.fade,
                 color: t.color,
+                anim,
             },
             Node { position_type: PositionType::Absolute, width: Val::Px(BOX), justify_content: JustifyContent::Center, ..default() },
+            UiTransform::default(),
             Text::new(text),
             TextFont { font: font.clone().into(), font_size: bevy::text::FontSize::Vh(vh), ..default() },
             TextColor(Color::srgba(t.color[0], t.color[1], t.color[2], t.color[3])),
@@ -248,11 +280,12 @@ fn move_texts(
     mut commands: Commands,
     time: Res<Time>,
     cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
-    mut texts: Query<(Entity, &mut Floating, &mut Node, &mut Visibility, &mut TextColor, &mut TextShadow)>,
+    mut texts: Query<(Entity, &mut Floating, &mut Node, &mut Visibility, &mut TextColor, &mut TextShadow, &mut UiTransform)>,
 ) {
     let Ok((camera, cam_at)) = cameras.single() else { return };
     let right = cam_at.right();
-    for (e, mut f, mut node, mut vis, mut color, mut shadow) in &mut texts {
+    let height = camera.logical_viewport_size().map(|s| s.y).unwrap_or(1080.0);
+    for (e, mut f, mut node, mut vis, mut color, mut shadow, mut ui) in &mut texts {
         f.age += time.delta_secs();
         if f.age >= f.duration {
             commands.entity(e).despawn();
@@ -266,10 +299,22 @@ fn move_texts(
         };
         *vis = Visibility::Inherited;
         node.left = Val::Px(screen.x - BOX / 2.0);
-        node.top = Val::Px(screen.y);
-        // The last `fade` seconds fade it out.
-        let left = f.duration - f.age;
-        let alpha = if f.fade > 0.0 && left < f.fade { left / f.fade } else { 1.0 } * f.color[3];
+        let alpha = match &f.anim {
+            // The clip: y in the UI's units (the screen's height, y down), its
+            // scale, its alpha. UNVERIFIED: the unit, from the bxml rects (0..1).
+            Some(a) => {
+                let (t, dt) = (f.age, a.dt);
+                node.top = Val::Px(screen.y + LabelAnim::at(&a.y, dt, t, 0.0) * height);
+                ui.scale = Vec2::splat(LabelAnim::at(&a.scale, dt, t, 1.0));
+                LabelAnim::at(&a.alpha, dt, t, 1.0).clamp(0.0, 1.0) * f.color[3]
+            }
+            // The last `fade` seconds fade it out.
+            None => {
+                node.top = Val::Px(screen.y);
+                let left = f.duration - f.age;
+                (if f.fade > 0.0 && left < f.fade { left / f.fade } else { 1.0 }) * f.color[3]
+            }
+        };
         color.0 = Color::srgba(f.color[0], f.color[1], f.color[2], alpha);
         shadow.color = Color::srgba(0.0, 0.0, 0.0, alpha);
     }

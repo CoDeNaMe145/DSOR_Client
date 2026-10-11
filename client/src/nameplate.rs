@@ -54,9 +54,10 @@ fn place(
     assets: Res<AssetServer>,
     mut font: Local<Option<Handle<Font>>>,
 ) {
-    // Bevy's built-in font is ASCII only ("F?lix"); Noto Sans Bold stands in for
-    // the game's Tahoma bold (assets/fonts, not shipped with the repository).
-    let font = font.get_or_insert_with(|| assets.load("fonts/NotoSans-Bold.ttf")).clone();
+    // EVIDENCE: ui/overheadtext.bxml NameLabel: font "tahoma", bold. Wine's Tahoma
+    // Bold (assets/fonts/tahomabd.ttf, copied by hand: not shipped with the game
+    // data), what the 2018 client shows under Proton.
+    let font = font.get_or_insert_with(|| assets.load("fonts/tahomabd.ttf")).clone();
     if crate::flag("nonames") {
         return;
     }

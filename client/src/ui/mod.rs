@@ -68,6 +68,8 @@ struct Label {
     size: f32,
     color: [f32; 4],
     align: [u8; 2],
+    #[serde(default)]
+    bold: bool,
 }
 
 #[derive(Deserialize, Clone)]
@@ -549,7 +551,13 @@ fn spawn_windows(
                 ));
                 let mut e = commands.spawn((
                     Text2d::new(if value.is_some() { String::new() } else { label.text.clone() }),
-                    TextFont { font_size: bevy::text::FontSize::Px(label.size * FONT_SCALE * screen.scale), ..default() },
+                    // Every label of the 2018 layouts is font "tahoma", bold or not:
+                    // Wine's Tahoma (assets/fonts, copied by hand).
+                    TextFont {
+                        font: assets.load(if label.bold { "fonts/tahomabd.ttf" } else { "fonts/tahoma.ttf" }).into(),
+                        font_size: bevy::text::FontSize::Px(label.size * FONT_SCALE * screen.scale),
+                        ..default()
+                    },
                     TextColor(Color::srgba(label.color[0], label.color[1], label.color[2], label.color[3])),
                     anchor,
                     Transform::from_xyz(x, -y, depth + 0.005).with_scale(Vec3::splat(1.0 / screen.scale)),
