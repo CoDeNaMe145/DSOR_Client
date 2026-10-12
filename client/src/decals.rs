@@ -159,6 +159,7 @@ fn project_decals(
     parents: Query<&ChildOf>,
     map_roots: Query<(), With<crate::map::MapRoot>>,
     mut plane: Local<Option<Handle<Mesh>>>,
+    mut transforms: Query<&mut Transform>,
 ) {
     if std::env::var("DSOR_NO_DECALS").is_ok() || crate::flag("nodecals") {
         return;
@@ -175,6 +176,14 @@ fn project_decals(
             // An effect's decal (a scorch where a fireball was cast): drawn flat on
             // its box's mid plane with the box's own merged colour+mask texture.
             // UNVERIFIED: not projected onto uneven ground like the map's.
+            // Lifted off the ground it lies on, as the map's projected decals
+            // (LIFT): level with it, its depth bias put it under the ground --
+            // warrior_defiance_loop's circle never showed ("le drapeau n'a pas la
+            // zone autour").
+            let (_, gt, ..) = pending.get(e).unwrap();
+            if let Ok(mut tf) = transforms.get_mut(e) {
+                tf.translation.y += LIFT * tf.scale.y / gt.scale().y.abs().max(1e-4);
+            }
             commands.entity(e).insert((Projected, Mesh3d(plane.get_or_insert_with(|| meshes.add(Plane3d::new(Vec3::Y, Vec2::splat(0.5)))).clone()), Visibility::Inherited));
         }
     }

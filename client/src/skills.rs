@@ -355,6 +355,17 @@ struct SkillMove {
     t: f32,
     duration: f32,
     arc: f32,
+    /// A charge: the caster is its bullet (see perform).
+    charge: Option<Charge>,
+}
+
+/// What a charging caster draws: its bullet's loop sequence on it while it runs,
+/// then the bullet's impact where it stops and the skill's impact on it.
+struct Charge {
+    looped: String,
+    player: Option<Entity>,
+    bullet_impact: String,
+    impact: String,
 }
 
 /// A jump's peak height over the straight line, units.
@@ -496,6 +507,7 @@ fn perform(
                 what: PendingKind::Sequence { name: skill.shifted.clone(), at: Transform::from_translation(point).with_rotation(entity_rotation(facing)), rate },
             });
         }
+        ("Charge" | "ChargeThrough", Some(_)) => {}
         (_, Some(b)) => {
             // EVIDENCE: the start (0x9BFFDC): a look-at frame on the aim, StartOffset
             //   turned by it: x to the right of the aim, y up, -z ahead (every z in the
@@ -521,13 +533,34 @@ fn perform(
     if matches!(skill.kind.as_str(), "Jump" | "Charge" | "ChargeThrough") {
         let start = skill.loop_start as f32 / FPS;
         let end = (skill.hit_frame.max(skill.loop_start + 1)) as f32 / FPS;
+        let mut duration = (end - start).max(0.05);
+        // A charge's caster rides its bullet: placed on the bullet's straight
+        // flight to the target point, its loop sequence on the caster (it holds
+        // the run: warrior_stuncharge_bullet animates Skill03_loop), its impacts
+        // where it stops (warrior_stuncharge_bimpact, then _impact's Skill03_impact).
+        // EVIDENCE: ChargeSkillVisualizer::Trigger (0x5EAB08) asserts
+        //   bulletCmd->HasTargetPosition() and places the player by
+        //   GameBulletSkill::ComputeStraightPosition (0x8EEB6E): start + velocity x
+        //   ticks. A free bullet with LifeTime 0 lived one tick and drew nothing
+        //   ("assaut n'a pas de FX").
+        // UNVERIFIED: the impacts' order and place; the speed of a bullet-less charge.
+        let charge = match (skill.kind.as_str(), &skill.bullet) {
+            ("Charge" | "ChargeThrough", Some(b)) => {
+                if b.velocity > 0.0 {
+                    duration = (Vec2::new(point.x - at.x, point.z - at.z).length() / b.velocity).max(0.05);
+                }
+                Some(Charge { looped: b.loop_seq.clone(), player: None, bullet_impact: b.impact.clone(), impact: skill.impact.clone() })
+            }
+            _ => None,
+        };
         commands.entity(actor).insert(SkillMove {
             from: at,
             to: point,
             delay: start,
             t: 0.0,
-            duration: (end - start).max(0.05),
+            duration,
             arc: if skill.kind == "Jump" { JUMP_ARC } else { 0.0 },
+            charge,
         });
     }
     if skill.kind == "Teleport" {
@@ -544,7 +577,8 @@ fn perform(
             "Shifted" => (skill.loop_start + skill.hit_frame) as f32 / FPS,
             _ => skill.hit_frame as f32 / FPS,
         };
-        // A bullet's impact is drawn where it ends (fly_bullets); the others here.
+        // A bullet's impact is drawn where it ends (fly_bullets), a charge's where
+        // its caster stops (carry_casters); the others here.
         if skill.bullet.is_none() || skill.kind == "Shifted" {
             commands.spawn(Pending {
                 after,
@@ -1519,8 +1553,12 @@ fn debug_fx_positions(
 fn carry_casters(
     mut commands: Commands,
     time: Res<Time>,
+    data: Res<SkillData>,
+    seqs: Res<Assets<SequenceTable>>,
     mut movers: Query<(Entity, &mut Transform, &mut SkillMove, Option<&mut LocalPlayer>)>,
+    mut players: Query<&mut SequencePlayer>,
 ) {
+    let sequences = seqs.get(&data.sequences);
     for (e, mut tf, mut m, local) in &mut movers {
         if let Some(mut l) = local {
             // Held until it lands.
@@ -1535,6 +1573,26 @@ fn carry_casters(
         let mut p = m.from.lerp(m.to, k);
         p.y += m.arc * 4.0 * k * (1.0 - k);
         tf.translation = p;
+        if let (Some(c), Some(sequences)) = (m.charge.as_mut(), sequences) {
+            if c.player.is_none() && k < 1.0 {
+                if let Some(seq) = sequences.0.get(&c.looped) {
+                    // Carried with the caster, not left where it started.
+                    c.player = Some(play_with(&mut commands, seq.clone(), Some(e), e, true, true));
+                }
+            }
+            if k >= 1.0 {
+                if let Some(mut pl) = c.player.and_then(|pl| players.get_mut(pl).ok()) {
+                    pl.stop = true;
+                }
+                if let Some(seq) = sequences.0.get(&c.bullet_impact) {
+                    let anchor = commands.spawn((Transform::from_translation(p).with_rotation(tf.rotation), Visibility::default())).id();
+                    play(&mut commands, seq.clone(), None, anchor, false);
+                }
+                if let Some(seq) = sequences.0.get(&c.impact).filter(|_| c.impact != "empty_sequence") {
+                    play(&mut commands, seq.clone(), Some(e), e, false);
+                }
+            }
+        }
         if k >= 1.0 {
             commands.entity(e).remove::<SkillMove>();
         }
@@ -1570,6 +1628,7 @@ fn status_visuals(
     mut by_name: Local<HashMap<String, u32>>,
     mut tested: Local<bool>,
     mut pending_test: Local<Vec<crate::net::LocationEvent>>,
+    locals: Query<&GlobalTransform, With<LocalPlayer>>,
 ) {
     let (Some(table), Some(sequences)) = (statuses.get(&data.status), seqs.get(&data.sequences)) else { return };
     if by_name.is_empty() {
@@ -1591,13 +1650,14 @@ fn status_visuals(
     // DSOR_TEST_STATUS=<status id>[,x,y,z]: that status effect played once as a
     // ground effect (offline checks; the server sends the real ones).
     if let Ok(spec) = std::env::var("DSOR_TEST_STATUS") {
-        if !*tested && seqs.get(&data.sequences).is_some() {
+        // Without a position: at the local player, once it is in.
+        let mut it = spec.split(',');
+        let name = it.next().unwrap_or_default().to_owned();
+        let v: Vec<f32> = it.filter_map(|x| x.parse().ok()).collect();
+        let at = if v.len() == 3 { Some(Vec3::new(v[0], v[1], v[2])) } else { locals.single().ok().map(|g| g.translation()) };
+        if let Some(at) = at.filter(|_| !*tested && time.elapsed_secs() > 3.0) {
             *tested = true;
-            let mut it = spec.split(',');
-            let name = it.next().unwrap_or_default().to_owned();
-            let v: Vec<f32> = it.filter_map(|x| x.parse().ok()).collect();
-            let at = if v.len() == 3 { Vec3::new(v[0], v[1], v[2]) } else { Vec3::new(121.5, 12.0, 71.4) };
-            pending_test.push(crate::net::LocationEvent { id: 999_999, status: name, position: at, heading: 0.0, seconds: Some(6.0) });
+            pending_test.push(crate::net::LocationEvent { id: 999_999, status: name, position: at, heading: 0.0, seconds: Some(20.0) });
         }
     }
     let mut net_events = Vec::new();
