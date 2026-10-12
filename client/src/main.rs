@@ -18,6 +18,8 @@ mod hud;
 mod anim_cull;
 mod refraction;
 mod lighting;
+#[allow(dead_code)]
+mod lighting_presets;
 mod map;
 mod materials;
 mod merge;

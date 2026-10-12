@@ -414,7 +414,7 @@ impl Plugin for SkillsPlugin {
             .add_systems(Startup, load)
             .add_systems(
                 Update,
-                (index_skills, cast_input, remote_skills, status_visuals, test_cast, run_pending, carry_casters, fly_bullets, play_sequences, start_fx_animations, retire_effects, shake_camera, test_shot, test_view, debug_fx_positions)
+                (index_skills, cast_input.run_if(crate::lighting::lighting_text_input_inactive), remote_skills, status_visuals, test_cast, run_pending, carry_casters, fly_bullets, play_sequences, start_fx_animations, retire_effects, shake_camera, test_shot, test_view, debug_fx_positions)
                     .chain()
                     .after(crate::net::NetSystems),
             );
@@ -574,6 +574,7 @@ fn play_with(commands: &mut Commands, seq: Sequence, actor: Option<Entity>, anch
 
 #[allow(clippy::too_many_arguments)]
 fn cast_input(
+
     mut commands: Commands,
     net: Option<NonSendMut<Net>>,
     data: Res<SkillData>,

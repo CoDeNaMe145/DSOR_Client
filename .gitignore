@@ -13,3 +13,7 @@
 __pycache__/
 /client/dist-profile
 /client/index.fast.html
+
+# Local lighting editor state; do not commit personal settings.
+/look.json
+/lighting-presets.json

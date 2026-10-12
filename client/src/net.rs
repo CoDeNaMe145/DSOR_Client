@@ -237,7 +237,7 @@ impl Plugin for NetPlugin {
             )
             .add_systems(
                 Update,
-                (debug_hierarchy, spawn_local, dress, apply_remotes, move_remotes, click_to_move, walk_local, zoom_camera, follow_camera, send_moves)
+                (debug_hierarchy, spawn_local, dress, apply_remotes, move_remotes, click_to_move.run_if(crate::lighting::lighting_text_input_inactive), walk_local, zoom_camera, follow_camera, send_moves)
                     .chain()
                     .in_set(NetSystems)
                     .run_if(net_exists),
@@ -877,40 +877,53 @@ pub fn cursor_ground(
 /// and upper floors included -- or, before it has loaded, the plane at the player's feet.
 #[allow(clippy::too_many_arguments)]
 fn click_to_move(
+    ui_buttons: Query<&Interaction, With<Button>>,
     buttons: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
     windows: Query<&Window, With<PrimaryWindow>>,
-    cameras: Query<(&Camera, &GlobalTransform)>,
+    cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     nav: Option<Res<CurrentNav>>,
     meshes: Res<Assets<NavMesh>>,
     mut players: Query<(&Transform, &mut LocalPlayer)>,
     hovered: Option<Res<crate::monsters::Hovered>>,
 ) {
-    if !buttons.pressed(MouseButton::Left) || keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) {
+    if !buttons.pressed(MouseButton::Left)
+        || keys.pressed(KeyCode::ShiftLeft)
+        || keys.pressed(KeyCode::ShiftRight)
+    {
         return;
     }
-    // A monster under the cursor: the click attacks it (crate::skills), it is no walk.
+    if ui_buttons.iter().any(|interaction| *interaction != Interaction::None) {
+        return;
+    }
     if hovered.is_some_and(|h| h.0.is_some()) {
         return;
     }
+
     let Ok(window) = windows.single() else { return };
     let Some(cursor) = window.cursor_position() else { return };
     let Ok((camera, cam_tf)) = cameras.single() else { return };
     let Ok(ray) = camera.viewport_to_world(cam_tf, cursor) else { return };
+
     let mesh = nav.as_ref().and_then(|n| meshes.get(&n.0));
     for (tf, mut player) in &mut players {
         let hit = mesh.and_then(|m| m.raycast(ray)).or_else(|| {
-            ray.intersect_plane(tf.translation, InfinitePlane3d::new(Vec3::Y)).map(|d| ray.get_point(d))
+            ray.intersect_plane(tf.translation, InfinitePlane3d::new(Vec3::Y))
+                .map(|d| ray.get_point(d))
         });
+
         if let Some(point) = hit {
-            let flat = Vec2::new(point.x - tf.translation.x, point.z - tf.translation.z).length();
+            let flat = Vec2::new(
+                point.x - tf.translation.x,
+                point.z - tf.translation.z,
+            ).length();
+
             if flat > CLICK_DEAD_ZONE {
                 player.target = Some(point);
             }
         }
     }
 }
-
 /// Walk toward the target on the navigation mesh: every step takes the ground's
 /// height, and a step that would leave the mesh slides along its edge or stops.
 fn walk_local(
