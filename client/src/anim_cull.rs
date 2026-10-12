@@ -38,7 +38,7 @@ impl Plugin for AnimCullPlugin {
 fn cull_animations(
     mut commands: Commands,
     mut frame: Local<u32>,
-    cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    cameras: Query<(&Camera, &GlobalTransform), (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
     players: Query<(Entity, &GlobalTransform, &InheritedVisibility, Option<&Parked>), (With<AnimationPlayer>, Without<ManagedAnimation>)>,
     targets: Query<(Entity, &AnimatedBy)>,
     me: Query<&GlobalTransform, With<crate::net::LocalPlayer>>,

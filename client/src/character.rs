@@ -899,7 +899,7 @@ fn drive_animations(
     mut commands: Commands,
     mut players: Query<&mut AnimationPlayer>,
     mut to_park: Local<Vec<Entity>>,
-    cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    cameras: Query<(&Camera, &GlobalTransform), (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
     me: Query<&GlobalTransform, With<crate::net::LocalPlayer>>,
 ) {
     // Animated within the zone around the player (crate::map::CULL_DISTANCE),

@@ -200,7 +200,7 @@ struct UiCamera;
 #[allow(clippy::type_complexity)]
 fn match_scene_camera(
     mut commands: Commands,
-    scene: Query<(Has<Hdr>, &Msaa), (With<Camera3d>, Without<UiCamera>)>,
+    scene: Query<(Has<Hdr>, &Msaa), (With<Camera3d>, Without<crate::highlight::HighlightCamera>, Without<UiCamera>)>,
     mut ui: Query<(Entity, Has<Hdr>, &mut Msaa), With<UiCamera>>,
 ) {
     let (Some((hdr, msaa)), Ok((e, ui_hdr, mut ui_msaa))) = (scene.iter().next(), ui.single_mut()) else { return };

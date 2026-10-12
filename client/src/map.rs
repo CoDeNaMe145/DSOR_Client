@@ -193,7 +193,7 @@ fn start_map(
     asset_server: Res<AssetServer>,
     manifests: Res<Assets<MapManifest>>,
     mut current: ResMut<CurrentMap>,
-    mut cameras: Query<&mut Transform, With<Camera3d>>,
+    mut cameras: Query<&mut Transform, (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
 ) {
     if current.root.is_some() || current.spawned {
         return;
@@ -434,7 +434,7 @@ pub fn camera_focus(cam: &GlobalTransform, player: Option<Vec3>, ground: f32) ->
 pub fn cull_cells(
     current: Res<CurrentMap>,
     manifests: Res<Assets<MapManifest>>,
-    cameras: Query<&GlobalTransform, With<Camera3d>>,
+    cameras: Query<&GlobalTransform, (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
     players: Query<&GlobalTransform, With<crate::net::LocalPlayer>>,
     mut cells: Query<&mut Visibility>,
 ) {

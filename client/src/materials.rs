@@ -139,7 +139,7 @@ pub struct FacesViewer;
 /// After the animation pose: each sprite node's world rotation becomes the
 /// camera's (its translation and scale stay the animation's).
 fn face_viewer(
-    cameras: Query<&GlobalTransform, With<Camera3d>>,
+    cameras: Query<&GlobalTransform, (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
     mut sprites: Query<(&mut Transform, &ChildOf), With<FacesViewer>>,
     parents: Query<&GlobalTransform>,
 ) {

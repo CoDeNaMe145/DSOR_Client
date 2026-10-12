@@ -14,6 +14,7 @@ mod debug;
 mod decals;
 mod dump;
 mod exits;
+mod highlight;
 mod hud;
 mod anim_cull;
 mod refraction;
@@ -299,6 +300,7 @@ fn main() {
         .add_plugins(dump::DumpPlugin)
         .add_plugins(ui::UiPlugin)
         .add_plugins((anim_cull::AnimCullPlugin, refraction::RefractionPlugin, surfaces::SurfacesPlugin, exits::ExitsPlugin, monsters::MonstersPlugin, combat_text::CombatTextPlugin, debug::DebugPlugin, stats::StatsPlugin, clamp::ClampPlugin, nebula_bloom::NebulaBloomPlugin))
+        .add_plugins(highlight::HighlightPlugin)
         .insert_resource(ClearColor(Color::srgb(0.05, 0.06, 0.08)))
         // The sun's one shadow cascade covers 60 units: 1 024 texels in the
         // browser (half bevy's default) is ~6 cm a texel.
@@ -468,7 +470,7 @@ fn demo_character(
     current: Option<Res<CurrentMap>>,
     manifests: Res<Assets<map::MapManifest>>,
     mut done: Local<bool>,
-    mut cameras: Query<&mut Transform, With<Camera3d>>,
+    mut cameras: Query<&mut Transform, (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
     mut anims: Query<&mut character::CharacterAnim>,
 ) {
     let Some((class, gender)) = opts.character else { return };

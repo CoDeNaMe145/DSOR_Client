@@ -420,7 +420,7 @@ fn step(e: &Emitter, s: &mut EmitterState, at: &GlobalTransform, dt: f32, emitti
 
 fn simulate(
     time: Res<Time>,
-    cameras: Query<&GlobalTransform, With<Camera3d>>,
+    cameras: Query<&GlobalTransform, (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
     mut emitters: Query<(&Emitter, &mut EmitterState, &GlobalTransform, &InheritedVisibility, Has<StopEmitting>)>,
 ) {
     let Ok(cam) = cameras.single() else { return };
@@ -475,7 +475,7 @@ fn draw(
     time: Res<Time>,
     groups: Res<Groups>,
     mut meshes: ResMut<Assets<Mesh>>,
-    cameras: Query<&GlobalTransform, With<Camera3d>>,
+    cameras: Query<&GlobalTransform, (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
     emitters: Query<(&Emitter, &EmitterState, &GlobalTransform, &InheritedVisibility)>,
     mut drawn: Local<Vec<bool>>,
 ) {

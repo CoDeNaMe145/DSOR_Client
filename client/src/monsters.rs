@@ -801,7 +801,7 @@ fn hits_and_kills(
 
 fn hover(
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
-    cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    cameras: Query<(&Camera, &GlobalTransform), (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
     monsters: Query<(Entity, &GlobalTransform, &Monster, &CharacterAnim, &InheritedVisibility)>,
     mut hovered: ResMut<Hovered>,
 ) {

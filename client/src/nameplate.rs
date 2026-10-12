@@ -50,7 +50,7 @@ impl Plugin for NameplatePlugin {
 fn place(
     mut commands: Commands,
     windows: Query<&Window>,
-    cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    cameras: Query<(&Camera, &GlobalTransform), (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
     actors: Query<(Entity, &Nameplate, &GlobalTransform, &InheritedVisibility, Option<&Label>)>,
     mut labels: Query<(Entity, &mut Node, &mut Visibility, &mut TextColor, &mut Text), With<LabelOf>>,
     owners: Query<&LabelOf>,

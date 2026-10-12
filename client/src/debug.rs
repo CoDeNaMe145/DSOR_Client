@@ -273,7 +273,7 @@ fn keyboard(
 struct Ctx<'w, 's> {
     commands: Commands<'w, 's>,
     assets: Res<'w, AssetServer>,
-    cameras: Query<'w, 's, &'static GlobalTransform, With<Camera3d>>,
+    cameras: Query<'w, 's, &'static GlobalTransform, (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
     players: Query<'w, 's, (Entity, &'static GlobalTransform), Or<(With<crate::net::LocalPlayer>, With<crate::character::Character>)>>,
     locals: Query<'w, 's, (Entity, &'static GlobalTransform, &'static crate::net::LocalPlayer)>,
     monsters: Query<'w, 's, (Entity, &'static Monster)>,

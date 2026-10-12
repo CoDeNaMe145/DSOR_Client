@@ -436,7 +436,7 @@ fn follow_level(
     ambiences: Res<Assets<Ambience>>,
     time: Res<Time>,
     manifests: Res<Assets<crate::map::MapManifest>>,
-    cameras: Query<&GlobalTransform, With<Camera3d>>,
+    cameras: Query<&GlobalTransform, (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
     players: Query<&GlobalTransform, With<crate::net::LocalPlayer>>,
 ) {
     let Some(current) = current else { return };
@@ -493,7 +493,7 @@ fn apply_look(
     mut suns: Query<(&mut DirectionalLight, &mut Transform), (With<Sun>, Without<BackLight>)>,
     mut backs: Query<(&mut DirectionalLight, &mut Transform), (With<BackLight>, Without<Sun>)>,
     mut ambient: ResMut<GlobalAmbientLight>,
-    cameras: Query<(Entity, Has<Bloom>), With<Camera3d>>,
+    cameras: Query<(Entity, Has<Bloom>), (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
     mut fresh: Local<Vec<Entity>>,
 ) {
     let new_camera = cameras.iter().any(|(e, _)| !fresh.contains(&e));
@@ -748,7 +748,7 @@ fn refresh_values(lighting: Res<Lighting>, mut texts: Query<(&ValueText, &mut Te
 fn shift_fog(
     zoom: Option<Res<crate::net::CameraZoom>>,
     level: Res<Level>,
-    mut fogs: Query<&mut DistanceFog, With<Camera3d>>,
+    mut fogs: Query<&mut DistanceFog, (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
 ) {
     let Some(zoom) = zoom else { return };
     let b = &level.bubble;

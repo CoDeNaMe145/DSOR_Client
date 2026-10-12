@@ -280,7 +280,7 @@ fn spawn_texts(
 fn move_texts(
     mut commands: Commands,
     time: Res<Time>,
-    cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    cameras: Query<(&Camera, &GlobalTransform), (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
     mut texts: Query<(Entity, &mut Floating, &mut Node, &mut Visibility, &mut TextColor, &mut TextShadow, &mut UiTransform)>,
 ) {
     let Ok((camera, cam_at)) = cameras.single() else { return };

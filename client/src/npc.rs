@@ -369,7 +369,7 @@ fn animate_models(
 fn cull_actors(
     current: Option<Res<CurrentMap>>,
     manifests: Res<Assets<crate::map::MapManifest>>,
-    cameras: Query<&GlobalTransform, With<Camera3d>>,
+    cameras: Query<&GlobalTransform, (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
     players: Query<&GlobalTransform, With<crate::net::LocalPlayer>>,
     mut actors: Query<(&GlobalTransform, &mut Visibility), Or<(With<Npc>, With<crate::net::RemotePlayer>)>>,
 ) {

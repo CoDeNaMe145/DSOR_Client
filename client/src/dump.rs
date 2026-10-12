@@ -216,7 +216,7 @@ fn snapshot(
     current: Option<Res<crate::map::CurrentMap>>,
     asset_server: Res<AssetServer>,
     diagnostics: Res<DiagnosticsStore>,
-    cameras: Query<&GlobalTransform, With<Camera3d>>,
+    cameras: Query<&GlobalTransform, (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
     players: Query<&GlobalTransform, With<crate::net::LocalPlayer>>,
     net: Option<NonSend<crate::net::Net>>,
     config: Option<Res<crate::net::NetConfig>>,

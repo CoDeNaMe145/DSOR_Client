@@ -582,7 +582,7 @@ fn cast_input(
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
-    cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    cameras: Query<(&Camera, &GlobalTransform), (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
     nav: Option<Res<CurrentNav>>,
     navmeshes: Res<Assets<NavMesh>>,
     time: Res<Time<Real>>,
@@ -1033,7 +1033,7 @@ fn play_sequences(
     mut anims: Query<&mut CharacterAnim>,
     mut visibility: Query<&mut Visibility>,
     transforms: Query<&GlobalTransform>,
-    cameras: Query<&GlobalTransform, With<Camera3d>>,
+    cameras: Query<&GlobalTransform, (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
     mut shake: ResMut<CameraShake>,
     (locals, remotes): (Query<&LocalPlayer>, Query<&RemotePlayer>),
     mut point_lights: Query<(&mut PointLight, &mut Transform), Without<Character>>,
@@ -1300,7 +1300,7 @@ fn start_fx_animations(
 }
 
 /// Camera shake, decaying, on top of where the follow camera put it this frame.
-fn shake_camera(time: Res<Time>, mut shake: ResMut<CameraShake>, mut cameras: Query<&mut Transform, (With<Camera3d>, Without<NotShadowCaster>)>) {
+fn shake_camera(time: Res<Time>, mut shake: ResMut<CameraShake>, mut cameras: Query<&mut Transform, (With<Camera3d>, Without<crate::highlight::HighlightCamera>, Without<NotShadowCaster>)>) {
     if shake.trauma <= 0.0 {
         return;
     }

@@ -936,7 +936,7 @@ fn click_to_move(
     windows: Query<&Window, With<PrimaryWindow>>,
     // The 3D view's camera: the UI has its own (crate::ui::UiCamera), and with
     // two, single() failed and no click walked ("je ne peux pas me déplacer").
-    cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    cameras: Query<(&Camera, &GlobalTransform), (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
     nav: Option<Res<CurrentNav>>,
     meshes: Res<Assets<NavMesh>>,
     mut players: Query<(&Transform, &mut LocalPlayer)>,
@@ -1061,7 +1061,7 @@ fn zoom_camera(mut wheel: MessageReader<bevy::input::mouse::MouseWheel>, mut zoo
 fn follow_camera(
     zoom: Res<CameraZoom>,
     players: Query<&Transform, With<LocalPlayer>>,
-    mut cameras: Query<(&mut Transform, &mut Projection), (With<Camera3d>, Without<LocalPlayer>)>,
+    mut cameras: Query<(&mut Transform, &mut Projection), (With<Camera3d>, Without<crate::highlight::HighlightCamera>, Without<LocalPlayer>)>,
 ) {
     let Ok(player) = players.single() else { return };
     let rotation = Quat::from_euler(EulerRot::YXZ, CAM_YAW_DEG.to_radians(), CAM_PITCH_DEG.to_radians(), 0.0);
