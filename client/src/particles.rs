@@ -108,6 +108,11 @@ pub struct Emitter {
     randomize_rotation: bool,
     start_delay: f32,
     additive: bool,
+    /// Particles in the emitter's own space, following it (n3 PLSC).
+    /// EVIDENCE: EmitParticle (0x7CBC8D) leaves the emitter point and the
+    ///   velocity in the emitter's space when attrs +0x42 is set (the PLSC byte,
+    ///   0x7D5C2D); otherwise it moves both into world space.
+    local_space: bool,
     /// The emitter node's MatEmissiveIntensity: the particle shader draws
     /// texture x colour x (1 + it), alpha included (shaders_sm30 "particle"
     /// AlphaUnlit ps_3_0, c3); its Additive technique leaves it out.
@@ -157,6 +162,7 @@ impl Emitter {
             randomize_rotation: num("randomize_rotation") != 0.0,
             start_delay: num("start_delay"),
             additive: v.get("additive").and_then(|x| x.as_bool()).unwrap_or(false),
+            local_space: num("local_space") > 0.5,
             emissive: 0.0,
             stretch: num("stretch").max(0.0),
             phases: 1,
@@ -214,6 +220,9 @@ struct EmitterState {
     pending: f32,
     active: bool,
     rng: u32,
+    /// The next emission point: taken in order (EmitParticle 0x7CBC8D counts
+    /// +0xA4 up and asks the emitter mesh for that point).
+    next_point: usize,
 }
 
 impl EmitterState {
@@ -340,6 +349,7 @@ fn start_emitters(
             pending: 0.0,
             active: false,
             rng: *seed | 1,
+            next_point: 0,
         });
     }
 }
@@ -357,13 +367,16 @@ fn step(e: &Emitter, s: &mut EmitterState, at: &GlobalTransform, dt: f32, emitti
     if emitting && t >= 0.0 && (e.looping || t <= e.duration) {
         let rel = if e.looping { (t % e.duration) / e.duration } else { t / e.duration };
         s.pending += sample(&env[FREQUENCY], rel).max(0.0) * dt;
-        let rot = at.rotation();
+        // World space: the emitter's rotation turns the emission; its own space:
+        // nothing (the particle stays in it, crate::particles::draw places it).
+        let rot = if e.local_space { Quat::IDENTITY } else { at.rotation() };
         while s.pending >= 1.0 {
             s.pending -= 1.0;
             if s.particles.len() >= MAX_PARTICLES {
                 continue;
             }
-            let i = ((s.rand() * s.points.len() as f32) as usize).min(s.points.len() - 1);
+            let i = s.next_point % s.points.len();
+            s.next_point = s.next_point.wrapping_add(1);
             let (p, n) = s.points[i];
             let normal = (rot * n).normalize_or(Vec3::Y);
             let theta = sample(&env[SPREAD_MIN], rel)
@@ -381,7 +394,7 @@ fn step(e: &Emitter, s: &mut EmitterState, at: &GlobalTransform, dt: f32, emitti
             let size_var = 1.0 - s.rand() * e.size_randomize;
             let frame = ((s.rand() * e.texture_tile as f32) as u32).min(e.texture_tile - 1);
             s.particles.push(Particle {
-                pos: at.transform_point(p),
+                pos: if e.local_space { p } else { at.transform_point(p) },
                 vel: dir * speed,
                 age: 0.0,
                 inv_life: 1.0 / life,
@@ -505,8 +518,10 @@ fn draw(
             let (ul, ur) = (frame, frame + 1.0 / phases);
             // The v = 0 edge trails where the particle was `stretch` seconds ago.
             let trail = p.pos - p.vel * e.stretch;
+            // A local-space particle is placed by its emitter as it stands now.
+            let (pos, trail) = if e.local_space { (at.transform_point(p.pos), at.transform_point(trail)) } else { (p.pos, trail) };
             let base = b.pos.len() as u32;
-            for (corner, from, uv) in [(-r - u, p.pos, [ul, v1]), (r - u, p.pos, [ur, v1]), (r + u, trail, [ur, v0]), (-r + u, trail, [ul, v0])] {
+            for (corner, from, uv) in [(-r - u, pos, [ul, v1]), (r - u, pos, [ur, v1]), (r + u, trail, [ur, v0]), (-r + u, trail, [ul, v0])] {
                 b.pos.push((from + corner).into());
                 b.uv.push(uv);
                 b.color.push(c);

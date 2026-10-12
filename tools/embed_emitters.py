@@ -133,6 +133,14 @@ for root, _dirs, files in os.walk(assets):
             packed = {k: envelope(em.get(k)) for k in ENVELOPES}
             packed.update({k: float(em.get(k, 0.0)) for k in SCALARS})
             packed["additive"] = em.get("type_name") == "Additive"
+            # n3 tag PLSC (DSO_Godot's "curve_looping"): the particles live in the
+            # emitter's own space and follow it.
+            # EVIDENCE: ParticleSystemNode's tag parser (0x7D5C2D) stores PLSC at
+            #   attrs +0x48E, the byte EmitParticle (0x7CBC8D) tests before moving
+            #   the emitter point and velocity into world space (attrs +0x42 there);
+            #   PLPE (looping) at +0x488 lands on attrs +0x3C, the looping flag of the
+            #   emission (0x7CC321).
+            packed["local_space"] = 1.0 if em.get("curve_looping") else 0.0
             nodes[node].setdefault("extras", {})["dsor_emitter"] = packed
             stats["emitters"] += 1
             changed = True
