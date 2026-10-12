@@ -82,6 +82,7 @@ echo "[convert] Nebula states and tables (log: $logs/post.log)"
     python3 "$tools/fix_materials.py" "$out" --n3 "$root/models"
     python3 "$tools/fix_materials.py" "$out" --character-colors
     python3 "$tools/close_loops.py" "$out"
+    python3 "$tools/fx_clip_starts.py" "$root" "$out" "$godot"
     python3 "$tools/character_tables.py" "$root" "$out"
     python3 "$tools/export_skills.py" "$root" "$out"
     python3 "$tools/export_npcs.py" "$root" "$out"
