@@ -398,10 +398,14 @@ const MIN_SHADOW_CASTER: f32 = 0.0;
 
 /// Culling cell size, world units.
 pub const CELL: f32 = 24.0;
-/// Cells farther than this from the point the camera looks at are hidden, from
-/// the view and from the shadow pass alike. The game camera at full zoom-out sees
-/// about 45 units around that point.
-pub const CULL_DISTANCE: f32 = 35.0;
+/// What lies farther than this from the player is not drawn nor animated: map
+/// cells (from the view and the shadow pass alike), actors and their animations.
+/// A zone around the player, as the 2018 client loads it, never the camera's view
+/// (the user's account of the original; 50 is their figure, UNVERIFIED).
+/// FAILURE: tied to the camera (its distance, what is on screen), models and
+///   animations went off and on as a free camera looked around ("ca fait
+///   clignoter les choses quand on regarde en camera libre").
+pub const CULL_DISTANCE: f32 = 50.0;
 
 fn cell_of(p: Vec3) -> (i32, i32) {
     ((p.x / CELL).floor() as i32, (p.z / CELL).floor() as i32)

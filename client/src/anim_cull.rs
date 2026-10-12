@@ -6,8 +6,8 @@
 //! frame, whether or not anything is seen: in the browser it was the largest
 //! single cost with only 3 of 84 characters animated (Chromium CPU profile of the
 //! wasm build: QueryParIter<AnimationTargetId...> 6.5 %). A player away from the
-//! camera's focus or off screen has its bones unhooked, and hooked again when it
-//! comes back; its clip time keeps running (the player itself is untouched).
+//! player (crate::map::CULL_DISTANCE) has its bones unhooked, and hooked again when
+//! it comes back; its clip time keeps running (the player itself is untouched).
 
 use std::collections::HashMap;
 
@@ -41,18 +41,20 @@ fn cull_animations(
     cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     players: Query<(Entity, &GlobalTransform, &InheritedVisibility, Option<&Parked>), (With<AnimationPlayer>, Without<ManagedAnimation>)>,
     targets: Query<(Entity, &AnimatedBy)>,
+    me: Query<&GlobalTransform, With<crate::net::LocalPlayer>>,
 ) {
     *frame = frame.wrapping_add(1);
     if *frame % EVERY != 0 {
         return;
     }
-    let Some((cam, cam_at)) = cameras.iter().next() else { return };
+    let Some((_, cam_at)) = cameras.iter().next() else { return };
+    // The zone around the player (crate::map::CULL_DISTANCE), not the view.
+    let focus = crate::map::camera_focus(cam_at, me.iter().next().map(|p| p.translation()), 0.0);
     let mut decided: HashMap<Entity, bool> = HashMap::new();
     for (e, at, shown, parked) in &players {
         let p = at.translation();
-        let near = cam_at.translation().distance(p) <= crate::map::CULL_DISTANCE + 25.0;
-        let on_screen = cam.world_to_ndc(cam_at, p).is_some_and(|n| n.x.abs() < 1.5 && n.y.abs() < 1.5 && n.z > 0.0);
-        let live = shown.get() && near && on_screen;
+        let near = Vec2::new(p.x - focus.x, p.z - focus.z).length() <= crate::map::CULL_DISTANCE;
+        let live = shown.get() && near;
         match (live, parked) {
             (true, Some(Parked(bones))) => {
                 for &b in bones {

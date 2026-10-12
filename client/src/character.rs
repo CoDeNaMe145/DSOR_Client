@@ -756,9 +756,6 @@ fn bind(
 /// A box around any posed character (weapons and capes included), in its own space.
 const CHARACTER_BOUNDS: (Vec3, Vec3) = (Vec3::new(-2.0, -0.5, -2.0), Vec3::new(2.0, 3.5, 2.0));
 
-/// Characters farther than this from the camera stop animating (their pose is
-/// kept); the game camera sees about 40 units around the player.
-const ANIMATION_DISTANCE: f32 = 60.0;
 
 /// Despawn the part's own copy of the skeleton once its skin points at the shared
 /// one: ~70 unused joints per part, ~800 entities per dressed character, which
@@ -903,14 +900,12 @@ fn drive_animations(
     mut players: Query<&mut AnimationPlayer>,
     mut to_park: Local<Vec<Entity>>,
     cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    me: Query<&GlobalTransform, With<crate::net::LocalPlayer>>,
 ) {
-    let cam = cameras.iter().next();
-    let eye = cam.map(|(_, g)| g.translation());
-    // On screen: the character's middle inside the view, with a margin for its
-    // size. Off screen it is not animated at all (it is not seen).
-    let on_screen = |p: Vec3| {
-        cam.and_then(|(c, g)| c.world_to_ndc(g, p + Vec3::Y)).is_some_and(|n| n.x.abs() < 1.3 && n.y.abs() < 1.3 && n.z > 0.0)
-    };
+    // Animated within the zone around the player (crate::map::CULL_DISTANCE),
+    // whatever the camera looks at.
+    let focus = cameras.iter().next().map(|(_, g)| crate::map::camera_focus(g, me.iter().next().map(|p| p.translation()), 0.0));
+    let near = |p: Vec3| focus.is_none_or(|f| Vec2::new(p.x - f.x, p.z - f.z).length() <= crate::map::CULL_DISTANCE);
     let fade_step = time.delta_secs() / BLEND.as_secs_f32();
     *frame = frame.wrapping_add(1);
     for (mut anim, at, shown, mut lod) in &mut characters {
@@ -951,10 +946,7 @@ fn drive_animations(
         // evaluated at all -- a paused animation is still applied every frame
         // (7 ms a frame for Kingshill's NPCs, bevy trace_chrome). Played again
         // from their state once back in view.
-        let far = crate::flag("noanim")
-            || !shown.get()
-            || eye.is_some_and(|e| e.distance(at.translation()) > ANIMATION_DISTANCE)
-            || !on_screen(at.translation());
+        let far = crate::flag("noanim") || !shown.get() || !near(at.translation());
         if far {
             if anim.applied.is_some() {
                 p.stop_all();
