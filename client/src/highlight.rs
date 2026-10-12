@@ -122,7 +122,8 @@ fn pick(
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), (With<Camera3d>, Without<HighlightCamera>)>,
     hovered: Res<crate::monsters::Hovered>,
-    actors: Query<(Entity, &GlobalTransform, &InheritedVisibility), Or<(With<crate::npc::Npc>, (With<crate::net::RemotePlayer>, With<crate::character::Character>, Without<crate::monsters::Monster>))>>,
+    actors: Query<(Entity, &GlobalTransform, &InheritedVisibility, Option<&crate::picking::PickBoxes>), Or<(With<crate::npc::Npc>, (With<crate::net::RemotePlayer>, With<crate::character::Character>, Without<crate::monsters::Monster>))>>,
+    joints: Query<&GlobalTransform>,
     mut highlighted: ResMut<Highlighted>,
 ) {
     let colour = |c: Vec4| [c.x.to_bits(), c.y.to_bits(), c.z.to_bits(), c.w.to_bits()];
@@ -138,8 +139,16 @@ fn pick(
         ray.and_then(|ray| {
             let (o, d) = (ray.origin, *ray.direction);
             let mut best: Option<(f32, Entity)> = None;
-            for (e, at, shown) in &actors {
+            for (e, at, shown, boxes) in &actors {
                 if !shown.get() {
+                    continue;
+                }
+                if let Some(boxes) = boxes.filter(|b| !b.0.is_empty()) {
+                    if let Some(t) = crate::picking::hit(ray, boxes, &joints) {
+                        if best.is_none_or(|(bt, _)| t < bt) {
+                            best = Some((t, e));
+                        }
+                    }
                     continue;
                 }
                 let base = at.translation();

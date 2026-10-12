@@ -314,6 +314,7 @@ fn spawn_npcs(
         };
         commands.entity(entity).insert((
             Npc { actor: spawn.actor },
+            crate::picking::PickModel(template.graphics.clone()),
             // No name over NPCs: the game draws names over players only.
             // NPCs idle at a third of the frame rate (crate::character::AnimLod).
             crate::character::AnimLod::new(3, spawn.actor % 3),

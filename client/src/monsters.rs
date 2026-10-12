@@ -114,6 +114,7 @@ macro_rules! json_loader {
         }
     };
 }
+pub(crate) use json_loader;
 json_loader!(MonsterTemplatesLoader, MonsterTemplates, "monster_templates.json");
 json_loader!(MonsterAnimsLoader, MonsterAnims, "monster_anims.json");
 json_loader!(ModelSetsLoader, ModelSets, "sets.json");
@@ -397,6 +398,7 @@ fn spawn_monsters(
         }
         commands.entity(entity).insert((
             Name::new(format!("monster {}", spawn.blueprint)),
+            crate::picking::PickModel(t.graphics.clone()),
             Monster {
                 actor: spawn.actor,
                 template: spawn.blueprint.clone(),
@@ -802,7 +804,8 @@ fn hits_and_kills(
 fn hover(
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
-    monsters: Query<(Entity, &GlobalTransform, &Monster, &CharacterAnim, &InheritedVisibility)>,
+    monsters: Query<(Entity, &GlobalTransform, &Monster, &CharacterAnim, &InheritedVisibility, Option<&crate::picking::PickBoxes>)>,
+    joints: Query<&GlobalTransform>,
     mut hovered: ResMut<Hovered>,
 ) {
     let ray = windows
@@ -814,8 +817,18 @@ fn hover(
     let mut best: Option<(f32, Entity, u32)> = None;
     if let Some(ray) = ray {
         let (o, d) = (ray.origin, *ray.direction);
-        for (e, at, m, anim, shown) in &monsters {
+        for (e, at, m, anim, shown, boxes) in &monsters {
             if anim.dead || !shown.get() {
+                continue;
+            }
+            // The client's picking boxes on the joints (crate::picking); the
+            // collision capsule only for a model without them.
+            if let Some(boxes) = boxes.filter(|b| !b.0.is_empty()) {
+                if let Some(t) = crate::picking::hit(ray, boxes, &joints) {
+                    if best.is_none_or(|(bt, _, _)| t < bt) {
+                        best = Some((t, e, m.actor));
+                    }
+                }
                 continue;
             }
             let base = at.translation();
@@ -847,8 +860,8 @@ fn hover(
             let eye = at.translation();
             best = monsters
                 .iter()
-                .filter(|(_, _, _, a, _)| !a.dead)
-                .map(|(e, g, m, _, _)| (g.translation().distance(eye), e, m.actor))
+                .filter(|(_, _, _, a, _, _)| !a.dead)
+                .map(|(e, g, m, _, _, _)| (g.translation().distance(eye), e, m.actor))
                 .min_by(|a, b| a.0.total_cmp(&b.0));
         }
     }
