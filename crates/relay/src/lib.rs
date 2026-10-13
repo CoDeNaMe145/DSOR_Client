@@ -7,6 +7,12 @@
 //!
 //! CONTRACT: the target must pass the allowlist (`Config::allow_hosts` textual host
 //! match, `Config::allow_ports` port ranges) or the HTTP upgrade is refused with 403.
+//!
+//! `/?login=host:port` instead logs in at that account service (release261:
+//! `POST /api/login`; port in `Config::account_ports`): the first text message is
+//! the JSON body, the one text reply is "<status>\n<body>". The login is made from
+//! the relay because the server admits UDP only from the address that logged in
+//! (dso-server-production persistence/account_registry.py:764-781).
 
 use futures_util::{SinkExt, StreamExt};
 use std::net::SocketAddr;
@@ -26,6 +32,8 @@ pub struct Config {
     pub allow_hosts: Vec<String>,
     /// Allowed target port ranges, inclusive.
     pub allow_ports: Vec<(u16, u16)>,
+    /// Allowed account-service (HTTP) ports for `?login=`.
+    pub account_ports: Vec<(u16, u16)>,
 }
 
 impl Default for Config {
@@ -34,6 +42,7 @@ impl Default for Config {
             listen: "0.0.0.0:2290".parse().unwrap(),
             allow_hosts: vec!["127.0.0.1".to_string()],
             allow_ports: vec![(2190, 2192), (30000, 30100)],
+            account_ports: vec![(8080, 8080)],
         }
     }
 }
@@ -84,18 +93,32 @@ fn percent_decode(s: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
-/// Extract `target` from a query string.
-fn query_target(query: Option<&str>) -> Option<String> {
+/// Extract `key` from a query string.
+fn query_value(query: Option<&str>, key: &str) -> Option<String> {
     query?
         .split('&')
         .filter_map(|kv| kv.split_once('='))
-        .find(|(k, _)| *k == "target")
+        .find(|(k, _)| *k == key)
         .and_then(|(_, v)| percent_decode(v))
+}
+
+/// Extract `target` from a query string.
+fn query_target(query: Option<&str>) -> Option<String> {
+    query_value(query, "target")
 }
 
 /// Split "host:port" / "[v6]:port" and check it against the allowlist.
 /// Returns the (host, port) to resolve on success.
 pub fn check_target(cfg: &Config, target: &str) -> Result<(String, u16), String> {
+    check_against(cfg, target, &cfg.allow_ports)
+}
+
+/// `check_target` for an account service (`?login=`): its own port list.
+pub fn check_account(cfg: &Config, target: &str) -> Result<(String, u16), String> {
+    check_against(cfg, target, &cfg.account_ports)
+}
+
+fn check_against(cfg: &Config, target: &str, ports: &[(u16, u16)]) -> Result<(String, u16), String> {
     let (host, port) = target
         .rsplit_once(':')
         .ok_or_else(|| format!("target {target:?} is not host:port"))?;
@@ -113,7 +136,7 @@ pub fn check_target(cfg: &Config, target: &str) -> Result<(String, u16), String>
     }) {
         return Err(format!("host {host:?} not allowed"));
     }
-    if !cfg.allow_ports.iter().any(|&(a, b)| (a..=b).contains(&port)) {
+    if !ports.iter().any(|&(a, b)| (a..=b).contains(&port)) {
         return Err(format!("port {port} not allowed"));
     }
     Ok((host.to_string(), port))
@@ -148,7 +171,20 @@ async fn handle(stream: TcpStream, peer: SocketAddr, cfg: Arc<Config>) {
     }
 
     let mut checked: Option<(String, u16)> = None;
+    let mut login: Option<(String, u16)> = None;
     let callback = |req: &Request, resp: Response| -> Result<Response, ErrorResponse> {
+        if let Some(account) = query_value(req.uri().query(), "login") {
+            return match check_account(&cfg, &account) {
+                Ok(t) => {
+                    login = Some(t);
+                    Ok(resp)
+                }
+                Err(e) => {
+                    log::warn!("{peer}: rejected login at {account:?}: {e}");
+                    Err(reject(StatusCode::FORBIDDEN, e))
+                }
+            };
+        }
         let Some(target) = query_target(req.uri().query()) else {
             return Err(reject(
                 StatusCode::BAD_REQUEST,
@@ -173,6 +209,10 @@ async fn handle(stream: TcpStream, peer: SocketAddr, cfg: Arc<Config>) {
             return;
         }
     };
+    if let Some((host, port)) = login {
+        log_in(ws, peer, &host, port).await;
+        return;
+    }
     let Some((host, port)) = checked else { return };
 
     let addr = match tokio::net::lookup_host((host.as_str(), port)).await {
@@ -245,6 +285,49 @@ async fn handle(stream: TcpStream, peer: SocketAddr, cfg: Arc<Config>) {
     );
 }
 
+/// One login: the first text message is POSTed to `host:port/api/login`; the reply
+/// goes back as "<status>\n<body>".
+async fn log_in(ws: tokio_tungstenite::WebSocketStream<TcpStream>, peer: SocketAddr, host: &str, port: u16) {
+    let (mut tx, mut rx) = ws.split();
+    let body = match tokio::time::timeout(std::time::Duration::from_secs(10), rx.next()).await {
+        Ok(Some(Ok(Message::Text(t)))) => t.to_string(),
+        _ => {
+            log::warn!("{peer}: login without a body");
+            return;
+        }
+    };
+    let reply = match http_post(host, port, "/api/login", &body).await {
+        Ok((status, text)) => format!("{status}\n{text}"),
+        Err(e) => format!("502\n{{\"error\":\"relay: {}\"}}", e.replace('"', "'")),
+    };
+    log::info!("{peer}: login at {host}:{port} -> {}", reply.lines().next().unwrap_or(""));
+    let _ = tx.send(Message::Text(reply.into())).await;
+    let _ = tx.close().await;
+}
+
+/// A JSON POST over HTTP/1.1 (Connection: close); (status, body).
+async fn http_post(host: &str, port: u16, path: &str, body: &str) -> Result<(u16, String), String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream = tokio::time::timeout(std::time::Duration::from_secs(5), TcpStream::connect((host, port)))
+        .await
+        .map_err(|_| "connect timed out".to_string())?
+        .map_err(|e| e.to_string())?;
+    let request = format!(
+        "POST {path} HTTP/1.1\r\nHost: {host}:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).await.map_err(|e| e.to_string())?;
+    let mut raw = Vec::new();
+    tokio::time::timeout(std::time::Duration::from_secs(10), stream.read_to_end(&mut raw))
+        .await
+        .map_err(|_| "read timed out".to_string())?
+        .map_err(|e| e.to_string())?;
+    let text = String::from_utf8_lossy(&raw);
+    let (head, body) = text.split_once("\r\n\r\n").ok_or("no HTTP header end")?;
+    let status = head.split_whitespace().nth(1).and_then(|s| s.parse().ok()).ok_or("bad status line")?;
+    Ok((status, body.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,6 +351,9 @@ mod tests {
         assert!(check_target(&cfg, "127.0.0.1:2193").is_err());
         assert!(check_target(&cfg, "10.0.0.1:2190").is_err());
         assert!(check_target(&cfg, "127.0.0.1").is_err());
+        assert!(check_account(&cfg, "127.0.0.1:8080").is_ok());
+        assert!(check_account(&cfg, "127.0.0.1:2190").is_err());
+        assert!(check_target(&cfg, "127.0.0.1:8080").is_err());
         assert_eq!(
             query_target(Some("a=b&target=127.0.0.1%3A2190")).as_deref(),
             Some("127.0.0.1:2190")

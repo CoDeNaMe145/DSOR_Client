@@ -69,6 +69,16 @@ pub struct NetConfig {
     pub login: String,
     pub account: String,
     pub session: String,
+    /// Log in at the account service first (release261 requires it): its user
+    /// name and password; `account` and `session` then come from its answer.
+    pub user: Option<String>,
+    pub password: Option<String>,
+    /// The account service, "host:port" (default: the login server's host, 8080).
+    pub account_api: Option<String>,
+    /// The character to create when the account has none: name, class (0
+    /// warrior, 1 mage, 2 ranger, 3 dwarf), gender. Default: the user name, a
+    /// warrior.
+    pub new_character: Option<(String, u8, u8)>,
     /// The WebSocket relay, required in the browser ("ws://host:2290").
     pub relay: Option<String>,
     /// Which character to pick (its id); the first of the roster when None.
@@ -88,6 +98,8 @@ pub struct Net {
     clock_offset: Option<i64>,
     relay: Option<String>,
     wanted_character: Option<u32>,
+    /// What to create if the server opens the character editor.
+    new_character: (String, u8, u8),
     pub local_actor: Option<u32>,
     /// The map frame's centre (wire = (game - centre) * 128).
     pub centre: Option<Vec3>,
@@ -259,6 +271,7 @@ impl Plugin for NetPlugin {
         let zoom = std::env::var("DSOR_ZOOM").ok().and_then(|z| z.parse().ok()).unwrap_or(CAM_HEIGHT_DEFAULT);
         app.insert_resource(CameraZoom(zoom))
             .add_systems(Startup, connect.run_if(resource_exists::<NetConfig>))
+            .add_systems(PreUpdate, finish_login.run_if(resource_exists::<LoggingIn>))
             .add_systems(
                 PreUpdate,
                 pump.run_if(net_exists),
@@ -308,6 +321,7 @@ pub fn start_offline(world: &mut World, class: u8, gender: u8) {
         clock_offset: Some(0),
         relay: None,
         wanted_character: None,
+        new_character: (String::new(), 0, 0),
         local_actor: Some(OFFLINE_ACTOR),
         centre: None,
         pending_local: None,
@@ -362,9 +376,66 @@ fn net_exists(active: Option<Res<NetActive>>) -> bool {
     active.is_some()
 }
 
+/// A login at the account service in flight (crate::net::connect).
+#[derive(Resource)]
+struct LoggingIn;
+
 /// Exclusive: a non-send resource can only be inserted through the World.
+/// With a user name, log in at the account service first (finish_login connects).
 fn connect(world: &mut World) {
     let Some(config) = world.get_resource::<NetConfig>().cloned() else { return };
+    if let Some(user) = config.user.clone() {
+        let api = config.account_api.clone().unwrap_or_else(|| {
+            let host = config.login.rsplit_once(':').map(|(h, _)| h).unwrap_or(&config.login);
+            format!("{host}:8080")
+        });
+        match dsor_transport::AccountLogin::start(&api, config.relay.as_deref(), &user, config.password.as_deref().unwrap_or("")) {
+            Ok(login) => {
+                info!("logging in as {user} at {api}");
+                world.insert_non_send(login);
+                world.insert_resource(LoggingIn);
+            }
+            Err(e) => error!("cannot log in at {api}: {e}"),
+        }
+        return;
+    }
+    start_session(world, config);
+}
+
+/// The account service's answer: the session to play with, or why not.
+/// EVIDENCE: dso-server-production services/accounts.py:254-284 (`POST /api/login`
+///   -> {"session": {"session_id", "account_id", ...}, "launch": {...}}; errors
+///   {"error": ...} with 401 / 403 / 429).
+fn finish_login(world: &mut World) {
+    let Some(mut login) = world.get_non_send_mut::<dsor_transport::AccountLogin>() else { return };
+    let Some(answer) = login.poll() else { return };
+    world.remove_non_send::<dsor_transport::AccountLogin>();
+    world.remove_resource::<LoggingIn>();
+    let parsed = answer.and_then(|(status, body)| {
+        let v: serde_json::Value = serde_json::from_str(&body).map_err(|e| format!("HTTP {status}: {e}: {body}"))?;
+        if status != 200 {
+            return Err(format!("HTTP {status}: {}", v["error"].as_str().unwrap_or(&body)));
+        }
+        let s = &v["session"];
+        match (s["account_id"].as_u64(), s["session_id"].as_str()) {
+            (Some(a), Some(sid)) => Ok((a.to_string(), sid.to_string())),
+            _ => Err(format!("no session in {body}")),
+        }
+    });
+    match parsed {
+        Ok((account, session)) => {
+            info!("logged in: account {account}");
+            let Some(mut config) = world.get_resource::<NetConfig>().cloned() else { return };
+            config.account = account;
+            config.session = session;
+            world.insert_resource(config.clone());
+            start_session(world, config);
+        }
+        Err(e) => error!("login refused: {e}"),
+    }
+}
+
+fn start_session(world: &mut World, config: NetConfig) {
     let now = now_ms(world.resource::<Time<Real>>());
     let Some(credentials) = Credentials::parse(&config.account, &config.session) else {
         error!("bad credentials: account {:?}, session {:?}", config.account, config.session);
@@ -386,6 +457,10 @@ fn connect(world: &mut World) {
         clock_offset: None,
         relay: config.relay.clone(),
         wanted_character: config.character,
+        new_character: config
+            .new_character
+            .clone()
+            .unwrap_or_else(|| (config.user.clone().unwrap_or_else(|| "Hero".into()), 0, 0)),
         local_actor: None,
         centre: None,
         pending_local: None,
@@ -535,6 +610,14 @@ fn pump(
                 if let Some(c) = pick {
                     net.session.select_character(c, now);
                 }
+            }
+            SessionEvent::CharacterEditor => {
+                let (name, class, gender) = net.new_character.clone();
+                info!("no character yet: creating {name} (class {class}, gender {gender})");
+                net.session.create_character(&name, class, gender, now);
+            }
+            SessionEvent::CreationRefused(reason) => {
+                error!("the server refused the new character {:?} (deny reason {reason}: 1 name taken, 2 empty, 3 invalid, 7 already made)", net.new_character.0);
             }
             SessionEvent::MapAssigned { name, rule_set } => {
                 info!("map {name} (rule set {rule_set})");

@@ -2,13 +2,19 @@
 //! login again with the chosen character -> map server, following the server's
 //! hand-offs.
 //!
-//! EVIDENCE: the 2018 client's own sequence in session-walk4 (tools/session_messages.py):
-//!   2190 login:      0x82 Login, we 0x8A short (0x83), 0x84/121 "127.0.0.1:2192", 0x88, we 0x15
-//!   2192 characters: 0x82, we 0x8A short, 0x86 "a0000_char", 0x88, we 0x8D + 0x1B,
-//!                    0x84/144 roster, we 0x8B/144 select, 0x84/144 op 5,
-//!                    0x84/121 "" (= back to login), we 0x15
-//!   2190 login:      we 0x8A long (character), 0x88, 0x84/121 "127.0.0.1:30000"
-//!   map:             0x82 Map, we 0x8A long, 0x86 map, 0x88, we 0x8D, the world arrives
+//! SOURCE: dso-server-production (release261), as traced in services/login_game.py,
+//!   services/lifecycle.py, services/dispatch.py, services/map_transition.py:
+//!   2190 login:      0x82 Login, we 0x8A, SwitchMap(<host>:2192, true), 0x88, we 0x15
+//!   2192 characters: 0x82 DrasaCharacterService, we 0x8A, 0x86 "a0000_char", 0x88,
+//!                    we 0x8D, 0x1B clock (ms), CharacterSelection op 1 (sent TWICE:
+//!                    once at once, once after its 80 ms fallback), we op 3, op 5,
+//!                    SwitchMap(<host>:2190, false), we 0x15
+//!   2190 login:      we 0x8A (long, with the character), SwitchMap(<host>:2192, false)
+//!   2192 map:        0x82 DrasaOnlineMapServer, we 0x8A, 0x86 map, 0x88, we 0x8D,
+//!                    the world arrives (NewPlayer 1 s later without StillAlive)
+//!   a map exit:      SwitchMap(<host>:2190, false) in a 0x85 batch, then as above.
+//! The account must have logged in over HTTP first (crate::account), from the same
+//! address: the server ignores a connection request from any other.
 //!
 //! No I/O: the caller owns the transport. When the session moves to another service it
 //! emits `SessionEvent::Connect(addr)`; the caller then routes datagrams to and from
@@ -40,6 +46,12 @@ pub enum SessionEvent {
     Service(String),
     /// The character service's roster: answer with `select_character`.
     Roster(Vec<RosterEntry>),
+    /// The account has no character: the server opened the character editor
+    /// (CharacterGeneration op 2); answer with `create_character`.
+    CharacterEditor,
+    /// The server refused the new character (CharacterGeneration op 4): its deny
+    /// reason (1 name taken, 2 empty, 3 invalid character, 7 already made, 8 other).
+    CreationRefused(u8),
     MapAssigned { name: String, rule_set: u32 },
     /// Game commands on the map (0x84 / 0x85), for `commands::decode_message`.
     Commands { data: Vec<u8>, bits: usize },
@@ -56,6 +68,9 @@ pub struct Session {
     character: Option<u32>,
     first_login: bool,
     readies: u8,
+    /// The roster was handed out on this character service already (the server
+    /// sends it twice; a second pick would re-arm the hand-off).
+    rostered: bool,
     events: VecDeque<SessionEvent>,
     started: u64,
     handing_off: bool,
@@ -93,6 +108,7 @@ impl Session {
             character: None,
             first_login: true,
             readies: 0,
+            rostered: false,
             events,
             started: now,
             handing_off: false,
@@ -129,6 +145,23 @@ impl Session {
     pub fn select_character(&mut self, character: u32, now: u64) {
         self.character = Some(character);
         let (bytes, bits) = messages::select_character(character);
+        self.conn.send(&bytes, bits, Reliability::ReliableOrdered, 0);
+        self.conn.flush(now);
+    }
+
+    /// Create a character in the editor the server opened (CharacterGeneration op 3).
+    /// On success the server answers op 5 with its id and hands off to the world.
+    /// SOURCE: dso-server-production services/character_selection.py:485-691,
+    ///   protocol/character_generation.py:87-124 (our layout, client tail 16 bits).
+    pub fn create_character(&mut self, name: &str, class: u8, gender: u8, now: u64) {
+        let c = crate::commands::player::CharacterGeneration {
+            operation: 3,
+            player_class: class as i8,
+            gender: gender as i8,
+            name: name.to_string(),
+            ..Default::default()
+        };
+        let (bytes, bits) = crate::commands::ClientCommand::CharacterGeneration(c).encode();
         self.conn.send(&bytes, bits, Reliability::ReliableOrdered, 0);
         self.conn.flush(now);
     }
@@ -184,11 +217,9 @@ impl Session {
     }
 
     fn ready(&mut self, now: u64) {
+        // No 0x1B clock of our own: the release261 server echoes it back, and the
+        // echo read as its clock (production runtime/transport.py:2211-2212).
         self.conn.send(&[messages::READY], 8, Reliability::ReliableOrdered, 0);
-        if self.readies == 0 {
-            let sync = messages::clock_sync(now, self.local_tick(now));
-            self.conn.send(&sync, sync.len() * 8, Reliability::ReliableOrdered, 0);
-        }
         self.readies = self.readies.saturating_add(1);
         self.conn.flush(now);
     }
@@ -202,7 +233,14 @@ impl Session {
                 //   Sessions.character_of), and the world was read as a roster.
                 match name.as_str() {
                     "DrasaOnlineMapServer" => self.stage = Stage::Map,
-                    "DrasaCharacterService" => self.stage = Stage::Characters,
+                    "DrasaCharacterService" => {
+                        self.stage = Stage::Characters;
+                        self.rostered = false;
+                    }
+                    // Every map change passes the login server (release261).
+                    "DrasaOnlineLoginServer" => {
+                        self.stage = if self.character.is_some() { Stage::LoginWithCharacter } else { Stage::Login }
+                    }
                     _ => {}
                 }
                 self.events.push_back(SessionEvent::Service(name))
@@ -217,24 +255,35 @@ impl Session {
                     self.ready(now);
                 }
             }
-            Envelope::Clock { tick } => self.events.push_back(SessionEvent::Clock(tick)),
+            // release261: milliseconds since the server started; its tick is ms / 40
+            // (production services/lifecycle.py:803-817, services/customization.py:400).
+            Envelope::Clock { tick } => self.events.push_back(SessionEvent::Clock(tick / 40)),
             Envelope::Handoff { target } => self.hand_off(&target, now),
             Envelope::Commands { data, bits } => {
+                // A SwitchMap in a 0x85 batch is a hand-off too (map exits, switching
+                // character: production protocol/map_packets.py:65-90).
+                if let Some(target) = messages::chained_handoff(&data, bits) {
+                    self.hand_off(&target, now);
+                    return;
+                }
                 if self.stage == Stage::Characters {
+                    if let Some(c) = messages::character_generation(&data, bits) {
+                        match c.operation {
+                            2 => self.events.push_back(SessionEvent::CharacterEditor),
+                            4 => self.events.push_back(SessionEvent::CreationRefused(c.deny_reason)),
+                            // Created: the hand-off that follows plays it.
+                            5 => self.character = Some(c.character),
+                            _ => {}
+                        }
+                        return;
+                    }
                     if let Some((operation, roster)) = messages::read_roster(&data, bits) {
-                        if operation == 1 {
+                        if operation == 1 && !self.rostered {
+                            self.rostered = true;
                             self.events.push_back(SessionEvent::Roster(roster));
                         }
                     }
                     return;
-                }
-                // The real client says ready again as InstanceConfig (29) and its own
-                // NewPlayer (35) arrive (session-walk4 frames 105-109).
-                if self.stage == Stage::Map && self.readies < 3 && data.len() >= 3 {
-                    let id = u16::from_le_bytes([data[1], data[2]]);
-                    if id == 29 || id == 35 {
-                        self.ready(now);
-                    }
                 }
                 self.events.push_back(SessionEvent::Commands { data, bits });
             }
@@ -252,12 +301,13 @@ impl Session {
             log::warn!("hand-off to {target:?}, which does not resolve");
             return;
         };
+        // Where it leads; the next service's 0x82 name corrects it when it differs
+        // (a map exit goes back through the login server).
         self.stage = match (self.stage, self.character.is_some()) {
             (Stage::Login, false) => Stage::Characters,
             (Stage::Characters, _) => Stage::LoginWithCharacter,
             (Stage::Login, true) | (Stage::LoginWithCharacter, _) => Stage::Map,
-            // A map-to-map switch (portals, travel) goes straight to the next map.
-            (Stage::Map, _) => Stage::Map,
+            (Stage::Map, _) => Stage::LoginWithCharacter,
         };
         self.handing_off = true;
         self.conn.disconnect(now);

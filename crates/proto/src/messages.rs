@@ -1,4 +1,5 @@
-//! The envelopes around game commands, as the 2018 client sees them.
+//! The envelopes around game commands (release261; the 2018 client's are the same
+//! but for the command ids).
 //!
 //! EVIDENCE: experimental dsor/messages.py and the captured sessions.
 //!   0x82 server -> client  service identity: one string ("DrasaOnlineLoginServer",
@@ -24,7 +25,7 @@ pub const READY: u8 = 0x8D;
 pub const TIMESTAMP: u8 = 0x1B;
 pub const CLOCK: u8 = 0x83;
 
-/// 0x84/121: the server sends the client elsewhere.
+/// SwitchMapCommand (release261: 112): the server sends the client elsewhere.
 pub const HANDOFF: u16 = 112;
 /// CharacterSelectionCommand, both directions on the character service.
 pub const CHARACTER_SELECTION: u16 = 135;
@@ -34,9 +35,9 @@ pub enum Envelope {
     Identity(String),
     MapAssignment { name: String, rule_set: u32 },
     Proceed,
-    /// 0x84/121; an empty target means "back to the login server".
+    /// 0x84/112 (SwitchMap); an empty target means "back to the login server".
     Handoff { target: String },
-    /// A clock reading: the server's game tick (25 per second).
+    /// A clock reading (release261: milliseconds since the server started).
     Clock { tick: u32 },
     /// 0x84/0x85 game commands, left for `commands`.
     Commands { data: Vec<u8>, bits: usize },
@@ -73,6 +74,30 @@ pub fn classify(data: &[u8], bits: usize) -> Envelope {
         }
         COMMAND | COMMANDS => Envelope::Commands { data: data.to_vec(), bits },
         _ => Envelope::Other { id, data: data.to_vec() },
+    }
+}
+
+/// The target of a SwitchMap carried in a 0x85 batch (`85 7000 <str> <bit> FF`),
+/// the form map exits and character switches use (production
+/// protocol/map_packets.py:65-90). None for any other batch.
+pub fn chained_handoff(data: &[u8], bits: usize) -> Option<String> {
+    if data.len() < 3 || data[0] != COMMANDS || u16::from_le_bytes([data[1], data[2]]) != HANDOFF {
+        return None;
+    }
+    let mut r = BitReader::with_bit_len(data, bits);
+    r.read_u8().ok()?;
+    r.read_u16().ok()?;
+    r.read_string().ok()
+}
+
+/// A CharacterGenerationCommand (release261: 134) from the character service.
+pub fn character_generation(data: &[u8], bits: usize) -> Option<crate::commands::player::CharacterGeneration> {
+    if data.len() < 3 || data[0] != COMMAND || u16::from_le_bytes([data[1], data[2]]) != 134 {
+        return None;
+    }
+    match crate::commands::decode_message(data, bits).ok()?.into_iter().next()? {
+        (crate::commands::ServerCommand::CharacterGeneration(c), _) => Some(c),
+        _ => None,
     }
 }
 
@@ -184,6 +209,17 @@ mod tests {
         assert_eq!(classify(&h, h.len() * 8), Envelope::Handoff { target: "127.0.0.1:2192".into() });
         let back = unhex("847000000000");
         assert_eq!(classify(&back, back.len() * 8), Envelope::Handoff { target: String::new() });
+    }
+
+    // dso-server-production protocol/character_generation.py: the editor it opens
+    // for an account with no character (op 2) and a creation's result (op 5).
+    #[test]
+    fn character_generation_from_the_server() {
+        let editor = unhex("84860002000000000000000700000012080000000000000000000000000000000052050000f8ff7fbf261094330000009c00000000261094330000803f26109433000000005d45ab2726109433f8ff7fbf000000000000000000000000000000000000803f0080115380000000000000");
+        assert_eq!(character_generation(&editor, 890).map(|c| c.operation), Some(2));
+        let result = unhex("8486000500020192100000000000000000000004004865726f0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000");
+        let c = character_generation(&result, 906).unwrap();
+        assert_eq!((c.operation, c.character, c.player_class, c.name.as_str()), (5, 4242, 2, "Hero"));
     }
 
     #[test]

@@ -106,7 +106,8 @@ pub struct Connection {
     acks_due: Vec<u32>,
     received_base: u32,
     received_above: std::collections::HashSet<u32>,
-    splits: HashMap<u16, (u32, Vec<Option<Vec<u8>>>, usize, Frame)>,
+    /// Split id -> (count, (bytes, bit length) per fragment, fragments in, first frame).
+    splits: HashMap<u16, (u32, Vec<Option<(Vec<u8>, usize)>>, usize, Frame)>,
     channels: Vec<Channel>,
     events: VecDeque<Event>,
     pub stats: Stats,
@@ -489,15 +490,19 @@ impl Connection {
                     (split.count, vec![None; split.count as usize], 0, frame.clone())
                 });
                 if (split.index as usize) < entry.1.len() && entry.1[split.index as usize].is_none() {
-                    entry.1[split.index as usize] = Some(frame.payload.clone());
+                    entry.1[split.index as usize] = Some((frame.payload.clone(), frame.bit_length));
                     entry.2 += 1;
                 }
                 if entry.2 < entry.0 as usize {
                     return;
                 }
                 let (_, pieces, _, first) = self.splits.remove(&split.id).unwrap();
-                let whole: Vec<u8> = pieces.into_iter().flatten().flatten().collect();
-                let bits = whole.len() * 8;
+                // The message's bits are the fragments' own bit lengths summed: the
+                // last one ends wherever the message ends (release261 server,
+                // runtime/transport.py:333-338), not on a byte.
+                let pieces: Vec<(Vec<u8>, usize)> = pieces.into_iter().flatten().collect();
+                let bits = pieces.iter().map(|(_, b)| *b).sum();
+                let whole: Vec<u8> = pieces.into_iter().flat_map(|(p, _)| p).collect();
                 (whole, bits, first)
             }
         };

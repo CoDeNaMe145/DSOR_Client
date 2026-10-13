@@ -282,6 +282,65 @@ mod imp {
         }
     }
 
+    /// The browser's login through the relay (see `AccountLogin`).
+    pub struct WsLogin {
+        ws: WebSocket,
+        reply: Rc<RefCell<Option<Result<(u16, String), String>>>>,
+        _onopen: Closure<dyn FnMut(Event)>,
+        _onmessage: Closure<dyn FnMut(MessageEvent)>,
+        _onclose: Closure<dyn FnMut(CloseEvent)>,
+    }
+
+    impl WsLogin {
+        pub fn start(url: &str, body: String) -> Result<Self, TransportError> {
+            let ws = WebSocket::new(url).map_err(js_err)?;
+            let reply = Rc::new(RefCell::new(None));
+            let onopen = {
+                let ws = ws.clone();
+                Closure::<dyn FnMut(Event)>::new(move |_e: Event| {
+                    if let Err(e) = ws.send_with_str(&body) {
+                        log::warn!("login: send: {e:?}");
+                    }
+                })
+            };
+            let onmessage = {
+                let reply = reply.clone();
+                Closure::<dyn FnMut(MessageEvent)>::new(move |e: MessageEvent| {
+                    if let Some(text) = e.data().as_string() {
+                        *reply.borrow_mut() =
+                            Some(super::split_login_reply(&text).ok_or_else(|| format!("bad relay reply {text:?}")));
+                    }
+                })
+            };
+            let onclose = {
+                let reply = reply.clone();
+                Closure::<dyn FnMut(CloseEvent)>::new(move |e: CloseEvent| {
+                    let mut r = reply.borrow_mut();
+                    if r.is_none() {
+                        *r = Some(Err(format!("relay closed the login ({} {})", e.code(), e.reason())));
+                    }
+                })
+            };
+            ws.set_onopen(Some(onopen.as_ref().unchecked_ref()));
+            ws.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
+            ws.set_onclose(Some(onclose.as_ref().unchecked_ref()));
+            Ok(Self { ws, reply, _onopen: onopen, _onmessage: onmessage, _onclose: onclose })
+        }
+
+        pub fn poll(&mut self) -> Option<Result<(u16, String), String>> {
+            self.reply.borrow_mut().take()
+        }
+    }
+
+    impl Drop for WsLogin {
+        fn drop(&mut self) {
+            self.ws.set_onopen(None);
+            self.ws.set_onmessage(None);
+            self.ws.set_onclose(None);
+            let _ = self.ws.close();
+        }
+    }
+
     impl Drop for Transport {
         fn drop(&mut self) {
             self.ws.set_onopen(None);
@@ -295,6 +354,118 @@ mod imp {
 
 /// One datagram transport for both targets; see the crate docs.
 pub use imp::Transport;
+
+/// The JSON body of an account login: `{"username": .., "password": ..}`.
+pub fn login_body(username: &str, password: &str) -> String {
+    fn quote(s: &str) -> String {
+        let mut out = String::from("\"");
+        for c in s.chars() {
+            match c {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+                c => out.push(c),
+            }
+        }
+        out.push('"');
+        out
+    }
+    format!("{{\"username\":{},\"password\":{}}}", quote(username), quote(password))
+}
+
+/// The relay URL that logs in at the account service `account` ("host:port").
+pub fn relay_login_url(relay_url: &str, account: &str) -> String {
+    relay_url_for(relay_url, account).replacen("target=", "login=", 1)
+}
+
+/// A login at the account service's `POST /api/login`, in flight.
+///
+/// CONTRACT: the release261 server admits UDP only from the address that logged
+///   in over HTTP (production persistence/account_registry.py:764-781), so the
+///   browser logs in THROUGH the relay (`?login=host:port`, one text message with
+///   the JSON body, one text reply "<status>\n<body>"), which also sends its UDP.
+///   Natively the request goes straight from this process.
+pub struct AccountLogin {
+    #[cfg(not(target_arch = "wasm32"))]
+    rx: std::sync::mpsc::Receiver<Result<(u16, String), String>>,
+    #[cfg(target_arch = "wasm32")]
+    inner: imp::WsLogin,
+}
+
+impl AccountLogin {
+    /// Start logging in as `username` at `account` ("host:port"); the browser needs
+    /// the relay.
+    pub fn start(account: &str, relay_url: Option<&str>, username: &str, password: &str) -> Result<Self, TransportError> {
+        let body = login_body(username, password);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let _ = relay_url;
+            let (tx, rx) = std::sync::mpsc::channel();
+            let account = account.to_string();
+            std::thread::spawn(move || {
+                let _ = tx.send(http_post(&account, "/api/login", &body));
+            });
+            Ok(Self { rx })
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let relay = relay_url.ok_or(TransportError::NoRelay)?;
+            Ok(Self { inner: imp::WsLogin::start(&relay_login_url(relay, account), body)? })
+        }
+    }
+
+    /// The HTTP status and body once the answer is in; an error if it failed.
+    pub fn poll(&mut self) -> Option<Result<(u16, String), String>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            match self.rx.try_recv() {
+                Ok(r) => Some(r),
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err("login thread ended".into())),
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.inner.poll()
+        }
+    }
+}
+
+/// "<status>\n<body>", the relay's login reply, back to (status, body).
+pub fn split_login_reply(reply: &str) -> Option<(u16, String)> {
+    let (status, body) = reply.split_once('\n')?;
+    Some((status.trim().parse().ok()?, body.to_string()))
+}
+
+/// A blocking HTTP/1.1 POST of a JSON body to `host:port` + `path`; (status, body).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn http_post(host_port: &str, path: &str, body: &str) -> Result<(u16, String), String> {
+    use std::io::{Read, Write};
+    use std::net::{TcpStream, ToSocketAddrs};
+    use std::time::Duration;
+    let addr = host_port
+        .to_socket_addrs()
+        .map_err(|e| format!("{host_port}: {e}"))?
+        .next()
+        .ok_or_else(|| format!("{host_port} does not resolve"))?;
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5)).map_err(|e| format!("{host_port}: {e}"))?;
+    stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
+    let request = format!(
+        "POST {path} HTTP/1.1\r\nHost: {host_port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).map_err(|e| e.to_string())?;
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).map_err(|e| e.to_string())?;
+    let text = String::from_utf8_lossy(&raw);
+    let (head, body) = text.split_once("\r\n\r\n").ok_or("no HTTP header end")?;
+    let status = head
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| format!("bad status line {:?}", head.lines().next()))?;
+    Ok((status, body.to_string()))
+}
 
 #[cfg(test)]
 mod tests {
@@ -310,6 +481,14 @@ mod tests {
             relay_url_for("ws://h:2290/?x=1", "127.0.0.1:30000"),
             "ws://h:2290/?x=1&target=127.0.0.1%3A30000"
         );
+    }
+
+    #[test]
+    fn login_pieces() {
+        assert_eq!(login_body("Hero", "p\"w\\d"), r#"{"username":"Hero","password":"p\"w\\d"}"#);
+        assert_eq!(relay_login_url("ws://h:2290", "127.0.0.1:8080"), "ws://h:2290/?login=127.0.0.1%3A8080");
+        assert_eq!(split_login_reply("200\n{\"a\":1}"), Some((200, "{\"a\":1}".to_string())));
+        assert_eq!(split_login_reply("garbage"), None);
     }
 
     #[cfg(not(target_arch = "wasm32"))]

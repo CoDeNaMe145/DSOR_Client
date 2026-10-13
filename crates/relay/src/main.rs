@@ -2,6 +2,7 @@
 //!
 //! Usage:
 //!   dsor-relay [--listen 0.0.0.0:2290] [--allow-host 127.0.0.1]... [--allow-ports 2190-2192,30000-30100]
+//!              [--account-ports 8080]
 //!
 //! Each WebSocket names its UDP target in the query: ws://host:2290/?target=127.0.0.1:2190
 
@@ -12,6 +13,7 @@ const USAGE: &str = "usage: dsor-relay [--listen ADDR] [--allow-host HOST]... [-
   --listen ADDR         WebSocket listen address (default 0.0.0.0:2290)
   --allow-host HOST     UDP target host allowed (repeatable; default 127.0.0.1)
   --allow-ports RANGES  UDP target ports allowed (default 2190-2192,30000-30100)
+  --account-ports RANGES  account service (HTTP login) ports allowed (default 8080)
 Logging: RUST_LOG=info (default) / debug";
 
 fn parse_args() -> Result<Config, String> {
@@ -36,6 +38,7 @@ fn parse_args() -> Result<Config, String> {
             }
             "--allow-host" => hosts.push(val("--allow-host")?),
             "--allow-ports" => cfg.allow_ports = parse_port_ranges(&val("--allow-ports")?)?,
+            "--account-ports" => cfg.account_ports = parse_port_ranges(&val("--account-ports")?)?,
             "-h" | "--help" => return Err(String::new()),
             other => return Err(format!("unknown argument {other}")),
         }

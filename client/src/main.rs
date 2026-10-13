@@ -114,6 +114,10 @@ fn options() -> Options {
                     login,
                     account: "107909469".into(),
                     session: "f7d06d94-af66-4ed7-bdae-b98f8e049ceb".into(),
+                    user: None,
+                    password: None,
+                    account_api: None,
+                    new_character: None,
                     relay: None,
                     character: None,
                 });
@@ -121,6 +125,32 @@ fn options() -> Options {
             "--account" => {
                 if let (Some(n), Some(a)) = (o.net.as_mut(), args.next()) {
                     n.account = a;
+                }
+            }
+            // Log in at the account service (release261): --user NAME --password PW
+            // [--account-api host:port].
+            "--user" => {
+                if let Some(n) = o.net.as_mut() {
+                    n.user = args.next();
+                }
+            }
+            "--password" => {
+                if let Some(n) = o.net.as_mut() {
+                    n.password = args.next();
+                }
+            }
+            // The character to create if the account has none: --new NAME CLASS GENDER.
+            "--new" => {
+                if let Some(n) = o.net.as_mut() {
+                    let name = args.next().unwrap_or_else(|| "Hero".into());
+                    let class = args.next().and_then(|c| c.parse().ok()).unwrap_or(0);
+                    let gender = args.next().and_then(|g| g.parse().ok()).unwrap_or(0);
+                    n.new_character = Some((name, class, gender));
+                }
+            }
+            "--account-api" => {
+                if let Some(n) = o.net.as_mut() {
+                    n.account_api = args.next();
                 }
             }
             "--sid" => {
@@ -162,20 +192,27 @@ fn options() -> Options {
             "flag" => {
                 let _ = FLAGS.set(v.split(',').map(str::to_owned).collect());
             }
-            "server" | "account" | "sid" | "relay" | "char" => {
+            "server" | "account" | "sid" | "relay" | "char" | "user" | "pass" | "api" => {
                 let n = o.net.get_or_insert_with(|| net::NetConfig {
                     login: "127.0.0.1:2190".into(),
                     account: String::new(),
                     session: String::new(),
+                    user: None,
+                    password: None,
+                    account_api: None,
+                    new_character: None,
                     relay: None,
                     character: None,
                 });
-                let v = v.replace("%3A", ":").replace("%2F", "/");
+                let v = percent_decode(v);
                 match k {
                     "server" => n.login = v,
                     "account" => n.account = v,
                     "sid" => n.session = v,
                     "relay" => n.relay = Some(v),
+                    "user" => n.user = Some(v),
+                    "pass" => n.password = Some(v),
+                    "api" => n.account_api = Some(v),
                     _ => n.character = v.parse().ok(),
                 }
             }
@@ -183,6 +220,34 @@ fn options() -> Options {
         }
     }
     o
+}
+
+/// A URL query value, %XX-decoded ('+' is a space).
+#[cfg(target_arch = "wasm32")]
+fn percent_decode(v: &str) -> String {
+    let b = v.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'%' if i + 3 <= b.len() => {
+                match std::str::from_utf8(&b[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                    Some(x) => out.push(x),
+                    None => out.extend_from_slice(&b[i..i + 3]),
+                }
+                i += 3;
+            }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            c => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Where the asset folder is. Natively it is `<workspace>/assets` (overridable
