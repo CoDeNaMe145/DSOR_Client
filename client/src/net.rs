@@ -17,7 +17,7 @@ use std::f32::consts::TAU;
 use bevy::input::mouse::MouseButton;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
-use dsor_proto::commands::{decode_message, movement, ClientCommand, ServerCommand};
+use dsor_proto::commands::{movement, ClientCommand, ServerCommand};
 use dsor_proto::identity::Credentials;
 use dsor_proto::session::{Session, SessionEvent};
 use dsor_raknet::Reliability;
@@ -654,14 +654,25 @@ fn pump(
                 let local = net.session.local_tick(now) as i64;
                 net.clock_offset = Some(tick as i64 - local);
             }
-            SessionEvent::Commands { data, bits } => match decode_message(&data, bits) {
-                Ok(list) => {
-                    for (command, actor) in list {
-                        on_command(net, command, actor);
+            SessionEvent::Commands { data, bits } => {
+                // What a chain held before a command we cannot read still counts
+                // (the player initialization batch starts with NewPlayer).
+                let (list, error) = dsor_proto::commands::decode_message_partial(&data, bits);
+                for (command, actor) in list {
+                    on_command(net, command, actor);
+                }
+                if let Some(e) = error {
+                    warn!("undecodable {:#04x} message ({} bytes, {bits} bits): {e}", data.first().copied().unwrap_or(0), data.len());
+                    // Natively, keep it to study: dsor-undecodable-<bits>.bin in the working directory.
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        let path = format!("dsor-undecodable-{bits}.bin");
+                        if std::fs::write(&path, &data).is_ok() {
+                            warn!("  saved to {path}");
+                        }
                     }
                 }
-                Err(e) => warn!("undecodable {:#04x} message ({} bytes): {e:?}", data.first().copied().unwrap_or(0), data.len()),
-            },
+            }
             SessionEvent::Disconnected(reason) => warn!("disconnected: {reason:?}"),
         }
     }

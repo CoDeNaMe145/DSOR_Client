@@ -258,33 +258,57 @@ pub fn decode_message(payload: &[u8], bits: usize) -> Result<Vec<(ServerCommand,
         }
         CHAIN => {
             let mut out = Vec::new();
-            while out.is_empty() || r.remaining() > PADDING_BITS {
-                let id = r.read_u16()?;
-                let at = r.position();
-                let index = out.len();
-                let wrap = |error| DecodeError::InCommand { id, index, at, error: Box::new(error) };
-                let scoped = actor_scoped(id);
-                let command = match ServerCommand::decode_body(id, &mut r) {
-                    Some(c) => c.map_err(wrap)?,
-                    None => {
-                        let n = find_tail(&r, scoped)
-                            .ok_or_else(|| wrap(DecodeError::Trailing { bits: r.remaining() }))?;
-                        ServerCommand::Unknown { id, body: Raw::read(&mut r, n)? }
-                    }
-                };
-                let mut command = command;
-                let actor = if scoped { Some(r.read_u32().map_err(|e| wrap(e.into()))?) } else { None };
-                command.decode_actor_slot_tail(&mut r).map_err(wrap)?;
-                let end = r.read_u8().map_err(|e| wrap(e.into()))?;
-                if end != TERMINATOR {
-                    return Err(wrap(DecodeError::BadTerminator { got: end }));
-                }
-                out.push((command, actor));
-            }
+            decode_chain(&mut r, &mut out)?;
             Ok(out)
         }
         other => Err(DecodeError::NotACommandMessage(other)),
     }
+}
+
+/// `decode_message`, keeping what a 0x85 chain held before the command that failed:
+/// the commands read so far, and the error if one stopped it.
+/// CONTRACT: the first commands of a chain stand on their own (a player
+///   initialization batch starts with NewPlayer); losing the whole chain to one
+///   later command without a layout left the player unspawned.
+pub fn decode_message_partial(payload: &[u8], bits: usize) -> (Vec<(ServerCommand, Option<u32>)>, Option<DecodeError>) {
+    if payload.first() != Some(&CHAIN) {
+        return match decode_message(payload, bits) {
+            Ok(v) => (v, None),
+            Err(e) => (Vec::new(), Some(e)),
+        };
+    }
+    let mut r = BitReader::with_bit_len(payload, bits);
+    let _ = r.read_u8();
+    let mut out = Vec::new();
+    let error = decode_chain(&mut r, &mut out).err();
+    (out, error)
+}
+
+/// The commands of a 0x85 chain after its envelope byte, appended to `out` as read.
+fn decode_chain(r: &mut BitReader<'_>, out: &mut Vec<(ServerCommand, Option<u32>)>) -> Result<(), DecodeError> {
+    while out.is_empty() || r.remaining() > PADDING_BITS {
+        let id = r.read_u16()?;
+        let at = r.position();
+        let index = out.len();
+        let wrap = |error| DecodeError::InCommand { id, index, at, error: Box::new(error) };
+        let scoped = actor_scoped(id);
+        let command = match ServerCommand::decode_body(id, r) {
+            Some(c) => c.map_err(wrap)?,
+            None => {
+                let n = find_tail(r, scoped).ok_or_else(|| wrap(DecodeError::Trailing { bits: r.remaining() }))?;
+                ServerCommand::Unknown { id, body: Raw::read(r, n)? }
+            }
+        };
+        let mut command = command;
+        let actor = if scoped { Some(r.read_u32().map_err(|e| wrap(e.into()))?) } else { None };
+        command.decode_actor_slot_tail(r).map_err(wrap)?;
+        let end = r.read_u8().map_err(|e| wrap(e.into()))?;
+        if end != TERMINATOR {
+            return Err(wrap(DecodeError::BadTerminator { got: end }));
+        }
+        out.push((command, actor));
+    }
+    Ok(())
 }
 
 /// How many body bits precede an unknown command's tail: the first position where
