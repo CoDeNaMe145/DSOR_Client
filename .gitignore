@@ -13,3 +13,4 @@
 __pycache__/
 /client/dist-profile
 /client/index.fast.html
+/dsor-undecodable-*.bin

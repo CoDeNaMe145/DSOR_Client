@@ -292,16 +292,34 @@ fn decode_chain(r: &mut BitReader<'_>, out: &mut Vec<(ServerCommand, Option<u32>
         let index = out.len();
         let wrap = |error| DecodeError::InCommand { id, index, at, error: Box::new(error) };
         let scoped = actor_scoped(id);
-        let command = match ServerCommand::decode_body(id, r) {
-            Some(c) => c.map_err(wrap)?,
-            None => {
-                let n = find_tail(r, scoped).ok_or_else(|| wrap(DecodeError::Trailing { bits: r.remaining() }))?;
-                ServerCommand::Unknown { id, body: Raw::read(r, n)? }
+        // A layout we have, read to its terminator; if it does not fit (a release261
+        // shape we have not ported: offers, challenges...), the command is kept as
+        // Unknown up to its tail like one we have no layout for, and the chain
+        // goes on. CONTRACT: only the chain's own framing ([actor] 0xFF) is trusted.
+        let mut try_known = r.clone();
+        let known = ServerCommand::decode_body(id, &mut try_known).map(|c| {
+            c.and_then(|mut command| {
+                let actor = if scoped { Some(try_known.read_u32()?) } else { None };
+                command.decode_actor_slot_tail(&mut try_known)?;
+                let end = try_known.read_u8()?;
+                if end != TERMINATOR {
+                    return Err(DecodeError::BadTerminator { got: end });
+                }
+                Ok((command, actor))
+            })
+        });
+        match known {
+            Some(Ok(done)) => {
+                *r = try_known;
+                out.push(done);
+                continue;
             }
-        };
-        let mut command = command;
+            Some(Err(e)) => log::debug!("command {id} at bit {at}: {e}; kept as unknown"),
+            None => {}
+        }
+        let n = find_tail(r, scoped).ok_or_else(|| wrap(DecodeError::Trailing { bits: r.remaining() }))?;
+        let command = ServerCommand::Unknown { id, body: Raw::read(r, n)? };
         let actor = if scoped { Some(r.read_u32().map_err(|e| wrap(e.into()))?) } else { None };
-        command.decode_actor_slot_tail(r).map_err(wrap)?;
         let end = r.read_u8().map_err(|e| wrap(e.into()))?;
         if end != TERMINATOR {
             return Err(wrap(DecodeError::BadTerminator { got: end }));

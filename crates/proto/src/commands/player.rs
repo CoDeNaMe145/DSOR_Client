@@ -88,44 +88,47 @@ fn fixed_bool<const N: usize>(r: &mut BitReader<'_>) -> Result<[bool; N], Decode
 
 // ---------------------------------------------------------------- server: map entry
 
-/// InstanceConfigClientInfoCommand (29): the map server's answer to the client's
-/// ready signal. u32 (refused above 1), two bools.
-/// SOURCE: dsor/mapentry2018.py instance_info; reader sub_9C8ED6 (vtable 0xFFE4AC).
+/// InstanceConfigClientInfoCommand (release261: 27): a u32 config id and one bool
+/// (production sends 1, true). The 2018 body had a second bool.
+/// SOURCE: dso-server-production protocol/gameplay_protocol.py:1160-1180 ("the
+///   generated 33-bit body").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct InstanceConfigClientInfo {
     pub unknown_u32_0: u32,
     pub unknown_flag_1: bool,
-    pub unknown_flag_2: bool,
 }
 
 impl Body for InstanceConfigClientInfo {
     fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
-        let unknown_u32_0 = r.u32()?;
-        if unknown_u32_0 > 1 {
-            return Err(invalid("InstanceConfigClientInfo u32", unknown_u32_0 as i64));
-        }
-        Ok(Self { unknown_u32_0, unknown_flag_1: r.bit()?, unknown_flag_2: r.bit()? })
+        Ok(Self { unknown_u32_0: r.u32()?, unknown_flag_1: r.bit()? })
     }
     fn encode(&self, w: &mut BitWriter) {
         w.u32(self.unknown_u32_0);
         w.bit(self.unknown_flag_1);
-        w.bit(self.unknown_flag_2);
     }
 }
 
-/// AchievementInfoCommand (283): a u32 count (0..=1000000) then the achievements.
-/// The server always sends none; the entry layout is not established, so only an
-/// empty list decodes. SOURCE: dsor/mapentry2018.py achievements; reader sub_8FDB23.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct AchievementInfo;
+/// AchievementInfoCommand (release261: 276): a u32 count, then per achievement its
+/// resource id and nine u32.
+/// SOURCE: dso-server-production protocol/player_init_protocol.py:741-765.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AchievementInfo {
+    pub achievements: Vec<(String, [u32; 9])>,
+}
 
 impl Body for AchievementInfo {
     fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
-        empty_list(r, "achievement count (entry layout unknown)")?;
-        Ok(Self)
+        let achievements = counted(r, MOST, "achievement count", |r| Ok((r.string()?, fixed_u32::<9>(r)?)))?;
+        Ok(Self { achievements })
     }
     fn encode(&self, w: &mut BitWriter) {
-        w.u32(0);
+        w.count(self.achievements.len());
+        for (id, values) in &self.achievements {
+            w.string(id);
+            for v in values {
+                w.u32(*v);
+            }
+        }
     }
 }
 

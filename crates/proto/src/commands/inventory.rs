@@ -832,40 +832,90 @@ impl Body for DeselectTalent {
     }
 }
 
-/// TalentSelectionInfoCommand (290): the selected talents of one category.
-/// Only context 3 (the Skill category: u8 preset, u8 count, each u8 rank + talent id)
-/// is established; any other context is refused rather than guessed.
-/// EVIDENCE: Encode 0xA3BEBA / reader 0xA3BA3E, entry sub_A64581 / sub_A64548;
-///   handler 0x602F3F (dsor/talents.py encode_skill_talents).
+/// One selected talent: rank (u16), a u16 (production field_04, meaning UNKNOWN),
+/// the talent's resource id.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TalentEntry {
+    pub rank: u16,
+    pub unknown_u16_04: u16,
+    pub id: String,
+}
+
+/// One talent category of a full selection: its preset, then skills and talents.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TalentCategory {
+    pub preset: u8,
+    pub skills: Vec<TalentEntry>,
+    pub talents: Vec<TalentEntry>,
+}
+
+/// TalentSelectionInfoCommand (release261: 283): the selected talents. Context 3
+/// (a skill refresh): u8 preset, u8 count, entries. Context 0 (everything): four
+/// categories, each u8 preset, u8-counted skill entries, u8-counted talent entries.
+/// Other contexts are refused (production does not model them either).
+/// SOURCE: dso-server-production protocol/player_init_protocol.py:875-950 (the 2018
+///   entry was u8 rank + string).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TalentSelectionInfo {
     pub context: u8,
+    /// Context 3.
     pub preset: u8,
-    /// (rank, talent id).
-    pub talents: Vec<(u8, String)>,
+    pub talents: Vec<TalentEntry>,
+    /// Context 0.
+    pub categories: Vec<TalentCategory>,
 }
 
 impl TalentSelectionInfo {
     pub const SKILL_CONTEXT: u8 = 3;
+    pub const ALL_CONTEXT: u8 = 0;
+}
+
+fn talent_entries(r: &mut BitReader<'_>) -> Result<Vec<TalentEntry>, DecodeError> {
+    let n = byte_count(r)?;
+    list(r, n, |r| Ok(TalentEntry { rank: r.u16()?, unknown_u16_04: r.u16()?, id: r.string()? }))
+}
+
+fn write_talent_entries(w: &mut BitWriter, entries: &[TalentEntry]) {
+    w.u8(entries.len() as u8);
+    for e in entries {
+        w.u16(e.rank);
+        w.u16(e.unknown_u16_04);
+        w.string(&e.id);
+    }
 }
 
 impl Body for TalentSelectionInfo {
     fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
         let context = r.u8()?;
-        if context != Self::SKILL_CONTEXT {
-            return Err(DecodeError::Invalid { what: "talent selection context (only 3 known)", value: context as i64 });
+        match context {
+            Self::SKILL_CONTEXT => {
+                let preset = r.u8()?;
+                Ok(Self { context, preset, talents: talent_entries(r)?, categories: Vec::new() })
+            }
+            Self::ALL_CONTEXT => {
+                let mut categories = Vec::with_capacity(4);
+                for _ in 0..4 {
+                    let preset = r.u8()?;
+                    let skills = talent_entries(r)?;
+                    categories.push(TalentCategory { preset, skills, talents: talent_entries(r)? });
+                }
+                Ok(Self { context, categories, ..Default::default() })
+            }
+            other => Err(DecodeError::Invalid { what: "talent selection context (0 and 3 known)", value: other as i64 }),
         }
-        let preset = r.u8()?;
-        let n = byte_count(r)?;
-        Ok(Self { context, preset, talents: list(r, n, |r| Ok((r.u8()?, r.string()?)))? })
     }
     fn encode(&self, w: &mut BitWriter) {
         w.u8(self.context);
-        w.u8(self.preset);
-        w.u8(self.talents.len() as u8);
-        for (rank, id) in &self.talents {
-            w.u8(*rank);
-            w.string(id);
+        if self.context == Self::ALL_CONTEXT {
+            for i in 0..4 {
+                let c = self.categories.get(i).cloned().unwrap_or_default();
+                w.u8(c.preset);
+                write_talent_entries(w, &c.skills);
+                write_talent_entries(w, &c.talents);
+            }
+        } else {
+            w.u8(self.preset);
+            write_talent_entries(w, &self.talents);
         }
     }
 }
