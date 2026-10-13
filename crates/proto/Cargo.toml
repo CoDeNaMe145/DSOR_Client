@@ -1,6 +1,6 @@
 [package]
 name = "dsor-proto"
-description = "Drakensang Online 2018 game protocol"
+description = "Drakensang Online game protocol (release261, as the production server speaks it)"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
@@ -8,3 +8,6 @@ license.workspace = true
 [dependencies]
 log.workspace = true
 dsor-raknet.workspace = true
+
+[dev-dependencies]
+serde_json = "1"

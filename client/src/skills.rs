@@ -721,14 +721,21 @@ fn cast_input(
     player.casting = (skill.motion_unblock.max(skill.unblock).max(1) as f32 / FPS).min(2.0);
 
     let tick = net.server_tick(now_ms(&time));
-    let base = SkillBase { high_water: 0, skill_id: wire as u16, heading: facing_to_aim(facing), start_tick: tick, unknown_u32_0: 0 };
+    // A fresh cast id per cast: the release261 server keys each cast's projectile
+    // timers by it (production services/player_combat.py:397-410); with 0 every
+    // cast replaced the previous one's.
+    static CAST_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+    let cast_id = CAST_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed).max(1);
+    let base = SkillBase { high_water: 0, skill_id: wire as u16, heading: facing_to_aim(facing), start_tick: tick, unknown_u32_0: cast_id };
     let dir = Quat::from_rotation_y(facing) * Vec3::Z;
     let speed = skill.bullet.as_ref().map(|b| b.velocity / FPS).unwrap_or(1.0);
     let step = [dir.x * speed, 0.0, dir.z * speed, 0.0];
     let points = vec![point.to_array()];
     let command = match skill.kind.as_str() {
+        // No target is 0 for the release261 server (it drops such a cast,
+        // production services/player_combat.py:585-590), not 0xFFFFFFFF.
         "MeleeTarget" | "RangedTarget" => {
-            ClientCommand::TargetSkill(combat::TargetSkill { base, target: target_actor.unwrap_or(u32::MAX), server: None })
+            ClientCommand::TargetSkill(combat::TargetSkill { base, target: target_actor.unwrap_or(0), server: None })
         }
         "Ranged" => ClientCommand::BulletSkill(combat::BulletSkill { base, step, orbit: 0, server: None }),
         "RangedTargetPoint" => {

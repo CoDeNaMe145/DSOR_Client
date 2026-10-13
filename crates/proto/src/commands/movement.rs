@@ -140,21 +140,22 @@ impl Body for ActorsLeftVicinity {
     }
 }
 
-/// ActorStatsUpdateCommand (132): the actor's current health and skill resource.
-/// EVIDENCE: the 2018 reader 0x9A68CE reads two floats (sub_C4A652) into the fields
-///   SetHealthPoints / SetSkillResource take (dsor/gameplay.py encode_actor_vitals).
+/// ActorStatsUpdateCommand (release261: 123): the actor's current health (u64)
+/// and skill resource (f32).
+/// SOURCE: dso-server-production protocol/gameplay_protocol.py:323-351 (the 2018
+///   reader took two floats).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct ActorStatsUpdate {
-    pub health: f32,
+    pub health: u64,
     pub resource: f32,
 }
 
 impl Body for ActorStatsUpdate {
     fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
-        Ok(Self { health: r.f32()?, resource: r.f32()? })
+        Ok(Self { health: r.u64()?, resource: r.f32()? })
     }
     fn encode(&self, w: &mut BitWriter) {
-        w.f32(self.health);
+        w.u64(self.health);
         w.f32(self.resource);
     }
 }

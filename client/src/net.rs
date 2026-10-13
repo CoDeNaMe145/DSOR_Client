@@ -124,7 +124,7 @@ pub struct Net {
     /// The wallet: slot 0 Andermant, slot 1 gold in copper (NewPlayer +356,
     /// CurrencyChanged 137). EVIDENCE: experimental dsor/mapinstance.py WALLET_RC /
     /// WALLET_VC (handler 0x513E39).
-    pub wallet: Option<[u32; 5]>,
+    pub wallet: Option<[u64; 5]>,
     /// The first quick slot bar (QuickSlotsInfo 83): skill ids by wire slot.
     pub bar: Vec<Option<String>>,
     /// Skills other actors used, relayed by the server (73-77), for crate::skills.
@@ -182,6 +182,11 @@ pub struct NpcSpawn {
     pub guid: String,
     pub position: Vec3,
     pub visible: bool,
+}
+
+/// A release261 u64 health, as the u32 the client keeps.
+fn sat(v: u64) -> u32 {
+    v.min(u32::MAX as u64) as u32
 }
 
 /// One NewMonsterCommand: its _Template_Monster blueprint and where (map frame).
@@ -610,11 +615,8 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
             };
             info!("I am {} ({}), actor {:?}, at {:?}", p.name, desc.animation_set(), actor, p.position);
             net.local_actor = actor;
-            // Health and skill resource from the start (+212 / +216), so a skill
-            // the character cannot pay for is never cast -- before this, rage that
-            // no blow had changed yet was unknown and every cast went out.
-            net.health = Some(p.words_212[0] as f32);
-            net.resource = Some(p.words_212[1] as f32);
+            // release261: NewPlayer carries no health or resource; InventoryInfo
+            // ends with both (production inventory_codec.py:476-477).
             net.level = Some(p.words_240[1]);
             net.xp = Some((p.words_240[2], p.words_240[3], p.words_240[4]));
             net.wallet = Some(p.currencies);
@@ -662,7 +664,7 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
         ServerCommand::ActorStatsUpdate(v) => {
             if actor.is_some() && actor == net.local_actor {
                 net.resource = Some(v.resource);
-                net.health = Some(v.health);
+                net.health = Some(v.health as f32);
             }
         }
         ServerCommand::QuickSlotsInfo(q) => {
@@ -675,7 +677,9 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
         ServerCommand::StatusEffect(c) => {
             for e in &c.elements {
                 net.status_events.push(StatusEvent {
-                    holder: e.holder,
+                    // release261: the holder is the command's actor (e.source is
+                    // who caused it).
+                    holder: actor.unwrap_or(e.source),
                     index: e.index,
                     instance: e.instance,
                     seconds: e.duration as f32 / 25.0,
@@ -716,7 +720,7 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
                 actor,
                 blueprint: m.blueprint,
                 position: Vec3::from(m.position),
-                health: m.health,
+                health: sat(m.health),
                 level: m.level,
             });
         }
@@ -728,7 +732,7 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
         }
         ServerCommand::MonsterUpdate(u) => {
             if let Some(a) = actor {
-                net.monster_health.push((a, u.health, u.max_health));
+                net.monster_health.push((a, sat(u.health), sat(u.max_health)));
             }
         }
         ServerCommand::PlayerLevelUpdate(u) => {
@@ -756,6 +760,12 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
             }
         }
         ServerCommand::InventoryInfo(inv) => {
+            // release261: the health and skill resource come here, not in
+            // NewPlayer, so a skill the character cannot pay for is never cast.
+            if actor.is_none() || actor == net.local_actor {
+                net.health = Some(inv.health);
+                net.resource = Some(inv.resource);
+            }
             let worn = inv
                 .slots
                 .iter()

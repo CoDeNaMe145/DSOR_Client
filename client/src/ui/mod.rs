@@ -290,7 +290,7 @@ struct Figures {
     online: bool,
     level: Option<u32>,
     /// Wallet slot 1, copper; slot 0, Andermant.
-    gold: Option<u32>,
+    gold: Option<u64>,
     andermant: Option<u32>,
 }
 
@@ -707,8 +707,8 @@ fn read_figures(net: Option<NonSend<crate::net::Net>>, mut figures: ResMut<Figur
         }
     }
     if let Some(w) = net.wallet {
-        if (figures.andermant, figures.gold) != (Some(w[0]), Some(w[1])) {
-            figures.andermant = Some(w[0]);
+        if (figures.andermant, figures.gold) != (Some(w[0] as u32), Some(w[1])) {
+            figures.andermant = Some(w[0] as u32);
             figures.gold = Some(w[1]);
         }
     }

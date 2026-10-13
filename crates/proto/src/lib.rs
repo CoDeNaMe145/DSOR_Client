@@ -1,4 +1,5 @@
-//! The 2018 game protocol on top of RakNet.
+//! The release261 game protocol on top of RakNet (dso-server-production is the
+//! spec: tests/commands_release261.rs checks every layout against its encoders).
 //!
 //! - `identity`: the client's 0x8A hello, account and session.
 //! - `messages`: the envelopes (0x82, 0x84, 0x85, 0x86, 0x88, 0x8B, 0x8D, 0x1B).

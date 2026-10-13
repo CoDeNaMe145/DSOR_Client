@@ -1,0 +1,2424 @@
+[
+ {
+  "name": "MoveCommand",
+  "id": 95,
+  "hex": "845f002efb290980f24182c30d0c0b0a341203020100",
+  "bits": 176,
+  "envelope": "0x84",
+  "fields": {
+   "move": {
+    "quantized_x": -1234,
+    "quantized_y": 2345,
+    "quantized_z": -3456,
+    "scalar_byte": 65,
+    "yaw_byte": 130,
+    "pitch_byte": 195,
+    "start_tick": 168496141,
+    "duration_ticks": 4660
+   },
+   "actor_id": 66051,
+   "encoder": "encode_move"
+  }
+ },
+ {
+  "name": "MoveCommand",
+  "id": 95,
+  "hex": "855f002efb290980f24182c30d0c0b0a341203020100ff5f006f0022ff4d0107080904030201060504030200ff",
+  "bits": 360,
+  "envelope": "0x85",
+  "fields": {
+   "commands": [
+    {
+     "move": {
+      "quantized_x": -1234,
+      "quantized_y": 2345,
+      "quantized_z": -3456,
+      "scalar_byte": 65,
+      "yaw_byte": 130,
+      "pitch_byte": 195,
+      "start_tick": 168496141,
+      "duration_ticks": 4660
+     },
+     "actor_id": 66051
+    },
+    {
+     "move": {
+      "quantized_x": 111,
+      "quantized_y": -222,
+      "quantized_z": 333,
+      "scalar_byte": 7,
+      "yaw_byte": 8,
+      "pitch_byte": 9,
+      "start_tick": 16909060,
+      "duration_ticks": 1286
+     },
+     "actor_id": 131844
+    }
+   ],
+   "encoder": "encode_move_batch"
+  },
+  "batch": [
+   "MoveCommand",
+   "MoveCommand"
+  ]
+ },
+ {
+  "name": "MoveCommand",
+  "id": 95,
+  "hex": "8b5f002efb290980f24182c30d0c0b0a3412",
+  "bits": 144,
+  "envelope": "0x8B",
+  "fields": {
+   "move": {
+    "quantized_x": -1234,
+    "quantized_y": 2345,
+    "quantized_z": -3456,
+    "scalar_byte": 65,
+    "yaw_byte": 130,
+    "pitch_byte": 195,
+    "start_tick": 168496141,
+    "duration_ticks": 4660
+   },
+   "encoder": "Move.encode_body",
+   "built_by": "helper:Move.encode_body"
+  }
+ },
+ {
+  "name": "NewMonsterCommand",
+  "id": 42,
+  "hex": "852a0010004d6f6e7374657254656d706c6174654102000000030000484107000040bf89674523010000009a78563402000000989898989c9c9c9c0000203f0000cb4200404a43000048c05ac4c4c4c4111101002222020033b63636363c1c1c1c108004368616d70696f6e07004578747261463005040300ff4f0000800000118082020202060606060a0a0a0a040404040c0c0c0c080808080e0e0e0e101010105028201807f80",
+  "bits": 1337,
+  "envelope": "0x85",
+  "fields": {
+   "new_monster": {
+    "template_id": "MonsterTemplateA",
+    "stats": [
+     {
+      "kind": 3,
+      "value": 12.5
+     },
+     {
+      "kind": 7,
+      "value": -0.75
+     }
+    ],
+    "field_88": 4886718345,
+    "field_90": 9468016794,
+    "field_98": 2560137368,
+    "field_9c": 2627509404,
+    "field_a0": 0.625,
+    "position": [
+     101.5,
+     202.25,
+     -3.125
+    ],
+    "category": 90,
+    "field_c4": 3301229764,
+    "placement": {
+     "field_00": 69905,
+     "actor_id": 139810,
+     "field_08": 51,
+     "field_0c": true,
+     "field_0d": false
+    },
+    "field_d8": 3638089944,
+    "field_dc": true,
+    "field_e0": 3772834016,
+    "field_e4": true,
+    "rank": "Champion",
+    "field_f0": "ExtraF0",
+    "actor_id": 197637
+   },
+   "status_effect": {
+    "clear_existing": false,
+    "entries": [
+     {
+      "effect_id": 291,
+      "field_04": 67372036,
+      "field_0c": 202116108,
+      "field_14": 336860180,
+      "field_08": 134744072,
+      "field_18": 404232216,
+      "field_10": 269488144,
+      "field_1c": 471604252,
+      "field_20": 538976288,
+      "field_25": true,
+      "field_26": false,
+      "field_39": true,
+      "has_details": false,
+      "values": [],
+      "field_38": false,
+      "field_3c": 255,
+      "shape_values": []
+     }
+    ]
+   },
+   "status_actor_id": 197637,
+   "encoder": "encode_monster_spawn_batch"
+  },
+  "batch": [
+   "NewMonsterCommand",
+   "StatusEffectCommand"
+  ]
+ },
+ {
+  "name": "MonsterUpdateCommand",
+  "id": 44,
+  "hex": "852c002020000001000000282800000200000030303030343434343838383801000400ff2c000100000003000000020000000400000031000000350000003900000002000400ff740002000000010004000200040006000500ff",
+  "bits": 720,
+  "envelope": "0x85",
+  "fields": {
+   "updates": [
+    {
+     "value": {
+      "field_20": 4294975520,
+      "field_28": 8589944872,
+      "field_30": 808464432,
+      "field_34": 875836468,
+      "field_38": 943208504
+     },
+     "actor_id": 262145
+    },
+    {
+     "value": {
+      "field_20": 12884901889,
+      "field_28": 17179869186,
+      "field_30": 49,
+      "field_34": 53,
+      "field_38": 57
+     },
+     "actor_id": 262146
+    }
+   ],
+   "vicinity": {
+    "actor_ids": [
+     262145,
+     262146
+    ]
+   },
+   "vicinity_actor_id": 327686,
+   "encoder": "encode_monster_vicinity_batch"
+  },
+  "batch": [
+   "MonsterUpdateCommand",
+   "MonsterUpdateCommand",
+   "ActorsEnterVicinityCommand"
+  ]
+ },
+ {
+  "name": "MonsterUpdateCommand",
+  "id": 44,
+  "hex": "852c002020000001000000282800000200000030303030343434343838383801000400ff7a0011110100222202003381c001803fd3c000200000046020808080818181818282828281010101030303030202020203838383840404041402000801fe",
+  "bits": 783,
+  "envelope": "0x85",
+  "fields": {
+   "monster": {
+    "field_20": 4294975520,
+    "field_28": 8589944872,
+    "field_30": 808464432,
+    "field_34": 875836468,
+    "field_38": 943208504
+   },
+   "monster_actor_id": 262145,
+   "faction": {
+    "placement": {
+     "field_00": 69905,
+     "actor_id": 139810,
+     "field_08": 51,
+     "field_0c": true,
+     "field_0d": false
+    }
+   },
+   "faction_actor_id": 393223,
+   "commands": [
+    {
+     "value": {
+      "clear_existing": false,
+      "entries": [
+       {
+        "effect_id": 291,
+        "field_04": 67372036,
+        "field_0c": 202116108,
+        "field_14": 336860180,
+        "field_08": 134744072,
+        "field_18": 404232216,
+        "field_10": 269488144,
+        "field_1c": 471604252,
+        "field_20": 538976288,
+        "field_25": true,
+        "field_26": false,
+        "field_39": true,
+        "has_details": false,
+        "values": [],
+        "field_38": false,
+        "field_3c": 255,
+        "shape_values": []
+       }
+      ]
+     },
+     "actor_id": 262145
+    }
+   ],
+   "encoder": "encode_monster_update_batch"
+  },
+  "batch": [
+   "MonsterUpdateCommand",
+   "FactionInfoCommand",
+   "StatusEffectCommand"
+  ]
+ },
+ {
+  "name": "DiscardMonsterCommand",
+  "id": 43,
+  "hex": "852b0001000700ff2b0002000700ff",
+  "bits": 120,
+  "envelope": "0x85",
+  "fields": {
+   "actor_ids": [
+    458753,
+    458754
+   ],
+   "encoder": "encode_discard_monster_batch"
+  },
+  "batch": [
+   "DiscardMonsterCommand",
+   "DiscardMonsterCommand"
+  ]
+ },
+ {
+  "name": "NewNPCCommand",
+  "id": 38,
+  "hex": "8526000c004e706354656d706c6174654210000102030405060708090a0b0c0d0e0f101111010022220200338000380fc0002c100000323000003910212001001fe0",
+  "bits": 523,
+  "envelope": "0x85",
+  "fields": {
+   "new_npc": {
+    "template_id": "NpcTemplateB",
+    "instance_guid": {
+     "bytes_hex": "0102030405060708090a0b0c0d0e0f10"
+    },
+    "placement": {
+     "field_00": 69905,
+     "actor_id": 139810,
+     "field_08": 51,
+     "field_0c": true,
+     "field_0d": false
+    },
+    "rotation": 1.75,
+    "position": [
+     5.5,
+     -6.25,
+     7.125
+    ],
+    "enabled": true,
+    "actor_id": 524297
+   },
+   "encoder": "encode_npc_batch"
+  },
+  "batch": [
+   "NewNPCCommand"
+  ]
+ },
+ {
+  "name": "HitCommand",
+  "id": 107,
+  "hex": "856b0044332211030000000a0b0c814100c080400000024201c1808000000282828282c2c2c2c3030303034000000383838003c3c3c004040400000008101100044616d616765446f6e65506f69736f6e01000900ff0",
+  "bits": 684,
+  "envelope": "0x85",
+  "fields": {
+   "hit": {
+    "server_tick": 287454020,
+    "hit_tags": [
+     10,
+     11,
+     12
+    ],
+    "field_48": true,
+    "field_49": false,
+    "current_health": 4328719365,
+    "maximum_health": 8691058697,
+    "absorbed_damage": 168430090,
+    "shield_damage": 185273099,
+    "damage": 202116108,
+    "damage_type": 13,
+    "attacker_actor_id": 921102,
+    "source_actor_id": 986895,
+    "skill_id": 1052688,
+    "impact_strength": 2.5,
+    "field_80": false,
+    "field_81": true,
+    "combat_text_type": "DamageDonePoison",
+    "legacy_tag_boundary_bit": false
+   },
+   "actor_id": 589825,
+   "legacy_hit_tag_boundary_bit": false,
+   "encoder": "encode_combat_batch"
+  },
+  "batch": [
+   "HitCommand"
+  ]
+ },
+ {
+  "name": "KillCommand",
+  "id": 108,
+  "hex": "856c0024232221020000001a1b262500004c4c4c4c22220900000038410000b241000007c23333090044440900810004807f80",
+  "bits": 401,
+  "envelope": "0x85",
+  "fields": {
+   "kill": {
+    "server_tick": 555885348,
+    "hit_tags": [
+     26,
+     27
+    ],
+    "animation_time": 9510,
+    "field_4c": 1280068684,
+    "killer_actor_id": 598562,
+    "position": [
+     11.5,
+     22.25,
+     -33.75
+    ],
+    "skill_id": 602931,
+    "projectile_id": 607300,
+    "field_78": true
+   },
+   "actor_id": 589826,
+   "encoder": "encode_combat_batch"
+  },
+  "batch": [
+   "KillCommand"
+  ]
+ },
+ {
+  "name": "HitCommand",
+  "id": 107,
+  "hex": "856b0044332211030000000a0b0c814100c080400000024201c1808000000282828282c2c2c2c3030303034000000383838003c3c3c004040400000008101100044616d616765446f6e65506f69736f6e01000900ff4f0000800000118082020202060606060a0a0a0a040404040c0c0c0c080808080e0e0e0e101010105008004807fb60012119110810000000d0d93128000262626261111048000001c2080005920800003e11999848022220480408002403fc0",
+  "bits": 1442,
+  "envelope": "0x85",
+  "fields": {
+   "commands": [
+    {
+     "hit": {
+      "server_tick": 287454020,
+      "hit_tags": [
+       10,
+       11,
+       12
+      ],
+      "field_48": true,
+      "field_49": false,
+      "current_health": 4328719365,
+      "maximum_health": 8691058697,
+      "absorbed_damage": 168430090,
+      "shield_damage": 185273099,
+      "damage": 202116108,
+      "damage_type": 13,
+      "attacker_actor_id": 921102,
+      "source_actor_id": 986895,
+      "skill_id": 1052688,
+      "impact_strength": 2.5,
+      "field_80": false,
+      "field_81": true,
+      "combat_text_type": "DamageDonePoison",
+      "legacy_tag_boundary_bit": false
+     },
+     "actor_id": 589825
+    },
+    {
+     "status_effect": {
+      "clear_existing": false,
+      "entries": [
+       {
+        "effect_id": 291,
+        "field_04": 67372036,
+        "field_0c": 202116108,
+        "field_14": 336860180,
+        "field_08": 134744072,
+        "field_18": 404232216,
+        "field_10": 269488144,
+        "field_1c": 471604252,
+        "field_20": 538976288,
+        "field_25": true,
+        "field_26": false,
+        "field_39": true,
+        "has_details": false,
+        "values": [],
+        "field_38": false,
+        "field_3c": 255,
+        "shape_values": []
+       }
+      ]
+     },
+     "actor_id": 589825
+    },
+    {
+     "kill": {
+      "server_tick": 555885348,
+      "hit_tags": [
+       26,
+       27
+      ],
+      "animation_time": 9510,
+      "field_4c": 1280068684,
+      "killer_actor_id": 598562,
+      "position": [
+       11.5,
+       22.25,
+       -33.75
+      ],
+      "skill_id": 602931,
+      "projectile_id": 607300,
+      "field_78": true
+     },
+     "actor_id": 589826
+    }
+   ],
+   "encoder": "encode_combat_batch"
+  },
+  "batch": [
+   "HitCommand",
+   "StatusEffectCommand",
+   "KillCommand"
+  ]
+ },
+ {
+  "name": "StatusEffectCommand",
+  "id": 79,
+  "hex": "854f0081000000118082020202060606060a0a0a0a040404040c0c0c0c080808080e0e0e0e1010101052b0222000000660000000a0000004400000001800000080000000e000000100000002818000000000601f8000086000206421008000241000000c100000280fc0000a10400028b040003c10404002803fc0",
+  "bits": 978,
+  "envelope": "0x85",
+  "fields": {
+   "status_effect": {
+    "clear_existing": true,
+    "entries": [
+     {
+      "effect_id": 291,
+      "field_04": 67372036,
+      "field_0c": 202116108,
+      "field_14": 336860180,
+      "field_08": 134744072,
+      "field_18": 404232216,
+      "field_10": 269488144,
+      "field_1c": 471604252,
+      "field_20": 538976288,
+      "field_25": true,
+      "field_26": false,
+      "field_39": true,
+      "has_details": false,
+      "values": [],
+      "field_38": false,
+      "field_3c": 255,
+      "shape_values": []
+     },
+     {
+      "effect_id": 1110,
+      "field_04": 68,
+      "field_0c": 204,
+      "field_14": 20,
+      "field_08": 136,
+      "field_18": 3,
+      "field_10": 16,
+      "field_1c": 28,
+      "field_20": 32,
+      "field_25": false,
+      "field_26": true,
+      "field_39": false,
+      "has_details": true,
+      "values": [
+       1.5,
+       -2.25,
+       100.125
+      ],
+      "field_38": false,
+      "field_3c": 2,
+      "shape_values": [
+       4.5,
+       2.75,
+       1.25,
+       10.5,
+       -20.25,
+       30.0
+      ]
+     }
+    ]
+   },
+   "actor_id": 655361,
+   "encoder": "encode_status_effect_batch"
+  },
+  "batch": [
+   "StatusEffectCommand"
+  ]
+ },
+ {
+  "name": "NewLocationEffectCommand",
+  "id": 60,
+  "hex": "853c0001000b000e0041757261456666656374547970650900677569642d31323334800000501f80001020000038200000001f8000601f80001020000030200680333c2fb932b9b7bab931b2afbc4161616161400000014141414040000000000308200000982c80000000400160022220200444404006758000000018005807f8",
+  "bits": 1029,
+  "envelope": "0x85",
+  "fields": {
+   "entries": [
+    {
+     "instance_id": 720897,
+     "effect_type": "AuraEffectType",
+     "instance_guid": "guid-1234",
+     "enabled": true,
+     "transform_mode": 0,
+     "position": [
+      1.25,
+      2.5,
+      3.75
+     ],
+     "yaw": 0.5,
+     "scale": [
+      1.5,
+      2.5,
+      3.5
+     ],
+     "effect_resource_id": "fx_resource_x",
+     "field_78": true,
+     "field_79": false,
+     "expires_tick": 185273099,
+     "ticks_per_second": 10,
+     "starts_tick": 168430090,
+     "values": [
+      9.5,
+      -8.25
+     ],
+     "strength_percent": 100,
+     "owner_actor_id": 720898,
+     "placement": {
+      "field_00": 69905,
+      "actor_id": 139810,
+      "field_08": 51,
+      "field_0c": true,
+      "field_0d": false
+     },
+     "field_b0": 176
+    }
+   ],
+   "actor_id": 720899,
+   "encoder": "encode_new_location_effect_batch"
+  },
+  "batch": [
+   "NewLocationEffectCommand"
+  ]
+ },
+ {
+  "name": "DiscardLocationEffectCommand",
+  "id": 61,
+  "hex": "853d0001000b0003000b00ff3d0005000b0003000b00ff",
+  "bits": 184,
+  "envelope": "0x85",
+  "fields": {
+   "instance_ids": [
+    720897,
+    720901
+   ],
+   "actor_id": 720899,
+   "encoder": "encode_discard_location_effect_batch"
+  },
+  "batch": [
+   "DiscardLocationEffectCommand",
+   "DiscardLocationEffectCommand"
+  ]
+ },
+ {
+  "name": "SkillCommand",
+  "id": 70,
+  "hex": "855f002efb290980f24182c30d0c0b0a341201000c00ff4600020104030000603f080706050c0b0a0902000c0001000c0c0f000000170000001f0000002900000000004841000054c100006c410000803fff80",
+  "bits": 657,
+  "envelope": "0x85",
+  "fields": {
+   "movements": [
+    {
+     "move": {
+      "quantized_x": -1234,
+      "quantized_y": 2345,
+      "quantized_z": -3456,
+      "scalar_byte": 65,
+      "yaw_byte": 130,
+      "pitch_byte": 195,
+      "start_tick": 168496141,
+      "duration_ticks": 4660
+     },
+     "actor_id": 786433
+    }
+   ],
+   "attack": {
+    "value": {
+     "skill_level": 258,
+     "skill_index": 772,
+     "aim_angle": 0.875,
+     "server_tick": 84281096,
+     "cast_id": 151653132,
+     "derived_flag": null
+    },
+    "actor_id": 786434,
+    "context": {
+     "impact_tick": 202113025,
+     "hit_frame": 15,
+     "motion_unblock_frame": 23,
+     "skill_unblock_frame": 31,
+     "reserved": 41,
+     "position": [
+      12.5,
+      -13.25,
+      14.75,
+      1.0
+     ],
+     "predicted": true
+    }
+   },
+   "encoder": "encode_monster_attack_batch"
+  },
+  "batch": [
+   "MoveCommand",
+   "SkillCommand"
+  ]
+ },
+ {
+  "name": "TargetSkillCommand",
+  "id": 71,
+  "hex": "855f002efb290980f24182c30d0c0b0a341201000c00ff4700120114030000c0be181716151c1b1a1999000c0003000c0001000c0c0f000000170000001f0000002900000000004841000054c100006c410000803fff80",
+  "bits": 689,
+  "envelope": "0x85",
+  "fields": {
+   "movements": [
+    {
+     "move": {
+      "quantized_x": -1234,
+      "quantized_y": 2345,
+      "quantized_z": -3456,
+      "scalar_byte": 65,
+      "yaw_byte": 130,
+      "pitch_byte": 195,
+      "start_tick": 168496141,
+      "duration_ticks": 4660
+     },
+     "actor_id": 786433
+    }
+   ],
+   "attack": {
+    "value": {
+     "skill_level": 274,
+     "skill_index": 788,
+     "aim_angle": -0.375,
+     "server_tick": 353769240,
+     "cast_id": 421141276,
+     "target_actor_id": 786585,
+     "context": {
+      "impact_tick": 202113025,
+      "hit_frame": 15,
+      "motion_unblock_frame": 23,
+      "skill_unblock_frame": 31,
+      "reserved": 41,
+      "position": [
+       12.5,
+       -13.25,
+       14.75,
+       1.0
+      ],
+      "predicted": true
+     },
+     "derived_flag": null
+    },
+    "actor_id": 786435
+   },
+   "encoder": "encode_monster_attack_batch"
+  },
+  "batch": [
+   "MoveCommand",
+   "TargetSkillCommand"
+  ]
+ },
+ {
+  "name": "BulletSkillCommand",
+  "id": 72,
+  "hex": "855f002efb290980f24182c30d0c0b0a341201000c00ff4800220124030000903f282726252c2b2a290000003f000080be0000003e0000803f2d04000c0001000c0c0f000000170000001f0000002900000000004841000054c100006c410000803fff80",
+  "bits": 793,
+  "envelope": "0x85",
+  "fields": {
+   "movements": [
+    {
+     "move": {
+      "quantized_x": -1234,
+      "quantized_y": 2345,
+      "quantized_z": -3456,
+      "scalar_byte": 65,
+      "yaw_byte": 130,
+      "pitch_byte": 195,
+      "start_tick": 168496141,
+      "duration_ticks": 4660
+     },
+     "actor_id": 786433
+    }
+   ],
+   "attack": {
+    "value": {
+     "skill_level": 290,
+     "skill_index": 804,
+     "aim_angle": 1.125,
+     "server_tick": 623257384,
+     "cast_id": 690629420,
+     "direction": [
+      0.5,
+      -0.25,
+      0.125,
+      1.0
+     ],
+     "variant": 45,
+     "derived_flag": null
+    },
+    "actor_id": 786436,
+    "context": {
+     "impact_tick": 202113025,
+     "hit_frame": 15,
+     "motion_unblock_frame": 23,
+     "skill_unblock_frame": 31,
+     "reserved": 41,
+     "position": [
+      12.5,
+      -13.25,
+      14.75,
+      1.0
+     ],
+     "predicted": true
+    }
+   },
+   "encoder": "encode_monster_attack_batch"
+  },
+  "batch": [
+   "MoveCommand",
+   "BulletSkillCommand"
+  ]
+ },
+ {
+  "name": "TargetPointBulletSkillCommand",
+  "id": 73,
+  "hex": "855f002efb290980f24182c30d0c0b0a341201000c00ff49003201340300001040383736353c3b3a390000403f0000003f000000bf0000803f3d0200002242000025420080284200002e42000032420000364205000c0001000c0c0f000000170000001f0000002900000000004841000054c100006c410000803fa30000007f80",
+  "bits": 1025,
+  "envelope": "0x85",
+  "fields": {
+   "movements": [
+    {
+     "move": {
+      "quantized_x": -1234,
+      "quantized_y": 2345,
+      "quantized_z": -3456,
+      "scalar_byte": 65,
+      "yaw_byte": 130,
+      "pitch_byte": 195,
+      "start_tick": 168496141,
+      "duration_ticks": 4660
+     },
+     "actor_id": 786433
+    }
+   ],
+   "attack": {
+    "value": {
+     "skill_level": 306,
+     "skill_index": 820,
+     "aim_angle": 2.25,
+     "server_tick": 892745528,
+     "cast_id": 960117564,
+     "direction": [
+      0.75,
+      0.5,
+      -0.5,
+      1.0
+     ],
+     "variant": 61,
+     "target_position": [
+      40.5,
+      41.25,
+      42.125
+     ],
+     "additional_target_positions": [
+      [
+       43.5,
+       44.5,
+       45.5
+      ]
+     ],
+     "derived_flag": null
+    },
+    "actor_id": 786437,
+    "context": {
+     "impact_tick": 202113025,
+     "hit_frame": 15,
+     "motion_unblock_frame": 23,
+     "skill_unblock_frame": 31,
+     "reserved": 41,
+     "position": [
+      12.5,
+      -13.25,
+      14.75,
+      1.0
+     ],
+     "predicted": true
+    },
+    "hit_range": 70
+   },
+   "encoder": "encode_monster_attack_batch"
+  },
+  "batch": [
+   "MoveCommand",
+   "TargetPointBulletSkillCommand"
+  ]
+ },
+ {
+  "name": "ShiftedSkillCommand",
+  "id": 74,
+  "hex": "855f002efb290980f24182c30d0c0b0a341201000c00ff4a00420144030000c0bf484746454c4b4a490200004a4200004d42008050420000564200005a4200005e4206000c0001000c0c0f000000170000001f0000002900000000004841000054c100006c410000803fab0000007f80",
+  "bits": 889,
+  "envelope": "0x85",
+  "fields": {
+   "movements": [
+    {
+     "move": {
+      "quantized_x": -1234,
+      "quantized_y": 2345,
+      "quantized_z": -3456,
+      "scalar_byte": 65,
+      "yaw_byte": 130,
+      "pitch_byte": 195,
+      "start_tick": 168496141,
+      "duration_ticks": 4660
+     },
+     "actor_id": 786433
+    }
+   ],
+   "attack": {
+    "value": {
+     "skill_level": 322,
+     "skill_index": 836,
+     "aim_angle": -1.5,
+     "server_tick": 1162233672,
+     "cast_id": 1229605708,
+     "variant": 77,
+     "target_position": [
+      50.5,
+      51.25,
+      52.125
+     ],
+     "additional_target_positions": [
+      [
+       53.5,
+       54.5,
+       55.5
+      ]
+     ],
+     "derived_flag": null
+    },
+    "actor_id": 786438,
+    "context": {
+     "impact_tick": 202113025,
+     "hit_frame": 15,
+     "motion_unblock_frame": 23,
+     "skill_unblock_frame": 31,
+     "reserved": 41,
+     "position": [
+      12.5,
+      -13.25,
+      14.75,
+      1.0
+     ],
+     "predicted": true
+    },
+    "pre_impact_delay": 86,
+    "note": "variant is not written by the server encoder; the u8 on the wire is the position count"
+   },
+   "encoder": "encode_monster_attack_batch"
+  },
+  "batch": [
+   "MoveCommand",
+   "ShiftedSkillCommand"
+  ]
+ },
+ {
+  "name": "TargetBulletSkillCommand",
+  "id": 75,
+  "hex": "855f002efb290980f24182c30d0c0b0a341201000c00ff4b00520154030000803e585756555c5b5a59000000bf0000803e0000403f0000803f5d77000c000278000c0079000c000200007242000075420080784200007e42000081420000834207000c0001000c0c0f000000170000001f0000002900000000004841000054c100006c410000803fff80",
+  "bits": 1097,
+  "envelope": "0x85",
+  "fields": {
+   "movements": [
+    {
+     "move": {
+      "quantized_x": -1234,
+      "quantized_y": 2345,
+      "quantized_z": -3456,
+      "scalar_byte": 65,
+      "yaw_byte": 130,
+      "pitch_byte": 195,
+      "start_tick": 168496141,
+      "duration_ticks": 4660
+     },
+     "actor_id": 786433
+    }
+   ],
+   "attack": {
+    "value": {
+     "skill_level": 338,
+     "skill_index": 852,
+     "aim_angle": 0.25,
+     "server_tick": 1431721816,
+     "cast_id": 1499093852,
+     "direction": [
+      -0.5,
+      0.25,
+      0.75,
+      1.0
+     ],
+     "variant": 93,
+     "target_actor_id": 786551,
+     "additional_target_actor_ids": [
+      786552,
+      786553
+     ],
+     "target_positions": [
+      [
+       60.5,
+       61.25,
+       62.125
+      ],
+      [
+       63.5,
+       64.5,
+       65.5
+      ]
+     ],
+     "derived_flag": null
+    },
+    "actor_id": 786439,
+    "context": {
+     "impact_tick": 202113025,
+     "hit_frame": 15,
+     "motion_unblock_frame": 23,
+     "skill_unblock_frame": 31,
+     "reserved": 41,
+     "position": [
+      12.5,
+      -13.25,
+      14.75,
+      1.0
+     ],
+     "predicted": true
+    }
+   },
+   "encoder": "encode_monster_attack_batch"
+  },
+  "batch": [
+   "MoveCommand",
+   "TargetBulletSkillCommand"
+  ]
+ },
+ {
+  "name": "TargetSkillCommand",
+  "id": 71,
+  "hex": "8b470062016403000020c0686766656c6b6a6988000c00",
+  "bits": 184,
+  "envelope": "0x8B",
+  "fields": {
+   "skill_level": 354,
+   "skill_index": 868,
+   "aim_angle": -2.5,
+   "server_tick": 1701209960,
+   "cast_id": 1768581996,
+   "target_actor_id": 786568,
+   "derived_flag": null,
+   "encoder": "BitWriter (decode_target_skill order)",
+   "built_by": "hand"
+  }
+ },
+ {
+  "name": "TargetBulletSkillCommand",
+  "id": 75,
+  "hex": "8b4b007201740300005040787776757c7b7a790000803e000040bf0000003f0000803f7d66000c000267000c0068000c000200008d4200808e4200409042000093420000954200009742",
+  "bits": 592,
+  "envelope": "0x8B",
+  "fields": {
+   "skill_level": 370,
+   "skill_index": 884,
+   "aim_angle": 3.25,
+   "server_tick": 1970698104,
+   "cast_id": 2038070140,
+   "direction": [
+    0.25,
+    -0.75,
+    0.5,
+    1.0
+   ],
+   "variant": 125,
+   "target_actor_id": 786534,
+   "additional_target_actor_ids": [
+    786535,
+    786536
+   ],
+   "target_positions": [
+    [
+     70.5,
+     71.25,
+     72.125
+    ],
+    [
+     73.5,
+     74.5,
+     75.5
+    ]
+   ],
+   "derived_flag": null,
+   "encoder": "BitWriter (decode_target_bullet_skill order)",
+   "built_by": "hand"
+  }
+ },
+ {
+  "name": "ActorStatsUpdateCommand",
+  "id": 123,
+  "hex": "857b00443322110100000000009b4201000d00ff",
+  "bits": 160,
+  "envelope": "0x85",
+  "fields": {
+   "value": {
+    "stat_id": 4582421316,
+    "value": 77.5
+   },
+   "actor_id": 851969,
+   "encoder": "encode_actor_stats_update_batch"
+  },
+  "batch": [
+   "ActorStatsUpdateCommand"
+  ]
+ },
+ {
+  "name": "ActorsEnterVicinityCommand",
+  "id": 116,
+  "hex": "8574000300000002000d0003000d0004000d0005000d00ff4f0000800000118082020202060606060a0a0a0a040404040c0c0c0c080808080e0e0e0e101010105010006807fbd80221991088080000000004da1018006807f8",
+  "bits": 709,
+  "envelope": "0x85",
+  "fields": {
+   "value": {
+    "actor_ids": [
+     851970,
+     851971,
+     851972
+    ]
+   },
+   "actor_id": 851973,
+   "commands": [
+    {
+     "status_effect": {
+      "clear_existing": false,
+      "entries": [
+       {
+        "effect_id": 291,
+        "field_04": 67372036,
+        "field_0c": 202116108,
+        "field_14": 336860180,
+        "field_08": 134744072,
+        "field_18": 404232216,
+        "field_10": 269488144,
+        "field_1c": 471604252,
+        "field_20": 538976288,
+        "field_25": true,
+        "field_26": false,
+        "field_39": true,
+        "has_details": false,
+        "values": [],
+        "field_38": false,
+        "field_3c": 255,
+        "shape_values": []
+       }
+      ]
+     },
+     "actor_id": 851970
+    },
+    {
+     "actor_stats": {
+      "stat_id": 4582421316,
+      "value": 77.5
+     },
+     "actor_id": 851971
+    }
+   ],
+   "encoder": "encode_actors_enter_vicinity_batch"
+  },
+  "batch": [
+   "ActorsEnterVicinityCommand",
+   "StatusEffectCommand",
+   "ActorStatsUpdateCommand"
+  ]
+ },
+ {
+  "name": "NewPlayerCommand",
+  "id": 29,
+  "hex": "841d00b4a0a0a0a0040000b0080000b00c0000b0100000b0140000b0180000b01c0000b0200000b004000130080001300c0001301000013014000130180001301c00013020000132700000c94200404843001096c39090909008004865726f4e616d65010203040506e0e000000a004669656c644538537472f0f0f0f001000000f8f8f8f8fc111101002222020033804000044080000440c0000441000004414000044180000441c00004420000044080000000400004c0800004c080000001c01cdd1c8c4d4c1841c01cdd1c8c4d4c1880400005c0800005c0c00005c1000005c1400005c1800005c1c00005c646464640800000004020064080200640c020064686868680c000000080000002001c185a5c8c588c18404000000100000002001c185a5c8c588c1880800000014000000040000740800007404020074080200740c0200741002007414020074180200741c020074200200747fe2047c18014dd1c8c8c0c0040200800802008004000170080001700c0001701000017014000170180001701c0001702000017024000170280001702c0001703000017034000170380001703c0001704000017044000170480001704c000170500001705400017058000170080000001001c9958d0414019195cd8d04040001a8080001a80c0001a8100001a8140001a8180001a81c0001a81001c9958d0814019195cd8d08040001ac080001ac0c0001ac100001ac140001ac180001ac1c0001ac040001fc080001fc0c0001fc100001fc040001e8080001e80c0001e8100001e8140001e8180001e81c0001e8200001e8240001e8280001e82c0001e8300001e8340001e8380001e8080000000400022c0800022e0c040002300800023212200c0000040300e0080300e00c0300e0100300e0140300e0180300e01c0300e0200300e2b018014dd1c8cd88c0040200ec080200ec0c0200ec100200ec140200ec180200ec1c0200ec200200ec040038000",
+  "bits": 5714,
+  "envelope": "0x84",
+  "fields": {
+   "value": {
+    "flags_20": [
+     true,
+     false,
+     true,
+     true,
+     false,
+     true
+    ],
+    "field_28": 673720360,
+    "value_block_2c": [
+     738197505,
+     738197506,
+     738197507,
+     738197508,
+     738197509,
+     738197510,
+     738197511,
+     738197512
+    ],
+    "value_block_4c": [
+     1275068417,
+     1275068418,
+     1275068419,
+     1275068420,
+     1275068421,
+     1275068422,
+     1275068423,
+     1275068424
+    ],
+    "field_6c": true,
+    "field_6d": false,
+    "field_70": 112,
+    "position": [
+     100.5,
+     200.25,
+     -300.125
+    ],
+    "field_90": 2425393296,
+    "name": "HeroName",
+    "appearance": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6
+    ],
+    "template_row": 57568,
+    "field_e8": "FieldE8Str",
+    "field_f0": 8337289456,
+    "field_f8": 4177066232,
+    "field_fc": 252,
+    "field_100": {
+     "field_00": 69905,
+     "actor_id": 139810,
+     "field_08": 51,
+     "field_0c": true,
+     "field_0d": false
+    },
+    "fields_110": [
+     285212673,
+     285212674,
+     285212675,
+     285212676,
+     285212677,
+     285212678,
+     285212679,
+     285212680
+    ],
+    "field_130": [
+     318767105,
+     318767106
+    ],
+    "field_150": [
+     "str150a",
+     "str150b"
+    ],
+    "fields_170": [
+     385875969,
+     385875970,
+     385875971,
+     385875972,
+     385875973,
+     385875974,
+     385875975
+    ],
+    "field_190": 9011009817,
+    "fields_198": [
+     427819009,
+     427819010,
+     427819011
+    ],
+    "field_1a8": 13322820122,
+    "field_1b0": [
+     [
+      "pair1b0a",
+      17179869185
+     ],
+     [
+      "pair1b0b",
+      21474836482
+     ]
+    ],
+    "fields_1d0": [
+     486539265,
+     486539266
+    ],
+    "fields_1d8": [
+     494927873,
+     494927874,
+     494927875,
+     494927876,
+     494927877,
+     494927878,
+     494927879,
+     494927880
+    ],
+    "field_1f8": 528611359,
+    "field_200": "Str200",
+    "fields_208": [
+     545259521,
+     545259522
+    ],
+    "player_state_scalars": [
+     1543503873,
+     1543503874,
+     1543503875,
+     1543503876,
+     1543503877,
+     1543503878,
+     1543503879,
+     1543503880,
+     1543503881,
+     1543503882,
+     1543503883,
+     1543503884,
+     1543503885,
+     1543503886,
+     1543503887,
+     1543503888,
+     1543503889,
+     1543503890,
+     1543503891,
+     1543503892,
+     1543503893,
+     1543503894
+    ],
+    "player_state_records": [
+     {
+      "name": "recA",
+      "description": "descA",
+      "values": [
+       1778384897,
+       1778384898,
+       1778384899,
+       1778384900,
+       1778384901,
+       1778384902,
+       1778384903
+      ]
+     },
+     {
+      "name": "recB",
+      "description": "descB",
+      "values": [
+       1795162113,
+       1795162114,
+       1795162115,
+       1795162116,
+       1795162117,
+       1795162118,
+       1795162119
+      ]
+     }
+    ],
+    "player_state_fixed": [
+     2130706433,
+     2130706434,
+     2130706435,
+     2130706436
+    ],
+    "player_state_tables": [
+     2046820353,
+     2046820354,
+     2046820355,
+     2046820356,
+     2046820357,
+     2046820358,
+     2046820359,
+     2046820360,
+     2046820361,
+     2046820362,
+     2046820363,
+     2046820364,
+     2046820365,
+     2046820366
+    ],
+    "bulk_records": [
+     {
+      "field_00": 2332033025,
+      "field_04": 2332033026,
+      "field_08": 131
+     },
+     {
+      "field_00": 2348810241,
+      "field_04": 2348810242,
+      "field_08": 132
+     }
+    ],
+    "field_388": 904,
+    "fields_38c": [
+     952107009,
+     952107010,
+     952107011,
+     952107012,
+     952107013,
+     952107014,
+     952107015,
+     952107016
+    ],
+    "field_3ac": 172,
+    "field_3b0": "Str3b0",
+    "fields_3b8": [
+     998244353,
+     998244354,
+     998244355,
+     998244356,
+     998244357,
+     998244358,
+     998244359,
+     998244360
+    ],
+    "actor_id": 917505
+   },
+   "message_id": 132,
+   "encoder": "encode_new_player_wire"
+  }
+ },
+ {
+  "name": "NewPlayerCommand",
+  "id": 29,
+  "hex": "851d00b4a0a0a0a0040000b0080000b00c0000b0100000b0140000b0180000b01c0000b0200000b004000130080001300c0001301000013014000130180001301c00013020000132700000c94200404843001096c39090909008004865726f4e616d65010203040506e0e000000a004669656c644538537472f0f0f0f001000000f8f8f8f8fc111101002222020033804000044080000440c0000441000004414000044180000441c00004420000044080000000400004c0800004c080000001c01cdd1c8c4d4c1841c01cdd1c8c4d4c1880400005c0800005c0c00005c1000005c1400005c1800005c1c00005c646464640800000004020064080200640c020064686868680c000000080000002001c185a5c8c588c18404000000100000002001c185a5c8c588c1880800000014000000040000740800007404020074080200740c0200741002007414020074180200741c020074200200747fe2047c18014dd1c8c8c0c0040200800802008004000170080001700c0001701000017014000170180001701c0001702000017024000170280001702c0001703000017034000170380001703c0001704000017044000170480001704c000170500001705400017058000170080000001001c9958d0414019195cd8d04040001a8080001a80c0001a8100001a8140001a8180001a81c0001a81001c9958d0814019195cd8d08040001ac080001ac0c0001ac100001ac140001ac180001ac1c0001ac040001fc080001fc0c0001fc100001fc040001e8080001e80c0001e8100001e8140001e8180001e81c0001e8200001e8240001e8280001e82c0001e8300001e8340001e8380001e8080000000400022c0800022e0c040002300800023212200c0000040300e0080300e00c0300e0100300e0140300e0180300e01c0300e0200300e2b018014dd1c8cd88c0040200ec080200ec0c0200ec100200ec140200ec180200ec1c0200ec200200ec04003803fc0",
+  "bits": 5722,
+  "envelope": "0x85",
+  "fields": {
+   "value": {
+    "flags_20": [
+     true,
+     false,
+     true,
+     true,
+     false,
+     true
+    ],
+    "field_28": 673720360,
+    "value_block_2c": [
+     738197505,
+     738197506,
+     738197507,
+     738197508,
+     738197509,
+     738197510,
+     738197511,
+     738197512
+    ],
+    "value_block_4c": [
+     1275068417,
+     1275068418,
+     1275068419,
+     1275068420,
+     1275068421,
+     1275068422,
+     1275068423,
+     1275068424
+    ],
+    "field_6c": true,
+    "field_6d": false,
+    "field_70": 112,
+    "position": [
+     100.5,
+     200.25,
+     -300.125
+    ],
+    "field_90": 2425393296,
+    "name": "HeroName",
+    "appearance": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6
+    ],
+    "template_row": 57568,
+    "field_e8": "FieldE8Str",
+    "field_f0": 8337289456,
+    "field_f8": 4177066232,
+    "field_fc": 252,
+    "field_100": {
+     "field_00": 69905,
+     "actor_id": 139810,
+     "field_08": 51,
+     "field_0c": true,
+     "field_0d": false
+    },
+    "fields_110": [
+     285212673,
+     285212674,
+     285212675,
+     285212676,
+     285212677,
+     285212678,
+     285212679,
+     285212680
+    ],
+    "field_130": [
+     318767105,
+     318767106
+    ],
+    "field_150": [
+     "str150a",
+     "str150b"
+    ],
+    "fields_170": [
+     385875969,
+     385875970,
+     385875971,
+     385875972,
+     385875973,
+     385875974,
+     385875975
+    ],
+    "field_190": 9011009817,
+    "fields_198": [
+     427819009,
+     427819010,
+     427819011
+    ],
+    "field_1a8": 13322820122,
+    "field_1b0": [
+     [
+      "pair1b0a",
+      17179869185
+     ],
+     [
+      "pair1b0b",
+      21474836482
+     ]
+    ],
+    "fields_1d0": [
+     486539265,
+     486539266
+    ],
+    "fields_1d8": [
+     494927873,
+     494927874,
+     494927875,
+     494927876,
+     494927877,
+     494927878,
+     494927879,
+     494927880
+    ],
+    "field_1f8": 528611359,
+    "field_200": "Str200",
+    "fields_208": [
+     545259521,
+     545259522
+    ],
+    "player_state_scalars": [
+     1543503873,
+     1543503874,
+     1543503875,
+     1543503876,
+     1543503877,
+     1543503878,
+     1543503879,
+     1543503880,
+     1543503881,
+     1543503882,
+     1543503883,
+     1543503884,
+     1543503885,
+     1543503886,
+     1543503887,
+     1543503888,
+     1543503889,
+     1543503890,
+     1543503891,
+     1543503892,
+     1543503893,
+     1543503894
+    ],
+    "player_state_records": [
+     {
+      "name": "recA",
+      "description": "descA",
+      "values": [
+       1778384897,
+       1778384898,
+       1778384899,
+       1778384900,
+       1778384901,
+       1778384902,
+       1778384903
+      ]
+     },
+     {
+      "name": "recB",
+      "description": "descB",
+      "values": [
+       1795162113,
+       1795162114,
+       1795162115,
+       1795162116,
+       1795162117,
+       1795162118,
+       1795162119
+      ]
+     }
+    ],
+    "player_state_fixed": [
+     2130706433,
+     2130706434,
+     2130706435,
+     2130706436
+    ],
+    "player_state_tables": [
+     2046820353,
+     2046820354,
+     2046820355,
+     2046820356,
+     2046820357,
+     2046820358,
+     2046820359,
+     2046820360,
+     2046820361,
+     2046820362,
+     2046820363,
+     2046820364,
+     2046820365,
+     2046820366
+    ],
+    "bulk_records": [
+     {
+      "field_00": 2332033025,
+      "field_04": 2332033026,
+      "field_08": 131
+     },
+     {
+      "field_00": 2348810241,
+      "field_04": 2348810242,
+      "field_08": 132
+     }
+    ],
+    "field_388": 904,
+    "fields_38c": [
+     952107009,
+     952107010,
+     952107011,
+     952107012,
+     952107013,
+     952107014,
+     952107015,
+     952107016
+    ],
+    "field_3ac": 172,
+    "field_3b0": "Str3b0",
+    "fields_3b8": [
+     998244353,
+     998244354,
+     998244355,
+     998244356,
+     998244357,
+     998244358,
+     998244359,
+     998244360
+    ],
+    "actor_id": 917505
+   },
+   "include_terminator": true,
+   "encoder": "encode_player_init_prefix"
+  },
+  "batch": [
+   "NewPlayerCommand"
+  ]
+ },
+ {
+  "name": "NewRemotePlayerCommand",
+  "id": 33,
+  "hex": "852100c8000000040001e1040002090400022504000300fc28014995b5bdd1952195c9bc18011dd5a5b1916008040c10141bc3c000000800000004080000001401cdada5b9041401cdada5b90a0001007c0000007e0000807e0001007e08020000000a00e6d6d2dc86020000000800737461747573503108007374617475735032bc0a000001000000ef0d0000020000002a0000002a0000000553000f0001010f0000000000000a8000003ffffffff36ac0000042c01858da17dd1a5d1b1957cc42801c1d9c1d1a5d1b194c0cc04043c03fc0",
+  "bits": 1682,
+  "envelope": "0x85",
+  "fields": {
+   "value": {
+    "actor_id": 983297,
+    "name": "RemoteHero",
+    "guild_name": "GuildX",
+    "class_id": 2,
+    "gender": 1,
+    "hair_style": 3,
+    "beard_style": 4,
+    "body_style": 5,
+    "body_stature": 6,
+    "template_row": 61680,
+    "position": [
+     15.5,
+     16.25,
+     17.125
+    ],
+    "heading": 1.5,
+    "character_id": 4294970044,
+    "account_id": 8589938159,
+    "level": 42,
+    "admin_privileges": true,
+    "admin_name_color": false,
+    "equipment": [
+     {
+      "slot": 1,
+      "skins": [
+       "skinA",
+       "skinB"
+      ],
+      "color": [
+       0.25,
+       0.5,
+       0.75,
+       1.0
+      ]
+     },
+     {
+      "slot": 4,
+      "skins": [
+       "skinC"
+      ],
+      "color": null
+     }
+    ],
+    "permanent_statuses": [
+     "statusP1",
+     "statusP2"
+    ],
+    "animation_set": "animset_x",
+    "additional_sequences": [
+     "seq1",
+     "seq2"
+    ],
+    "fighting_power": 43981,
+    "title_type": 1,
+    "achievement_title": "ach_title_1",
+    "pvp_rank_title": "pvptitle03"
+   },
+   "faction_id": 983123,
+   "encoder": "encode_new_remote_player"
+  },
+  "batch": [
+   "NewRemotePlayerCommand"
+  ]
+ },
+ {
+  "name": "RemotePlayerInfoCommand",
+  "id": 34,
+  "hex": "85220006004775696c64580200000001020000000500736b696e410500736b696e428000401f0000001f8000201f8000401f8200800000028039b5b4b7218240185b9a5b5cd95d17de0080000001001cd95c4c41001cd95c4c800000000a8000000154c003c0004043c00002a000000ffffffff010b006163685f7469746c655f310a007076707469746c65303301010f00ff0",
+  "bits": 1172,
+  "envelope": "0x85",
+  "fields": {
+   "value": {
+    "actor_id": 983297,
+    "name": "RemoteHero",
+    "guild_name": "GuildX",
+    "class_id": 2,
+    "gender": 1,
+    "hair_style": 3,
+    "beard_style": 4,
+    "body_style": 5,
+    "body_stature": 6,
+    "template_row": 61680,
+    "position": [
+     15.5,
+     16.25,
+     17.125
+    ],
+    "heading": 1.5,
+    "character_id": 4294970044,
+    "account_id": 8589938159,
+    "level": 42,
+    "admin_privileges": true,
+    "admin_name_color": false,
+    "equipment": [
+     {
+      "slot": 1,
+      "skins": [
+       "skinA",
+       "skinB"
+      ],
+      "color": [
+       0.25,
+       0.5,
+       0.75,
+       1.0
+      ]
+     },
+     {
+      "slot": 4,
+      "skins": [
+       "skinC"
+      ],
+      "color": null
+     }
+    ],
+    "permanent_statuses": [
+     "statusP1",
+     "statusP2"
+    ],
+    "animation_set": "animset_x",
+    "additional_sequences": [
+     "seq1",
+     "seq2"
+    ],
+    "fighting_power": 43981,
+    "title_type": 1,
+    "achievement_title": "ach_title_1",
+    "pvp_rank_title": "pvptitle03"
+   },
+   "faction_id": 983123,
+   "encoder": "encode_remote_player_info"
+  },
+  "batch": [
+   "RemotePlayerInfoCommand"
+  ]
+ },
+ {
+  "name": "DiscardPlayerCommand",
+  "id": 30,
+  "hex": "851e0001010f00ff",
+  "bits": 64,
+  "envelope": "0x85",
+  "fields": {
+   "actor_id": 983297,
+   "encoder": "encode_discard_player"
+  },
+  "batch": [
+   "DiscardPlayerCommand"
+  ]
+ },
+ {
+  "name": "XPChangedCommand",
+  "id": 125,
+  "hex": "857d0045230100210000000000010000000200808000007f80",
+  "bits": 193,
+  "envelope": "0x85",
+  "fields": {
+   "value": {
+    "xp": 74565,
+    "level": 33,
+    "level_base_xp": 65536,
+    "next_level_base_xp": 131072,
+    "level_up": true
+   },
+   "actor_id": 1,
+   "encoder": "encode_server_command_batch"
+  },
+  "batch": [
+   "XPChangedCommand"
+  ]
+ },
+ {
+  "name": "PlayerLevelUpdateCommand",
+  "id": 124,
+  "hex": "857c0022000000242424242828282801000000303030303434343401000000ff",
+  "bits": 256,
+  "envelope": "0x85",
+  "fields": {
+   "value": {
+    "level": 34,
+    "field_24": 606348324,
+    "field_28": 4968687656,
+    "field_30": 808464432,
+    "field_34": 875836468
+   },
+   "actor_id": 1,
+   "encoder": "encode_server_command_batch"
+  },
+  "batch": [
+   "PlayerLevelUpdateCommand"
+  ]
+ },
+ {
+  "name": "CurrencyChangedCommand",
+  "id": 128,
+  "hex": "8580001101000022020000010000003303000044040000550500006606000002000000808000007f80",
+  "bits": 321,
+  "envelope": "0x85",
+  "fields": {
+   "value": {
+    "currency_type": 273,
+    "amount": 4294967842,
+    "values": [
+     819,
+     1092,
+     1365
+    ],
+    "delta": 8589936230,
+    "notify": true,
+    "wallet_base": null
+   },
+   "actor_id": 1,
+   "encoder": "encode_server_command_batch"
+  },
+  "batch": [
+   "CurrencyChangedCommand"
+  ]
+ },
+ {
+  "name": "InventoryInfoCommand",
+  "id": 84,
+  "hex": "855400020000000100a000040000000e0000000802111218180000302010ff1c00000007006479655f726564870000000b0000003400000083c01a5d195b57dd195b5c1b185d1957cc41401cdd1c8e0e0000300fc00008100000181001401cdd1c8e0c01c0000002801d1c985b9cdb5bd9d7cc6040001407e02101c0000181c00000c00cadcc6d0bec20000418004101e0000181e00000c00cadcc6d0bec4040a00cecadabec20a00cecadabec5d40e0000020000000400000006000000080000000a0000000401400088000000020000011002424450500000c0a08100580000001000c8f2cabec4d8eacaa00000003600000088000000878034ba32b6afba32b6b83630ba32af990200399c1c310000482000005820000068200200399c1831018000000000004000071040c2040000030400000180195b98da17d8c0414019d95b57d8fa41c0000300000007c0000005c000000ec000000e8000000080000000402800008000000040808028000040000001c040000000802800014000000040000000402800018000000040000000402c0001c000000040000000802c00020000000040000000402003c08000000040200440802004404000000040280000400000004020054080200540400000004000060080000001401ccc584c1841401ccc584c18878000000d400000380000000380400002c00000030000000014269100202190a02000001fe",
+  "bits": 4183,
+  "envelope": "0x85",
+  "fields": {
+   "value": {
+    "items": [
+     {
+      "item_id": 10485761,
+      "field_04": 4,
+      "amount": 14,
+      "field_08": 8,
+      "socket_count": 2,
+      "field_11": 17,
+      "field_12": 18,
+      "field_18": 6168,
+      "field_20": 4279246896,
+      "field_1c": 28,
+      "field_28": "dye_red",
+      "item_level": 135,
+      "field_30": 11,
+      "field_34": 52,
+      "field_3c": true,
+      "field_3d": false,
+      "template_id": "item_template_1",
+      "field_88": "str88",
+      "field_100": [
+       1.5,
+       2.5,
+       3.5
+      ],
+      "field_80": "str80",
+      "field_38": 7,
+      "field_f8": "transmog_1",
+      "field_3e": true,
+      "enchantments": [
+       {
+        "value": 1.25,
+        "kind": 1,
+        "field_08": 3592,
+        "field_0c": 3596,
+        "template_id": "ench_a"
+       },
+       {
+        "value": -2.5,
+        "kind": 2,
+        "field_08": 3848,
+        "field_0c": 3852,
+        "template_id": "ench_b"
+       }
+      ],
+      "socketed_templates": [
+       "gem_a",
+       "gem_b"
+      ],
+      "created_at": [
+       2026,
+       1,
+       2,
+       3,
+       4,
+       5
+      ],
+      "quest_id": ""
+     },
+     {
+      "item_id": 10485762,
+      "field_04": 68,
+      "amount": 1,
+      "field_08": 136,
+      "socket_count": 1,
+      "field_11": 33,
+      "field_12": 34,
+      "field_18": 10280,
+      "field_20": 2151698528,
+      "field_1c": 44,
+      "field_28": "dye_blue",
+      "item_level": 80,
+      "field_30": 27,
+      "field_34": 68,
+      "field_3c": false,
+      "field_3d": true,
+      "template_id": "item_template_2",
+      "field_88": "s88b",
+      "field_100": [
+       4.5,
+       5.5,
+       6.5
+      ],
+      "field_80": "s80b",
+      "field_38": 3,
+      "field_f8": "",
+      "field_3e": false,
+      "enchantments": [
+       {
+        "value": 9.75,
+        "kind": 3,
+        "field_08": 4104,
+        "field_0c": 4108,
+        "template_id": "ench_c"
+       }
+      ],
+      "socketed_templates": [
+       "gem_c"
+      ],
+      "created_at": [
+       2025,
+       12,
+       31,
+       23,
+       59,
+       58
+      ],
+      "quest_id": ""
+     }
+    ],
+    "equipment_slots": {
+     "10485761": [
+      1,
+      2
+     ],
+     "10485762": [
+      7
+     ]
+    },
+    "storage_58": {
+     "10485762": 5
+    },
+    "storage_80": {
+     "10485761": 6
+    },
+    "storage_a8": {
+     "11534337": 7
+    },
+    "storage_d0": {
+     "11534338": 8
+    },
+    "field_f8": [
+     260046849
+    ],
+    "field_118": [
+     293601281,
+     293601282
+    ],
+    "changed_item_ids": [
+     10485761
+    ],
+    "field_158": {
+     "360710145": 360710146
+    },
+    "field_180": [
+     402653185
+    ],
+    "field_1a0": [
+     "s1a0a",
+     "s1a0b"
+    ],
+    "storage_upgrade": 30,
+    "bank_storage_upgrade": 53,
+    "storage_size": 224,
+    "bank_storage_size": 270,
+    "extra_bank_storage_size": 11,
+    "extra_storage_size": 12,
+    "health_points": 1234.5,
+    "secondary_resource": 67.25,
+    "field_1e0": true,
+    "actor_id": 1,
+    "premium_inventory_overflow": [],
+    "premium_storage_overflow": []
+   },
+   "actor_id": 1,
+   "encoder": "encode_server_command_batch"
+  },
+  "batch": [
+   "InventoryInfoCommand"
+  ]
+ },
+ {
+  "name": "InventoryInfoCommand",
+  "id": 84,
+  "hex": "845400020000000100a000040000000e0000000802111218180000302010ff1c00000007006479655f726564870000000b0000003400000083c01a5d195b57dd195b5c1b185d1957cc41401cdd1c8e0e0000300fc00008100000181001401cdd1c8e0c01c0000002801d1c985b9cdb5bd9d7cc6040001407e02101c0000181c00000c00cadcc6d0bec20000418004101e0000181e00000c00cadcc6d0bec4040a00cecadabec20a00cecadabec5d40e0000020000000400000006000000080000000a0000000401400088000000020000011002424450500000c0a08100580000001000c8f2cabec4d8eacaa00000003600000088000000878034ba32b6afba32b6b83630ba32af990200399c1c310000482000005820000068200200399c1831018000000000004000071040c2040000030400000180195b98da17d8c0414019d95b57d8fa41c0000300000007c0000005c000000ec000000e8000000080000000402800008000000040808028000040000001c040000000802800014000000040000000402800018000000040000000402c0001c000000040000000802c00020000000040000000402003c08000000040200440802004404000000040280000400000004020054080200540400000004000060080000001401ccc584c1841401ccc584c18878000000d400000380000000380400002c00000030000000014269100202190a02000000",
+  "bits": 4175,
+  "envelope": "0x84",
+  "fields": {
+   "value": {
+    "items": [
+     {
+      "item_id": 10485761,
+      "field_04": 4,
+      "amount": 14,
+      "field_08": 8,
+      "socket_count": 2,
+      "field_11": 17,
+      "field_12": 18,
+      "field_18": 6168,
+      "field_20": 4279246896,
+      "field_1c": 28,
+      "field_28": "dye_red",
+      "item_level": 135,
+      "field_30": 11,
+      "field_34": 52,
+      "field_3c": true,
+      "field_3d": false,
+      "template_id": "item_template_1",
+      "field_88": "str88",
+      "field_100": [
+       1.5,
+       2.5,
+       3.5
+      ],
+      "field_80": "str80",
+      "field_38": 7,
+      "field_f8": "transmog_1",
+      "field_3e": true,
+      "enchantments": [
+       {
+        "value": 1.25,
+        "kind": 1,
+        "field_08": 3592,
+        "field_0c": 3596,
+        "template_id": "ench_a"
+       },
+       {
+        "value": -2.5,
+        "kind": 2,
+        "field_08": 3848,
+        "field_0c": 3852,
+        "template_id": "ench_b"
+       }
+      ],
+      "socketed_templates": [
+       "gem_a",
+       "gem_b"
+      ],
+      "created_at": [
+       2026,
+       1,
+       2,
+       3,
+       4,
+       5
+      ],
+      "quest_id": ""
+     },
+     {
+      "item_id": 10485762,
+      "field_04": 68,
+      "amount": 1,
+      "field_08": 136,
+      "socket_count": 1,
+      "field_11": 33,
+      "field_12": 34,
+      "field_18": 10280,
+      "field_20": 2151698528,
+      "field_1c": 44,
+      "field_28": "dye_blue",
+      "item_level": 80,
+      "field_30": 27,
+      "field_34": 68,
+      "field_3c": false,
+      "field_3d": true,
+      "template_id": "item_template_2",
+      "field_88": "s88b",
+      "field_100": [
+       4.5,
+       5.5,
+       6.5
+      ],
+      "field_80": "s80b",
+      "field_38": 3,
+      "field_f8": "",
+      "field_3e": false,
+      "enchantments": [
+       {
+        "value": 9.75,
+        "kind": 3,
+        "field_08": 4104,
+        "field_0c": 4108,
+        "template_id": "ench_c"
+       }
+      ],
+      "socketed_templates": [
+       "gem_c"
+      ],
+      "created_at": [
+       2025,
+       12,
+       31,
+       23,
+       59,
+       58
+      ],
+      "quest_id": ""
+     }
+    ],
+    "equipment_slots": {
+     "10485761": [
+      1,
+      2
+     ],
+     "10485762": [
+      7
+     ]
+    },
+    "storage_58": {
+     "10485762": 5
+    },
+    "storage_80": {
+     "10485761": 6
+    },
+    "storage_a8": {
+     "11534337": 7
+    },
+    "storage_d0": {
+     "11534338": 8
+    },
+    "field_f8": [
+     260046849
+    ],
+    "field_118": [
+     293601281,
+     293601282
+    ],
+    "changed_item_ids": [
+     10485761
+    ],
+    "field_158": {
+     "360710145": 360710146
+    },
+    "field_180": [
+     402653185
+    ],
+    "field_1a0": [
+     "s1a0a",
+     "s1a0b"
+    ],
+    "storage_upgrade": 30,
+    "bank_storage_upgrade": 53,
+    "storage_size": 224,
+    "bank_storage_size": 270,
+    "extra_bank_storage_size": 11,
+    "extra_storage_size": 12,
+    "health_points": 1234.5,
+    "secondary_resource": 67.25,
+    "field_1e0": true,
+    "actor_id": 1,
+    "premium_inventory_overflow": [],
+    "premium_storage_overflow": []
+   },
+   "encoder": "encode_inventory_info"
+  }
+ },
+ {
+  "name": "QuickSlotsInfoCommand",
+  "id": 80,
+  "hex": "8550000200000003000000010000000b00616e677279737472696b65ffffffff020000000800706f74696f6e5f7801000000030000000b006d69676874797377696e6701000000ff",
+  "bits": 576,
+  "envelope": "0x85",
+  "fields": {
+   "value": {
+    "quickbars": [
+     [
+      {
+       "kind": 1,
+       "resource_id": "angrystrike"
+      },
+      {
+       "kind": 4294967295,
+       "resource_id": null
+      },
+      {
+       "kind": 2,
+       "resource_id": "potion_x"
+      }
+     ],
+     [
+      {
+       "kind": 3,
+       "resource_id": "mightyswing"
+      }
+     ]
+    ]
+   },
+   "actor_id": 1,
+   "encoder": "encode_server_command_batch"
+  },
+  "batch": [
+   "QuickSlotsInfoCommand"
+  ]
+ },
+ {
+  "name": "CharacterSelectionCommand",
+  "id": 135,
+  "hex": "84870001020200ee0bb0b0000005000000e86800000100222281000000028020b6383430848036b0b82fb0b638343080000000008000000889098a00807705850505050787800044b3a2918080000066d580000a8000000000001f8000601f8000102000003020000048200000582000006820000078200000042080000c208000142080001c208000242080002c208000342080003c20c0a0084e4c2ecde1200dac2e0bec4e4c2ecde0400000000000000424446480401dc16161616163e3e000134f0ac6804000001bd7800004a0000000001017c0001417e000021800000a1800001118000015180000191800001d18000000982000029820000498200006982000089820000a9820000c9820000e98281000000048032b8afb4ba32b6af98840032b8afb0b8382f98838032b8afb33c2f988000401f0000001f8000201f8000401fc240195c57da5d195b57cc8200195c57d85c1c17cc81c0195c57d99e17cc8000300fc000081000001810000024100",
+  "bits": 2959,
+  "envelope": "0x84",
+  "fields": {
+   "value": {
+    "operation": 1,
+    "deny_reason": 2,
+    "active_character_id": 200146946,
+    "header_field_b": 45232,
+    "character_slots": 5,
+    "header_flag": true,
+    "header_field_d": 53456,
+    "locale": "DE",
+    "characters": [
+     {
+      "name": "Alpha",
+      "map_id": "map_alpha",
+      "class_id": 0,
+      "gender": 1,
+      "hair_style": 17,
+      "beard_style": 18,
+      "body_style": 19,
+      "body_stature": 20,
+      "character_id": 200146945,
+      "unknown_u32_a": 168430090,
+      "premium_currency": 3855,
+      "progression_u64": 4886718345,
+      "progression_u32": 43981,
+      "level": 21,
+      "transform": [
+       0.5,
+       1.5,
+       2.5,
+       3.5,
+       4.5,
+       5.5,
+       6.5,
+       7.5,
+       8.5,
+       9.5,
+       10.5,
+       11.5,
+       12.5,
+       13.5,
+       14.5,
+       15.5
+      ],
+      "flag_a": true,
+      "flag_b": false,
+      "admin_privileges": false,
+      "admin_name_color": false,
+      "quickbar_skill_slots": null
+     },
+     {
+      "name": "Bravo",
+      "map_id": "map_bravo",
+      "class_id": 2,
+      "gender": 0,
+      "hair_style": 33,
+      "beard_style": 34,
+      "body_style": 35,
+      "body_stature": 36,
+      "character_id": 200146946,
+      "unknown_u32_a": 185273099,
+      "premium_currency": 7967,
+      "progression_u64": 9468016794,
+      "progression_u32": 48350,
+      "level": 37,
+      "transform": [
+       -0.25,
+       -1.25,
+       -2.25,
+       -3.25,
+       -4.25,
+       -5.25,
+       -6.25,
+       -7.25,
+       -8.25,
+       -9.25,
+       -10.25,
+       -11.25,
+       -12.25,
+       -13.25,
+       -14.25,
+       -15.25
+      ],
+      "flag_a": false,
+      "flag_b": true,
+      "admin_privileges": false,
+      "admin_name_color": false,
+      "quickbar_skill_slots": null
+     }
+    ],
+    "equipment": [
+     {
+      "item_id": "eq_item_1",
+      "appearance_id": "eq_app_1",
+      "effect_id": "eq_fx_1",
+      "tint": [
+       0.25,
+       0.5,
+       0.75,
+       1.0
+      ],
+      "enabled": true
+     },
+     {
+      "item_id": "eq_item_2",
+      "appearance_id": "eq_app_2",
+      "effect_id": "eq_fx_2",
+      "tint": [
+       1.5,
+       2.5,
+       3.5,
+       4.5
+      ],
+      "enabled": false
+     }
+    ]
+   },
+   "wire": "current",
+   "encoder": "encode_character_selection"
+  }
+ },
+ {
+  "name": "SwitchMapCommand",
+  "id": 112,
+  "hex": "8470000e003132372e302e302e313a3231393080",
+  "bits": 153,
+  "envelope": "0x84",
+  "fields": {
+   "value": {
+    "server_address": "127.0.0.1:2190",
+    "enter_character_selection": true
+   },
+   "encoder": "SwitchMapPacket.encode"
+  }
+ },
+ {
+  "name": "SwitchMapCommand",
+  "id": 112,
+  "hex": "8570000d0031302e302e302e323a32313930ff80",
+  "bits": 153,
+  "envelope": "0x85",
+  "fields": {
+   "value": {
+    "server_address": "10.0.0.2:2190",
+    "enter_character_selection": true
+   },
+   "encoder": "GameplaySwitchMapPacket.encode"
+  },
+  "batch": [
+   "SwitchMapCommand"
+  ]
+ }
+]

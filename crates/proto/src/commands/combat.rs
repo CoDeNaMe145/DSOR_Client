@@ -90,18 +90,21 @@ impl Body for SkillBase {
 }
 
 /// The server-only part of a skill command's slot 9, after the actor.
-/// EVIDENCE: shared actor slot 0x9F9178 (dsor/combat.py encode_target_skill,
-///   encode_bullet_skill; dsor/world.py relay). GameSkill::Setup (0x8EB7BE) ends the
-///   skill at start + unblock_frame (+104) and start + motion_unblock_frame (+108).
+/// SOURCE (release261): dso-server-production protocol/combat_protocol.py:510-520
+///   (_write_skill_context): impact tick, hit frame, motion unblock frame, skill
+///   unblock frame, a reserved u32 (0), the position (x, y, z, 1.0), a bool. The
+///   2018 layout had no reserved u32 and the unblock frames the other way round.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct SkillServerData {
     /// +100: the tick the blow lands (start + hit frame, or start + flight).
     pub impact_tick: u32,
     /// +72: the hit frame, or the loop-start frame (a bullet's execute phase).
     pub phase_frame: u32,
-    /// +104 / +108: the two unblock frames.
-    pub unblock_frame: u32,
+    /// The two unblock frames, motion first (production's order).
     pub motion_unblock_frame: u32,
+    pub unblock_frame: u32,
+    /// Always 0 from production.
+    pub reserved: u32,
     /// +80: the caster's position in the description frame, then a rate (1.0).
     pub position: [f32; 4],
     /// +96: one skips movement modulation and transform correction.
@@ -116,8 +119,9 @@ impl SkillServerData {
         Ok(Self {
             impact_tick: r.u32()?,
             phase_frame: r.u32()?,
-            unblock_frame: r.u32()?,
             motion_unblock_frame: r.u32()?,
+            unblock_frame: r.u32()?,
+            reserved: r.u32()?,
             position: vec4(r)?,
             flag: r.bit()?,
             shift: if shifted { Some(r.u32()?) } else { None },
@@ -126,8 +130,9 @@ impl SkillServerData {
     fn encode(&self, w: &mut BitWriter) {
         w.u32(self.impact_tick);
         w.u32(self.phase_frame);
-        w.u32(self.unblock_frame);
         w.u32(self.motion_unblock_frame);
+        w.u32(self.unblock_frame);
+        w.u32(self.reserved);
         write_vec4(w, self.position);
         w.bit(self.flag);
         if let Some(s) = self.shift {
@@ -193,6 +198,46 @@ impl Body for BulletSkill {
         self.base.encode(w);
         write_vec4(w, self.step);
         w.u8(self.orbit);
+    }
+}
+
+/// TargetBulletSkillCommand (release261: 75), both directions: BulletSkill's body,
+/// the primary target (non-zero), a u8-counted list of further targets, a
+/// u8-counted list of target points (at least one). The server's copy adds the
+/// actor and the execution context (no trailing u32).
+/// SOURCE: dso-server-production protocol/combat_protocol.py:439-496 (client
+///   decoder), :684-722 (server writer).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct TargetBulletSkill {
+    pub base: SkillBase,
+    pub step: [f32; 4],
+    pub orbit: u8,
+    pub target: u32,
+    pub more_targets: Vec<u32>,
+    pub points: Vec<[f32; 3]>,
+    pub server: Option<SkillServerData>,
+}
+
+impl Body for TargetBulletSkill {
+    fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
+        let base = SkillBase::decode(r)?;
+        let step = vec4(r)?;
+        let orbit = r.u8()?;
+        let target = r.u32()?;
+        let n = r.u8()? as usize;
+        let more_targets = list(r, n, |r| r.u32())?;
+        Ok(Self { base, step, orbit, target, more_targets, points: points(r)?, server: None })
+    }
+    fn encode(&self, w: &mut BitWriter) {
+        self.base.encode(w);
+        write_vec4(w, self.step);
+        w.u8(self.orbit);
+        w.u32(self.target);
+        w.u8(self.more_targets.len() as u8);
+        for &t in &self.more_targets {
+            w.u32(t);
+        }
+        write_points(w, &self.points);
     }
 }
 
@@ -328,6 +373,7 @@ impl ServerCommand {
             Self::Skill(c) => c.server = Some(SkillServerData::decode(r, false)?),
             Self::TargetSkill(c) => c.server = Some(SkillServerData::decode(r, false)?),
             Self::BulletSkill(c) => c.server = Some(SkillServerData::decode(r, false)?),
+            Self::TargetBulletSkill(c) => c.server = Some(SkillServerData::decode(r, false)?),
             Self::TargetPointBulletSkill(c) => c.server = Some(SkillServerData::decode(r, true)?),
             Self::ShiftedSkill(c) => c.server = Some(SkillServerData::decode(r, true)?),
             _ => {}
@@ -342,6 +388,7 @@ impl ServerCommand {
             Self::Skill(c) => (c.server, false),
             Self::TargetSkill(c) => (c.server, false),
             Self::BulletSkill(c) => (c.server, false),
+            Self::TargetBulletSkill(c) => (c.server, false),
             Self::TargetPointBulletSkill(c) => (c.server, true),
             Self::ShiftedSkill(c) => (c.server, true),
             _ => return,
@@ -369,9 +416,12 @@ pub struct Hit {
     pub damage_types: Vec<u8>,
     pub blocked: bool,
     pub critical: bool,
-    /// +44, +48: SetHitPoints / SetMaxHitPoints (whole numbers).
-    pub victim_health: i32,
-    pub victim_max_health: i32,
+    /// SetHitPoints / SetMaxHitPoints (release261: u64).
+    pub victim_health: u64,
+    pub victim_max_health: u64,
+    /// release261: absorbed and shield damage (production sends 0).
+    pub absorbed: u32,
+    pub shield: u32,
     pub damage: i32,
     /// 3 in every real hit observed.
     pub kind: i32,
@@ -380,8 +430,13 @@ pub struct Hit {
     pub combat_value_owner: u32,
     pub heavy_until_tick: u32,
     pub combat_value: f32,
-    /// +76.
+    /// production field_80 (false; immunity comes as combat_text "DamageImmunityOther").
     pub immune: bool,
+    /// production field_81 (meaning UNKNOWN).
+    pub unknown_flag_81: bool,
+    /// The combat text type: "HealingSelf", "DamageDonePoison",
+    /// "DamageImmunityOther", or "".
+    pub combat_text: String,
 }
 
 impl Body for Hit {
@@ -391,8 +446,10 @@ impl Body for Hit {
             damage_types: damage_types(r)?,
             blocked: r.bit()?,
             critical: r.bit()?,
-            victim_health: r.i32()?,
-            victim_max_health: r.i32()?,
+            victim_health: r.u64()?,
+            victim_max_health: r.u64()?,
+            absorbed: r.u32()?,
+            shield: r.u32()?,
             damage: r.i32()?,
             kind: r.i32()?,
             attacker: r.u32()?,
@@ -400,6 +457,8 @@ impl Body for Hit {
             heavy_until_tick: r.u32()?,
             combat_value: r.f32()?,
             immune: r.bit()?,
+            unknown_flag_81: r.bit()?,
+            combat_text: r.string()?,
         })
     }
     fn encode(&self, w: &mut BitWriter) {
@@ -407,8 +466,10 @@ impl Body for Hit {
         write_damage_types(w, &self.damage_types);
         w.bit(self.blocked);
         w.bit(self.critical);
-        w.i32(self.victim_health);
-        w.i32(self.victim_max_health);
+        w.u64(self.victim_health);
+        w.u64(self.victim_max_health);
+        w.u32(self.absorbed);
+        w.u32(self.shield);
         w.i32(self.damage);
         w.i32(self.kind);
         w.u32(self.attacker);
@@ -416,6 +477,8 @@ impl Body for Hit {
         w.u32(self.heavy_until_tick);
         w.f32(self.combat_value);
         w.bit(self.immune);
+        w.bit(self.unknown_flag_81);
+        w.string(&self.combat_text);
     }
 }
 
@@ -582,14 +645,20 @@ pub struct StatusEffectElement {
     pub duration: u32,
     /// Field 6: per effect (1/2/3/5/100), meaning not established.
     pub sixth: u32,
-    /// Field 7: the actor holding the effect.
-    pub holder: u32,
+    /// Field 7: the actor that caused the effect (production field_20, the
+    /// source; the holder is the command's actor).
+    pub source: u32,
+    /// production field_25, field_26 (the counted-icon bit), field_39; then the
+    /// has-details bit (`tail`). release261 has four bits here, 2018 had two.
     pub flag_0: bool,
+    pub flag_26: bool,
+    pub flag_39: bool,
     pub tail: Option<StatusEffectTail>,
 }
 
-/// StatusEffectCommand (82): the effects running on an actor.
-/// A header bit, a u32 count, then the elements (dsor/statuseffect.py encode/decode).
+/// StatusEffectCommand (release261: 79): the effects running on an actor.
+/// A header bit (clear existing), a u32 count, then the elements.
+/// SOURCE: dso-server-production protocol/gameplay_protocol.py:1572-1659.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct StatusEffect {
     pub header: bool,
@@ -609,8 +678,10 @@ impl Body for StatusEffect {
                 spare: r.u32()?,
                 duration: r.u32()?,
                 sixth: r.u32()?,
-                holder: r.u32()?,
+                source: r.u32()?,
                 flag_0: r.bit()?,
+                flag_26: r.bit()?,
+                flag_39: r.bit()?,
                 tail: None,
             };
             if r.bit()? {
@@ -634,10 +705,12 @@ impl Body for StatusEffect {
         w.count(self.elements.len());
         for e in &self.elements {
             w.u16(e.index);
-            for v in [e.instance, e.end, e.second, e.start, e.spare, e.duration, e.sixth, e.holder] {
+            for v in [e.instance, e.end, e.second, e.start, e.spare, e.duration, e.sixth, e.source] {
                 w.u32(v);
             }
             w.bit(e.flag_0);
+            w.bit(e.flag_26);
+            w.bit(e.flag_39);
             w.bit(e.tail.is_some());
             if let Some(t) = &e.tail {
                 write_f32_list(w, &t.parameters);
@@ -724,9 +797,8 @@ impl Body for NewLocationEffect {
         let block_u32_0 = r.u32()?;
         let block_u32_1 = r.u32()?;
         let block_i8_2 = r.i8()?;
-        if !(-1..=3).contains(&block_i8_2) {
-            return Err(DecodeError::Invalid { what: "location effect block byte", value: block_i8_2 as i64 });
-        }
+        // release261: the 2018 reader's range check is not established for this
+        // client (dso-server-production does not enforce it); not enforced here.
         Ok(Self {
             effect_id,
             entity_class,

@@ -273,11 +273,14 @@ impl Body for ExitInfo {
 
 // ---------------------------------------------------------------- character service
 
-/// One roster equipment entry: template, slot, colour (4 floats), a bit.
+/// One roster equipment entry: item template, appearance (transmog skin), effect
+/// (release261 only), colour (4 floats), enabled.
+/// SOURCE: dso-server-production protocol/character_selection.py:521-523, :589-590.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SelectionEquipment {
     pub template: String,
     pub slot: String,
+    pub effect: String,
     pub colour: [f32; 4],
     pub unknown_flag_0: bool,
 }
@@ -296,7 +299,8 @@ pub struct SelectionCharacter {
     pub character: u32,
     pub unknown_u32_0: u32,
     pub andermant: u32,
-    pub unknown_u32_1: u32,
+    /// release261: u64 (production progression_u64, character_selection.py:483-486).
+    pub unknown_u32_1: u64,
     pub experience: u32,
     pub level: u32,
     /// 4x4 matrix (sub_C4A76A).
@@ -353,7 +357,7 @@ impl Body for CharacterSelection {
                 character: r.u32()?,
                 unknown_u32_0: r.u32()?,
                 andermant: r.u32()?,
-                unknown_u32_1: r.u32()?,
+                unknown_u32_1: r.u64()?,
                 experience: r.u32()?,
                 level: r.u32()?,
                 transform: fixed_f32::<16>(r)?,
@@ -361,10 +365,11 @@ impl Body for CharacterSelection {
                 unknown_flag_1: r.bit()?,
             })
         })?;
-        let equipment = counted(r, 20, "equipment amount", |r| {
+        let equipment = counted(r, 100, "equipment amount", |r| {
             Ok(SelectionEquipment {
                 template: r.string()?,
                 slot: r.string()?,
+                effect: r.string()?,
                 colour: fixed_f32::<4>(r)?,
                 unknown_flag_0: r.bit()?,
             })
@@ -404,7 +409,7 @@ impl Body for CharacterSelection {
             w.u32(c.character);
             w.u32(c.unknown_u32_0);
             w.u32(c.andermant);
-            w.u32(c.unknown_u32_1);
+            w.u64(c.unknown_u32_1);
             w.u32(c.experience);
             w.u32(c.level);
             for f in c.transform {
@@ -417,6 +422,7 @@ impl Body for CharacterSelection {
         for e in &self.equipment {
             w.string(&e.template);
             w.string(&e.slot);
+            w.string(&e.effect);
             for f in e.colour {
                 w.f32(f);
             }
@@ -526,9 +532,12 @@ pub struct TableEntry {
     pub values: [u32; 7],
 }
 
-/// NewPlayerCommand (35): the local player. 58 fields in reader order.
-/// SOURCE: dsor/newplayer.py encode_new_player; reader sub_9A8502 (vtable 0xfee2e8
-///   slot 5), writer 0x9AC4B8; meanings from HandleNewPlayerCommand 0x543AF6.
+/// NewPlayerCommand (release261: 29): the local player, in reader order.
+/// SOURCE: dso-server-production protocol/new_player_codec.py:109-276 (the typed
+///   codec) and protocol/gameplay_commands.py:159-351 (field meanings). Against the
+///   2018 layout: health/resource gone (+212 is u64 then the level; health and
+///   resource come as f32 at InventoryInfo's end), the +292 list gone, gold u64,
+///   five blocks after the wallet, 18 (not 28) table words.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct NewPlayer {
     /// Six bools at +16..+21; index 2 is the admin byte, 3 the PvP flag.
@@ -553,8 +562,9 @@ pub struct NewPlayer {
     pub template_row: u32,
     /// +208.
     pub secondary: String,
-    /// +212 current health, +216 current resource (whole parts).
-    pub words_212: [u32; 2],
+    /// field_f0 (u64, production sends 0) and the level (field_f8).
+    pub unknown_u64_f0: u64,
+    pub level: u32,
     /// i8 enum at +220 (-1..5): the armament.
     pub rank: i8,
     /// +224, 74 bits: the GameFaction -- faction id, owner actor, i8 type (-1..3),
@@ -564,23 +574,31 @@ pub struct NewPlayer {
     pub composite_flags: [bool; 2],
     /// +240..+268: [0, level, experience, level floor, level ceiling, 0, 0, 0].
     pub words_240: [u32; 8],
-    /// +272: the portal's unlock bits. +292: unnamed.
+    /// +272: the travel map's unlock bits.
     pub words_272: Vec<u32>,
-    pub words_292: Vec<u32>,
     /// +312.
     pub strings_312: Vec<String>,
     /// +332..+352.
     pub words_332: [u32; 6],
-    /// +356..+372: the wallet.
-    pub currencies: [u32; 5],
+    /// The wallet: Andermant (u32), gold (u64 on the wire), badges of honour,
+    /// legacy progression, draken (u32 each).
+    pub currencies: [u64; 5],
     /// +376.
     pub long_376: u64,
     /// +384: (string, u64) entries.
     pub entries_384: Vec<(String, u64)>,
+    /// production fields_1d0, fields_1d8, field_1f8, field_200, fields_208 (meanings
+    /// UNKNOWN; production sends zeros and "").
+    pub words_1d0: [u32; 2],
+    pub words_1d8: [u32; 8],
+    pub word_1f8: u32,
+    pub text_200: String,
+    pub words_208: [u32; 2],
     /// +404 table (sub_A3340A): 22 u32, a dictionary, 4 x 7 u32.
     pub table_leading: [u32; 22],
     pub table_dictionary: Vec<TableEntry>,
-    pub table_groups: [u32; 28],
+    /// production player_state_fixed[4] + player_state_tables[14].
+    pub table_groups: [u32; 18],
     /// +632: (u32, u32, i8 -1..30) entries.
     pub entries_632: Vec<(u32, u32, i8)>,
     /// +652, -1 by default.
@@ -599,9 +617,8 @@ impl Body for NewPlayer {
     fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
         let leading_flags = fixed_bool::<6>(r)?;
         let mode = r.u32()?;
-        if mode > 2 {
-            return Err(invalid("NewPlayer mode", mode as i64));
-        }
+        // release261: the 2018 reader's range check is not established for this
+        // client (dso-server-production does not enforce it); not enforced here.
         let appearance = fixed_u32::<8>(r)?;
         let appearance_extra = fixed_u32::<8>(r)?;
         let middle_flags = fixed_bool::<2>(r)?;
@@ -612,31 +629,34 @@ impl Body for NewPlayer {
         let parts = fixed_u8::<6>(r)?;
         let template_row = r.u32()?;
         let secondary = r.string()?;
-        let words_212 = fixed_u32::<2>(r)?;
+        let unknown_u64_f0 = r.u64()?;
+        let level = r.u32()?;
         let rank = r.i8()?;
         let composite_words = fixed_u32::<2>(r)?;
         let composite_enum = r.i8()?;
         let composite_flags = fixed_bool::<2>(r)?;
         let words_240 = fixed_u32::<8>(r)?;
         let words_272 = words(r, "NewPlayer +272 count")?;
-        let words_292 = words(r, "NewPlayer +292 count")?;
         let strings_312 = strings(r, "NewPlayer +312 count")?;
         let words_332 = fixed_u32::<6>(r)?;
-        let currencies = fixed_u32::<5>(r)?;
+        let currencies = [r.u32()? as u64, r.u64()?, r.u32()? as u64, r.u32()? as u64, r.u32()? as u64];
         let long_376 = r.u64()?;
         let entries_384 = counted(r, MOST, "NewPlayer +384 count", |r| Ok((r.string()?, r.u64()?)))?;
+        let words_1d0 = fixed_u32::<2>(r)?;
+        let words_1d8 = fixed_u32::<8>(r)?;
+        let word_1f8 = r.u32()?;
+        let text_200 = r.string()?;
+        let words_208 = fixed_u32::<2>(r)?;
         let table_leading = fixed_u32::<22>(r)?;
         let table_dictionary = counted(r, MOST, "NewPlayer table dictionary count", |r| {
             Ok(TableEntry { key: r.string()?, name: r.string()?, values: fixed_u32::<7>(r)? })
         })?;
-        let table_groups = fixed_u32::<28>(r)?;
+        let table_groups = fixed_u32::<18>(r)?;
         let entries_632 = counted(r, MOST, "NewPlayer +632 count", |r| Ok((r.u32()?, r.u32()?, r.i8()?)))?;
         let identifier = r.i32()?;
         let block_656 = fixed_u32::<8>(r)?;
         let state = r.u8()?;
-        if state > 2 {
-            return Err(invalid("NewPlayer state", state as i64));
-        }
+        // release261: the 2018 reader's 0..2 bound is not enforced (not established).
         let tertiary = r.string()?;
         let block_696 = fixed_u32::<8>(r)?;
         Ok(Self {
@@ -652,19 +672,24 @@ impl Body for NewPlayer {
             parts,
             template_row,
             secondary,
-            words_212,
+            unknown_u64_f0,
+            level,
             rank,
             composite_words,
             composite_enum,
             composite_flags,
             words_240,
             words_272,
-            words_292,
             strings_312,
             words_332,
             currencies,
             long_376,
             entries_384,
+            words_1d0,
+            words_1d8,
+            word_1f8,
+            text_200,
+            words_208,
             table_leading,
             table_dictionary,
             table_groups,
@@ -696,9 +721,8 @@ impl Body for NewPlayer {
         }
         w.u32(self.template_row);
         w.string(&self.secondary);
-        for v in self.words_212 {
-            w.u32(v);
-        }
+        w.u64(self.unknown_u64_f0);
+        w.u32(self.level);
         w.i8(self.rank);
         for v in self.composite_words {
             w.u32(v);
@@ -711,16 +735,28 @@ impl Body for NewPlayer {
             w.u32(v);
         }
         write_words(w, &self.words_272);
-        write_words(w, &self.words_292);
         write_strings(w, &self.strings_312);
-        for v in self.words_332.iter().chain(&self.currencies) {
-            w.u32(*v);
+        for v in self.words_332 {
+            w.u32(v);
+        }
+        w.u32(self.currencies[0] as u32);
+        w.u64(self.currencies[1]);
+        for v in &self.currencies[2..] {
+            w.u32(*v as u32);
         }
         w.u64(self.long_376);
         w.count(self.entries_384.len());
         for (s, v) in &self.entries_384 {
             w.string(s);
             w.u64(*v);
+        }
+        for v in self.words_1d0.iter().chain(&self.words_1d8) {
+            w.u32(*v);
+        }
+        w.u32(self.word_1f8);
+        w.string(&self.text_200);
+        for v in self.words_208 {
+            w.u32(v);
         }
         for v in self.table_leading {
             w.u32(v);
@@ -835,9 +871,10 @@ pub struct NewRemotePlayer {
     pub equipment: Vec<WornSlot>,
     /// +216.
     pub strings_216: Vec<String>,
-    /// +236 current health, +240 MaxHealthPoints attribute, +244 maximum health.
-    pub health: u32,
-    pub max_health_attribute: u32,
+    /// release261: the character id and account id (u64 each), then the level
+    /// twice (production social_protocol.py:968-971).
+    pub character_id: u64,
+    pub account_id: u64,
     pub max_health: u32,
     /// +248.
     pub unknown_u32_248: u32,
@@ -854,8 +891,10 @@ pub struct NewRemotePlayer {
     pub unknown_u32_284: u32,
     /// +288, enum 0..2.
     pub unknown_u8_288: u8,
-    /// +292.
+    /// +292: the achievement title.
     pub tertiary: String,
+    /// release261: the PvP rank title (social_protocol.py:991).
+    pub pvp_title: String,
 }
 
 impl Body for NewRemotePlayer {
@@ -877,8 +916,8 @@ impl Body for NewRemotePlayer {
             template_row: r.u32()?,
             equipment: worn(r)?,
             strings_216: strings(r, "NewRemotePlayer +216 count")?,
-            health: r.u32()?,
-            max_health_attribute: r.u32()?,
+            character_id: r.u64()?,
+            account_id: r.u64()?,
             max_health: r.u32()?,
             unknown_u32_248: r.u32()?,
             armament: r.i8()?,
@@ -889,6 +928,7 @@ impl Body for NewRemotePlayer {
             unknown_u32_284: r.u32()?,
             unknown_u8_288: r.u8()?,
             tertiary: r.string()?,
+            pvp_title: r.string()?,
         })
     }
     fn encode(&self, w: &mut BitWriter) {
@@ -907,8 +947,8 @@ impl Body for NewRemotePlayer {
         w.u32(self.template_row);
         write_worn(w, &self.equipment);
         write_strings(w, &self.strings_216);
-        w.u32(self.health);
-        w.u32(self.max_health_attribute);
+        w.u64(self.character_id);
+        w.u64(self.account_id);
         w.u32(self.max_health);
         w.u32(self.unknown_u32_248);
         w.i8(self.armament);
@@ -919,6 +959,7 @@ impl Body for NewRemotePlayer {
         w.u32(self.unknown_u32_284);
         w.u8(self.unknown_u8_288);
         w.string(&self.tertiary);
+        w.string(&self.pvp_title);
     }
 }
 
@@ -952,6 +993,8 @@ pub struct RemotePlayerInfo {
     pub unknown_u8_e0: u8,
     /// +0xE4.
     pub unknown_text_e4: String,
+    /// release261: the PvP rank title (social_protocol.py:1028).
+    pub pvp_title: String,
 }
 
 impl Body for RemotePlayerInfo {
@@ -969,6 +1012,7 @@ impl Body for RemotePlayerInfo {
             unknown_i32_dc: r.i32()?,
             unknown_u8_e0: r.u8()?,
             unknown_text_e4: r.string()?,
+            pvp_title: r.string()?,
         })
     }
     fn encode(&self, w: &mut BitWriter) {
@@ -984,25 +1028,35 @@ impl Body for RemotePlayerInfo {
         w.i32(self.unknown_i32_dc);
         w.u8(self.unknown_u8_e0);
         w.string(&self.unknown_text_e4);
+        w.string(&self.pvp_title);
     }
 }
 
 // ---------------------------------------------------------------- server: progress
 
-/// PlayerLevelUpdateCommand (133): one u32, the level.
-/// SOURCE: dsor/combat.py encode_player_level(trailing=False), dsor/vitals.py
-///   player_level(padding=0); reader 0x9A93C8 (vtable 0xfee0e8).
+/// PlayerLevelUpdateCommand (release261: 124): the level, then u32, u64, u32, u32
+/// (production "progression/title fields", meanings UNKNOWN).
+/// SOURCE: dso-server-production protocol/player_init_protocol.py:387-401, reader
+///   :1085-1092, writer :1095-1102.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PlayerLevelUpdate {
     pub level: u32,
+    pub unknown_u32_24: u32,
+    pub unknown_u64_28: u64,
+    pub unknown_u32_30: u32,
+    pub unknown_u32_34: u32,
 }
 
 impl Body for PlayerLevelUpdate {
     fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
-        Ok(Self { level: r.u32()? })
+        Ok(Self { level: r.u32()?, unknown_u32_24: r.u32()?, unknown_u64_28: r.u64()?, unknown_u32_30: r.u32()?, unknown_u32_34: r.u32()? })
     }
     fn encode(&self, w: &mut BitWriter) {
         w.u32(self.level);
+        w.u32(self.unknown_u32_24);
+        w.u64(self.unknown_u64_28);
+        w.u32(self.unknown_u32_30);
+        w.u32(self.unknown_u32_34);
     }
 }
 
@@ -1031,23 +1085,28 @@ impl Body for XpChanged {
     }
 }
 
-/// CurrencyChangedCommand (137): five u32 wallet slots (slot 0 andermant -> player
-/// +916, slot 1 gold -> +920), a u64, and the notify bit.
-/// SOURCE: dsor/mapinstance.py encode_currency_changed; handler 0x513E39.
+/// CurrencyChangedCommand (release261: 128): the wallet -- Andermant u32, gold
+/// u64, badges of honour, legacy progression, draken u32 -- a u64 (glyphs of power)
+/// and the notify bit.
+/// SOURCE: dso-server-production protocol/player_init_protocol.py:346-385, reader
+///   :1064-1071, writer :1074-1082.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CurrencyChanged {
-    pub wallet: [u32; 5],
+    pub wallet: [u64; 5],
     pub unknown_u64_5: u64,
     pub notify: bool,
 }
 
 impl Body for CurrencyChanged {
     fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
-        Ok(Self { wallet: fixed_u32::<5>(r)?, unknown_u64_5: r.u64()?, notify: r.bit()? })
+        let wallet = [r.u32()? as u64, r.u64()?, r.u32()? as u64, r.u32()? as u64, r.u32()? as u64];
+        Ok(Self { wallet, unknown_u64_5: r.u64()?, notify: r.bit()? })
     }
     fn encode(&self, w: &mut BitWriter) {
-        for v in self.wallet {
-            w.u32(v);
+        w.u32(self.wallet[0] as u32);
+        w.u64(self.wallet[1]);
+        for v in &self.wallet[2..] {
+            w.u32(*v as u32);
         }
         w.u64(self.unknown_u64_5);
         w.bit(self.notify);

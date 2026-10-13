@@ -80,16 +80,20 @@ impl Body for Faction {
 /// The client refuses an attribute id at or above this (v < 0x39 at 0x8D8F52).
 pub const MOST_ATTRIBUTES: u8 = 57;
 
-/// NewMonsterCommand (48): a creature's description.
-/// SOURCE: dsor/describe.py encode_new_monster_2018; reader 0x9A82C2, writer 0x9AC2D1,
-///   handler HandleNewMonsterCommand 0x53AB27.
+/// NewMonsterCommand (release261: 42): a creature's description.
+/// SOURCE: dso-server-production protocol/gameplay_protocol.py:2372-2394
+///   (_write_new_monster_body). Against 2018: u64 current and u64 maximum health and
+///   a u32 (0) before the level; a bool after the team id; no attribute id bound.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct NewMonster {
     /// The _Template_Monster blueprint.
     pub blueprint: String,
     /// (attribute id < 57, value): a u32 count (sub_999898: 0..=1000000), each u8 + f32.
     pub attributes: Vec<(u8, f32)>,
-    pub health: u32,
+    pub health: u64,
+    pub max_health: u64,
+    /// production field_98, always 0 (meaning UNKNOWN).
+    pub unknown_u32_98: u32,
     /// Copied to GameMonster+64, printed as the level by the info panel.
     pub level: u32,
     pub unknown_f32_0: f32,
@@ -102,7 +106,10 @@ pub struct NewMonster {
     /// +0xA8: the actor that summoned it, 0 for none (copied to GameMonster+0xF4).
     pub summoner: u32,
     pub unknown_flag_0: bool,
+    /// The PvP team id, 0xFFFFFFFF for none.
     pub unknown_u32_1: u32,
+    /// production field_e4, always false (meaning UNKNOWN).
+    pub unknown_flag_e4: bool,
     /// _Template_MonsterRanks id.
     pub rank: String,
     /// The rank's RMEType ("" or "guardian").
@@ -112,17 +119,13 @@ pub struct NewMonster {
 impl Body for NewMonster {
     fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
         let blueprint = r.string()?;
-        let attributes = counted(r, MOST, "monster attribute count", |r| {
-            let id = r.u8()?;
-            if id >= MOST_ATTRIBUTES {
-                return Err(DecodeError::Invalid { what: "monster attribute id", value: id as i64 });
-            }
-            Ok((id, r.f32()?))
-        })?;
+        let attributes = counted(r, MOST, "monster attribute count", |r| Ok((r.u8()?, r.f32()?)))?;
         Ok(Self {
             blueprint,
             attributes,
-            health: r.u32()?,
+            health: r.u64()?,
+            max_health: r.u64()?,
+            unknown_u32_98: r.u32()?,
             level: r.u32()?,
             unknown_f32_0: r.f32()?,
             position: r.vec3()?,
@@ -132,6 +135,7 @@ impl Body for NewMonster {
             summoner: r.u32()?,
             unknown_flag_0: r.bit()?,
             unknown_u32_1: r.u32()?,
+            unknown_flag_e4: r.bit()?,
             rank: r.string()?,
             rme_type: r.string()?,
         })
@@ -142,7 +146,9 @@ impl Body for NewMonster {
             w.u8(*id);
             w.f32(*v);
         });
-        w.u32(self.health);
+        w.u64(self.health);
+        w.u64(self.max_health);
+        w.u32(self.unknown_u32_98);
         w.u32(self.level);
         w.f32(self.unknown_f32_0);
         w.vec3(self.position);
@@ -152,29 +158,35 @@ impl Body for NewMonster {
         w.u32(self.summoner);
         w.bit(self.unknown_flag_0);
         w.u32(self.unknown_u32_1);
+        w.bit(self.unknown_flag_e4);
         w.string(&self.rank);
         w.string(&self.rme_type);
     }
 }
 
-/// MonsterUpdateCommand (50): what moves a monster's health bar.
-/// SOURCE: dsor/describe.py encode_monster_update_2018; reader 0x9A8094 (three u32),
-///   handler 0x53A9E0: SetAttributeBase(MaxHealthPoints, max_health), health, +64 level.
+/// MonsterUpdateCommand (release261: 44): what moves a monster's health bar --
+/// u64 current health, u64 maximum, then three u32 production sends as 0, 0, 100
+/// (meanings UNKNOWN; the first mirrors NewMonster's unknown_u32_98).
+/// SOURCE: dso-server-production protocol/gameplay_protocol.py:1464-1486.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct MonsterUpdate {
-    pub max_health: u32,
-    pub health: u32,
-    pub level: u32,
+    pub health: u64,
+    pub max_health: u64,
+    pub unknown_u32_30: u32,
+    pub unknown_u32_34: u32,
+    pub unknown_u32_38: u32,
 }
 
 impl Body for MonsterUpdate {
     fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
-        Ok(Self { max_health: r.u32()?, health: r.u32()?, level: r.u32()? })
+        Ok(Self { health: r.u64()?, max_health: r.u64()?, unknown_u32_30: r.u32()?, unknown_u32_34: r.u32()?, unknown_u32_38: r.u32()? })
     }
     fn encode(&self, w: &mut BitWriter) {
-        w.u32(self.max_health);
-        w.u32(self.health);
-        w.u32(self.level);
+        w.u64(self.health);
+        w.u64(self.max_health);
+        w.u32(self.unknown_u32_30);
+        w.u32(self.unknown_u32_34);
+        w.u32(self.unknown_u32_38);
     }
 }
 

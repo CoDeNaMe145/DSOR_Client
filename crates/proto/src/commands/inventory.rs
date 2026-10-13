@@ -78,8 +78,10 @@ pub struct ItemStatistic {
 
 /// Game::ItemInfo, the item record read by 0x980AFC. Carried by InventoryInfo (87),
 /// Offer (93, the buyback list) and NewItemCommand (51).
-/// SOURCE: dsor/inventory.py _write_item; dsor/items.py encode_new_item_2018 (same
-///   reader). Field names are the server's ordinals where meaning is not established.
+/// SOURCE: dso-server-production protocol/inventory_codec.py:149-193 (writer),
+///   :195-264 (reader). Against 2018: no u32 after fifty_second nor after tier, a
+///   bool after fourth_name, no third u8-counted string list. Field names are the
+///   2018 server's ordinals where meaning is not established.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ItemInfo {
     /// The item's actor.
@@ -100,7 +102,6 @@ pub struct ItemInfo {
     /// GameItem::SetBaseLevel; must be above 0.
     pub level: u32,
     pub fifty_second: u32,
-    pub unknown_u32_0: u32,
     pub flag_0: bool,
     pub flag_1: bool,
     /// The item template (blueprint) id.
@@ -111,12 +112,12 @@ pub struct ItemInfo {
     /// The appearance id (ItemInfo+128).
     pub appearance: String,
     pub tier: u32,
-    pub unknown_u32_1: u32,
+    /// The equipped transmog skin id (production field_f8).
     pub fourth_name: String,
+    /// production field_3e (True by default; meaning UNKNOWN).
+    pub flag_2: bool,
     pub statistics: Vec<ItemStatistic>,
     pub names: Vec<String>,
-    /// The third u8-counted string list (nothing the server sends fills it).
-    pub third_names: Vec<String>,
     /// Acquired year, month, day, hour, minute, second (UNKNOWN (2018) order).
     pub stamped: [u32; 6],
 }
@@ -130,9 +131,8 @@ impl Body for ItemInfo {
         let second = r.u32()?;
         let third = r.u32()?;
         let kind = r.u8()?;
-        if kind >= MOST_RARITIES {
-            return Err(DecodeError::Invalid { what: "item rarity", value: kind as i64 });
-        }
+        // release261: the 2018 reader's range check is not established for this
+        // client (dso-server-production does not enforce it); not enforced here.
         let mut item = Self {
             id,
             second,
@@ -148,7 +148,6 @@ impl Body for ItemInfo {
             durability: r.u32()?,
             level: r.u32()?,
             fifty_second: r.u32()?,
-            unknown_u32_0: r.u32()?,
             flag_0: r.bit()?,
             flag_1: r.bit()?,
             template: r.string()?,
@@ -156,8 +155,8 @@ impl Body for ItemInfo {
             position: r.vec3()?,
             appearance: r.string()?,
             tier: r.u32()?,
-            unknown_u32_1: r.u32()?,
             fourth_name: r.string()?,
+            flag_2: r.bit()?,
             ..Default::default()
         };
         let n = byte_count(r)?;
@@ -165,7 +164,6 @@ impl Body for ItemInfo {
             Ok(ItemStatistic { value: r.f32()?, kind: r.i8()?, third: r.u32()?, fourth: r.u32()?, name: r.string()? })
         })?;
         item.names = strings_u8(r)?;
-        item.third_names = strings_u8(r)?;
         for v in item.stamped.iter_mut() {
             *v = r.u32()?;
         }
@@ -187,7 +185,6 @@ impl Body for ItemInfo {
         w.u32(self.durability);
         w.u32(self.level);
         w.u32(self.fifty_second);
-        w.u32(self.unknown_u32_0);
         w.bit(self.flag_0);
         w.bit(self.flag_1);
         w.string(&self.template);
@@ -195,8 +192,8 @@ impl Body for ItemInfo {
         w.vec3(self.position);
         w.string(&self.appearance);
         w.u32(self.tier);
-        w.u32(self.unknown_u32_1);
         w.string(&self.fourth_name);
+        w.bit(self.flag_2);
         w.u8(self.statistics.len() as u8);
         for s in &self.statistics {
             w.f32(s.value);
@@ -206,7 +203,6 @@ impl Body for ItemInfo {
             w.string(&s.name);
         }
         write_strings_u8(w, &self.names);
-        write_strings_u8(w, &self.third_names);
         for &v in &self.stamped {
             w.u32(v);
         }
@@ -215,8 +211,10 @@ impl Body for ItemInfo {
 
 // ── 87 InventoryInfo ────────────────────────────────────────────────────────
 
-/// InventoryInfoCommand (87): the whole inventory.
-/// Nine collections, then six u32, two f32 and one bit.
+/// InventoryInfoCommand (release261: 84): the whole inventory.
+/// Twelve collections, then six u32, two f32 and one bit.
+/// SOURCE (release261): dso-server-production protocol/inventory_codec.py:437-524
+///   (three collections after `removed`: a u32 map, a u32 array, a string array).
 /// EVIDENCE: reader 0x9A7AA3 / writer 0x9ABBCB (dsor/inventory.py encode);
 ///   ClientInventoryManager::LocateItem 0x535D75 names the storages.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -238,6 +236,11 @@ pub struct InventoryInfo {
     pub invisible: Vec<u32>,
     /// Items removed (dsor/inventory.py three_hundred_twelfth).
     pub removed: Vec<u32>,
+    /// production field_158 (u32 map), field_180 (u32 array), field_1a0 (strings);
+    /// meanings UNKNOWN.
+    pub map_158: Vec<(u32, u32)>,
+    pub words_180: Vec<u32>,
+    pub strings_1a0: Vec<String>,
     /// Scalars +204..+224: 2 is the bag's cell count (<= 224), 3 bank, 4 extra bank,
     /// 5 extra bag (dsor/inventory.py load_inventory); 0 and 1 unnamed.
     pub storage_sizes: [u32; 6],
@@ -264,6 +267,9 @@ impl Body for InventoryInfo {
             overflow: u32_list(r, "overflow")?,
             invisible: u32_list(r, "invisible")?,
             removed: u32_list(r, "removed")?,
+            map_158: pair_list(r, "inventory +0x158")?,
+            words_180: u32_list(r, "inventory +0x180")?,
+            strings_1a0: counted(r, MOST, "inventory +0x1a0", |r| r.string())?,
             ..Default::default()
         };
         for v in got.storage_sizes.iter_mut() {
@@ -295,6 +301,12 @@ impl Body for InventoryInfo {
         write_u32_list(w, &self.overflow);
         write_u32_list(w, &self.invisible);
         write_u32_list(w, &self.removed);
+        write_pair_list(w, &self.map_158);
+        write_u32_list(w, &self.words_180);
+        w.count(self.strings_1a0.len());
+        for t in &self.strings_1a0 {
+            w.string(t);
+        }
         for &v in &self.storage_sizes {
             w.u32(v);
         }
@@ -321,9 +333,8 @@ impl QuickSlot {
 
     fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
         let kind = r.i32()?;
-        if !(-1..=2).contains(&kind) {
-            return Err(DecodeError::Invalid { what: "quick slot kind", value: kind as i64 });
-        }
+        // release261: the 2018 reader's range check is not established for this
+        // client (dso-server-production does not enforce it); not enforced here.
         let id = if kind == Self::EMPTY { None } else { Some(r.string()?) };
         Ok(Self { kind, id })
     }

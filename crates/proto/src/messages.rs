@@ -25,9 +25,9 @@ pub const TIMESTAMP: u8 = 0x1B;
 pub const CLOCK: u8 = 0x83;
 
 /// 0x84/121: the server sends the client elsewhere.
-pub const HANDOFF: u16 = 121;
+pub const HANDOFF: u16 = 112;
 /// CharacterSelectionCommand, both directions on the character service.
-pub const CHARACTER_SELECTION: u16 = 144;
+pub const CHARACTER_SELECTION: u16 = 135;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Envelope {
@@ -107,7 +107,7 @@ pub fn select_character(character: u32) -> (Vec<u8>, usize) {
     w.finish()
 }
 
-/// One roster entry of the character service's list (0x84/144, operation 1).
+/// One roster entry of the character service's list (0x84/135, operation 1).
 #[derive(Clone, Debug, PartialEq)]
 pub struct RosterEntry {
     pub name: String,
@@ -118,7 +118,8 @@ pub struct RosterEntry {
     pub level: u32,
 }
 
-/// The roster in a 0x84/144. EVIDENCE: experimental dsor/selection2018.encode_selection.
+/// The roster in a 0x84/135 (release261). EVIDENCE: dso-server-production
+/// protocol/character_selection.py:459-531 (progression u64 at :483-486).
 pub fn read_roster(data: &[u8], bits: usize) -> Option<(u8, Vec<RosterEntry>)> {
     let mut r = BitReader::with_bit_len(data, bits);
     if r.read_u8().ok()? != COMMAND || r.read_u16().ok()? != CHARACTER_SELECTION {
@@ -143,7 +144,8 @@ pub fn read_roster(data: &[u8], bits: usize) -> Option<(u8, Vec<RosterEntry>)> {
             r.read_u8().ok()?;
         }
         let character = r.read_u32().ok()?;
-        for _ in 0..3 {
+        // u32, u32 (andermant), u64 (release261 progression).
+        for _ in 0..4 {
             r.read_u32().ok()?;
         }
         let _experience = r.read_u32().ok()?;
@@ -166,6 +168,9 @@ mod tests {
         (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
     }
 
+    // The 2018 capture's bytes with release261's ids (SwitchMap 112 = 0x70,
+    // CharacterSelection 135 = 0x87); dso-server-production map_packets.py:47-62
+    // writes the same hand-off layout.
     #[test]
     fn envelopes_from_the_capture() {
         let id = unhex("82160044726173614f6e6c696e654c6f67696e536572766572");
@@ -175,15 +180,15 @@ mod tests {
             classify(&map, map.len() * 8),
             Envelope::MapAssignment { name: "a0200_kingscity".into(), rule_set: 3 }
         );
-        let h = unhex("8479000e003132372e302e302e313a3231393280");
+        let h = unhex("8470000e003132372e302e302e313a3231393280");
         assert_eq!(classify(&h, h.len() * 8), Envelope::Handoff { target: "127.0.0.1:2192".into() });
-        let back = unhex("847900000000");
+        let back = unhex("847000000000");
         assert_eq!(classify(&back, back.len() * 8), Envelope::Handoff { target: String::new() });
     }
 
     #[test]
     fn selection_is_the_real_clients() {
         let (bytes, _bits) = select_character(1);
-        assert_eq!(bytes, unhex("8b90000300010000000000000000000000000000000000000000000000000000"));
+        assert_eq!(bytes, unhex("8b87000300010000000000000000000000000000000000000000000000000000"));
     }
 }
