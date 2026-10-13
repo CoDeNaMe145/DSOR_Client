@@ -31,6 +31,8 @@ root=$(cd "$1" && pwd)
 mkdir -p "$2"
 out=$(cd "$2" && pwd)
 godot=${3:-$out/.DSO_Godot}
+# Resolved before the cd into DSO_Godot below: a relative $0 broke step 5.
+tools=$(cd "$(dirname "$0")" && pwd)
 logs=$out/logs
 mkdir -p "$logs"
 
@@ -72,7 +74,6 @@ python3 export_maps.py --root "$root" --out "$out/maps" > "$logs/export_maps.log
 tail -n 6 "$logs/export_maps.log"
 
 # 5. What glTF cannot carry, and the client's own tables.
-tools=$(cd "$(dirname "$0")" && pwd)
 echo "[convert] Nebula states and tables (log: $logs/post.log)"
 {
     python3 "$tools/fix_materials.py" "$out"
