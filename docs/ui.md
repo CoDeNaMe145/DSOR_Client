@@ -1,8 +1,8 @@
-# The interface (2018 windows)
+# The original client interface
 
 ## The 2018 data
 
-- `export_win32/ui/<window>.bxml`: one window per file (145), Nebula binary XML.
+- `export_win32/ui/<window>.bxml`: one window per file, Nebula binary XML.
   A tree of widgets (`Label`, `TextLabel`, `Button`, `SlotButton`, `Slot`,
   `ProgressBar`...), each with a `rect` in fractions of a 1024 x 768 reference
   screen, its anchor to its parent (`HorizontalParentAlignment`,
@@ -23,7 +23,7 @@ repository's `tools/export_ui.py` reuses them.
 Every window by default (`--hud`: the four the HUD needs) into
 `<assets>/interface/<window>.ui.json`, plus `skills.icons.json` (skill id ->
 icon), `loca_fr.json` / `loca_en.json`, and the atlases and icons as PNG under
-`<assets>/textures/`. 145 windows, ~32 000 widgets, ~435 000 triangles, 33 MB.
+`<assets>/textures/`. The current source tree contains 160 windows.
 
 Each widget: its id path, its rect in reference pixels, `k`, its artwork
 (triangles, UVs, vertex colours, atlas) and its text (French, else English).
@@ -33,49 +33,126 @@ fixed and only full-screen top-level canvases stretch, so a widget's x is its
 1024 x 768 x plus k x (reference width - 1024). The bottom bar (centred) has
 k = 0.5, the money (top left) 0, the menu buttons (top right) 1.
 
-What the game shows only in some state is exported `hidden`: button states
-(`mouseover`, `pressed`, `disabled`), cooldown covers, glows, the "buy a slot"
+Button state subtrees retain `button` (the owner's widget path) and `state`
+(`normal`, `mouseover`, `pressed`, `mouseoverpressed`, `disabled`). Button
+widgets retain their `type`, `event`, `enabled` and `click_through` fields.
+The renderer selects one state at runtime; these states must not be baked into
+the mesh as permanently hidden or simultaneously visible artwork.
+Button state backgrounds render before the button's common icon/text children;
+source XML order alone can put an opaque button face over its icon. Glow children
+inside a button state follow that state rather than being suppressed globally.
+
+What the game shows only in other runtime contexts is exported `hidden`:
+cooldown covers, glows, the "buy a slot"
 offers, the alternative stacks DSO_Godot already spots, the character preview
 area (`figur`, a runtime render target), placeholder icons (`icon_dummy`, "?"),
 templates outside a window's root (`ROOTS`: the inventory's drag ghosts, the
 payment variants of the money display). Template slots the game clones are laid
-out (`GRIDS`: the inventory bag, 7 x 3 empty slots).
+out (`GRIDS`: the inventory bag, 7 x 3 empty slots, fitted to the area's width).
+Readable, lossless copies of the source BXML are also written to
+`interface/xml/<window>.xml`. BXML is a binary XML tree, not a compressed text
+file; the exporter decodes its node, attribute and string tables.
 
 ## The client (`client/src/ui`)
 
 A 2D camera over the 3D one (sharing its target textures: same HDR and MSAA),
 orthographic, 768 reference pixels high. Each window is built once into a few
-meshes (one per run of widgets sharing an atlas, the draw order kept by depth),
+meshes (one per run of widgets sharing an atlas, anchor and visibility gate,
+the draw order kept by depth),
 drawn by `UiMaterial` (`ui.wgsl`: atlas x vertex colour in gamma space, cut to a
 clip rectangle). A resize only moves the per-k parents. Texts are Text2d.
 
 Drawn:
 
-- always: the bottom bar (`bottombar`: frame, health globe, the class's resource
-  globe, XP bar, 7 quick slots + left / right mouse slots with the skills'
-  icons, mount slot, home teleport), the money (`currencybar`), the menu buttons
-  (`gamebar`);
+- always: the current `bottombar/Canvas/Label_new` layout: horizontal health and
+  resource bars, XP and wisdom bars with level labels, five quick slots plus
+  left/right mouse slots, mount and home teleport; the money (`currencybar`), the menu buttons
+  (`gamebar`), and the central navigation (`ingamemenu`);
 - menus: inventory (I: equipment slots, bag tabs I-VIII, 7 x 3 bag, page),
-  character sheet (C), skills (K). Natively `DSOR_UI_OPEN=inventory,...` opens
+  character sheet (C), current skill/talent window (K: `skilltalentswindow`),
+  quest log, travel map, local map, shop, social window, PvP matchmaking,
+  leaderboards, events and game menu (Escape). Natively `DSOR_UI_OPEN=inventory,...` opens
   them from the start (screenshots).
 
-Live values: health and resource (`Net::health` / `resource`; the maxima are
-the largest values seen), the quick slot bar (`Net::bar`, wire slots: 0 left
+Live values: health and resource (`Net::health` / `resource`), level, XP, wallet,
+the character sheet's available figures, the quick slot bar (`Net::bar`, wire slots: 0 left
 button, 1 right button, 2-6 keys 1-5), the character name. Offline (map viewer)
-the HUD shows resting values (80 % health, 60 % resource, 35 % XP, the mage's
-skills).
+the map viewer shows resting values (80 % health, 60 % resource, 35 % XP, the mage's
+skills). Wisdom's display is restored, but its server progression is not decoded
+yet: it shows an unknown level rather than a fabricated value when connected.
+
+## Interaction (`client/src/ui/controls.rs`)
+
+The window controller resolves source events (such as `Close`, `NextPage`,
+`InventoryReturn`, `IngredientBag`) and controls identified by widget path
+(bag tabs, character tabs and navigation buttons). Unimplemented actions use
+the authored disabled state. A click activates on release over the same
+control that received the press; dragging off, losing focus, or closing the
+window cancels it. The highest visible window owns the pointer at its bounds.
+The game menu blocks pointer input to the windows and world below it.
+
+All top-navigation windows and the game menu can be dragged with the left
+mouse button from the top 32 reference pixels of their painted frame (scaled
+with the interface). The cursor changes to a hand there; close buttons retain
+priority over dragging. Clicking a window brings it forward below the modal
+game menu. Artwork, text, gauge clipping and hit regions share the root's
+offset. Positions survive closing/reopening during the session. Dragging and
+resizing keep at least 64 reference pixels of the title reachable; losing focus
+or hiding a window cancels its drag. The HUD bars stay fixed.
+
+Inventory equipment, ingredients, trinkets and mercenary pages are mutually
+exclusive. The character sheet likewise selects one of its five tabs. Switching
+between the character sheet and skills/talents closes the previous panel.
+Escape closes the topmost menu, or opens the game menu when none is open.
+The central navigation opens inventory, character sheet and skills; the gamebar
+opens the game menu, toggles fullscreen and opens the membership tab.
+
+All eleven central navigation buttons open their corresponding panels; their
+pressed state follows actual window visibility, including keyboard toggles and
+close buttons. `controls/panels.rs` selects quest, social, skill/talent, shop,
+leaderboard and travel-region pages. List/card templates stay hidden until data
+is supplied. Checkboxes and filters keep local state. Search and voucher fields
+support Unicode text, caret navigation, deletion and Ctrl+A; focused fields
+consume game shortcuts. Backend actions such as buying, redeeming or joining a
+battle remain disabled until their services are connected.
+
+The top-right bar selects the standard background, fullscreen/menu controls,
+and the non-premium badge. Autoplay, membership alternatives and regional
+sign-in/season-pass controls are conditional variants, not extra bars to draw
+together. Common highlight layers are hidden; authored hover/pressed highlights
+are selected by the owning button. Identical nested icon meshes are drawn once.
+The skills window's background layers are painted before its controls, and
+authored multiline labels wrap within their source rectangles. Hidden legacy
+gauges and quick slots cannot contribute artwork, fill bounds or hit regions.
+
+The original `locationmap` is a runtime drawing area with no map bitmap. Its
+client implementation (`local_map.rs`) projects the loaded navigation mesh and
+player position into a framed, draggable map with a close button.
+
+The bag tabs and page arrows navigate the eight authored bag pages, plus the
+extra/overflow bag views. This is currently UI selection, not a server-backed
+inventory model: item contents and purchased capacities are not bound yet.
+Ingredient category and rarity selection retain their selected button state.
+Hotbar skill clicks enter the existing skill casting path, with its ordinary
+resource/cooldown validation.
+
+Visible artwork and buttons populate `UiRegions` using the same page/state
+gates as rendering. Hidden pages cannot intercept input. These regions integrate
+with `ui_input` so a UI press remains captured through its release and cannot
+move or attack in the world underneath. A left press started in the world keeps
+its ownership while held over UI, so crossing a panel does not interrupt walking
+or start a window drag. A new press over UI is captured normally. Scroll still
+respects the UI under the cursor.
 
 ## Missing
 
-- A font with accents: bevy's default font is ASCII only ("D?g?ts"). The 2018
-  fonts are bitmaps (`ui/*_info.bytes` + textures), not loaded; a TTF in
-  `assets/fonts/` would do.
-- Values the client does not decode yet: money, Andermant, level, XP, maximum
-  health / resource, buffs, the character sheet's figures, the inventory's items
-  (shown as 0, -, empty).
-- Interaction: no clicks (buttons, drag and drop, tooltips), no hover states;
-  menus open by key only.
-- The other 140 windows are exported but not shown (quest log, map, shop,
-  chat...); `MENU_WINDOWS` in `client/src/ui/mod.rs` adds one with a key.
-- The potion slots drawn inside the globes' edges are as the data places them;
-  UNVERIFIED against the 2018 client.
+- Text uses `assets/fonts/tahoma.ttf`; the original bitmap font and text effects
+  are not reproduced.
+- Inventory item contents, capacity/unlock state, item tooltips, drag/drop,
+  sort, bank access and purchases still need a server-backed inventory controller.
+- Character preview render targets and list scrolling are not implemented.
+- Server-backed quests, catalogue entries, social rosters, event payloads,
+  leaderboard rows and talent allocation are not bound yet; opening their
+  panels and switching their UI pages works independently of those services.
+- Context-specific dialogs outside the top navigation (crafting, chat, etc.)
+  still need their owning gameplay controllers.

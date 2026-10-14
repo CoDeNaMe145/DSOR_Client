@@ -14,8 +14,8 @@
 //! The node's static alpha factor (extras.dsor_alpha) is applied to the rest.
 //!
 //! Done in a glTF extension handler, so the states are part of the loaded scene:
-//! nothing runs per entity once the map is up. Every surface that is not opaque
-//! also stops casting shadows, as in the game's shadow pass.
+//! nothing runs per entity once the map is up. Opaque and alpha-masked surfaces
+//! cast shadows; blended surfaces, decals, glows and emitters do not.
 
 use bevy::gltf::extensions::{ErasedGltfExtensionHandler, GltfExtensionHandler, GltfExtensionHandlers};
 use bevy::gltf::{gltf, GltfMaterial};
@@ -74,6 +74,15 @@ fn state_of(material: &gltf::Material) -> Option<State> {
         "Hidden" => Some(State::Hidden),
         _ => None,
     }
+}
+
+/// Characters, equipment and summons use MASK for cutout edges. Bevy's shadow
+/// pass skins these meshes and applies the texture's alpha cutoff, so their
+/// silhouettes must participate just like opaque geometry. The asset folder is
+/// not a render state: solid player-created models under effects/ cast too.
+fn casts_shadow(material: &gltf::Material) -> bool {
+    state_of(material).is_none()
+        && matches!(material.alpha_mode(), ::gltf::material::AlphaMode::Opaque | ::gltf::material::AlphaMode::Mask)
 }
 
 fn dsor_label(material_label: &str) -> String {
@@ -638,10 +647,7 @@ impl GltfExtensionHandler for NebulaStates {
         material_label: &str,
     ) {
         let state = state_of(material);
-        // Skill effects cast no shadow (the fireball's rock threw one on the ground;
-        // in the game its flight leaves none).
-        let effect = load_context.path().path().to_string_lossy().starts_with("effects");
-        if effect || state.is_some() || format!("{:?}", material.alpha_mode()) != "Opaque" {
+        if !casts_shadow(material) {
             entity.insert(NotShadowCaster);
         }
         if self.refractions.contains(material_label) {
@@ -714,5 +720,42 @@ impl Plugin for MaterialsPlugin {
         bevy::tasks::block_on(async { handlers.write().await.push(Box::new(NebulaStates::default())) });
         #[cfg(not(target_family = "wasm"))]
         handlers.write_blocking().push(Box::new(NebulaStates::default()));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn material_casts_shadow(material: serde_json::Value) -> bool {
+        let document = serde_json::json!({
+            "asset": {"version": "2.0"},
+            "materials": [material],
+        });
+        let gltf = gltf::Gltf::from_slice(&serde_json::to_vec(&document).unwrap()).unwrap();
+        casts_shadow(&gltf.materials().next().unwrap())
+    }
+
+    #[test]
+    fn character_and_summon_cutouts_cast_shadows() {
+        for shader in ["shd:character", "shd:characterfalloff", "shd:monster", "shd:standard"] {
+            assert!(material_casts_shadow(serde_json::json!({
+                "alphaMode": "MASK", "alphaCutoff": 0.5,
+                "extras": {"nebula_shader": shader},
+            })), "{shader} cutouts must cast a shadow");
+        }
+        assert!(material_casts_shadow(serde_json::json!({"alphaMode": "OPAQUE"})));
+    }
+
+    #[test]
+    fn transparent_effects_and_non_surface_states_do_not_cast_shadows() {
+        assert!(!material_casts_shadow(serde_json::json!({"alphaMode": "BLEND"})));
+        for state in ["Hidden", "Decal", "Additive"] {
+            for mode in ["OPAQUE", "MASK", "BLEND"] {
+                assert!(!material_casts_shadow(serde_json::json!({
+                    "alphaMode": mode, "extras": {"dsor_state": state},
+                })), "{state} must not cast even when exported as {mode}");
+            }
+        }
     }
 }

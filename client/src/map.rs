@@ -155,7 +155,7 @@ impl CurrentMap {
             .models
             .iter()
             .filter(|h| {
-                matches!(
+                matches!(asset_server.get_load_state(*h), Some(LoadState::Failed(_))) || matches!(
                     asset_server.get_recursive_dependency_load_state(*h),
                     Some(RecursiveDependencyLoadState::Loaded | RecursiveDependencyLoadState::Failed(_))
                 )

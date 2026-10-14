@@ -25,7 +25,7 @@ bevy = { workspace = true, features = [
     "default_app", "scene", "picking", "3d_bevy_render",
     "std", "bevy_gilrs", "bevy_winit", "bevy_clipboard", "default_font", "multi_threaded",
     "x11", "wayland", "custom_cursor", "sysinfo_plugin",
-    "ui", "png", "free_camera",
+    "ui", "png", "free_camera", "system_clipboard",
 ] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

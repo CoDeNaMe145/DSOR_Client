@@ -58,9 +58,46 @@ pub const CAM_HEIGHT_MAX: f32 = 25.0;
 pub const CAM_HEIGHT_DEFAULT: f32 = 25.0;
 pub const CAM_OFFSET_Z: f32 = 0.5;
 
-/// The camera's current zoom (its height above the player).
+/// Exponential response rates: zoom settles in about 250 ms, turns in 200 ms.
+const ZOOM_RESPONSE: f32 = 14.0;
+const TURN_RESPONSE: f32 = 18.0;
+
+/// Rendered and requested distances along the camera's view direction.
 #[derive(Resource)]
-pub struct CameraZoom(pub f32);
+pub struct CameraZoom {
+    current: f32,
+    target: f32,
+}
+
+impl CameraZoom {
+    fn new(distance: f32) -> Self {
+        let distance = if distance.is_finite() { distance.clamp(CAM_HEIGHT_MIN, CAM_HEIGHT_MAX) } else { CAM_HEIGHT_DEFAULT };
+        Self { current: distance, target: distance }
+    }
+
+    fn advance(&mut self, dt: f32) {
+        self.current += (self.target - self.current) * response(ZOOM_RESPONSE, dt);
+        if (self.target - self.current).abs() < 0.001 {
+            self.current = self.target;
+        }
+    }
+}
+
+/// Equal elapsed time gives the same blend at low and high frame rates.
+fn response(rate: f32, dt: f32) -> f32 {
+    -(-rate * dt.max(0.0)).exp_m1()
+}
+
+/// Smooth the displayed heading only; movement and network aim use `facing`.
+/// Quaternion interpolation takes the short arc across the +/-pi boundary.
+fn turn_towards(rotation: Quat, facing: f32, dt: f32) -> Quat {
+    let target = Quat::from_rotation_y(facing);
+    if rotation.angle_between(target) < 0.001 {
+        target
+    } else {
+        rotation.slerp(target, response(TURN_RESPONSE, dt)).normalize()
+    }
+}
 
 /// Where and as whom to connect. Absent: the client is a map viewer.
 #[derive(Resource, Clone, Debug)]
@@ -248,7 +285,7 @@ pub struct LocalPlayer {
     pub actor: u32,
     /// Where the player is walking to, game frame.
     pub target: Option<Vec3>,
-    /// Body facing, radians around +Y.
+    /// Requested facing around +Y; the displayed body eases toward it while walking.
     pub facing: f32,
     last_sent_tick: u32,
     /// Stood on the navigation mesh since arriving on this map.
@@ -258,6 +295,223 @@ pub struct LocalPlayer {
     pub casting: f32,
 }
 
+#[cfg(test)]
+mod pointer_tests {
+    use super::*;
+    use bevy::camera::{ComputedCameraValues, RenderTargetInfo};
+    use crate::ui_input::{BlocksWorldInput, UiInputPlugin, UiRegions};
+
+    #[test]
+    fn ui_and_debug_panels_block_actual_walk_targets_but_world_clicks_work() {
+        let mut app = App::new();
+        app.add_plugins(UiInputPlugin)
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<Assets<NavMesh>>()
+            .add_systems(Update, click_to_move);
+        let mut window = Window { resolution: (1024, 768).into(), ..default() };
+        window.set_cursor_position(Some(Vec2::new(400.0, 400.0)));
+        app.world_mut().spawn((window, PrimaryWindow));
+        app.world_mut().spawn((Camera3d::default(), Camera {
+            computed: ComputedCameraValues {
+                clip_from_view: Mat4::perspective_infinite_reverse_rh(1.0, 1024.0 / 768.0, 0.1),
+                target_info: Some(RenderTargetInfo { physical_size: UVec2::new(1024, 768), scale_factor: 1.0 }),
+                ..default()
+            },
+            ..default()
+        }, GlobalTransform::from(Transform::from_xyz(0.0, 10.0, 10.0).looking_at(Vec3::ZERO, Vec3::Y))));
+        let player = app.world_mut().spawn((Transform::default(), LocalPlayer {
+            actor: 1, target: None, facing: 0.0, last_sent_tick: 0, snapped: true, casting: 0.0,
+        })).id();
+        let press = |app: &mut App| {
+            let mut buttons = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+            buttons.release(MouseButton::Left);
+            buttons.clear();
+            buttons.press(MouseButton::Left);
+        };
+        press(&mut app);
+        app.update();
+        assert!(app.world().get::<LocalPlayer>(player).unwrap().target.is_some(), "ground clicks must still move");
+
+        // Mesh HUD/menu, native button, and empty F2/F3 panel background.
+        for kind in 0..3 {
+            app.world_mut().get_mut::<LocalPlayer>(player).unwrap().target = None;
+            let blocker = match kind {
+                0 => app.world_mut().spawn((UiRegions(vec![(0.0, [350.0, 300.0, 500.0, 500.0])]), Visibility::Inherited)).id(),
+                1 => app.world_mut().spawn((Interaction::Pressed, InheritedVisibility::VISIBLE)).id(),
+                _ => app.world_mut().spawn((BlocksWorldInput, Visibility::Inherited, InheritedVisibility::VISIBLE,
+                    bevy::ui::RelativeCursorPosition { cursor_over: true, normalized: Some(Vec2::ZERO) })).id(),
+            };
+            // Continue a world-origin hold across each kind of UI. Clearing
+            // the target proves this frame still generates a walk target.
+            app.world_mut().resource_mut::<ButtonInput<MouseButton>>().clear();
+            app.update();
+            assert!(app.world().get::<LocalPlayer>(player).unwrap().target.is_some(), "UI kind {kind} interrupted a world hold");
+            app.world_mut().get_mut::<LocalPlayer>(player).unwrap().target = None;
+            press(&mut app);
+            app.update();
+            assert!(app.world().get::<LocalPlayer>(player).unwrap().target.is_none(), "UI kind {kind} leaked a walk");
+            app.world_mut().despawn(blocker);
+            app.world_mut().resource_mut::<ButtonInput<MouseButton>>().clear();
+            app.update();
+            assert!(app.world().get::<LocalPlayer>(player).unwrap().target.is_none(), "dragging off UI leaked a walk");
+            press(&mut app);
+            app.update();
+            assert!(app.world().get::<LocalPlayer>(player).unwrap().target.is_some(), "fresh world click stayed blocked");
+        }
+        app.world_mut().get_mut::<LocalPlayer>(player).unwrap().target = None;
+        app.world_mut().spawn((UiRegions(vec![(0.0, [350.0, 300.0, 500.0, 500.0])]), Visibility::Hidden));
+        press(&mut app);
+        app.update();
+        assert!(app.world().get::<LocalPlayer>(player).unwrap().target.is_some(), "hidden menus must not intercept input");
+    }
+}
+
+#[cfg(test)]
+mod smoothing_tests {
+    use super::*;
+    use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
+    use std::time::Duration;
+
+    fn local(target: Option<Vec3>) -> LocalPlayer {
+        LocalPlayer { actor: 1, target, facing: 0.0, last_sent_tick: 0, snapped: true, casting: 0.0 }
+    }
+
+    fn step(app: &mut App, dt: f32) {
+        app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs_f32(dt));
+        app.update();
+    }
+
+    #[test]
+    fn wheel_eases_camera_and_ui_discards_new_scroll_without_interrupting_settling() {
+        let mut app = App::new();
+        app.insert_resource(Time::<()>::default())
+            .insert_resource(CameraZoom::new(20.0))
+            .init_resource::<crate::ui_input::UiInput>()
+            .add_message::<MouseWheel>()
+            .add_systems(Update, (zoom_camera, follow_camera).chain());
+        app.world_mut().spawn((Transform::default(), local(None)));
+        let camera = app.world_mut().spawn((Camera3d::default(), Transform::default())).id();
+        let wheel = |app: &mut App, unit, y| {
+            app.world_mut().write_message(MouseWheel {
+                unit, x: 0.0, y, window: Entity::PLACEHOLDER, phase: bevy::input::touch::TouchPhase::Moved,
+            });
+        };
+
+        wheel(&mut app, MouseScrollUnit::Line, 5.0);
+        step(&mut app, 1.0 / 60.0);
+        let zoom = app.world().resource::<CameraZoom>();
+        assert_eq!(zoom.target, 15.0);
+        assert!(zoom.current > 15.0 && zoom.current < 20.0, "first frame must blend, not jump");
+        let distance = app.world().get::<Transform>(camera).unwrap().translation.distance(Vec3::new(0.0, 0.0, CAM_OFFSET_Z));
+        assert!((distance - zoom.current).abs() < 1e-5, "camera must use the blended distance");
+        let previous = zoom.current;
+
+        app.world_mut().resource_mut::<crate::ui_input::UiInput>().over_ui = true;
+        wheel(&mut app, MouseScrollUnit::Line, -8.0);
+        step(&mut app, 1.0 / 60.0);
+        let zoom = app.world().resource::<CameraZoom>();
+        assert_eq!(zoom.target, 15.0, "UI scroll must be consumed without zooming");
+        assert!(zoom.current < previous, "an accepted zoom must keep settling over UI");
+        app.world_mut().resource_mut::<crate::ui_input::UiInput>().over_ui = false;
+        wheel(&mut app, MouseScrollUnit::Pixel, -40.0);
+        step(&mut app, 1.0 / 60.0);
+        assert_eq!(app.world().resource::<CameraZoom>().target, 16.0);
+
+        for (scroll, limit) in [(1000.0, CAM_HEIGHT_MIN), (-1000.0, CAM_HEIGHT_MAX)] {
+            wheel(&mut app, MouseScrollUnit::Line, scroll);
+            for _ in 0..60 { step(&mut app, 1.0 / 60.0); }
+            let zoom = app.world().resource::<CameraZoom>();
+            assert_eq!(zoom.target, limit);
+            assert_eq!(zoom.current, limit, "scroll must settle exactly at either limit");
+        }
+    }
+
+    #[test]
+    fn zoom_and_turn_response_are_independent_of_frame_rate() {
+        let mut results = Vec::new();
+        for fps in [30, 60, 120] {
+            let mut zoom = CameraZoom::new(25.0);
+            zoom.target = 12.0;
+            let mut rotation = Quat::IDENTITY;
+            for _ in 0..fps / 10 {
+                zoom.advance(1.0 / fps as f32);
+                rotation = turn_towards(rotation, 2.8, 1.0 / fps as f32);
+                assert!((12.0..25.0).contains(&zoom.current), "zoom must not overshoot");
+            }
+            results.push((zoom.current, rotation * Vec3::Z));
+        }
+        for (zoom, forward) in &results[1..] {
+            assert!((*zoom - results[0].0).abs() < 1e-4);
+            assert!(forward.distance(results[0].1) < 1e-4);
+        }
+    }
+
+    #[test]
+    fn heading_blend_crosses_the_angle_wrap_by_the_short_arc() {
+        let start = Quat::from_rotation_y(179.0_f32.to_radians());
+        let target = Quat::from_rotation_y(-179.0_f32.to_radians());
+        let turned = turn_towards(start, -179.0_f32.to_radians(), 1.0 / 60.0);
+        assert!(turned.angle_between(start) < 1.0_f32.to_radians());
+        assert!(turned.angle_between(target) < start.angle_between(target));
+        assert!((turned * Vec3::Z).z < -0.99, "must not rotate the long way through zero");
+    }
+
+    #[test]
+    fn local_turn_blends_while_movement_and_aim_change_immediately() {
+        let mut app = App::new();
+        app.insert_resource(Time::<()>::default())
+            .init_resource::<Assets<NavMesh>>()
+            .add_systems(Update, walk_local);
+        let player = app.world_mut().spawn((Transform::default(), local(Some(Vec3::new(0.0, 0.0, -2.0))), CharacterAnim::default())).id();
+        step(&mut app, 1.0 / 60.0);
+        let tf = app.world().get::<Transform>(player).unwrap();
+        let facing = app.world().get::<LocalPlayer>(player).unwrap().facing;
+        assert!((tf.translation.z + RUN_SPEED / 60.0).abs() < 1e-5);
+        assert!((facing.abs() - std::f32::consts::PI).abs() < 1e-5, "logical aim must update immediately");
+        let angle = Quat::IDENTITY.angle_between(tf.rotation);
+        assert!(angle > 0.1 && angle < 1.0, "180-degree reversal must begin with a partial turn");
+        for _ in 0..60 { step(&mut app, 1.0 / 60.0); }
+        let tf = app.world().get::<Transform>(player).unwrap();
+        assert!(tf.translation.distance(Vec3::new(0.0, 0.0, -2.0)) < 1e-5);
+        assert!(tf.rotation.angle_between(Quat::from_rotation_y(facing)) < 0.001);
+
+        let mut p = app.world_mut().get_mut::<LocalPlayer>(player).unwrap();
+        p.facing = std::f32::consts::FRAC_PI_2;
+        p.casting = 0.5;
+        step(&mut app, 1.0 / 60.0);
+        assert!((app.world().get::<Transform>(player).unwrap().rotation * Vec3::Z).distance(Vec3::X) < 1e-5,
+            "cast effects must still align with their aim immediately");
+    }
+
+    #[test]
+    fn remote_player_blends_record_heading_but_snaps_on_teleport_and_cast() {
+        let mut app = App::new();
+        app.insert_resource(Time::<()>::default()).add_systems(Update, move_remotes);
+        let remote = app.world_mut().spawn((Transform::default(), CharacterAnim::default(), RemotePlayer {
+            actor: 2, target: Vec3::X, facing: -std::f32::consts::FRAC_PI_2, still_for: 0.0, held: 0.0, held_until_tick: None,
+        })).id();
+        step(&mut app, 1.0 / 60.0);
+        let tf = app.world().get::<Transform>(remote).unwrap();
+        assert!(tf.translation.x > 0.0);
+        assert!(Quat::IDENTITY.angle_between(tf.rotation) < 1.0);
+        assert!((tf.rotation * Vec3::Z).x < 0.0, "turn toward the record's heading, not its travel direction");
+
+        let mut r = app.world_mut().get_mut::<RemotePlayer>(remote).unwrap();
+        r.target = Vec3::X * 20.0;
+        r.facing = -std::f32::consts::FRAC_PI_2;
+        step(&mut app, 1.0 / 60.0);
+        let tf = app.world().get::<Transform>(remote).unwrap();
+        assert_eq!(tf.translation, Vec3::X * 20.0);
+        assert!((tf.rotation * Vec3::Z).distance(-Vec3::X) < 1e-5);
+        let mut r = app.world_mut().get_mut::<RemotePlayer>(remote).unwrap();
+        r.facing = 0.0;
+        r.held = 0.5;
+        step(&mut app, 1.0 / 60.0);
+        assert!((app.world().get::<Transform>(remote).unwrap().rotation * Vec3::Z).distance(Vec3::Z) < 1e-5);
+    }
+}
+
 /// The networking and local-player systems; crate::skills runs after them (its
 /// camera shake on top of the follow camera).
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
@@ -265,20 +519,25 @@ pub struct NetSystems;
 
 pub struct NetPlugin;
 
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct NetReceive;
+
 impl Plugin for NetPlugin {
     fn build(&self, app: &mut App) {
         // DSOR_ZOOM=<height>: start at another zoom (debugging screenshots).
         let zoom = std::env::var("DSOR_ZOOM").ok().and_then(|z| z.parse().ok()).unwrap_or(CAM_HEIGHT_DEFAULT);
-        app.insert_resource(CameraZoom(zoom))
+        app.insert_resource(CameraZoom::new(zoom))
             .add_systems(Startup, connect.run_if(resource_exists::<NetConfig>))
             .add_systems(PreUpdate, finish_login.run_if(resource_exists::<LoggingIn>))
             .add_systems(
                 PreUpdate,
-                pump.run_if(net_exists),
+                pump.in_set(NetReceive).run_if(net_exists),
             )
             .add_systems(
                 Update,
-                (debug_hierarchy, spawn_local, dress, apply_remotes, move_remotes, click_to_move, walk_local, zoom_camera, follow_camera, send_moves)
+                (debug_hierarchy, spawn_local, dress, apply_remotes, move_remotes,
+                    click_to_move.run_if(crate::loading::gameplay_ready), walk_local.run_if(crate::loading::gameplay_ready),
+                    zoom_camera.run_if(crate::loading::gameplay_ready), follow_camera, send_moves.run_if(crate::loading::gameplay_ready))
                     .chain()
                     .in_set(NetSystems)
                     .run_if(net_exists),
@@ -372,6 +631,10 @@ pub fn last_per_actor<T>(batch: Vec<T>, actor: impl Fn(&T) -> u32) -> Vec<T> {
 #[derive(Resource)]
 pub struct NetActive;
 
+/// Lets the in-client login screen recover from a refused game connection.
+#[derive(Resource)]
+pub struct ConnectionFailure(pub String);
+
 fn net_exists(active: Option<Res<NetActive>>) -> bool {
     active.is_some()
 }
@@ -435,14 +698,17 @@ fn finish_login(world: &mut World) {
     }
 }
 
-fn start_session(world: &mut World, config: NetConfig) {
+pub(crate) fn start_session(world: &mut World, config: NetConfig) {
+    world.resource_mut::<crate::loading::LoadingScreen>().connecting();
+    world.remove_resource::<ConnectionFailure>();
     let now = now_ms(world.resource::<Time<Real>>());
     let Some(credentials) = Credentials::parse(&config.account, &config.session) else {
-        error!("bad credentials: account {:?}, session {:?}", config.account, config.session);
+        error!("invalid account or session received from the account service");
         return;
     };
     let Some(login) = dsor_proto::session::resolve(&config.login, 2190) else {
         error!("cannot resolve the login server {}", config.login);
+        world.insert_resource(ConnectionFailure("Cannot resolve the game server.".into()));
         return;
     };
     // One RakNet GUID per run, as the real client keeps one for all its connections.
@@ -562,7 +828,8 @@ fn pump(
     roots: Query<Entity, With<MapRoot>>,
     assets: Res<AssetServer>,
     manifests: Res<Assets<MapManifest>>,
-    left_behind: Query<Entity, Or<(With<crate::npc::Npc>, With<RemotePlayer>)>>,
+    left_behind: Query<Entity, Or<(With<crate::npc::Npc>, With<RemotePlayer>, With<LocalPlayer>)>>,
+    mut loading: ResMut<crate::loading::LoadingScreen>,
 ) {
     let now = now_ms(&time);
     let mut changed_map = false;
@@ -592,6 +859,7 @@ fn pump(
     while let Some(event) = net.session.poll_event() {
         match event {
             SessionEvent::Connect { target, farewell } => {
+                loading.connecting();
                 if let Some(t) = net.transport.as_mut() {
                     for d in &farewell {
                         let _ = t.send(d);
@@ -599,7 +867,10 @@ fn pump(
                 }
                 match Transport::connect(&target.to_string(), net.relay.as_deref()) {
                     Ok(t) => net.transport = Some(t),
-                    Err(e) => error!("cannot reach {target}: {e}"),
+                    Err(e) => {
+                        error!("cannot reach {target}: {e}");
+                        commands.insert_resource(ConnectionFailure("Cannot reach the game server. Sign in again to retry.".into()));
+                    }
                 }
                 info!("connecting to {target}");
             }
@@ -618,8 +889,10 @@ fn pump(
             }
             SessionEvent::CreationRefused(reason) => {
                 error!("the server refused the new character {:?} (deny reason {reason}: 1 name taken, 2 empty, 3 invalid, 7 already made)", net.new_character.0);
+                commands.insert_resource(ConnectionFailure("The character name was refused. Choose another name in Settings and sign in again.".into()));
             }
             SessionEvent::MapAssigned { name, rule_set } => {
+                loading.map(name.clone());
                 info!("map {name} (rule set {rule_set})");
                 if current.as_ref().is_some_and(|c| c.name == name) {
                     continue;
@@ -673,7 +946,10 @@ fn pump(
                     }
                 }
             }
-            SessionEvent::Disconnected(reason) => warn!("disconnected: {reason:?}"),
+            SessionEvent::Disconnected(reason) => {
+                warn!("disconnected: {reason:?}");
+                commands.insert_resource(ConnectionFailure("The game server disconnected. Sign in again to retry.".into()));
+            }
         }
     }
     // CONTRACT: not in the pass that changed map: `current` is still the OLD map
@@ -939,8 +1215,8 @@ fn apply_remotes(
 
 /// Other players run toward their last reported position at the run speed, and
 /// snap when they are far off (a teleport, a map entry).
-fn move_remotes(time: Res<Time>, mut remotes: Query<(&mut Transform, &mut RemotePlayer, &mut CharacterAnim)>) {
-    for (mut tf, mut r, mut anim) in &mut remotes {
+fn move_remotes(time: Res<Time>, mut remotes: Query<(&mut Transform, &mut RemotePlayer, &mut CharacterAnim, Has<crate::monsters::Monster>)>) {
+    for (mut tf, mut r, mut anim, monster) in &mut remotes {
         if anim.dead {
             continue;
         }
@@ -964,7 +1240,11 @@ fn move_remotes(time: Res<Time>, mut remotes: Query<(&mut Transform, &mut Remote
         // way). FAILURE: turned toward each step while walking and to the facing
         // between steps, a chasing creature (walking to its ring slot, facing the
         // player) flickered between the two ("ils recalculent en boucle l'angle").
-        tf.rotation = Quat::from_rotation_y(r.facing);
+        tf.rotation = if flat > 8.0 || monster {
+            Quat::from_rotation_y(r.facing)
+        } else {
+            turn_towards(tf.rotation, r.facing, time.delta_secs())
+        };
         // CONTRACT: a short grace before standing: records arrive 25 a second and a
         //   remote player reaches each one a little early, so without it the run
         //   restarted at every record ("les animations ne se jouent pas entierement").
@@ -1036,6 +1316,7 @@ pub fn cursor_ground(
 #[allow(clippy::too_many_arguments)]
 fn click_to_move(
     buttons: Res<ButtonInput<MouseButton>>,
+    ui: Res<crate::ui_input::UiInput>,
     keys: Res<ButtonInput<KeyCode>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     // The 3D view's camera: the UI has its own (crate::ui::UiCamera), and with
@@ -1046,7 +1327,7 @@ fn click_to_move(
     mut players: Query<(&Transform, &mut LocalPlayer)>,
     hovered: Option<Res<crate::monsters::Hovered>>,
 ) {
-    if !buttons.pressed(MouseButton::Left) || keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) {
+    if ui.blocks(MouseButton::Left) || !buttons.pressed(MouseButton::Left) || keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) {
         return;
     }
     // A monster under the cursor: the click attacks it (crate::skills), it is no walk.
@@ -1138,7 +1419,7 @@ fn walk_local(
                 _ => player.target = None,
             }
         }
-        tf.rotation = Quat::from_rotation_y(player.facing);
+        tf.rotation = turn_towards(tf.rotation, player.facing, time.delta_secs());
         // A skill's animation plays to its end unless the player walks off; forcing
         // Idle as soon as the movement block lifted cut every cast short.
         let wanted = if moving {
@@ -1154,11 +1435,14 @@ fn walk_local(
     }
 }
 
-fn zoom_camera(mut wheel: MessageReader<bevy::input::mouse::MouseWheel>, mut zoom: ResMut<CameraZoom>) {
+fn zoom_camera(mut wheel: MessageReader<bevy::input::mouse::MouseWheel>, mut zoom: ResMut<CameraZoom>, ui: Res<crate::ui_input::UiInput>, time: Res<Time>) {
     for w in wheel.read() {
+        if ui.over_ui { continue; }
         let step = if w.unit == bevy::input::mouse::MouseScrollUnit::Line { w.y } else { w.y / 40.0 };
-        zoom.0 = (zoom.0 - step).clamp(CAM_HEIGHT_MIN, CAM_HEIGHT_MAX);
+        zoom.target = (zoom.target - step).clamp(CAM_HEIGHT_MIN, CAM_HEIGHT_MAX);
     }
+    // Previously accepted input keeps settling even after the cursor enters UI.
+    zoom.advance(time.delta_secs());
 }
 
 /// The DSO camera: fixed pitch and yaw, looking at the player from `zoom` above.
@@ -1174,7 +1458,7 @@ fn follow_camera(
     // The zoom is the camera's distance to the player along its view.
     // FAILURE (2026-10-06): read as an altitude, the camera sat 35 units away and the
     // player was a speck ("je vois pas le perso que je joue").
-    let distance = zoom.0;
+    let distance = zoom.current;
     for (mut cam, mut projection) in &mut cameras {
         *cam = Transform::from_translation(target + back * distance).with_rotation(rotation);
         if let Projection::Perspective(p) = &mut *projection {

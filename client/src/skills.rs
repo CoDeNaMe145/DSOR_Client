@@ -425,7 +425,7 @@ impl Plugin for SkillsPlugin {
             .add_systems(Startup, load)
             .add_systems(
                 Update,
-                (index_skills, cast_input, remote_skills, status_visuals, test_cast, run_pending, carry_casters, fly_bullets, play_sequences, start_fx_animations, retire_effects, shake_camera, test_shot, test_view, debug_fx_positions)
+                (index_skills, cast_input.run_if(crate::loading::gameplay_ready), remote_skills, status_visuals, test_cast, run_pending, carry_casters, fly_bullets, play_sequences, start_fx_animations, retire_effects, shake_camera, test_shot, test_view, debug_fx_positions)
                     .chain()
                     .after(crate::net::NetSystems),
             );
@@ -622,28 +622,32 @@ fn cast_input(
     time: Res<Time<Real>>,
     mut players: Query<(Entity, &mut Transform, &mut LocalPlayer, &Character)>,
     mut cooldowns: Local<HashMap<String, f64>>,
-    (hovered, monsters, mut debug_monsters): (
+    (hovered, monsters, mut debug_monsters, ui, mut ui_skills): (
         Res<crate::monsters::Hovered>,
         Query<(&GlobalTransform, &crate::monsters::Monster, &CharacterAnim)>,
         ResMut<crate::monsters::DebugMonsters>,
+        Res<crate::ui_input::UiInput>,
+        ResMut<crate::ui::SkillClicks>,
     ),
     // A target skill aimed at a monster out of reach: (slot, monster), cast once
     // the walk brings it in reach.
     mut queued: Local<Option<(usize, Entity)>>,
 ) {
+    let clicked_slot = ui_skills.0.take();
+    if ui.typing { return; }
     let Some(mut net) = net else { return };
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
     // A click on the ground (a walk) drops the pending attack.
-    if buttons.just_pressed(MouseButton::Left) && hovered.0.is_none() {
+    if !ui.blocks(MouseButton::Left) && buttons.just_pressed(MouseButton::Left) && hovered.0.is_none() {
         *queued = None;
     }
     // One press, one cast (holding a key re-fired the skill as soon as it
     // unblocked: "certains sorts se lancent 2x"); only the basic attack on
     // Shift + left button repeats while held.
     // A left click held on a monster attacks it with the left button's skill.
-    let slot = if (shift || hovered.0.is_some()) && buttons.pressed(MouseButton::Left) {
+    let slot = if !ui.blocks(MouseButton::Left) && (shift || hovered.0.is_some()) && buttons.pressed(MouseButton::Left) {
         Some(0)
-    } else if buttons.just_pressed(MouseButton::Right) {
+    } else if !ui.blocks(MouseButton::Right) && buttons.just_pressed(MouseButton::Right) {
         Some(1)
     } else {
         [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5]
@@ -653,7 +657,7 @@ fn cast_input(
     };
     // DSOR_TEST_SLOT=<slot>: that quick slot pressed all the time (testing online
     // without a keyboard; the cooldowns pace it).
-    let slot = slot.or_else(|| std::env::var("DSOR_TEST_SLOT").ok().and_then(|v| v.parse().ok()));
+    let slot = slot.or(clicked_slot).or_else(|| std::env::var("DSOR_TEST_SLOT").ok().and_then(|v| v.parse().ok()));
     let (slot, aimed) = match slot {
         Some(s) => {
             *queued = None;

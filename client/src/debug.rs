@@ -173,6 +173,7 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>) {
     commands
         .spawn((
             Panel,
+            crate::ui_input::BlocksWorldInput,
             Node {
                 position_type: PositionType::Absolute,
                 left: Val::Px(8.0),

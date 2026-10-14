@@ -25,6 +25,16 @@ Natively the client reads `<workspace>/assets` (override with the `DSOR_ASSETS`
 environment variable). In the browser it fetches `assets/...` relative to the
 page, so the web server must serve the same tree next to `index.html`.
 
+For a production `dso_server` checkout that contains
+`gameplay/pathengine_navigation.py`, export navigation with its reader:
+
+```sh
+python tools/export_navmesh.py <export_win32> <assets> --server <dso_server>
+```
+
+This writes `maps/<map>.nav.bin` in world X/Y/Z coordinates. The original
+`EXPERIMENTAL` reader remains supported when `--server` is omitted.
+
 ## What is in it
 
 | Path | What |

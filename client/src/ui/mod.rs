@@ -1,7 +1,7 @@
 //! The 2018 client's interface: the windows always on screen (the bottom bar with
 //! the health and resource globes, the XP bar and the quick slots; the money in the
-//! top left corner; the menu buttons in the top right) and three menus: the
-//! inventory (I), the character sheet (C) and the skills (K).
+//! top left corner; navigation and menu buttons) and the inventory (I),
+//! character sheet (C), skills (K) and game menu (Escape).
 //!
 //! tools/export_ui.py exports each window (`interface/<name>.ui.json`): its
 //! widgets in drawing order, each with its artwork as the triangles, atlas UVs and
@@ -12,10 +12,11 @@
 //! top left, the menu in the top right.
 //!
 //! Drawn by a 2D camera over the 3D one, as meshes: one mesh per run of widgets
-//! sharing a texture (the engine's own draw order kept by depth), built once; a
+//! sharing a texture, anchor and state/page gate (draw order kept by depth), built once; a
 //! resize only moves their parents. The globes and the XP bar are cut to their
 //! fill by their material's clip rectangle; texts are Text2d. Nothing is rebuilt
-//! per frame: values change materials and texts only when they change.
+//! per frame: values change materials/texts and controls select visual states.
+//! controls.rs shares page visibility between drawing and pointer hit testing.
 //! SEE: docs/ui.md.
 
 use std::collections::HashMap;
@@ -33,6 +34,11 @@ use bevy::sprite_render::{AlphaMode2d, Material2d, Material2dPlugin};
 use bevy::window::{PrimaryWindow, WindowResized};
 use serde::Deserialize;
 
+mod controls;
+mod local_map;
+use controls::{Element, Gate, WindowControls};
+pub(crate) use controls::SkillClicks;
+
 /// The reference screen the 2018 interface was laid out on.
 const BASE_W: f32 = 1024.0;
 const BASE_H: f32 = 768.0;
@@ -42,7 +48,7 @@ const LAYER: usize = 7;
 const FONT_SCALE: f32 = 1.5;
 
 /// Windows shown from the start, and their depth (later ones over earlier ones).
-const HUD_WINDOWS: [(&str, f32); 4] = [("bottombar", 10.0), ("currencybar", 20.0), ("gamebar", 30.0), ("interactinfo", 40.0)];
+const HUD_WINDOWS: [(&str, f32); 5] = [("bottombar", 10.0), ("currencybar", 20.0), ("gamebar", 30.0), ("ingamemenu", 35.0), ("interactinfo", 40.0)];
 
 /// The hovered monster's info window (top of the screen): shown while a monster
 /// is under the cursor, with only its monster parts -- the frame, the health bar
@@ -61,11 +67,19 @@ fn hover_part(id: &str) -> bool {
         || id.starts_with("Canvas/Label_bg/ActorInfo/ActorInfo/gothic_panel")
 }
 /// Windows the player opens: (window, key, depth).
-const MENU_WINDOWS: [(&str, KeyCode, f32); 3] = [
+const MENU_WINDOWS: [(&str, KeyCode, f32); 4] = [
     ("inventory", KeyCode::KeyI, 100.0),
     ("charactersheet", KeyCode::KeyC, 110.0),
-    ("skillwindow2", KeyCode::KeyK, 120.0),
+    ("skilltalentswindow", KeyCode::KeyK, 120.0),
+    ("gamemenu", KeyCode::Escape, 500.0),
 ];
+
+/// Other top-navigation panels, loaded once and opened by their own shortcut.
+const NAV_WINDOWS: [&str; 8] = ["questlog", "travelmap", "locationmap", "shopwindow", "socialscreen", "pvpleaderboards", "matchmakingwindow", "eventwindow"];
+
+fn is_menu(name: &str) -> bool {
+    MENU_WINDOWS.iter().any(|(n, _, _)| *n == name) || NAV_WINDOWS.contains(&name)
+}
 
 // -- data ------------------------------------------------------------------------
 
@@ -87,17 +101,33 @@ struct Label {
     align: [u8; 2],
     #[serde(default)]
     bold: bool,
+    #[serde(default)]
+    word_break: bool,
 }
 
 #[derive(Deserialize, Clone)]
 struct Widget {
     id: String,
+    #[serde(default, rename = "type")]
+    kind: String,
+    #[serde(default)]
+    event: String,
+    #[serde(default)]
+    click_through: bool,
+    #[serde(default = "enabled_default")]
+    enabled: bool,
+    #[serde(default)]
+    button: Option<String>,
+    #[serde(default)]
+    state: Option<String>,
     k: f32,
     rect: [f32; 4],
     hidden: bool,
     art: Option<Art>,
     text: Option<Label>,
 }
+
+fn enabled_default() -> bool { true }
 
 #[derive(Asset, TypePath, Deserialize)]
 pub struct Layout {
@@ -238,6 +268,9 @@ enum Gauge {
     Xp,
     /// The hovered monster's health (interactinfo Healthbar/progress).
     TargetHealth,
+    HealthBar,
+    ResourceBar,
+    Wisdom,
 }
 
 /// A text the game sets: what it shows.
@@ -251,6 +284,10 @@ enum ValueKind {
     Copper,
     Andermant,
     Level,
+    XpPercent,
+    WisdomLevel,
+    WisdomProgress,
+    LocationName,
     Name,
     Page,
     /// The hovered monster's title and level (interactinfo).
@@ -285,6 +322,8 @@ struct Figures {
     health: (f32, f32),
     resource: (f32, f32),
     xp: f32,
+    /// The current protocol does not yet decode wisdom progression.
+    wisdom: Option<(u32, f32)>,
     bar: Vec<Option<String>>,
     name: String,
     online: bool,
@@ -313,10 +352,12 @@ impl Plugin for UiPlugin {
             .init_asset_loader::<SkillIconsLoader>()
             .init_resource::<Screen>()
             .init_resource::<Figures>()
+            .init_resource::<controls::Pointer>()
+            .init_resource::<SkillClicks>()
             .add_systems(Startup, setup)
             .add_systems(
                 Update,
-                (match_scene_camera, spawn_windows, follow_screen, read_figures, (update_fills, update_values, update_slots), toggle_windows, show_hover_window).chain(),
+                (match_scene_camera, spawn_windows, follow_screen, read_figures, controls::keyboard, controls::interact, controls::edit_text, (update_fills, update_values, update_slots, local_map::update), controls::paint, show_hover_window).chain().run_if(crate::loading::gameplay_ready),
             );
     }
 }
@@ -346,6 +387,9 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>) {
     for (name, key, z) in MENU_WINDOWS {
         loaded.layouts.push((assets.load(format!("interface/{name}.ui.json")), z, Some(key)));
     }
+    for (i, name) in NAV_WINDOWS.iter().enumerate() {
+        loaded.layouts.push((assets.load(format!("interface/{name}.ui.json")), 160.0 + i as f32 * 20.0, None));
+    }
     loaded.spawned = vec![false; loaded.layouts.len()];
     commands.insert_resource(loaded);
 }
@@ -357,6 +401,10 @@ fn gauge_of(id: &str) -> Option<Gauge> {
         return Some(Gauge::TargetHealth);
     }
     match parent {
+        "Health" if id.ends_with("/progress") => Some(Gauge::HealthBar),
+        "Resource" if id.ends_with("/progress") => Some(Gauge::ResourceBar),
+        "bottombar_xp_bar" if id.ends_with("/progress") => Some(Gauge::Xp),
+        "bottombar_wisdom_bar" if id.ends_with("/progress") => Some(Gauge::Wisdom),
         "ProgressBar_health" => Some(Gauge::Health),
         "ProgressBar_rage" | "ProgressBar_mana" | "ProgressBar_stamina" | "ProgressBar_mechanicResource" => Some(Gauge::Resource),
         "ProgressBar_xp" if !id.ends_with("glow") && !id.contains("glow") => Some(Gauge::Xp),
@@ -388,10 +436,14 @@ fn value_of(id: &str) -> Option<ValueKind> {
         "silver_display" => ValueKind::Silver,
         "copper_display" => ValueKind::Copper,
         "andermant_display" => ValueKind::Andermant,
-        "Level" if id.contains("ProgressBar_xp") => ValueKind::Level,
+        "Level" if id.contains("ProgressBar_xp") || id.contains("/bottombar_xp_bar/") => ValueKind::Level,
+        "XP" if id.contains("/bottombar_xp_bar/") => ValueKind::XpPercent,
+        "Level" if id.contains("/bottombar_wisdom_bar/") => ValueKind::WisdomLevel,
+        "Wisdom" if id.contains("/bottombar_wisdom_bar/") => ValueKind::WisdomProgress,
         "ActorName" if id.contains("/Healthbar/") => ValueKind::TargetName,
         "Level" if id.contains("/Levelcircle4/") => ValueKind::TargetLevel,
         "CharacterName" => ValueKind::Name,
+        "LocationName" => ValueKind::LocationName,
         "PageNumText" => ValueKind::Page,
         _ => return None,
     })
@@ -405,7 +457,7 @@ fn quick_slot_of(id: &str) -> Option<usize> {
         let leaf = it.next()?;
         (it.next().unwrap_or(""), leaf)
     };
-    if parent != "icon_bg" {
+    if !matches!(parent, "icon_bg" | "Iconslots") {
         return None;
     }
     Some(match leaf {
@@ -426,6 +478,7 @@ fn static_text(l: &Label) -> bool {
 #[derive(Default)]
 struct Run {
     k: f32,
+    gate: Gate,
     /// Drawing order: transparent 2D meshes are sorted by their entity's z.
     z: f32,
     tex: Option<String>,
@@ -476,7 +529,7 @@ fn spawn_windows(
         if loaded.spawned[i] {
             continue;
         }
-        let (handle, z, key) = loaded.layouts[i].clone();
+        let (handle, z, _key) = loaded.layouts[i].clone();
         let Some(layout) = layouts.get(&handle) else { continue };
         loaded.spawned[i] = true;
         // DSOR_UI_OPEN=inventory,...: menus open from the start (screenshots).
@@ -485,7 +538,7 @@ fn spawn_windows(
             .spawn((
                 Window2018(layout.window.clone()),
                 Transform::from_xyz(0.0, 0.0, z),
-                if (key.is_some() || layout.window == HOVER_WINDOW) && !open { Visibility::Hidden } else { Visibility::Inherited },
+                if (is_menu(&layout.window) || layout.window == HOVER_WINDOW) && !open { Visibility::Hidden } else { Visibility::Inherited },
             ))
             .id();
         // One artwork parent (y flipped) and one text parent per k.
@@ -506,13 +559,15 @@ fn spawn_windows(
             }
             let m = materials.add(material(atlas(&run.tex)));
             let z = run.z;
-            commands.spawn((Mesh2d(meshes.add(run.mesh())), MeshMaterial2d(m), Transform::from_xyz(0.0, 0.0, z), RenderLayers::layer(LAYER), ChildOf(parent)));
+            let gate = run.gate.clone();
+            commands.spawn((Mesh2d(meshes.add(run.mesh())), MeshMaterial2d(m), Transform::from_xyz(0.0, 0.0, z), RenderLayers::layer(LAYER), ChildOf(parent), Element { root, gate }, Visibility::Hidden));
         };
         let wanted_resource = resource_bar(class);
+        let mut controls = WindowControls::new(layout);
         // Each gauge fills one rectangle: the union of its pieces (a globe's two
         // halves, the XP bar's ends and middle).
         let mut gauge_rects: HashMap<(u8, u32), [f32; 4]> = HashMap::new();
-        for w in &layout.widgets {
+        for w in layout.widgets.iter().filter(|w| !w.hidden) {
             if let (Some(g), Some(art)) = (gauge_of(&w.id), &w.art) {
                 if g == Gauge::Resource && !w.id.contains(&format!("/{wanted_resource}/")) {
                     continue;
@@ -522,20 +577,23 @@ fn spawn_windows(
                 *e = [e[0].min(b[0]), e[1].min(b[1]), e[2].max(b[2]), e[3].max(b[3])];
             }
         }
-        for w in &layout.widgets {
+        for w in layout.widgets.iter().filter(|w| !w.hidden) {
             if layout.window == HOVER_WINDOW && !hover_part(&w.id) {
                 continue;
             }
             if let Some(slot) = quick_slot_of(&w.id) {
+                controls.region(w.k, w.rect, Gate::default());
                 let p = parent(&mut commands, w.k, true);
                 commands.spawn((QuickSlot { slot, k: w.k, rect: w.rect, shown: None }, Transform::from_xyz(0.0, 0.0, depth + 0.005), Visibility::Inherited, ChildOf(p)));
             }
             let gauge = gauge_of(&w.id);
             let other_class = gauge == Some(Gauge::Resource) && !w.id.contains(&format!("/{wanted_resource}/"));
-            if (w.hidden && gauge.is_none()) || other_class {
+            if other_class {
                 continue;
             }
+            let gate = controls.gate(&layout.window, w);
             if let Some(art) = &w.art {
+                controls.region(w.k, bounds(&art.pos), gate.clone());
                 depth += 0.01;
                 if let Some(which) = gauge {
                     // Its own mesh and material, cut to the fill.
@@ -552,25 +610,28 @@ fn spawn_windows(
                         Transform::from_xyz(0.0, 0.0, depth),
                         RenderLayers::layer(LAYER),
                         ChildOf(p),
+                        Element { root, gate: gate.clone() },
+                        Visibility::Hidden,
                     ));
                 } else {
-                    let same = run.as_ref().is_some_and(|r| r.k == w.k && r.tex == art.tex);
+                    let same = run.as_ref().is_some_and(|r| r.k == w.k && r.tex == art.tex && r.gate == gate);
                     if !same {
                         let prev = run.take();
                         if let Some(prev_k) = prev.as_ref().map(|r| r.k) {
                             let p = parent(&mut commands, prev_k, true);
                             flush(&mut commands, prev, p, &mut meshes, &mut materials);
                         }
-                        run = Some(Run { k: w.k, tex: art.tex.clone(), ..default() });
+                        run = Some(Run { k: w.k, tex: art.tex.clone(), gate: gate.clone(), ..default() });
                     }
                     run.as_mut().unwrap().push(art, depth);
                 }
             }
             if let Some(label) = &w.text {
                 let value = value_of(&w.id);
-                if !(static_text(label) || value.is_some()) || label.color[3] <= 0.0 {
+                if !(static_text(label) || value.is_some() || w.kind == "TextEntry") || label.color[3] <= 0.0 {
                     continue;
                 }
+                controls.region(w.k, w.rect, gate.clone());
                 let p = parent(&mut commands, w.k, false);
                 let [l, t, r, b] = w.rect;
                 let x = match label.align[0] { 0 => l, 2 => r, _ => (l + r) * 0.5 };
@@ -594,16 +655,24 @@ fn spawn_windows(
                     Transform::from_xyz(x, -y, depth + 0.005).with_scale(Vec3::splat(1.0 / screen.scale)),
                     RenderLayers::layer(LAYER),
                     ChildOf(p),
+                    Element { root, gate: gate.clone() },
+                    Visibility::Hidden,
                 ));
                 if let Some(v) = value {
                     e.insert(Value(v));
                 }
+                if label.word_break {
+                    e.insert((bevy::text::TextBounds::new_horizontal((r - l) * screen.scale),
+                        TextLayout::justify(match label.align[0] { 0 => Justify::Left, 2 => Justify::Right, _ => Justify::Center })));
+                }
+                if w.kind == "TextEntry" { e.insert(controls::EntryLabel(w.id.clone())); }
             }
         }
         if let Some(prev_k) = run.as_ref().map(|r| r.k) {
             let p = parent(&mut commands, prev_k, true);
             flush(&mut commands, run.take(), p, &mut meshes, &mut materials);
         }
+        commands.entity(root).insert((controls, crate::ui_input::UiRegions::default()));
     }
 }
 
@@ -627,7 +696,7 @@ fn follow_screen(
     mut resized: MessageReader<WindowResized>,
     mut screen: ResMut<Screen>,
     mut follows: Query<(&Follows, &mut Transform), Without<Text2d>>,
-    mut texts: Query<(&mut TextFont, &mut Transform, &ChildOf), With<Text2d>>,
+    mut texts: Query<(&mut TextFont, &mut Transform, &ChildOf, &mut bevy::text::TextBounds), With<Text2d>>,
     labels: Query<(), With<Follows>>,
     mut fills: Query<&mut Fill>,
     mut first: Local<bool>,
@@ -645,12 +714,13 @@ fn follow_screen(
         *tf = follow_transform(&new, f.k, f.flip);
     }
     if (old_scale - new.scale).abs() > 1e-3 {
-        for (mut font, mut tf, parent) in &mut texts {
+        for (mut font, mut tf, parent, mut bounds) in &mut texts {
             if labels.contains(parent.parent()) {
                 if let bevy::text::FontSize::Px(px) = font.font_size {
                     font.font_size = bevy::text::FontSize::Px(px / old_scale * new.scale);
                 }
                 tf.scale = Vec3::splat(1.0 / new.scale);
+                if let Some(width) = &mut bounds.width { *width *= new.scale / old_scale; }
             }
         }
     }
@@ -668,7 +738,9 @@ fn read_figures(net: Option<NonSend<crate::net::Net>>, mut figures: ResMut<Figur
             figures.health = (80.0, 100.0);
             figures.resource = (60.0, 100.0);
             figures.xp = 0.35;
-            figures.bar = ["mage_magicmissile_default", "mage_fireball_default", "mage_frostnova_default", "mage_iceball_default", "mage_meteor_default", "mage_teleport_default", "mage_lightningstrike_default"]
+            figures.level = Some(1);
+            figures.wisdom = Some((0, 0.0));
+            figures.bar = ["magicmissile", "fireball", "frostnova", "iceball", "meteor", "teleport", "lightningstrike"]
                 .iter()
                 .map(|s| Some((*s).to_owned()))
                 .collect();
@@ -681,6 +753,7 @@ fn read_figures(net: Option<NonSend<crate::net::Net>>, mut figures: ResMut<Figur
         figures.health = (0.0, 0.0);
         figures.resource = (0.0, 0.0);
         figures.xp = 0.0;
+        figures.wisdom = None;
         figures.bar.clear();
     }
     // The server gives the current values; the maxima are the largest seen
@@ -730,26 +803,31 @@ fn update_fills(
     figures: Res<Figures>,
     hover: Res<crate::monsters::HoverInfo>,
     screen: Res<Screen>,
-    mut fills: Query<(&mut Fill, &MeshMaterial2d<UiMaterial>)>,
+    mut fills: Query<(&mut Fill, &MeshMaterial2d<UiMaterial>, &Element)>,
+    roots: Query<Ref<Transform>, With<Window2018>>,
     mut materials: ResMut<Assets<UiMaterial>>,
 ) {
-    for (mut f, m) in &mut fills {
+    for (mut f, m, element) in &mut fills {
+        let Ok(root) = roots.get(element.root) else { continue };
         let v = match f.which {
-            Gauge::Health => fraction(figures.health),
-            Gauge::Resource => fraction(figures.resource),
+            Gauge::Health | Gauge::HealthBar => fraction(figures.health),
+            Gauge::Resource | Gauge::ResourceBar => fraction(figures.resource),
             Gauge::Xp => figures.xp.clamp(0.0, 1.0),
+            Gauge::Wisdom => figures.wisdom.map(|(_, progress)| progress.clamp(0.0, 1.0)).unwrap_or(0.0),
             Gauge::TargetHealth => hover.0.as_ref().map(|h| fraction((h.2 as f32, h.3 as f32))).unwrap_or(0.0),
         };
-        if (v - f.shown).abs() < 1e-3 {
+        if (v - f.shown).abs() < 1e-3 && !root.is_changed() {
             continue;
         }
         f.shown = v;
         let [l, t, r, b] = f.rect;
         // Globes fill from the bottom; the XP bar from the left.
         let (min, max) = match f.which {
-            Gauge::Xp | Gauge::TargetHealth => (screen.world(f.k, l, b), screen.world(f.k, l + (r - l) * v, t)),
-            _ => (screen.world(f.k, l, b), screen.world(f.k, r, b - (b - t) * v)),
+            Gauge::Health | Gauge::Resource => (screen.world(f.k, l, b), screen.world(f.k, r, b - (b - t) * v)),
+            _ => (screen.world(f.k, l, b), screen.world(f.k, l + (r - l) * v, t)),
         };
+        let offset = root.translation.truncate();
+        let (min, max) = (min + offset, max + offset);
         if let Some(mut mat) = materials.get_mut(&m.0) {
             mat.clip = Vec4::new(min.x, min.y, max.x, max.y);
         }
@@ -760,9 +838,10 @@ fn update_values(
     figures: Res<Figures>,
     sheet: Res<crate::stats::Sheet>,
     hover: Res<crate::monsters::HoverInfo>,
+    current_map: Option<Res<crate::map::CurrentMap>>,
     mut texts: Query<(&Value, &mut Text2d)>,
 ) {
-    if !figures.is_changed() && !sheet.is_changed() && !hover.is_changed() {
+    if !figures.is_changed() && !sheet.is_changed() && !hover.is_changed() && !current_map.as_ref().is_some_and(|m| m.is_changed()) {
         return;
     }
     for (v, mut t) in &mut texts {
@@ -775,8 +854,13 @@ fn update_values(
             ValueKind::Copper => (copper % 100).to_string(),
             ValueKind::Andermant => figures.andermant.unwrap_or(0).to_string(),
             ValueKind::Level => figures.level.map(|l| l.to_string()).unwrap_or_else(|| "-".to_owned()),
+            ValueKind::XpPercent => format!("{:.0}%", figures.xp * 100.0),
+            ValueKind::WisdomLevel => figures.wisdom.map(|(level, _)| level.to_string()).unwrap_or_else(|| "—".to_owned()),
+            ValueKind::WisdomProgress => figures.wisdom.map(|(_, progress)| format!("{:.0}%", progress * 100.0)).unwrap_or_else(|| "Wisdom".to_owned()),
+            ValueKind::LocationName => current_map.as_ref().map(|m| m.name.split_once('_').map_or(m.name.as_str(), |(_, name)| name).replace('_', " ")).unwrap_or_else(|| "Map".to_owned()),
             ValueKind::Name => figures.name.clone(),
-            ValueKind::Page => "1/1".to_owned(),
+            // Each window owns its current page (controls::paint).
+            ValueKind::Page => continue,
             ValueKind::TargetName => hover.0.as_ref().map(|h| h.0.clone()).unwrap_or_default(),
             ValueKind::TargetLevel => hover.0.as_ref().map(|h| h.1.to_string()).unwrap_or_default(),
             ValueKind::Sheet(w) => match sheet.0.get(w) {
@@ -839,20 +923,6 @@ fn show_hover_window(hover: Res<crate::monsters::HoverInfo>, mut windows: Query<
             let want = if hover.0.is_some() { Visibility::Inherited } else { Visibility::Hidden };
             if *v != want {
                 *v = want;
-            }
-        }
-    }
-}
-
-fn toggle_windows(keys: Res<ButtonInput<KeyCode>>, loaded: Res<Loaded>, layouts: Res<Assets<Layout>>, mut windows: Query<(&Window2018, &mut Visibility)>) {
-    for (handle, _, key) in &loaded.layouts {
-        let (Some(key), Some(layout)) = (key, layouts.get(handle)) else { continue };
-        if !keys.just_pressed(*key) {
-            continue;
-        }
-        for (w, mut v) in &mut windows {
-            if w.0 == layout.window {
-                *v = if *v == Visibility::Hidden { Visibility::Inherited } else { Visibility::Hidden };
             }
         }
     }

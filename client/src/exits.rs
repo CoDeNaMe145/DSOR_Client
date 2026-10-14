@@ -94,7 +94,7 @@ impl Plugin for ExitsPlugin {
             .register_asset_loader(MapExitsLoader)
             .init_resource::<ExitState>()
             .add_systems(Update, (load_exits, spawn_exits).chain().run_if(resource_exists::<CurrentMap>))
-            .add_systems(Update, (click_exit, use_exit).chain().after(NetSystems));
+            .add_systems(Update, (click_exit, use_exit).chain().after(NetSystems).run_if(crate::loading::gameplay_ready));
     }
 }
 
@@ -148,6 +148,7 @@ fn spawn_exits(
 #[allow(clippy::too_many_arguments)]
 fn click_exit(
     buttons: Res<ButtonInput<MouseButton>>,
+    ui: Res<crate::ui_input::UiInput>,
     keys: Res<ButtonInput<KeyCode>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     // The 3D view's camera: the UI has its own (crate::ui::UiCamera), and with
@@ -159,7 +160,7 @@ fn click_exit(
     mut players: Query<(&Transform, &mut LocalPlayer)>,
     mut state: ResMut<ExitState>,
 ) {
-    if !buttons.just_pressed(MouseButton::Left) || keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) {
+    if ui.blocks(MouseButton::Left) || !buttons.just_pressed(MouseButton::Left) || keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) {
         return;
     }
     let Ok((tf, mut player)) = players.single_mut() else { return };

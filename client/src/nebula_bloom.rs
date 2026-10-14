@@ -50,6 +50,10 @@ impl Plugin for NebulaBloomPlugin {
                 bloom_compose
                     .after(crate::clamp::clamp)
                     .after(bevy::core_pipeline::tonemapping::tonemapping)
+                    // Both passes swap ViewTarget's source/destination. Without
+                    // an edge, their CPU swaps can disagree with GPU submission
+                    // order, feeding a previous frame back into the bloom.
+                    .before(bevy::anti_alias::fxaa::fxaa)
                     .in_set(Core3dSystems::PostProcess),
             );
     }
@@ -265,7 +269,7 @@ fn bloom_scene(
     }
 }
 
-/// Before the tone mapping: the blurred bright pass added x BloomScale.
+/// After tone mapping, before FXAA: add the blurred bright pass x BloomScale.
 fn bloom_compose(
     view: ViewQuery<(&ViewTarget, &BloomTargets, &BloomPipelines, &NebulaBloom)>,
     pipeline: Res<BloomPipeline>,

@@ -48,6 +48,31 @@ Details: `docs/assets.md`.
 
 ### 3. Native client
 
+Running `dsor-client.exe` without arguments opens its built-in login screen.
+On Windows, `Play.cmd` opens this same executable. Sign in or create an account,
+then press **PLAY** to enter the game in the same window. The client uses the
+account-service protocol from `dso_custom_client` and passes the returned
+account ID and session directly to its game connection.
+
+Build and run the complete client, including the login screen:
+
+```sh
+cargo build --locked --release -p dsor-client
+cargo run --locked --release -p dsor-client
+```
+
+The account service defaults to `http://127.0.0.1:8080`. The Rust client connects
+to the advertised game host on login port 2190 (or `launch.login_port` when
+provided), rather than the retired client's gateway port 80. The service must
+be running before signing in. **Settings** configures this address and the name,
+class and gender to use if the account has no character. Existing accounts enter
+with their first character. Preferences live in the ignored `client-auth.json`;
+passwords and sessions stay in memory. Tab switches fields, Ctrl+V pastes, and
+Enter submits the form. Failed authentication and connection errors appear in
+the game window and allow another attempt.
+
+The executable also retains the direct game and offline viewer commands:
+
 ```sh
 cargo run -p dsor-client --release -- a0200_kingscity          # map viewer (free camera)
 cargo run -p dsor-client --release -- a0302_wildforest --npcs   # with the level's NPCs
@@ -57,11 +82,34 @@ cargo run -p dsor-client --release -- --server 127.0.0.1:2190 --account <id> --s
 | Argument | What |
 |---|---|
 | `<map>` | the map to show offline (`a0200_kingscity` by default) |
+| `--login` / `--offline` | explicitly show the account screen / open the default map viewer |
 | `--cam x,y,z,tx,ty,tz` | camera position and look-at point, game frame |
 | `--screenshot` / `--screenshot-to <png>` | once loaded, save a screenshot and quit |
 | `--no-shadows`, `--npcs` | no sun shadows / place the level's NPCs |
 | `--character <class> <gender>` `[--anim <state>]` | a dressed demo character at the map centre (class 0 warrior, 1 mage, 2 ranger, 3 dwarf) |
 | `--server <host:port>` `--account <id>` `--sid <session>` `--char <id>` | play online against the login server |
+
+Fog distances now start beyond the camera's focus, keeping the top-down play
+area clear as the camera moves or zooms. Each map retains its fog colour and
+fade. Open **F2** and adjust **Fog range x** to move the haze farther away or
+closer; **Fog x** controls opacity. Both settings are saved with the other look
+controls. Default factors: sun **1.00**, back light **0.90**, ambient **0.90**,
+level lights **1.75**, exposure **0.25**, fog **0.55**, fog range **0.50**, bloom
+**0.80**, saturation **1.28**, vignette **0.00**, tonemapping **off**, shadows **on**.
+Opaque and alpha-masked models cast animated shadows, including NPCs, players,
+their equipment and solid summoned objects. Transparent effects remain unshadowed.
+The native client also applies ambient occlusion for contact shading beneath
+objects and in creases, including areas already covered by a sun shadow.
+
+Clicks over the HUD, open game windows, and F2/F3 panels are captured by the
+interface until release. They do not issue movement, attacks or exit requests;
+scrolling over the interface does not zoom the world camera.
+
+Startup and map transitions use the in-client loading screen with
+`splashart_crunch.png` and the frame/fill from `statusbar_connenctscreen_new.png`.
+Map progress follows loaded models and textures; gameplay resumes once the
+player and renderer are ready. The shared `LoadingScreen::begin_assets` API
+accepts asset batches for additional preload stages.
 
 ### 4. Browser client
 

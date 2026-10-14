@@ -300,6 +300,8 @@ pub struct Lighting {
     /// Exposure compensation, stops.
     pub exposure: f32,
     pub fog: f32,
+    /// Scale the authored fog distances beyond the camera's focus.
+    pub fog_range: f32,
     pub bloom: f32,
     pub saturation: f32,
     pub vignette: f32,
@@ -312,14 +314,15 @@ impl Default for Lighting {
     fn default() -> Self {
         Self {
             sun: 1.0,
-            back: 1.0,
-            ambient: 1.0,
-            lights: 1.0,
-            exposure: 0.0,
-            fog: 1.0,
-            bloom: 1.0,
-            saturation: 1.0,
-            vignette: 1.0,
+            back: 0.9,
+            ambient: 0.9,
+            lights: 1.75,
+            exposure: 0.25,
+            fog: 0.55,
+            fog_range: 0.5,
+            bloom: 0.8,
+            saturation: 1.28,
+            vignette: 0.0,
             tonemapping: false,
             shadows: true,
         }
@@ -341,6 +344,7 @@ const FIELDS: &[Field] = &[
     Field { label: "Level lights x", step: 0.05, get: |l| l.lights, set: |l, v| l.lights = v.max(0.0) },
     Field { label: "Exposure", step: 0.05, get: |l| l.exposure, set: |l, v| l.exposure = v.clamp(-5.0, 5.0) },
     Field { label: "Fog x", step: 0.05, get: |l| l.fog, set: |l, v| l.fog = v.clamp(0.0, 2.0) },
+    Field { label: "Fog range x", step: 0.25, get: |l| l.fog_range, set: |l, v| l.fog_range = v.clamp(0.25, 4.0) },
     Field { label: "Bloom x", step: 0.05, get: |l| l.bloom, set: |l, v| l.bloom = v.clamp(0.0, 4.0) },
     Field { label: "Saturation x", step: 0.02, get: |l| l.saturation, set: |l, v| l.saturation = v.clamp(0.0, 3.0) },
     Field { label: "Vignette x", step: 0.05, get: |l| l.vignette, set: |l, v| l.vignette = v.clamp(0.0, 2.0) },
@@ -408,9 +412,9 @@ impl Plugin for LightingPlugin {
                     (follow_level, apply_look, place_level_lights.run_if(resource_exists::<CurrentMap>)).chain(),
                     flicker,
                     player_light,
-                    shift_fog.after(apply_look),
                 ),
-            );
+            )
+            .add_systems(PostUpdate, shift_fog.after(bevy::transform::TransformSystems::Propagate));
     }
 }
 
@@ -660,6 +664,7 @@ fn spawn_panel(mut commands: Commands) {
     commands
         .spawn((
             Panel,
+            crate::ui_input::BlocksWorldInput,
             Node {
                 position_type: PositionType::Absolute,
                 right: Val::Px(8.0),
@@ -736,26 +741,28 @@ fn refresh_values(lighting: Res<Lighting>, mut texts: Query<(&ValueText, &mut Te
     }
 }
 
-/// The fog's distances follow the zoom: Nebula adds a fog plane shift to both
-/// (FogDistances = near + shift, far + shift, .., far - near: 0x849D6F; the
-/// shift comes in PostEffect::UpdateParams::SetFogPlaneShift, 0x847889, sent by
-/// 0x84716A), so the haze around the player stays the same however far the
-/// camera is.
-/// UNVERIFIED: the shift as the camera's distance less its farthest zoom
-///   (crate::net::CAM_HEIGHT_MAX); its producer is not traced.
-/// FAILURE: unshifted, zooming in brought the scene nearer than FogNearDist and
-///   the haze faded ("quand je zoom elle s'estompe").
+/// Bevy measures fog from the camera. Start the map's authored range beyond
+/// its focus so the camera-to-player distance does not consume the clear range.
+/// Previously `zoom - CAM_HEIGHT_MAX` left only 2 clear units behind the
+/// player in Kingshill (near 27, camera distance 25), washing out the upper
+/// half of the top-down view. Use the actual transform for both play and the
+/// free-camera map viewer, after camera/player transforms have propagated.
 fn shift_fog(
-    zoom: Option<Res<crate::net::CameraZoom>>,
     level: Res<Level>,
-    mut fogs: Query<&mut DistanceFog, (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
+    lighting: Res<Lighting>,
+    current: Option<Res<CurrentMap>>,
+    manifests: Res<Assets<crate::map::MapManifest>>,
+    players: Query<&GlobalTransform, With<crate::net::LocalPlayer>>,
+    mut fogs: Query<(&GlobalTransform, &mut DistanceFog), (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
 ) {
-    let Some(zoom) = zoom else { return };
     let b = &level.bubble;
-    let shift = zoom.0 - crate::net::CAM_HEIGHT_MAX;
-    let start = b.fog_near_dist + shift;
-    let end = (b.fog_far_dist + shift).max(start + 0.1);
-    for mut fog in &mut fogs {
+    let ground = current.as_ref().and_then(|m| manifests.get(&m.manifest)).map(|m| m.center[1]).unwrap_or(0.0);
+    let player = players.iter().next().map(|p| p.translation());
+    for (camera, mut fog) in &mut fogs {
+        let focus = crate::map::camera_focus(camera, player, ground);
+        let shift = camera.translation().distance(focus);
+        let start = shift + b.fog_near_dist.max(0.0) * lighting.fog_range;
+        let end = (shift + b.fog_far_dist * lighting.fog_range).max(start + 0.1);
         if let FogFalloff::Linear { start: s, end: e } = fog.falloff {
             if (s - start).abs() > 1e-3 || (e - end).abs() > 1e-3 {
                 fog.falloff = FogFalloff::Linear { start, end };
