@@ -173,31 +173,17 @@ def widget_art(node, mesh, cx0, cy0):
 
 
 def local_map_controls(widgets):
-    """locationmap's map is a runtime render target, with no painted controls.
+    """The runtime overlay owns its size, caption and click-through behaviour."""
+    return [dict(w, click_through=True) for w in widgets if w["id"] in {"Canvas", "Canvas/map"}]
 
-    Supply a movable frame and close control for our nav-mesh map renderer.
-    """
-    target = next(w for w in widgets if w["id"] == "Canvas/map")
-    l, t, r, b = target["rect"]
-    def quad(wid, rect, color, **extra):
-        x, y, right, bottom = rect
-        return dict(id=wid, type="Label", k=target["k"], rect=rect, hidden=False,
-                    art=dict(tex=None, pos=[x,y,right,y,right,bottom,x,bottom], uv=[0,0,1,0,1,1,0,1],
-                             color=color*4, idx=[0,1,2,0,2,3]), **extra)
-    frame = [quad("Canvas/MapFrame", [l,t,r,b], [.52,.39,.20,1]),
-             quad("Canvas/MapBackground", [l+2,t+2,r-2,b-2], [.07,.06,.045,.96])]
-    for w in widgets:
-        if w["id"] == "Canvas/LocationName":
-            w["rect"] = [l+12,t+4,r-40,t+29]
-        if w["id"] == "Canvas/LocationType": w["hidden"] = True
-    close = "Canvas/MapClose"
-    rect = [r-30,t+3,r-3,t+30]
-    controls = [dict(id=close, type="Button", event="Close", k=target["k"], rect=rect, hidden=False)]
-    for state, color in [("normal", [.28,.20,.10,1]), ("mouseover", [.60,.45,.23,1]), ("pressed", [.14,.10,.05,1])]:
-        controls.append(quad(close+"/"+state, rect, color, button=close, state=state))
-    controls.append(dict(id=close+"/Text", type="TextLabel", k=target["k"], rect=rect, hidden=False,
-                         text=dict(text="×",key="×",size=14,color=[.95,.85,.65,1],align=[1,1])))
-    return frame + widgets + controls
+
+def export_map_names(loca, out_dir):
+    """Use the same English localization as the rest of the current interface."""
+    prefix = "maps.names_"
+    names = {key[len(prefix):]: text for key, text in loca.get("en", {}).items()
+             if key.startswith(prefix) and text.strip()}
+    with open(os.path.join(out_dir, "maps.names.json"), "w", encoding="utf-8") as f:
+        json.dump(names, f, ensure_ascii=False, separators=(",", ":"))
 
 
 def export(name):
@@ -389,6 +375,7 @@ for sid, brush, char_class in con.execute("select Id, IconBrush, CharClass from 
 with open(os.path.join(out_dir, "skills.icons.json"), "w") as f:
     json.dump(icons, f, separators=(",", ":"))
 print(f"skill icons: {len(icons)}")
+export_map_names(loca, out_dir)
 for lang in ("fr", "en"):
     table = loca.get(lang, {})
     with open(os.path.join(out_dir, f"loca_{lang}.json"), "w", encoding="utf-8") as f:

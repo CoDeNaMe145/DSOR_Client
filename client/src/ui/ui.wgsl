@@ -7,7 +7,7 @@
 struct UiMaterial {
     // World-space rectangle kept: min x, min y, max x, max y.
     clip: vec4<f32>,
-    // x: 1 when textured.
+    // x: 1 when textured; y: additional transparency (0 for ordinary UI).
     flags: vec4<f32>,
 }
 
@@ -31,6 +31,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
 #ifdef VERTEX_COLORS
     c = c * in.color;
 #endif
+    c.a *= 1.0 - material.flags.y;
 #ifndef SRGB_OUTPUT
     // A linear target: hand it linear values.
     c = vec4<f32>(srgb_to_linear(c.rgb), c.a);

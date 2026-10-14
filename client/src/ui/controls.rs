@@ -248,6 +248,7 @@ struct Button {
 
 #[derive(Component)]
 pub(super) struct WindowControls {
+    pub(super) map_mode: local_map::MapMode,
     buttons: Vec<Button>,
     regions: Vec<(f32, [f32; 4], Gate)>,
     drag_handle: Option<DragHandle>,
@@ -274,7 +275,7 @@ pub(super) struct WindowControls {
 impl WindowControls {
     pub(super) fn new(layout: &Layout) -> Self {
         let buttons = layout.widgets.iter()
-            .filter(|w| !w.hidden && !w.click_through && (matches!(w.kind.as_str(), "Button" | "TextButton" | "SlotButton" | "TextEntry" | "Slider") || (layout.window == "inventory" && items::cell(w).is_some())))
+            .filter(|w| layout.window != "locationmap" && !w.hidden && !w.click_through && (matches!(w.kind.as_str(), "Button" | "TextButton" | "SlotButton" | "TextEntry" | "Slider") || (layout.window == "inventory" && items::cell(w).is_some())))
             .map(|w| Button {
                 id: w.id.clone(), k: w.k, rect: w.rect,
                 section: section(&layout.window, &w.id), action: action(&layout.window, w), authored_enabled: w.enabled,
@@ -282,8 +283,12 @@ impl WindowControls {
                 states: layout.widgets.iter().filter(|s| !s.hidden && s.button.as_ref() == Some(&w.id))
                     .filter_map(|s| s.state.as_deref().and_then(State::parse)).fold(0, |bits, state| bits | state.bit()),
             }).collect();
-        let mut controls = Self { buttons, regions: Vec::new(), drag_handle: DragHandle::from_layout(layout), inventory: 0, character: 0, bag: 0, bag_pages: 8, premium_bag: false, overflow_page: 0, overflow_pages: 1, ingredient: 0, rarity: 1, locked: false, hovered: None, pressed: None,
+        let mut controls = Self { map_mode: local_map::MapMode::Compact, buttons, regions: Vec::new(), drag_handle: DragHandle::from_layout(layout), inventory: 0, character: 0, bag: 0, bag_pages: 8, premium_bag: false, overflow_page: 0, overflow_pages: 1, ingredient: 0, rarity: 1, locked: false, hovered: None, pressed: None,
             pages: HashMap::new(), toggles: default(), open_windows: Vec::new(), entries: HashMap::new(), choices: HashMap::new(), spells: default() };
+        // Together with DSOR_UI_OPEN=locationmap, capture either overlay size.
+        if layout.window == "locationmap" && std::env::var("DSOR_MAP_VIEW").is_ok_and(|v| v == "expanded") {
+            controls.map_mode = local_map::MapMode::Expanded;
+        }
         // Native fixture captures without desktop input (only with packet replay).
         if layout.window == "inventory" && std::env::var_os("DSOR_INVENTORY_PREVIEW").is_some() {
             if let Ok(view) = std::env::var("DSOR_INVENTORY_VIEW") {
@@ -493,6 +498,20 @@ fn raise(entity: Entity, windows: &mut Windows) {
 }
 
 fn toggle(name: &str, windows: &mut Windows) {
+    if name == "locationmap" {
+        for (_, w, mut controls, mut visibility, _) in windows.iter_mut() {
+            if w.0 != name { continue; }
+            if *visibility == Visibility::Hidden {
+                controls.map_mode = local_map::MapMode::Compact;
+                *visibility = Visibility::Inherited;
+            } else if controls.map_mode == local_map::MapMode::Compact {
+                controls.map_mode = local_map::MapMode::Expanded;
+            } else {
+                *visibility = Visibility::Hidden;
+            }
+        }
+        return;
+    }
     let open = windows.iter().any(|(_, w, _, v, _)| w.0 == name && *v == Visibility::Hidden);
     for (_, w, mut controls, mut v, _) in windows.iter_mut() {
         if w.0 == name {
@@ -529,6 +548,7 @@ pub(super) fn keyboard(keys: Res<ButtonInput<KeyCode>>, mut windows: Windows, mu
     for (name, key, _) in MENU_WINDOWS {
         if key != KeyCode::Escape && keys.just_pressed(key) { toggle(name, &mut windows); }
     }
+    if keys.just_pressed(KeyCode::Tab) { toggle("locationmap", &mut windows); }
 }
 
 pub(super) fn interact(
@@ -806,6 +826,7 @@ mod tests {
             .init_resource::<Pointer>()
             .init_resource::<items::Interaction>()
             .init_resource::<SkillClicks>()
+            .init_resource::<local_map::MapSettings>()
             .add_systems(Update, (keyboard, interact, edit_text, paint).chain());
         let primary = app.world_mut().spawn((Window { focused: true, resolution: (1024, 768).into(), ..default() }, PrimaryWindow)).id();
         let mut roots = HashMap::new();
@@ -818,7 +839,7 @@ mod tests {
             let layout: Layout = serde_json::from_slice(&std::fs::read(path).expect("export the original UI first")).unwrap();
             let mut c = WindowControls::new(&layout);
             for w in &layout.widgets {
-                if !w.hidden {
+                if !w.hidden && name != "locationmap" {
                     if let Some(a) = &w.art { c.region(w.k, bounds(&a.pos), c.gate(name, w)); }
                 }
             }
@@ -846,6 +867,46 @@ mod tests {
         app.world_mut().resource_mut::<ButtonInput<MouseButton>>().release(MouseButton::Left);
         app.update();
         app.world_mut().resource_mut::<ButtonInput<MouseButton>>().clear();
+    }
+
+    #[test]
+    #[ignore = "requires locally converted game UI assets"]
+    fn map_cycles_compact_expanded_off_without_capturing_world_input() {
+        let (mut app, primary, roots, _) = exported_app();
+        let root = roots["locationmap"];
+        let press = |app: &mut App, key| {
+            app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(key);
+            app.update();
+            app.world_mut().resource_mut::<ButtonInput<KeyCode>>().reset(key);
+        };
+        for _ in 0..2 {
+            for mode in [local_map::MapMode::Compact, local_map::MapMode::Expanded] {
+                press(&mut app, KeyCode::Tab);
+                assert_eq!(*app.world().get::<Visibility>(root).unwrap(), Visibility::Inherited);
+                let controls = app.world().get::<WindowControls>(root).unwrap();
+                assert_eq!(controls.map_mode, mode);
+                assert!(controls.buttons.is_empty() && controls.drag_handle.is_none());
+                for size in [Vec2::new(1024.0, 768.0), Vec2::new(1920.0, 1080.0)] {
+                    let mut window = app.world_mut().get_mut::<Window>(primary).unwrap();
+                    window.resolution.set(size.x, size.y);
+                    window.set_cursor_position(Some(Vec2::new(120.0, 180.0) * (size.y / BASE_H)));
+                    app.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(MouseButton::Left);
+                    app.update();
+                    assert!(!app.world().resource::<crate::ui_input::UiInput>().blocks(MouseButton::Left));
+                    assert!(app.world().get::<crate::ui_input::UiRegions>(root).unwrap().0.is_empty());
+                    app.world_mut().resource_mut::<ButtonInput<MouseButton>>().reset(MouseButton::Left);
+                }
+            }
+            press(&mut app, KeyCode::Tab);
+            assert_eq!(*app.world().get::<Visibility>(root).unwrap(), Visibility::Hidden);
+        }
+        // Escape resets the next opening to compact, even from the large map.
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Escape);
+        assert_eq!(*app.world().get::<Visibility>(root).unwrap(), Visibility::Hidden);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.world().get::<WindowControls>(root).unwrap().map_mode, local_map::MapMode::Compact);
     }
 
     #[test]
@@ -955,9 +1016,16 @@ mod tests {
             let c = app.world().get::<WindowControls>(roots["ingamemenu"]).unwrap();
             assert!(c.selected(&Action::Window(window)), "shortcut must follow the opened panel");
             let panel = app.world().get::<WindowControls>(roots[window]).unwrap();
-            assert!(panel.drag_handle.is_some(), "{window} must be draggable");
-            let close = panel.buttons.iter().find(|b| b.action == Action::Close).unwrap().id.clone();
-            click_control(&mut app, primary, roots[window], &close);
+            if window == "locationmap" {
+                assert!(panel.drag_handle.is_none());
+                app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::Escape);
+                app.update();
+                app.world_mut().resource_mut::<ButtonInput<KeyCode>>().reset(KeyCode::Escape);
+            } else {
+                assert!(panel.drag_handle.is_some(), "{window} must be draggable");
+                let close = panel.buttons.iter().find(|b| b.action == Action::Close).unwrap().id.clone();
+                click_control(&mut app, primary, roots[window], &close);
+            }
             assert_eq!(*app.world().get::<Visibility>(roots[window]).unwrap(), Visibility::Hidden, "close {window}");
             let c = app.world().get::<WindowControls>(roots["ingamemenu"]).unwrap();
             assert!(!c.selected(&Action::Window(window)), "closed shortcut must lose its highlight");

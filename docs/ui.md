@@ -91,7 +91,7 @@ control that received the press; dragging off, losing focus, or closing the
 window cancels it. The highest visible window owns the pointer at its bounds.
 The game menu blocks pointer input to the windows and world below it.
 
-All top-navigation windows and the game menu can be dragged with the left
+Top-navigation panels (except the location-map overlay) and the game menu can be dragged with the left
 mouse button from the top 32 reference pixels of their painted frame (scaled
 with the interface). The cursor changes to a hand there; close buttons retain
 priority over dragging. Clicking a window brings it forward below the modal
@@ -126,8 +126,26 @@ authored multiline labels wrap within their source rectangles. Hidden legacy
 gauges and quick slots cannot contribute artwork, fill bounds or hit regions.
 
 The original `locationmap` is a runtime drawing area with no map bitmap. Its
-client implementation (`local_map.rs`) projects the loaded navigation mesh and
-player position into a framed, draggable map with a close button.
+client implementation (`local_map.rs`) projects the loaded navigation mesh into
+a Path of Exile-inspired transparent overlay: muted gold boundary lines, a faint
+walkable-area tint and a mint player arrow that follows position and facing.
+Terrain and player markers share the scene camera's ground-plane projection,
+so map directions match the world view without a mirrored vertical axis.
+Shared triangle edges are removed, so the overlay shows terrain boundaries.
+Tab cycles from off to a compact upper-left preview, then a larger centered
+preview, then off. The navigation map button uses the same cycle. Escape hides
+the map; its next opening starts compact. Both sizes, including their captions,
+are click-through and have no header or settings controls. A right-aligned
+localized map name sits just below the preview's bottom-right corner; names
+come from the original English `maps.names` localization, matching the rest of
+the current interface. The exporter writes them to `interface/maps.names.json`.
+Until the settings window is implemented, the F3 debug menu's "Map transparency"
+row adjusts terrain transparency in 5% steps from 0-100% (default 45%), while
+the player arrow and map name stay visible.
+The setting survives restarts in `map-settings.json` natively or `dsor.map` in
+browser localStorage. Re-export the UI to generate the localized name table.
+For native captures, use `DSOR_UI_OPEN=locationmap` and optionally
+`DSOR_MAP_VIEW=expanded`; the default capture shows the compact map.
 
 Inventory contents now follow the server's item records and slot allocations.
 The eight ordinary tabs each address 28 slots (4 rows x 7 columns), accounting

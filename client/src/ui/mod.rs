@@ -36,6 +36,7 @@ use serde::Deserialize;
 
 mod controls;
 mod local_map;
+pub(crate) use local_map::MapSettings;
 use controls::{Element, Gate, WindowControls};
 pub(crate) use controls::SkillClicks;
 
@@ -163,6 +164,7 @@ macro_rules! json_loader {
 }
 json_loader!(LayoutLoader, Layout, "ui.json");
 json_loader!(SkillIconsLoader, SkillIcons, "icons.json");
+json_loader!(MapNamesLoader, local_map::MapNames, "names.json");
 
 // -- material ----------------------------------------------------------------------
 
@@ -339,6 +341,7 @@ struct Figures {
 struct Loaded {
     layouts: Vec<(Handle<Layout>, f32, Option<KeyCode>)>,
     icons: Handle<SkillIcons>,
+    map_names: Handle<local_map::MapNames>,
     spawned: Vec<bool>,
 }
 
@@ -350,6 +353,8 @@ impl Plugin for UiPlugin {
         app.add_plugins(Material2dPlugin::<UiMaterial>::default())
             .init_asset::<Layout>()
             .init_asset::<SkillIcons>()
+            .init_asset::<local_map::MapNames>()
+            .init_asset_loader::<MapNamesLoader>()
             .init_asset_loader::<LayoutLoader>()
             .init_asset_loader::<SkillIconsLoader>()
             .init_asset::<controls::items::Catalog>()
@@ -359,10 +364,11 @@ impl Plugin for UiPlugin {
             .init_resource::<Figures>()
             .init_resource::<controls::Pointer>()
             .init_resource::<SkillClicks>()
+            .insert_resource(local_map::MapSettings::load())
             .add_systems(Startup, (setup, controls::items::setup))
             .add_systems(
                 Update,
-                (match_scene_camera, spawn_windows, follow_screen, controls::spells::sync, controls::items::sync, controls::keyboard, controls::interact, controls::spells::apply_drop, read_figures, controls::edit_text, controls::items::input, (update_fills, update_values, update_slots, local_map::update), controls::paint, controls::items::render, (controls::spells::overlay, controls::items::overlay), show_hover_window).chain().run_if(crate::loading::gameplay_ready),
+                (match_scene_camera, spawn_windows, follow_screen, controls::spells::sync, controls::items::sync, controls::keyboard, controls::interact, controls::spells::apply_drop, read_figures, controls::edit_text, controls::items::input, (update_fills, update_values, update_slots, (local_map::update, local_map::appearance).chain()), controls::paint, controls::items::render, (controls::spells::overlay, controls::items::overlay), show_hover_window).chain().run_if(crate::loading::gameplay_ready),
             );
     }
 }
@@ -385,7 +391,7 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>) {
         IsDefaultUiCamera,
         RenderLayers::layer(LAYER),
     ));
-    let mut loaded = Loaded { icons: assets.load("interface/skills.icons.json"), ..default() };
+    let mut loaded = Loaded { icons: assets.load("interface/skills.icons.json"), map_names: assets.load("interface/maps.names.json"), ..default() };
     loaded.layouts.push((assets.load("interface/unstackwindow.ui.json"), 600.0, None));
     for (name, z) in HUD_WINDOWS {
         loaded.layouts.push((assets.load(format!("interface/{name}.ui.json")), z, None));
@@ -570,6 +576,12 @@ fn spawn_windows(
         };
         let wanted_resource = resource_bar(class);
         let mut controls = WindowControls::new(layout);
+        // The map is a runtime overlay with no legacy frame or hit regions,
+        // including when using an older exported locationmap layout.
+        if layout.window == "locationmap" {
+            commands.entity(root).insert((controls, crate::ui_input::UiRegions::default()));
+            continue;
+        }
         // Each gauge fills one rectangle: the union of its pieces (a globe's two
         // halves, the XP bar's ends and middle).
         let mut gauge_rects: HashMap<(u8, u32), [f32; 4]> = HashMap::new();
