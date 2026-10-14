@@ -42,9 +42,72 @@ ln -sfn ~/Documents/Drakensang/dsor_assets assets
 ```
 
 This runs DSO_Godot, then every tool of `tools/` in order (render states, cube
-maps, ambience, skills, NPCs, exits, interface windows). With
+maps, ambience, skills, NPCs, exits, interface windows, level decorations). With
 `EXPERIMENTAL=<path of the server repo>` it also exports the navigation meshes.
 Details: `docs/assets.md`.
+
+A few tools are not part of `convert_assets.sh` yet; run them afterwards (same
+two paths, `<export_win32>` then `<assets>`):
+
+```sh
+R=~/Downloads/DSOClient2018_rel_206-7-32bit/export_win32   # or the 261 one, below
+O=~/Documents/Drakensang/dsor_assets
+G=~/Documents/Drakensang/DSO_Godot
+python3 tools/embed_character_masks.py "$R" "$O" "$G"   # character dyes
+python3 tools/export_monsters.py "$R" "$O"              # monsters, summons
+python3 tools/export_picking.py "$R" "$O"               # click shapes
+python3 tools/export_stats.py "$R" "$O"                 # character sheet
+python3 tools/export_combat_text.py "$R" "$O" "$G"      # damage numbers
+python3 tools/export_debug.py "$O"                      # debug map (F3)
+mkdir -p "$O/fonts"                                      # Tahoma, the game's font
+cp /System/Library/Fonts/Supplemental/Tahoma.ttf "$O/fonts/tahoma.ttf"
+cp "/System/Library/Fonts/Supplemental/Tahoma Bold.ttf" "$O/fonts/tahoma_bold.ttf"
+```
+
+(Windows: Tahoma is `C:\Windows\Fonts\tahoma.ttf` / `tahomabd.ttf`.)
+
+#### Release 261 data (branch `release261`)
+
+The 261 client comes as Bigpoint's packed download cache (`dlcache`: `.nb`
+bundles and `__toc` files with hash suffixes). The game only downloads what a
+character has visited, so that cache misses files (12,960 in ours: skill
+animations, meshes, textures -- half-drawn spells, a debug map without ground).
+
+1. Unpack it with DSO_Godot:
+   `python3 $G/unpack.py <packed client folder> ~/Documents/Drakensang/client261`
+2. Fill the gaps with the 2018 files of the same path (only files the 261 TOCs
+   list and the folder lacks; nothing is overwritten):
+   ```sh
+   cd ~/Documents/Drakensang/client261
+   python3 - <<'PY' > /tmp/fill261.txt
+   import glob, os
+   listed = {l.split("|")[0] for t in glob.glob("*__toc*")
+             for l in open(t, encoding="utf-8", errors="replace") if l.count("|") == 2 and "|f|" in l}
+   print("\n".join(p for p in sorted(listed) if not os.path.exists(p)))
+   PY
+   rsync -a --ignore-existing --files-from=/tmp/fill261.txt \
+         ~/Downloads/DSOClient2018_rel_206-7-32bit/ .
+   ```
+   (A file Bigpoint changed since 2018 stays in its 2018 version.)
+3. Convert as above with `R=~/Documents/Drakensang/client261/export_win32` and
+   another output folder, then run the extra tools, then point `assets` at it.
+
+#### After pulling new code
+
+A tool that changed only takes effect once it is run again over your assets.
+Rerunning `convert_assets.sh` always works; to save time, rerun just the tools
+the commits touched, for instance:
+
+| Changed | Rerun |
+|---|---|
+| `tools/export_skills.py` (sequences, statuses) | `export_skills.py`, then `export_deco.py` |
+| `tools/export_deco.py` (town guards, townsfolk, animals) | `export_skills.py`, then `export_deco.py` |
+| `tools/export_monsters.py` (summons) | `export_monsters.py` |
+| `tools/embed_animators.py` (effect fades, decals) | `embed_animators.py <export_win32>/models <assets>` |
+| `tools/export_stats.py` | `export_stats.py` |
+
+`export_deco.py` adds its animation sets to `characters/anims.json`, so it must
+run after `export_skills.py` and after any `character_tables.py` run.
 
 ### 3. Native client
 
