@@ -119,6 +119,7 @@ fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>, mut material
 /// an NPC or another player, nearest along the ray.
 #[allow(clippy::type_complexity)]
 fn pick(
+    ui: Res<crate::ui_input::UiInput>,
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), (With<Camera3d>, Without<HighlightCamera>)>,
     hovered: Res<crate::monsters::Hovered>,
@@ -127,7 +128,9 @@ fn pick(
     mut highlighted: ResMut<Highlighted>,
 ) {
     let colour = |c: Vec4| [c.x.to_bits(), c.y.to_bits(), c.z.to_bits(), c.w.to_bits()];
-    let now = if let Some((e, _)) = hovered.0 {
+    let now = if ui.over_ui {
+        None
+    } else if let Some((e, _)) = hovered.0 {
         Some((e, colour(ENEMY)))
     } else {
         let ray = windows

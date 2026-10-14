@@ -45,7 +45,10 @@ def cube_faces(path):
         size = lambda w, h: max(1, (w + 3) // 4) * max(1, (h + 3) // 4) * block
     else:
         size = lambda w, h: w * h * (bits // 8)
-    face = sum(size(max(1, w >> m), max(1, h >> m)) for m in range(mips))
+    # DDPF_PALETTEINDEXED8 stores a 256-entry RGBA palette before each face.
+    # Include it both when stepping over the mip chain and when decoding mip 0.
+    palette = 1024 if pf_flags & 0x20 else 0
+    face = palette + sum(size(max(1, w >> m), max(1, h >> m)) for m in range(mips))
     header = bytearray(d[:128])
     struct.pack_into("<I", header, 28, 1)          # one mip
     struct.pack_into("<I", header, 8, struct.unpack_from("<I", header, 8)[0] & ~0x20000)
@@ -53,7 +56,7 @@ def cube_faces(path):
     out = []
     for f in range(6):
         at = 128 + f * face
-        img = Image.open(io.BytesIO(bytes(header) + d[at:at + size(w, h)]))
+        img = Image.open(io.BytesIO(bytes(header) + d[at:at + palette + size(w, h)]))
         img.load()
         out.append(img.convert("RGB"))
     return out

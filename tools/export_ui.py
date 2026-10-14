@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Export the 2018 client's interface windows for client/src/ui.
 
-Usage: export_ui.py <export_win32> <assets> <DSO_Godot> [window ...]
+Usage: export_ui.py <export_win32> <assets> <DSO_Godot> [window ...] [--database static.db4]
 
 A window (export_win32/ui/<name>.bxml, Nebula binary XML) is a tree of widgets;
 each one has a rect in fractions of a 1024 x 768 reference screen and an anchor
@@ -30,14 +30,23 @@ artwork as the mesh group's own triangles, UVs and vertex colours (the engine
 draws them as they are: quads, nine-slices, the globes' polygons), plus the
 atlases as <assets>/textures/ui/*.png and <assets>/interface/loca_<lang>.json
 (the texts of the "gui." keys the windows use).
-Alternative states stacked on one rect (button states, latency colours...) are
-marked hidden but the first, as DSO_Godot does.
+Button states and runtime pages are preserved for the client controller.
+Decorative alternatives and data templates remain hidden until needed.
 """
-import json, os, sys
+import json, os, sys, sqlite3
+from PIL import Image  # Fail before writing any layouts if conversion deps are missing.
 
 root, assets, godot = sys.argv[1], sys.argv[2], sys.argv[3]
 # Every window by default ("--hud": the four the HUD needs).
-only = sys.argv[4:] or sorted(f[:-5] for f in os.listdir(os.path.join(root, "ui")) if f.endswith(".bxml"))
+only = sys.argv[4:]
+database = os.path.join(root, "db", "static.db4")
+if "--database" in only:
+    at = only.index("--database")
+    database = only[at + 1]
+    del only[at:at + 2]
+only = only or sorted(f[:-5] for f in os.listdir(os.path.join(root, "ui")) if f.endswith(".bxml"))
+from ui_catalog import spell_grid, ranking_categories
+catalog = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
 if only == ["--hud"]:
     only = ["bottombar", "currencybar", "inventory", "gamebar"]
 sys.path.insert(0, godot)
@@ -54,11 +63,11 @@ import re  # noqa: E402
 # the cooldown covers, the "buy a slot" offers, the other classes' resource
 # globes stay (the client shows its class's). They are exported hidden.
 RUNTIME = re.compile(
-    r"^(mouseover|pressed|mouseoverpressed|disabled|cover|selected|highlight|flash|checked)$"
+    r"^(cover|selected|highlight|flash|checked)$"
     r"|glow|Glow|sparkle|Sparkle|shine|Shine|flare"
     r"|^EmptyQuickbar|^ButtonBuy|^ButtonDeluxe|^MultipleBars|_locked$|^Quickslots_old$"
-    r"|^LatencyIndicator(Red|Yellow)$|^figur$"
-    r"|^ammo_|^ProgressBar_ammo|^wisdomAndXpbar$|^TemplateGlow")
+    r"|^LatencyIndicator(Red|Yellow)$|^figur$|^FlagLabel(Category|Subcategory)$"
+    r"|^ammo_|^ProgressBar_ammo|^TemplateGlow|(?:^|_)[Hh]ighlight\d*$")
 
 
 # Slots the game clones from a template over an area, row by row: (window,
@@ -78,12 +87,16 @@ def grid(widgets, template, area):
     l, top, r, b = tw["rect"]
     step_x, step_y = (r - l) + 2.0, (b - top) + 2.0
     al, at, ar, ab = a["rect"]
-    cols = int((ar - l + 2.0) // step_x)
+    cols = int((ar - al + 2.0) // step_x)
     rows = int((ab - GRID_FOOTER - top) // step_y)
+    # Fit the grid to the AREA, not the template's arbitrary authored offset.
+    # The inventory template starts 11px inside its area; using it as the left
+    # boundary lost the seventh column in the current client's assets.
+    start_x = al + ((ar - al) - (cols * step_x - 2.0)) / 2.0
     clones = []
     for row in range(rows):
         for col in range(cols):
-            dx, dy = col * step_x, row * step_y
+            dx, dy = start_x - l + col * step_x, row * step_y
             for w in [tw] + sub:
                 c = json.loads(json.dumps(w))
                 c["id"] = w["id"].replace(template, f"{template}#{row}_{col}", 1)
@@ -102,10 +115,25 @@ def grid(widgets, template, area):
 # Windows whose widgets outside these subtrees are templates the game clones at
 # run time (drag and drop ghosts, slot highlights), not part of the window.
 ROOTS = {
+    "bottombar": ["Canvas/Label_new"],
     "inventory": ["Canvas/PositioningLabel"],
     # The money display in its plain layout (not the payment / RC-only ones).
     "currencybar": ["Canvas/LabelDefault", "Canvas/AnchorSidebarCurrencyDisplay"],
+    "skillwindow2": ["Canvas/Label"],
 }
+
+# These are application-controlled pages, not decorative alternatives. Preserve
+# every page, including those gx.exclusive would hide by matching rectangles.
+PANELS = {"oben", "IngredientBag", "TrinketBag", "mercenary", "StatsCharacter",
+          "StatsPVP", "AchievementTitles", "VeteranStatus", "MembershipStatus",
+          "Premium", "Deluxe", "NoPremium",
+          "QuestlogLabel", "CompendiumLabel", "AchievementsLabel", "DailyAchievementsLabel", "WantedMissionsLabel",
+          "OptionsGroup", "OptionsGroupFinder", "OptionsGuild", "OptionsFriends",
+          "TableHeadSearch", "TableHeadFriends", "TableHeadGroup", "TableHeadGroupFinder", "TableHeadGuild", "TableHeadIgnore",
+          "Duria", "Teganswall", "Northlands", "Dwarflands", "Parallelworlds", "Atlantis", "Lortac", "Qaizah", "LandOfImmortals",
+          "DealsPage", "OffersPage", "TieredSpenderLabel", "PvP", "PvE", "Event"}
+BUTTONS = {"Button", "TextButton", "SlotButton"}
+STATES = {"normal", "mouseover", "pressed", "mouseoverpressed", "disabled"}
 
 
 def runtime_only(node):
@@ -144,27 +172,74 @@ def widget_art(node, mesh, cx0, cy0):
     }, None
 
 
+def local_map_controls(widgets):
+    """locationmap's map is a runtime render target, with no painted controls.
+
+    Supply a movable frame and close control for our nav-mesh map renderer.
+    """
+    target = next(w for w in widgets if w["id"] == "Canvas/map")
+    l, t, r, b = target["rect"]
+    def quad(wid, rect, color, **extra):
+        x, y, right, bottom = rect
+        return dict(id=wid, type="Label", k=target["k"], rect=rect, hidden=False,
+                    art=dict(tex=None, pos=[x,y,right,y,right,bottom,x,bottom], uv=[0,0,1,0,1,1,0,1],
+                             color=color*4, idx=[0,1,2,0,2,3]), **extra)
+    frame = [quad("Canvas/MapFrame", [l,t,r,b], [.52,.39,.20,1]),
+             quad("Canvas/MapBackground", [l+2,t+2,r-2,b-2], [.07,.06,.045,.96])]
+    for w in widgets:
+        if w["id"] == "Canvas/LocationName":
+            w["rect"] = [l+12,t+4,r-40,t+29]
+        if w["id"] == "Canvas/LocationType": w["hidden"] = True
+    close = "Canvas/MapClose"
+    rect = [r-30,t+3,r-3,t+30]
+    controls = [dict(id=close, type="Button", event="Close", k=target["k"], rect=rect, hidden=False)]
+    for state, color in [("normal", [.28,.20,.10,1]), ("mouseover", [.60,.45,.23,1]), ("pressed", [.14,.10,.05,1])]:
+        controls.append(quad(close+"/"+state, rect, color, button=close, state=state))
+    controls.append(dict(id=close+"/Text", type="TextLabel", k=target["k"], rect=rect, hidden=False,
+                         text=dict(text="×",key="×",size=14,color=[.95,.85,.65,1],align=[1,1])))
+    return frame + widgets + controls
+
+
 def export(name):
     path = os.path.join(root, "ui", name + ".bxml")
     doc = bxml.parse(open(path, "rb").read())
+    # Keep a readable, lossless source beside the generated layout for audits.
+    xml_dir = os.path.join(out_dir, "xml")
+    os.makedirs(xml_dir, exist_ok=True)
+    with open(os.path.join(xml_dir, name + ".xml"), "w", encoding="utf-8") as f:
+        f.write(bxml.to_xml(doc))
     mpath = os.path.join(root, "meshes", "ui", name + "_s_0.nvx2")
     mesh = gx.UiMesh(mpath) if os.path.isfile(mpath) else None
     widgets, stats = [], {"widgets": 0, "art": 0, "triangles": 0, "no texture": 0, "texts": 0}
 
     roots = ROOTS.get(name)
 
-    def walk(node, prefix, parent_rect, pk, hidden_parent):
+    def walk(node, prefix, parent_rect, pk, hidden_parent, button=None, state=None):
         hide_idx = gx.exclusive(node)
-        for i, c in enumerate(node.children):
+        children = list(enumerate(node.children))
+        if name == "skilltalentswindow":
+            # These authored backgrounds appear after the controls in the XML;
+            # the original window controller sends them behind its content.
+            children.sort(key=lambda pair: pair[1].attrs.get("id") not in {"background", "background_classes"})
+        if node.tag in BUTTONS:
+            # Nebula buttons paint their state background before their common
+            # icon/label children, even when the XML lists the icon first.
+            # Flattening source order put opaque button faces over menu icons.
+            children.sort(key=lambda pair: pair[1].attrs.get("id") not in STATES)
+        for i, c in children:
             if c.tag in ("Nebula3", "Window"):
                 walk(c, prefix, parent_rect, pk, hidden_parent)
                 continue
             a = c.attrs
+            state_child = node.tag in BUTTONS and a.get("id") in STATES
+            owner = prefix if state_child else button
+            visual_state = a.get("id") if state_child else state
             rect = gx.fvals(a.get("rect", "0,0,1,1"), 4)
             l, t, r, b = rect[0] * BASE_W, rect[1] * BASE_H, rect[2] * BASE_W, rect[3] * BASE_H
             # No alignment: the engine's default, the parent's top left (the
             # currency bar's canvas has none and sits in the screen's corner).
-            ax = gx.H_ANCHOR.get(a.get("HorizontalParentAlignment"), 0.0)
+            ax = gx.H_ANCHOR.get(a.get("HorizontalParentAlignment"),
+                                 0.5 if name == "ingamemenu" and c.tag == "Canvas" else 0.0)
             ay = gx.V_ANCHOR.get(a.get("VerticalParentAlignment"), 0.0)
             # (k of the left edge, k of the right edge) of the parent.
             kl = pk[0] + ax * (pk[1] - pk[0])
@@ -172,13 +247,24 @@ def export(name):
             ks = (0.0, 1.0) if stretch else (kl, kl)
             wid = (prefix + "/" if prefix else "") + (a.get("id") or c.tag)
             outside = roots is not None and not any(wid == r or wid.startswith(r + "/") or r.startswith(wid + "/") for r in roots)
-            hidden = hidden_parent or i in hide_idx or a.get("Visible") == "false" or runtime_only(c) or outside
+            alternative = i in hide_idx and not state_child and a.get("id") not in PANELS
+            hidden = (hidden_parent or alternative or a.get("Visible") == "false"
+                      or (runtime_only(c) and visual_state is None) or outside)
             w, h = max(r - l, 0.0), max(b - t, 0.0)
             art, why = widget_art(c, mesh, l + w / 2.0, t + h / 2.0)
             if why:
                 stats[why] += 1
             entry = {"id": wid, "type": c.tag, "k": round(ks[0], 4),
                      "rect": [round(l, 2), round(t, 2), round(r, 2), round(b, 2)], "hidden": hidden}
+            if owner:
+                entry["button"] = owner
+                entry["state"] = visual_state
+            if a.get("event"):
+                entry["event"] = a["event"]
+            if a.get("ClickThrough") == "true":
+                entry["click_through"] = True
+            if a.get("Enabled") == "false":
+                entry["enabled"] = False
             if art and art["tex"] == "textures/ui/icon_dummy.png":
                 # The "?" placeholder of an icon the game sets at run time.
                 entry["hidden"] = True
@@ -198,6 +284,7 @@ def export(name):
                     "color": gx.fvals(a.get("fontColor", "1,1,1,1"), 4, 1.0),
                     "align": [gx.H_ALIGN.get(a.get("HorizontalAlignment"), 0), gx.V_ALIGN.get(a.get("VerticalAlignment"), 0)],
                     "bold": a.get("bold") == "true",
+                    "word_break": a.get("WordBreak") == "true",
                 }
                 # TextEffect 1: an outline of TextEffectSize pixels in TextEffectColor
                 # (every combat, name and money label).
@@ -206,12 +293,57 @@ def export(name):
                 stats["texts"] += 1
             widgets.append(entry)
             stats["widgets"] += 1
-            walk(c, wid, (l, t, r, b), ks, hidden)
+            walk(c, wid, (l, t, r, b), ks, hidden, owner, visual_state)
 
     walk(doc, "", (0.0, 0.0, BASE_W, BASE_H), (0.0, 1.0), False)
+    if name == "skilltalentswindow":
+        for w in widgets:
+            # These four vertical progression models are not supplied yet.
+            # Keep their frames, without the source's full-bar sample values.
+            if w["id"].endswith("/LevelBar/progress"):
+                w["hidden"] = True
+            if "/LevelBar/" in w["id"] and w["id"].endswith("/LevelLabel"):
+                w["text"].update(text="—", key="—")
+    if name == "skilltalentswindow": widgets = spell_grid(widgets, catalog, tex, loca)
+    if name == "leaderboards": widgets = ranking_categories(widgets, catalog, loca)
+    if name == "locationmap": widgets = local_map_controls(widgets)
+    if name == "shopwindow":
+        # The game assigns these labels along with its catalogue. Keep the
+        # front-end pages usable while no catalogue service is connected.
+        for w in list(widgets):
+            if w["id"].endswith("/Headline/WindowTitle"):
+                # The source keeps the skills-window placeholder title.
+                w["text"].update(text="Boutique", key="gui.client.shop.title")
+            caption = {"ShopTab1": "Offres", "ShopTab2": "Objets", "ShopTab3": "Code bonus"}.get(w["id"].rsplit("/", 1)[-1])
+            if caption and w["type"] == "Button":
+                widgets.append(dict(id=w["id"]+"/Caption", type="TextLabel", k=w["k"], rect=w["rect"], hidden=w["hidden"],
+                                    text=dict(text=caption, key="gui.client.shop.tab", size=10, color=[.90,.78,.54,1], align=[1,1])))
+    if name == "matchmakingwindow":
+        for w in widgets:
+            leaf = w["id"].rsplit("/", 1)[-1]
+            if leaf == "LeaderboardRankNumber" or leaf in {"LeaderboardScoreValue", "MatchesPlayedValue", "MatchesWonValue", "MatchesDrawValue", "PlayersDefeatedValue"}:
+                w["text"].update(text="—", key="—")
+            if leaf == "NoLeaderBoardSeasonText":
+                # The source spans all three columns although the stats panel
+                # occupies the first one. Keep this message in the other two.
+                w["rect"][0] = 376.0
+                w["text"]["word_break"] = True
+    if name == "eventwindow":
+        empty = next(w for w in widgets if w["id"].endswith("/BottomNoEvent"))
+        widgets.append(dict(id=empty["id"]+"/EmptyMessage", type="TextLabel", k=empty["k"],
+                            rect=[90,270,920,320], hidden=False,
+                            text=dict(text="Aucun événement disponible.",key="gui.client.events.empty",size=12,color=[.90,.78,.54,1],align=[1,1])))
     for (win, template, area) in GRIDS:
         if win == name:
             widgets = grid(widgets, template, area)
+    # Some source icons contain an identical copy of themselves as a child.
+    # Drawing both makes the normal icon look permanently highlighted.
+    by_id = {w["id"]: w for w in widgets}
+    for w in widgets:
+        parent = by_id.get(w["id"].rsplit("/", 1)[0])
+        if (not w["hidden"] and w.get("art") and parent and not parent["hidden"]
+                and parent.get("art") == w["art"] and parent.get("state") == w.get("state")):
+            parent.pop("art")
     with open(os.path.join(out_dir, name + ".ui.json"), "w", encoding="utf-8") as f:
         json.dump({"window": name, "base": [BASE_W, BASE_H], "widgets": widgets}, f, ensure_ascii=False, separators=(",", ":"))
     return stats
@@ -234,11 +366,15 @@ for f in failed:
     print("  !!", f)
 # Skill icons: _Template_Skill.IconBrush ("icons/mage_skill02b") as PNG, by id.
 import sqlite3  # noqa: E402
-con = sqlite3.connect(f"file:{os.path.join(root, 'db', 'static.db4')}?mode=ro", uri=True)
+con = catalog
 icons = {}
-for sid, brush in con.execute("select Id, IconBrush from _Template_Skill"):
+for sid, brush, char_class in con.execute("select Id, IconBrush, CharClass from _Template_Skill"):
     if brush and tex.get(brush):
         icons[sid] = f"textures/{brush}.png"
+        # Keep the old aliases readable; release261 packets and offline play
+        # use the canonical template id.
+        if char_class in {"warrior", "mage", "ranger", "dwarf"}:
+            icons[f"{char_class}_{sid}_default"] = icons[sid]
 with open(os.path.join(out_dir, "skills.icons.json"), "w") as f:
     json.dump(icons, f, separators=(",", ":"))
 print(f"skill icons: {len(icons)}")

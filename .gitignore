@@ -14,3 +14,10 @@ __pycache__/
 /client/dist-profile
 /client/index.fast.html
 /dsor-undecodable-*.bin
+/launcher-client.json
+/launcher-client.json.tmp
+/launcher-logs/
+/launcher/build/
+/launcher/dist/
+/client-auth.json
+/client-auth.json.tmp

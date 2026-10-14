@@ -274,7 +274,7 @@ impl Plugin for MonstersPlugin {
             .init_resource::<ShaderColors>()
             .init_resource::<DebugMonsters>()
             .add_systems(PostUpdate, (own_player_materials, apply_shader_colors).chain())
-            .add_systems(PreUpdate, hover)
+            .add_systems(PreUpdate, hover.after(crate::ui_input::CaptureUiInput))
             .add_systems(Startup, load)
             .add_systems(Update, (spawn_monsters, setup_models, monster_health, hits_and_kills).chain());
     }
@@ -802,12 +802,17 @@ fn hits_and_kills(
 }
 
 fn hover(
+    ui: Res<crate::ui_input::UiInput>,
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
     monsters: Query<(Entity, &GlobalTransform, &Monster, &CharacterAnim, &InheritedVisibility, Option<&crate::picking::PickBoxes>)>,
     joints: Query<&GlobalTransform>,
     mut hovered: ResMut<Hovered>,
 ) {
+    if ui.over_ui {
+        if hovered.0.is_some() { hovered.0 = None; }
+        return;
+    }
     let ray = windows
         .single()
         .ok()

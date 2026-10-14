@@ -19,6 +19,9 @@ mod hud;
 mod anim_cull;
 mod refraction;
 mod lighting;
+mod loading;
+#[cfg(not(target_arch = "wasm32"))]
+mod login;
 mod map;
 mod materials;
 mod merge;
@@ -34,6 +37,7 @@ mod skills;
 mod stats;
 mod surfaces;
 mod ui;
+mod ui_input;
 
 use bevy::camera_controller::free_camera::{FreeCamera, FreeCameraPlugin};
 use bevy::diagnostic::{EntityCountDiagnosticsPlugin, FrameTimeDiagnosticsPlugin};
@@ -49,6 +53,7 @@ const SCREENSHOT_PATH: &str = "/tmp/claude-1000/dsor_shot.png";
 /// Command-line (native) or URL query (web) options.
 #[derive(Resource, Clone, Debug)]
 struct Options {
+    login_screen: bool,
     map: String,
     /// Save one screenshot once the map has loaded, then exit.
     screenshot: Option<String>,
@@ -68,10 +73,14 @@ struct Options {
     play: Option<(u8, u8)>,
 }
 
+/// Present while the in-client account screen owns input and the viewport.
+#[derive(Resource)]
+pub struct LoginGate;
+
 /// Offline play: `--play` / `?play=`, or the debug map with nobody else to play.
 fn offline_play(world: &mut World) {
     let opts = world.resource::<Options>().clone();
-    if opts.net.is_some() {
+    if opts.net.is_some() || opts.login_screen {
         return;
     }
     let play = opts.play.or((opts.map == "debug" && opts.character.is_none()).then_some((1, 0)));
@@ -88,22 +97,27 @@ fn parse_cam(s: &str) -> Option<([f32; 3], [f32; 3])> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn options() -> Options {
-    let mut o = Options { map: DEFAULT_MAP.into(), screenshot: None, cam: None, shadows: true, npcs: false, character: None, anim: None, net: None, play: None };
+    let mut o = Options { login_screen: true, map: DEFAULT_MAP.into(), screenshot: None, cam: None, shadows: true, npcs: false, character: None, anim: None, net: None, play: None };
+    let mut force_login = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
+            "--login" => force_login = true,
+            "--offline" => o.login_screen = false,
             "--screenshot" => o.screenshot = Some(SCREENSHOT_PATH.into()),
             "--screenshot-to" => o.screenshot = args.next(),
             "--cam" => o.cam = args.next().as_deref().and_then(parse_cam),
             "--no-shadows" => o.shadows = false,
             "--npcs" => o.npcs = true,
             "--character" => {
+                o.login_screen = false;
                 let class = args.next().and_then(|c| c.parse().ok()).unwrap_or(0);
                 let gender = args.next().and_then(|g| g.parse().ok()).unwrap_or(0);
                 o.character = Some((class, gender));
             }
             "--anim" => o.anim = args.next(),
             "--play" => {
+                o.login_screen = false;
                 let class = args.next().and_then(|c| c.parse().ok()).unwrap_or(1);
                 let gender = args.next().and_then(|g| g.parse().ok()).unwrap_or(0);
                 o.play = Some((class, gender));
@@ -112,8 +126,8 @@ fn options() -> Options {
                 let login = args.next().unwrap_or_else(|| "127.0.0.1:2190".into());
                 o.net = Some(net::NetConfig {
                     login,
-                    account: "107909469".into(),
-                    session: "f7d06d94-af66-4ed7-bdae-b98f8e049ceb".into(),
+                    account: String::new(),
+                    session: String::new(),
                     user: None,
                     password: None,
                     account_api: None,
@@ -163,16 +177,23 @@ fn options() -> Options {
                     n.character = args.next().and_then(|c| c.parse().ok());
                 }
             }
-            m if !m.starts_with('-') => o.map = m.trim_end_matches(".map.json").into(),
+            m if !m.starts_with('-') => {
+                o.map = m.trim_end_matches(".map.json").into();
+                o.login_screen = false;
+            },
             other => eprintln!("unknown argument {other}"),
         }
     }
+    if let Some(n) = &o.net {
+        o.login_screen = n.user.is_none() && (n.account.is_empty() || n.session.is_empty());
+    }
+    o.login_screen |= force_login;
     o
 }
 
 #[cfg(target_arch = "wasm32")]
 fn options() -> Options {
-    let mut o = Options { map: DEFAULT_MAP.into(), screenshot: None, cam: None, shadows: true, npcs: false, character: None, anim: None, net: None, play: None };
+    let mut o = Options { login_screen: false, map: DEFAULT_MAP.into(), screenshot: None, cam: None, shadows: true, npcs: false, character: None, anim: None, net: None, play: None };
     let search = web_sys::window()
         .and_then(|w| w.location().search().ok())
         .unwrap_or_default();
@@ -302,8 +323,11 @@ fn main() {
     });
     let opts = options();
     let mut app = App::new();
-    if let Some(config) = &opts.net {
+    if let Some(config) = opts.net.as_ref().filter(|_| !opts.login_screen) {
         app.insert_resource(config.clone());
+    }
+    if opts.login_screen {
+        app.insert_resource(LoginGate);
     }
     if opts.npcs && opts.net.is_none() {
         app.insert_resource(npc::OfflineNpcs::default());
@@ -337,7 +361,7 @@ fn main() {
                 .set(bevy::log::LogPlugin { custom_layer: dump::log_layer, ..default() })
                 .set(WindowPlugin {
                     primary_window: Some(Window {
-                        title: format!("DSOR - {}", opts.map),
+                        title: if opts.login_screen { "DSOR Kitty - Login".into() } else { format!("DSOR - {}", opts.map) },
                         // Uncapped frame rate so the FPS readout means something.
                         present_mode: bevy::window::PresentMode::AutoNoVsync,
                         fit_canvas_to_parent: true,
@@ -365,6 +389,8 @@ fn main() {
         ))
         .add_plugins(dump::DumpPlugin)
         .add_plugins(ui::UiPlugin)
+        .add_plugins(ui_input::UiInputPlugin)
+        .add_plugins(loading::LoadingPlugin)
         .add_plugins((anim_cull::AnimCullPlugin, refraction::RefractionPlugin, surfaces::SurfacesPlugin, exits::ExitsPlugin, monsters::MonstersPlugin, combat_text::CombatTextPlugin, debug::DebugPlugin, stats::StatsPlugin, clamp::ClampPlugin, nebula_bloom::NebulaBloomPlugin))
         .add_plugins((highlight::HighlightPlugin, picking::PickingPlugin))
         .insert_resource(ClearColor(Color::srgb(0.05, 0.06, 0.08)))
@@ -375,6 +401,8 @@ fn main() {
         })
         .insert_resource(opts.clone())
         .add_systems(Startup, (setup, offline_play));
+    #[cfg(not(target_arch = "wasm32"))]
+    app.add_plugins(login::LoginPlugin);
     // CONTRACT: vertex and index slabs stay small in the browser. bevy's defaults
     //   grow a slab x1.5 up to 512 MiB, copying it each time; with Kingshill's
     //   ~140 MiB of static vertices ANGLE/Metal failed the allocation
@@ -400,7 +428,7 @@ fn main() {
 
 fn setup(mut commands: Commands, asset_server: Res<AssetServer>, opts: Res<Options>) {
     // Online, the server says which map; offline, the command line does.
-    if opts.net.is_some() {
+    if opts.net.is_some() || opts.login_screen {
         // NetConfig is inserted before the app runs: net::connect reads it at Startup.
     } else {
         commands.insert_resource(CurrentMap::new(
@@ -441,9 +469,25 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, opts: Res<Optio
             commands.entity(camera).insert(Msaa::Off);
         }
     }
+    // Sun shadows only occlude direct light. SSAO also occludes ambient light
+    // near contacts, grounding objects even inside another object's shadow.
+    // The native SSAO pass requires single-sample depth; FXAA smooths edges.
+    #[cfg(not(target_arch = "wasm32"))]
+    if !flag("noao") {
+        commands.entity(camera).insert((
+            bevy::pbr::ScreenSpaceAmbientOcclusion {
+                // Eight samples retain contact shading without the default
+                // high preset's eighteen full-resolution samples per pixel.
+                quality_level: bevy::pbr::ScreenSpaceAmbientOcclusionQualityLevel::Medium,
+                ..default()
+            },
+            Msaa::Off,
+            bevy::anti_alias::fxaa::Fxaa::default(),
+        ));
+    }
     // Online the game camera follows the player (net::follow_camera); the free
     // fly camera is the map viewer's.
-    if opts.net.is_none() {
+    if opts.net.is_none() && !opts.login_screen {
         commands.entity(camera).insert(FreeCamera { walk_speed: 15.0, run_speed: 60.0, ..default() });
     }
 
@@ -469,6 +513,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, opts: Res<Optio
 fn screenshot_when_loaded(
     mut commands: Commands,
     opts: Res<Options>,
+    loading: Res<loading::LoadingScreen>,
     current: Option<Res<CurrentMap>>,
     asset_server: Res<AssetServer>,
     mut settled: Local<u32>,
@@ -490,6 +535,13 @@ fn screenshot_when_loaded(
         if *frames > at + 30 + burst {
             commands.write_message(AppExit::Success);
         }
+        return;
+    }
+    if loading.active() { return; }
+    // Also allow a capture of the native account form before a map is loaded.
+    if opts.login_screen && current.is_none() && *frames > 120 {
+        commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path.clone()));
+        *taken = Some(*frames);
         return;
     }
     let Some(current) = current else { return };

@@ -1,0 +1,1172 @@
+//! Behaviour for the original mesh UI. Artwork keeps its authored geometry;
+//! visibility, hit testing and actions share the same page/state gates.
+use super::*;
+use bevy::ui::RelativeCursorPosition;
+use bevy::window::{CursorIcon, MonitorSelection, SystemCursorIcon, WindowMode};
+use bevy::input::keyboard::KeyboardInput;
+mod panels;
+pub(super) mod spells;
+
+/// Reference pixels, scaled by the same factor as the rest of the interface.
+const DRAG_HANDLE_HEIGHT: f32 = 32.0;
+
+#[derive(Clone, Copy)]
+struct DragHandle {
+    k: f32,
+    rect: [f32; 4],
+}
+
+impl DragHandle {
+    fn from_layout(layout: &Layout) -> Option<Self> {
+        // Use the painted frame, not the source container bounds: inventory's
+        // container includes offscreen templates thousands of pixels above it.
+        let suffix = match layout.window.as_str() {
+            "inventory" | "charactersheet" => "/FrameLabel/BorderLabel",
+            "skilltalentswindow" => "/BackGroundLabel/Frame/Frame2",
+            "gamemenu" => "Canvas/CenterLabel",
+            other => panels::frame_suffix(other)?,
+        };
+        let frame = layout.widgets.iter().find(|w| !w.hidden && w.id.ends_with(suffix))?;
+        let mut rect = frame.art.as_ref().map(|a| bounds(&a.pos)).unwrap_or(frame.rect);
+        for title in layout.widgets.iter().filter(|w| !w.hidden &&
+            ["/WindowTitleLabel", "/Headline", "/TitlaLabel", "/WindowTitleBar"].iter().any(|s| w.id.ends_with(s))) {
+            if title.rect[1] >= 0.0 { rect[1] = rect[1].min(title.rect[1]); }
+        }
+        rect[3] = rect[1] + DRAG_HANDLE_HEIGHT;
+        Some(Self { k: frame.k, rect })
+    }
+
+    fn clamp_offset(self, offset: Vec2, width: f32) -> Vec2 {
+        let [l, t, r, b] = self.rect;
+        let anchor = self.k * (width - BASE_W);
+        // Keep enough of the title reachable to recover a partly offscreen
+        // window, including after resizing the client.
+        let visible_width = 64.0_f32.min(r - l).min(width);
+        Vec2::new(offset.x.clamp(visible_width - r - anchor, width - visible_width - l - anchor),
+            offset.y.clamp(-t, BASE_H - b))
+    }
+}
+
+fn window_offset(transform: &Transform) -> Vec2 {
+    Vec2::new(transform.translation.x, -transform.translation.y)
+}
+
+fn translated([l, t, r, b]: [f32; 4], offset: Vec2) -> [f32; 4] {
+    [l + offset.x, t + offset.y, r + offset.x, b + offset.y]
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Section {
+    #[default]
+    Always,
+    Inventory(u8),
+    InventoryReturn,
+    Character(u8),
+    /// Allowed pages as a bitmask; some shared headers serve several tabs.
+    Page(&'static str, u32),
+    SkillClass(u8),
+    Ranking(u8, bool),
+    Hidden,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum State {
+    #[default]
+    Normal,
+    Hover,
+    Pressed,
+    HoverPressed,
+    Disabled,
+}
+
+impl State {
+    fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "normal" => Self::Normal,
+            "mouseover" => Self::Hover,
+            "pressed" => Self::Pressed,
+            "mouseoverpressed" => Self::HoverPressed,
+            "disabled" => Self::Disabled,
+            _ => return None,
+        })
+    }
+
+    fn bit(self) -> u8 { 1 << self as u8 }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct Gate {
+    section: Section,
+    button: Option<(usize, State)>,
+}
+
+fn section(window: &str, id: &str) -> Section {
+    let parts: Vec<_> = id.split('/').collect();
+    if let Some(section) = panels::section(window, &parts) { return section; }
+    if window == "inventory" {
+        for (name, page) in [("oben", 0), ("IngredientBag", 1), ("TrinketBag", 2), ("mercenary", 3)] {
+            if parts.contains(&name) { return Section::Inventory(page); }
+        }
+        if parts.contains(&"InventoryReturn") { return Section::InventoryReturn; }
+        // These are the unavailable-access overlays, mutually exclusive with
+        // the real controls. Keep the controls and their disabled states.
+        if parts.iter().any(|p| p.ends_with("NotVisible")) { return Section::Hidden; }
+    }
+    if window == "charactersheet" {
+        for (name, page) in [("StatsCharacter", 0), ("StatsPVP", 1), ("AchievementTitles", 2), ("MembershipStatus", 3), ("VeteranStatus", 4)] {
+            if parts.contains(&name) { return Section::Character(page); }
+        }
+    }
+    if window == "gamebar" && parts.iter().any(|p| matches!(*p, "Premium" | "Deluxe" | "bgAutoplay" | "autoplay" | "SigninBtn" | "CameBackSignInBtn" | "SeasonPassBtn")) {
+        return Section::Hidden;
+    }
+    Section::Always
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Action {
+    Close,
+    Window(&'static str),
+    Inventory(u8),
+    Bag(usize),
+    Ingredient(usize),
+    Rarity(usize),
+    Character(u8),
+    Tab(&'static str, u8),
+    Toggle(String),
+    Edit(String),
+    Choose(&'static str, String),
+    Membership,
+    Page(i32),
+    Fullscreen,
+    Lock,
+    Skill(usize),
+    Spell,
+    Unavailable,
+}
+
+fn action(window: &str, w: &Widget) -> Action {
+    let leaf = w.id.rsplit('/').next().unwrap_or("");
+    if w.spell.is_some() { return Action::Spell; }
+    if w.kind == "TextEntry" { return Action::Edit(w.id.clone()); }
+    if w.event == "Close" { return Action::Close; }
+    if let Some(action) = panels::action(window, w) { return action; }
+    if window == "ingamemenu" {
+        return match leaf {
+            "char" => Action::Window("charactersheet"),
+            "inventory" => Action::Window("inventory"),
+            "skills" => Action::Window("skilltalentswindow"),
+            "quest" => Action::Window("questlog"),
+            "travelmap" => Action::Window("travelmap"),
+            "minimap" => Action::Window("locationmap"),
+            "dealer" => Action::Window("shopwindow"),
+            "socialscreen" => Action::Window("socialscreen"),
+            "pvpleaderboards" => Action::Window("leaderboards"),
+            "pvp" => Action::Window("matchmakingwindow"),
+            "events" => Action::Window("eventwindow"),
+            _ => Action::Unavailable,
+        };
+    }
+    if window == "gamebar" {
+        return match w.event.as_str() {
+            "Logout" => Action::Window("gamemenu"),
+            "ToggleFullscreen" => Action::Fullscreen,
+            "Premium" => Action::Membership,
+            _ => Action::Unavailable,
+        };
+    }
+    if window == "inventory" {
+        match w.event.as_str() {
+            "InventoryReturn" => return Action::Inventory(0),
+            "IngredientBag" => return Action::Inventory(1),
+            "TrinketBag" => return Action::Inventory(2),
+            "MercenaryBag" => return Action::Inventory(3),
+            "NextPage" => return Action::Page(1),
+            "PrevPage" => return Action::Page(-1),
+            _ => {}
+        }
+        if let Some(suffix) = leaf.strip_prefix("BagButton") {
+            if let Some(page) = if suffix.is_empty() { Some(0) } else { suffix.parse().ok() } {
+                return if w.id.contains("/IngredientBag/") { Action::Ingredient(page) } else { Action::Bag(page) };
+            }
+        }
+        if let Some(rarity) = leaf.strip_prefix("Button_Rarity").and_then(|s| s.parse().ok()) {
+            return Action::Rarity(rarity);
+        }
+        return match leaf {
+            "ExtraBagButton" => Action::Bag(8),
+            "OverflowBagButton" => Action::Bag(9),
+            _ => Action::Unavailable,
+        };
+    }
+    if window == "charactersheet" {
+        return match leaf {
+            "TabButtonCharacter" => Action::Character(0),
+            "TabButtonPVP" => Action::Character(1),
+            "TabButtonTitles" => Action::Character(2),
+            "TabButtonMembership" => Action::Character(3),
+            "TabButtonVeteran" => Action::Character(4),
+            _ => Action::Unavailable,
+        };
+    }
+    if window == "bottombar" {
+        if w.event == "Lock" { return Action::Lock; }
+        if leaf == "LMB" { return Action::Skill(0); }
+        if leaf == "RMB" { return Action::Skill(1); }
+        if let Some(slot) = leaf.strip_prefix("QuickSlot").and_then(|s| s.parse::<usize>().ok()) {
+            return Action::Skill(slot + 1);
+        }
+    }
+    Action::Unavailable
+}
+
+struct Button {
+    id: String,
+    k: f32,
+    rect: [f32; 4],
+    section: Section,
+    action: Action,
+    authored_enabled: bool,
+    states: u8,
+    spell: Option<spells::Spell>,
+}
+
+#[derive(Component)]
+pub(super) struct WindowControls {
+    buttons: Vec<Button>,
+    regions: Vec<(f32, [f32; 4], Gate)>,
+    drag_handle: Option<DragHandle>,
+    inventory: u8,
+    character: u8,
+    bag: usize,
+    ingredient: usize,
+    rarity: usize,
+    locked: bool,
+    hovered: Option<usize>,
+    pressed: Option<usize>,
+    pages: HashMap<&'static str, u8>,
+    toggles: std::collections::HashSet<String>,
+    open_windows: Vec<String>,
+    entries: HashMap<String, TextEntry>,
+    choices: HashMap<&'static str, String>,
+    spells: spells::Model,
+}
+
+impl WindowControls {
+    pub(super) fn new(layout: &Layout) -> Self {
+        let buttons = layout.widgets.iter()
+            .filter(|w| !w.hidden && !w.click_through && matches!(w.kind.as_str(), "Button" | "TextButton" | "SlotButton" | "TextEntry"))
+            .map(|w| Button {
+                id: w.id.clone(), k: w.k, rect: w.rect,
+                section: section(&layout.window, &w.id), action: action(&layout.window, w), authored_enabled: w.enabled,
+                spell: w.spell.clone(),
+                states: layout.widgets.iter().filter(|s| !s.hidden && s.button.as_ref() == Some(&w.id))
+                    .filter_map(|s| s.state.as_deref().and_then(State::parse)).fold(0, |bits, state| bits | state.bit()),
+            }).collect();
+        Self { buttons, regions: Vec::new(), drag_handle: DragHandle::from_layout(layout), inventory: 0, character: 0, bag: 0, ingredient: 0, rarity: 5, locked: false, hovered: None, pressed: None,
+            pages: HashMap::new(), toggles: default(), open_windows: Vec::new(), entries: HashMap::new(), choices: HashMap::new(), spells: default() }
+    }
+
+    pub(super) fn gate(&self, window: &str, widget: &Widget) -> Gate {
+        let button = widget.button.as_ref().and_then(|id| self.buttons.iter().position(|b| &b.id == id))
+            .zip(widget.state.as_deref().and_then(State::parse));
+        // A visual state whose owner is noninteractive (e.g. a ClickThrough
+        // template) still has only one default state.
+        let orphan_state = widget.state.as_deref().is_some_and(|s| s != "normal") && button.is_none();
+        Gate { section: if orphan_state { Section::Hidden } else { section(window, &widget.id) }, button }
+    }
+
+    pub(super) fn region(&mut self, k: f32, rect: [f32; 4], gate: Gate) {
+        self.regions.push((k, rect, gate));
+    }
+
+    fn section_visible(&self, section: Section) -> bool {
+        match section {
+            Section::Always => true,
+            Section::Inventory(page) => self.inventory == page,
+            Section::InventoryReturn => self.inventory != 0,
+            Section::Character(page) => self.character == page,
+            Section::Page(group, mask) => mask & (1 << self.pages.get(group).copied().unwrap_or(0)) != 0,
+            Section::SkillClass(class) => self.spells.class == class && self.pages.get("talents").copied().unwrap_or(0) == 0,
+            Section::Ranking(group, overall) => self.pages.get("rank_group").copied().unwrap_or(0) == group
+                && (self.pages.get("rank_category").copied().unwrap_or(0) == 0) == overall,
+            Section::Hidden => false,
+        }
+    }
+
+    fn enabled(&self, button: &Button) -> bool {
+        button.authored_enabled && match button.action {
+            Action::Unavailable => false,
+            Action::Spell => button.spell.as_ref().is_some_and(|s| self.spells.available(s)),
+            Action::Page(-1) => self.bag > 0 && self.bag < 8,
+            Action::Page(1) => self.bag < 7,
+            _ => true,
+        }
+    }
+
+    fn selected(&self, action: &Action) -> bool {
+        match action {
+            Action::Window(name) => self.open_windows.iter().any(|n| n == name),
+            Action::Tab(group, page) => self.pages.get(group).copied().unwrap_or(0) == *page,
+            Action::Toggle(id) => self.toggles.contains(id),
+            Action::Choose(group, id) => self.choices.get(group) == Some(id),
+            Action::Inventory(page) => self.inventory == *page,
+            Action::Bag(page) => self.bag == *page,
+            Action::Character(page) => self.character == *page,
+            Action::Ingredient(page) => self.ingredient == *page,
+            Action::Rarity(rarity) => self.rarity == *rarity,
+            Action::Lock => self.locked,
+            _ => false,
+        }
+    }
+
+    fn state(&self, index: usize) -> State {
+        let b = &self.buttons[index];
+        let hovered = self.hovered == Some(index);
+        let down = (self.pressed == Some(index) && hovered) || self.selected(&b.action);
+        let candidates = if !self.enabled(b) {
+            [State::Disabled, State::Normal, State::Normal]
+        } else if down && hovered {
+            [State::HoverPressed, State::Pressed, State::Hover]
+        } else if down {
+            [State::Pressed, State::Normal, State::Normal]
+        } else if hovered {
+            [State::Hover, State::Normal, State::Normal]
+        } else {
+            [State::Normal; 3]
+        };
+        candidates.into_iter().find(|s| b.states & s.bit() != 0).unwrap_or(State::Normal)
+    }
+
+    fn visible(&self, gate: &Gate) -> bool {
+        self.section_visible(gate.section) && gate.button.is_none_or(|(index, state)| self.state(index) == state)
+    }
+
+    fn hit(&self, point: Vec2, width: f32) -> Option<usize> {
+        self.buttons.iter().enumerate().rev().find(|(_, b)| self.section_visible(b.section) && contains(b.k, b.rect, point, width)).map(|(i, _)| i)
+    }
+
+    fn covers(&self, point: Vec2, width: f32) -> bool {
+        self.regions.iter().any(|(k, rect, gate)| self.visible(gate) && contains(*k, *rect, point, width))
+            || self.hit(point, width).is_some()
+            || self.title_hit(point, width)
+    }
+
+    fn title_hit(&self, point: Vec2, width: f32) -> bool {
+        self.drag_handle.is_some_and(|h| contains(h.k, h.rect, point, width))
+    }
+}
+
+fn contains(k: f32, [l, t, r, b]: [f32; 4], point: Vec2, width: f32) -> bool {
+    let x = point.x - k * (width - BASE_W);
+    x >= l && x <= r && point.y >= t && point.y <= b
+}
+
+#[derive(Component)]
+pub(super) struct Element {
+    pub root: Entity,
+    pub gate: Gate,
+}
+
+/// One mouse press belongs to exactly one control until release. Releasing
+/// over another control, or pressing outside then dragging in, never clicks it.
+#[derive(Resource, Default)]
+pub(super) struct Pointer {
+    down: Option<(Entity, usize)>,
+    drag: Option<Drag>,
+    focus: Option<(Entity, String)>,
+    spell_drag: Option<spells::DragSpell>,
+    spell_drop: Option<spells::DropSpell>,
+}
+
+#[derive(Component)]
+pub(super) struct EntryLabel(pub String);
+
+#[derive(Default)]
+struct TextEntry {
+    text: String,
+    cursor: usize,
+    selected: bool,
+}
+
+impl TextEntry {
+    fn edit(&mut self, key: KeyCode, text: Option<&str>, control: bool) {
+        if control {
+            if key == KeyCode::KeyA { self.selected = true; }
+            return;
+        }
+        let left = self.text[..self.cursor].char_indices().next_back().map(|(i, _)| i).unwrap_or(0);
+        let right = self.text[self.cursor..].chars().next().map(|c| self.cursor + c.len_utf8()).unwrap_or(self.cursor);
+        match key {
+            KeyCode::ArrowLeft => { self.cursor = left; self.selected = false; }
+            KeyCode::ArrowRight => { self.cursor = right; self.selected = false; }
+            KeyCode::Home => { self.cursor = 0; self.selected = false; }
+            KeyCode::End => { self.cursor = self.text.len(); self.selected = false; }
+            KeyCode::Backspace | KeyCode::Delete => {
+                if self.selected { self.text.clear(); self.cursor = 0; }
+                else if key == KeyCode::Backspace { self.text.replace_range(left..self.cursor, ""); self.cursor = left; }
+                else { self.text.replace_range(self.cursor..right, ""); }
+                self.selected = false;
+            }
+            _ => if let Some(text) = text {
+                if self.selected { self.text.clear(); self.cursor = 0; self.selected = false; }
+                let text: String = text.chars().filter(|c| !c.is_control()).take(128usize.saturating_sub(self.text.chars().count())).collect();
+                self.text.insert_str(self.cursor, &text);
+                self.cursor += text.len();
+            }
+        }
+    }
+}
+
+struct Drag {
+    root: Entity,
+    /// Cursor position relative to the root when grabbed (reference pixels).
+    grab: Vec2,
+    width: f32,
+}
+
+impl Pointer {
+    fn update(&mut self, hit: Option<(Entity, usize)>, press: bool, release: bool) -> Option<(Entity, usize)> {
+        if press { self.down = hit; }
+        if release {
+            let down = self.down.take();
+            return down.filter(|d| Some(*d) == hit);
+        }
+        None
+    }
+}
+
+#[derive(Resource, Default)]
+pub(crate) struct SkillClicks(pub Option<usize>);
+
+type Windows<'w, 's> = Query<'w, 's, (Entity, &'static Window2018, &'static mut WindowControls, &'static mut Visibility, &'static mut Transform)>;
+
+fn raise(entity: Entity, windows: &mut Windows) {
+    let mut order: Vec<_> = windows.iter().filter(|(_, name, controls, _, _)| controls.drag_handle.is_some() && name.0 != "gamemenu")
+        .map(|(e, _, _, _, tf)| (e, tf.translation.z)).collect();
+    if !order.iter().any(|(e, _)| *e == entity) { return; }
+    order.sort_by(|a, b| (a.0 == entity).cmp(&(b.0 == entity)).then(a.1.total_cmp(&b.1)));
+    // Bounded, separated depth bands keep entire windows together and below
+    // the modal game menu, even after repeated changes of focus.
+    for (i, (e, _)) in order.into_iter().enumerate() {
+        if let Ok((_, _, _, _, mut tf)) = windows.get_mut(e) { tf.translation.z = 100.0 + i as f32 * 20.0; }
+    }
+}
+
+fn toggle(name: &str, windows: &mut Windows) {
+    let open = windows.iter().any(|(_, w, _, v, _)| w.0 == name && *v == Visibility::Hidden);
+    for (_, w, mut controls, mut v, _) in windows.iter_mut() {
+        if w.0 == name {
+            *v = if open { Visibility::Inherited } else { Visibility::Hidden };
+            controls.hovered = None;
+            controls.pressed = None;
+        } else if open && matches!(name, "charactersheet" | "skilltalentswindow") && matches!(w.0.as_str(), "charactersheet" | "skilltalentswindow") {
+            *v = Visibility::Hidden;
+        }
+    }
+    if open {
+        if let Some(e) = windows.iter().find(|(_, w, _, _, _)| w.0 == name).map(|(e, _, _, _, _)| e) { raise(e, windows); }
+    }
+}
+
+pub(super) fn keyboard(keys: Res<ButtonInput<KeyCode>>, mut windows: Windows, mut pointer: ResMut<Pointer>) {
+    if keys.just_pressed(KeyCode::Escape) && pointer.spell_drag.take().is_some() {
+        pointer.down = None;
+        return;
+    }
+    if pointer.focus.is_some() {
+        if keys.just_pressed(KeyCode::Escape) { pointer.focus = None; }
+        return;
+    }
+    if keys.just_pressed(KeyCode::Escape) {
+        let top = windows.iter().filter(|(_, w, _, v, _)| *v != Visibility::Hidden && is_menu(&w.0))
+            .max_by(|a, b| a.4.translation.z.total_cmp(&b.4.translation.z)).map(|(e, _, _, _, _)| e);
+        if let Some(top) = top {
+            if let Ok((_, _, _, mut v, _)) = windows.get_mut(top) { *v = Visibility::Hidden; }
+        } else { toggle("gamemenu", &mut windows); }
+        return;
+    }
+    for (name, key, _) in MENU_WINDOWS {
+        if key != KeyCode::Escape && keys.just_pressed(key) { toggle(name, &mut windows); }
+    }
+}
+
+pub(super) fn interact(
+    mut commands: Commands,
+    mut windows: Windows,
+    mut primary: Query<(Entity, &mut Window, Option<&CursorIcon>), With<PrimaryWindow>>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    mut pointer: ResMut<Pointer>,
+    mut skill_clicks: ResMut<SkillClicks>,
+    panels: Query<(&RelativeCursorPosition, &InheritedVisibility), With<crate::ui_input::BlocksWorldInput>>,
+) {
+    let Ok((primary, mut window, cursor)) = primary.single_mut() else { return };
+    let blocked = panels.iter().any(|(cursor, visible)| visible.get() && cursor.cursor_over());
+    let point = window.cursor_position().filter(|_| window.focused && window.height() > 0.0)
+        .map(|p| p * (BASE_H / window.height()));
+    let width = BASE_H * window.width() / window.height().max(1.0);
+    let modal = windows.iter().find(|(_, w, _, v, _)| w.0 == "gamemenu" && *v != Visibility::Hidden).map(|(e, _, _, _, _)| e);
+    if !window.focused || mouse.just_pressed(MouseButton::Left) { pointer.focus = None; }
+
+    if !window.focused || mouse.just_pressed(MouseButton::Left) {
+        pointer.drag = None;
+    }
+    if pointer.drag.as_ref().is_some_and(|d| !windows.get(d.root).is_ok_and(|(_, _, _, v, _)| *v != Visibility::Hidden) || modal.is_some_and(|m| m != d.root)) {
+        pointer.drag = None;
+    }
+    if mouse.pressed(MouseButton::Left) || mouse.just_released(MouseButton::Left) {
+        if let (Some(drag), Some(p)) = (&mut pointer.drag, point) {
+            if let Ok((_, _, controls, _, mut tf)) = windows.get_mut(drag.root) {
+                if let Some(handle) = controls.drag_handle {
+                    drag.grab.x += handle.k * (width - drag.width);
+                    drag.width = width;
+                    let offset = handle.clamp_offset(p - drag.grab, width);
+                    tf.translation.x = offset.x;
+                    tf.translation.y = -offset.y;
+                }
+            }
+        }
+    }
+    if !mouse.pressed(MouseButton::Left) { pointer.drag = None; }
+    for (_, _, controls, _, mut tf) in &mut windows {
+        if let Some(handle) = controls.drag_handle {
+            let offset = handle.clamp_offset(window_offset(&tf), width);
+            if offset != window_offset(&tf) {
+                tf.translation.x = offset.x;
+                tf.translation.y = -offset.y;
+            }
+        }
+    }
+
+    let top = point.filter(|_| !blocked).and_then(|p| windows.iter()
+        .filter(|(e, _, controls, visibility, tf)| *visibility != Visibility::Hidden && modal.is_none_or(|m| m == *e) && controls.covers(p - window_offset(tf), width))
+        .max_by(|a, b| a.4.translation.z.total_cmp(&b.4.translation.z))
+        .map(|(e, _, c, _, tf)| (e, c.hit(p - window_offset(tf), width), c.title_hit(p - window_offset(tf), width))));
+    if mouse.just_pressed(MouseButton::Left) {
+        if let Some((e, button, title)) = top {
+            raise(e, &mut windows);
+            if title && button.is_none() {
+                let (_, _, _, _, tf) = windows.get(e).unwrap();
+                pointer.drag = Some(Drag { root: e, grab: point.unwrap() - window_offset(tf), width });
+            }
+        }
+    }
+    let hovered = top.filter(|_| pointer.drag.is_none()).and_then(|(e, b, _)| b.map(|i| (e, i)));
+    let hit = hovered.filter(|(e, index)| windows.get(*e).is_ok_and(|(_, _, c, _, _)| c.enabled(&c.buttons[*index])));
+    if !window.focused || blocked || pointer.down.is_some_and(|(e, _)| !windows.get(e).is_ok_and(|(_, _, _, v, _)| *v != Visibility::Hidden)) { pointer.down = None; }
+    let mut clicked = pointer.update(hit, mouse.just_pressed(MouseButton::Left), mouse.just_released(MouseButton::Left));
+    if spells::drag(&mut pointer, &windows, &mouse, hit, point, window.focused && !blocked && modal.is_none()) {
+        clicked = None;
+    }
+    if !mouse.pressed(MouseButton::Left) { pointer.down = None; }
+    let want: CursorIcon = if pointer.drag.is_some() || pointer.spell_drag.as_ref().is_some_and(|d| d.active) { SystemCursorIcon::Grabbing }
+        else if !mouse.pressed(MouseButton::Left) && top.is_some_and(|(_, button, title)| title && button.is_none()) { SystemCursorIcon::Grab }
+        else { SystemCursorIcon::Default }.into();
+    if cursor != Some(&want) { commands.entity(primary).insert(want); }
+    for (e, _, mut controls, visibility, _) in &mut windows {
+        controls.hovered = hovered.filter(|(root, _)| *root == e).map(|(_, i)| i);
+        controls.pressed = pointer.down.filter(|(root, _)| *root == e && *visibility != Visibility::Hidden).map(|(_, i)| i);
+    }
+    let Some((entity, index)) = clicked else { return };
+    let Ok((_, name, mut controls, mut visibility, _)) = windows.get_mut(entity) else { return };
+    let action = controls.buttons[index].action.clone();
+    info!("ui {}: {} ({action:?})", name.0, controls.buttons[index].id);
+    match action {
+        Action::Close => *visibility = Visibility::Hidden,
+        Action::Inventory(page) => controls.inventory = page,
+        Action::Character(page) => controls.character = page,
+        Action::Tab(group, page) => {
+            controls.pages.insert(group, page);
+            if group == "rank_group" { controls.pages.insert("rank_category", 0); }
+        }
+        Action::Toggle(id) => { if !controls.toggles.remove(&id) { controls.toggles.insert(id); } }
+        Action::Edit(id) => { controls.entries.entry(id.clone()).or_default(); pointer.focus = Some((entity, id)); }
+        Action::Choose(group, id) => { controls.choices.insert(group, id); }
+        Action::Bag(page) => controls.bag = page,
+        Action::Ingredient(page) => controls.ingredient = page,
+        Action::Rarity(rarity) => controls.rarity = rarity,
+        Action::Page(delta) => controls.bag = (controls.bag as i32 + delta).clamp(0, 7) as usize,
+        Action::Lock => controls.locked = !controls.locked,
+        Action::Skill(slot) => skill_clicks.0 = Some(slot),
+        Action::Fullscreen => window.mode = if window.mode == WindowMode::Windowed { WindowMode::BorderlessFullscreen(MonitorSelection::Current) } else { WindowMode::Windowed },
+        Action::Window(target) => toggle(target, &mut windows),
+        Action::Membership => {
+            for (_, w, mut c, mut v, _) in &mut windows {
+                if w.0 == "charactersheet" { c.character = 3; *v = Visibility::Inherited; }
+                if w.0 == "skilltalentswindow" { *v = Visibility::Hidden; }
+            }
+            if let Some(e) = windows.iter().find(|(_, w, _, _, _)| w.0 == "charactersheet").map(|(e, _, _, _, _)| e) { raise(e, &mut windows); }
+        }
+        Action::Spell | Action::Unavailable => {}
+    }
+}
+
+pub(super) fn edit_text(
+    mut events: MessageReader<KeyboardInput>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mut pointer: ResMut<Pointer>,
+    mut windows: Windows,
+    mut input: ResMut<crate::ui_input::UiInput>,
+) {
+    if pointer.focus.as_ref().is_some_and(|(e, id)| !windows.get(*e).is_ok_and(|(_, _, c, v, _)| *v != Visibility::Hidden
+        && c.buttons.iter().any(|b| b.id == *id && c.section_visible(b.section)))) { pointer.focus = None; }
+    for event in events.read() {
+        let Some((root, id)) = pointer.focus.as_ref() else { continue };
+        if !event.state.is_pressed() { continue; }
+        if matches!(event.key_code, KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Escape) { pointer.focus = None; continue; }
+        if let Ok((_, _, mut c, _, _)) = windows.get_mut(*root) {
+            c.entries.entry(id.clone()).or_default().edit(event.key_code, event.text.as_deref(),
+                keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight));
+        }
+    }
+    input.typing = pointer.focus.is_some();
+}
+
+pub(super) fn paint(
+    mut windows: Query<(&mut WindowControls, &Window2018, &Visibility, &mut crate::ui_input::UiRegions, &Transform), Without<Element>>,
+    mut elements: Query<(&Element, &mut Visibility, Option<&Value>, Option<&EntryLabel>, Option<&mut Text2d>), Without<Window2018>>,
+    pointer: Res<Pointer>,
+) {
+    let open: Vec<_> = windows.iter().filter(|(_, _, v, _, _)| **v != Visibility::Hidden).map(|(_, name, _, _, _)| name.0.clone()).collect();
+    for (mut controls, _, _, _, _) in &mut windows {
+        if controls.open_windows != open { controls.open_windows.clone_from(&open); }
+    }
+    for (element, mut visibility, value, entry, text) in &mut elements {
+        let Ok((controls, name, _, _, _)) = windows.get(element.root) else { continue };
+        let visible = controls.visible(&element.gate);
+        let want = if visible { Visibility::Inherited } else { Visibility::Hidden };
+        if *visibility != want { *visibility = want; }
+        if let Some(mut text) = text {
+            if let Some(EntryLabel(id)) = entry {
+                if let Some(entry) = controls.entries.get(id) {
+                    let mut display = entry.text.clone();
+                    if pointer.focus.as_ref().is_some_and(|(e, focused)| *e == element.root && focused == id) { display.insert(entry.cursor, '|'); }
+                    if text.0 != display { text.0 = display; }
+                }
+            } else if matches!(value, Some(Value(ValueKind::Page))) {
+                let page = if name.0 == "inventory" && controls.bag < 8 { format!("{}/8", controls.bag + 1) } else { "1/1".to_owned() };
+                if text.0 != page { text.0 = page; }
+            }
+        }
+    }
+    for (controls, name, visibility, mut regions, tf) in &mut windows {
+        regions.0.clear();
+        if *visibility == Visibility::Hidden { continue; }
+        let offset = window_offset(tf);
+        regions.0.extend(controls.regions.iter().filter(|(_, _, gate)| controls.visible(gate)).map(|(k, rect, _)| (*k, translated(*rect, offset))));
+        regions.0.extend(controls.buttons.iter().filter(|b| controls.section_visible(b.section)).map(|b| (b.k, translated(b.rect, offset))));
+        if let Some(h) = controls.drag_handle { regions.0.push((h.k, translated(h.rect, offset))); }
+        if name.0 == "gamemenu" { regions.0.push((0.0, [-1.0e6, -1.0e6, 1.0e6, 1.0e6])); }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture(window: &str, widgets: serde_json::Value) -> Layout {
+        serde_json::from_value(serde_json::json!({ "window": window, "widgets": widgets })).unwrap()
+    }
+
+    fn button(id: &str, event: &str) -> Widget {
+        serde_json::from_value(serde_json::json!({"id":id,"type":"Button","event":event,"k":0.5,"rect":[0,0,20,20],"hidden":false})).unwrap()
+    }
+
+    #[test]
+    fn click_requires_the_same_press_and_release_target() {
+        let mut pointer = Pointer::default();
+        let a = Some((Entity::from_bits(1), 0));
+        let b = Some((Entity::from_bits(1), 1));
+        assert_eq!(pointer.update(a, true, false), None);
+        assert_eq!(pointer.update(b, false, true), None);
+        pointer.update(None, true, false);
+        assert_eq!(pointer.update(a, false, true), None);
+        pointer.update(a, true, false);
+        assert_eq!(pointer.update(a, false, true), a);
+    }
+
+    #[test]
+    fn inventory_pages_and_return_are_mutually_exclusive() {
+        let mut c = WindowControls::new(&fixture("inventory", serde_json::json!([])));
+        for selected in 0..4 {
+            c.inventory = selected;
+            for (name, page) in [("oben", 0), ("IngredientBag", 1), ("TrinketBag", 2), ("mercenary", 3)] {
+                let gate = section("inventory", &format!("Canvas/PositioningLabel/Label_texture/{name}/normal"));
+                assert_eq!(c.section_visible(gate), page == selected);
+            }
+            assert_eq!(c.section_visible(Section::InventoryReturn), selected != 0);
+        }
+    }
+
+    #[test]
+    fn hover_press_disabled_and_release_use_authored_states() {
+        let mut c = WindowControls::new(&fixture("inventory", serde_json::json!([])));
+        c.buttons.push(Button { id: "Close".into(), k: 0.0, rect: [0.0; 4], section: Section::Always,
+            action: Action::Close, authored_enabled: true, states: 31, spell: None });
+        assert_eq!(c.state(0), State::Normal);
+        c.hovered = Some(0);
+        assert_eq!(c.state(0), State::Hover);
+        c.pressed = Some(0);
+        assert_eq!(c.state(0), State::HoverPressed);
+        c.buttons[0].states &= !State::HoverPressed.bit();
+        assert_eq!(c.state(0), State::Pressed);
+        c.hovered = None;
+        assert_eq!(c.state(0), State::Normal);
+        c.buttons[0].authored_enabled = false;
+        assert_eq!(c.state(0), State::Disabled);
+    }
+
+    #[test]
+    fn events_and_identical_tab_names_resolve_in_their_own_window() {
+        assert_eq!(action("inventory", &button("Canvas/IngredientBag/BagButton2", "")), Action::Ingredient(2));
+        assert_eq!(action("inventory", &button("Canvas/unten/BagButton2", "")), Action::Bag(2));
+        assert_eq!(action("inventory", &button("Canvas/Frame/Button", "Close")), Action::Close);
+        assert_eq!(action("gamebar", &button("Canvas/gamemenu", "Logout")), Action::Window("gamemenu"));
+        assert_eq!(action("inventory", &button("Canvas/SortInventoryButton", "SortInventory")), Action::Unavailable);
+    }
+
+    #[test]
+    fn hit_regions_follow_the_same_scale_and_anchor_as_artwork() {
+        let rect = [600.0, 100.0, 650.0, 150.0];
+        let width = 768.0 * 1920.0 / 1080.0;
+        assert!(contains(0.5, rect, Vec2::new(625.0 + (width - 1024.0) / 2.0, 125.0), width));
+        assert!(!contains(0.5, rect, Vec2::new(625.0, 125.0), width));
+    }
+
+    #[test]
+    fn dragging_a_window_moves_its_gauge_clip_without_changing_the_fill() {
+        let mut app = App::new();
+        app.init_resource::<Figures>()
+            .init_resource::<crate::monsters::HoverInfo>()
+            .init_resource::<Screen>()
+            .init_resource::<Assets<UiMaterial>>()
+            .add_systems(Update, update_fills);
+        app.world_mut().resource_mut::<Figures>().xp = 0.25;
+        let root = app.world_mut().spawn((Window2018("charactersheet".into()), Transform::default())).id();
+        let mat = app.world_mut().resource_mut::<Assets<UiMaterial>>().add(material(None));
+        app.world_mut().spawn((Fill { which: Gauge::Xp, k: 0.5, rect: [10.0, 20.0, 110.0, 30.0], shown: -1.0 },
+            MeshMaterial2d(mat.clone()), Element { root, gate: Gate::default() }));
+        app.update();
+        let clip = app.world().resource::<Assets<UiMaterial>>().get(&mat).unwrap().clip;
+        assert_eq!(clip.z - clip.x, 25.0);
+        app.world_mut().get_mut::<Transform>(root).unwrap().translation = Vec3::new(150.0, -45.0, 0.0);
+        app.update();
+        assert_eq!(app.world().resource::<Assets<UiMaterial>>().get(&mat).unwrap().clip, clip + Vec4::new(150.0, -45.0, 150.0, -45.0));
+    }
+
+    fn exported_app() -> (App, Entity, HashMap<&'static str, Entity>, HashMap<&'static str, Layout>) {
+        let mut app = App::new();
+        app.add_plugins((TransformPlugin, crate::ui_input::UiInputPlugin))
+            .add_message::<KeyboardInput>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<Pointer>()
+            .init_resource::<SkillClicks>()
+            .add_systems(Update, (keyboard, interact, edit_text, paint).chain());
+        let primary = app.world_mut().spawn((Window { focused: true, resolution: (1024, 768).into(), ..default() }, PrimaryWindow)).id();
+        let mut roots = HashMap::new();
+        let mut layouts = HashMap::new();
+        let definitions = HUD_WINDOWS.into_iter().chain(MENU_WINDOWS.map(|(name, _, z)| (name, z)))
+            .chain(NAV_WINDOWS.into_iter().enumerate().map(|(i, name)| (name, 160.0 + i as f32 * 20.0)));
+        for (name, z) in definitions {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../assets/interface/{name}.ui.json"));
+            let layout: Layout = serde_json::from_slice(&std::fs::read(path).expect("export the original UI first")).unwrap();
+            let mut c = WindowControls::new(&layout);
+            for w in &layout.widgets {
+                if !w.hidden {
+                    if let Some(a) = &w.art { c.region(w.k, bounds(&a.pos), c.gate(name, w)); }
+                }
+            }
+            let root = app.world_mut().spawn((Window2018(name.into()), c,
+                if name == "ingamemenu" { Visibility::Inherited } else { Visibility::Hidden },
+                Transform::from_xyz(0.0, 0.0, z), crate::ui_input::UiRegions::default())).id();
+            roots.insert(name, root);
+            layouts.insert(name, layout);
+        }
+        (app, primary, roots, layouts)
+    }
+
+    fn click_control(app: &mut App, primary: Entity, root: Entity, suffix: &str) {
+        let controls = app.world().get::<WindowControls>(root).unwrap();
+        let b = controls.buttons.iter().find(|b| b.id.ends_with(suffix) && controls.section_visible(b.section)).expect(suffix);
+        let (k, [l, t, r, bottom]) = (b.k, b.rect);
+        let offset = window_offset(app.world().get::<Transform>(root).unwrap());
+        let mut window = app.world_mut().get_mut::<Window>(primary).unwrap();
+        let scale = window.height() / BASE_H;
+        let width = window.width() / scale;
+        window.set_cursor_position(Some((Vec2::new((l + r) * 0.5 + k * (width - BASE_W), (t + bottom) * 0.5) + offset) * scale));
+        app.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(MouseButton::Left);
+        app.update();
+        app.world_mut().resource_mut::<ButtonInput<MouseButton>>().clear();
+        app.world_mut().resource_mut::<ButtonInput<MouseButton>>().release(MouseButton::Left);
+        app.update();
+        app.world_mut().resource_mut::<ButtonInput<MouseButton>>().clear();
+    }
+
+    #[test]
+    #[ignore = "requires locally converted game UI assets"]
+    fn spell_grid_matches_class_and_drag_owns_release_and_cancellation() {
+        let (mut app, primary, roots, layouts) = exported_app();
+        let book = roots["skilltalentswindow"];
+        let bar = roots["bottombar"];
+        *app.world_mut().get_mut::<Visibility>(book).unwrap() = Visibility::Inherited;
+        *app.world_mut().get_mut::<Visibility>(bar).unwrap() = Visibility::Inherited;
+        let cards: Vec<_> = layouts["skilltalentswindow"].widgets.iter().filter(|w| w.spell.is_some()).collect();
+        for (class, count) in [(0, 15), (1, 18), (2, 16), (3, 16)] {
+            let mut c = app.world_mut().get_mut::<WindowControls>(book).unwrap();
+            c.spells.class = class;
+            let visible: Vec<_> = cards.iter().filter(|w| c.visible(&c.gate("skilltalentswindow", w))).collect();
+            assert!(visible.iter().all(|w| w.spell.as_ref().unwrap().class_id == class));
+            assert_eq!(visible.iter().filter(|w| w.spell.as_ref().unwrap().wire.is_some()).count(), count);
+        }
+        app.world_mut().get_mut::<WindowControls>(book).unwrap().spells.class = 1;
+        app.update();
+        let spell = cards.iter().find(|w| w.spell.as_ref().unwrap().id == "magicmissile").unwrap();
+        let center = |rect: [f32; 4]| Vec2::new((rect[0] + rect[2]) / 2.0, (rect[1] + rect[3]) / 2.0);
+        let start = center(spell.rect);
+        let target = center(app.world().get::<WindowControls>(bar).unwrap().buttons.iter().find(|b| b.action == Action::Skill(2)).unwrap().rect);
+        let pointer_step = |app: &mut App, point, press, release| {
+            app.world_mut().get_mut::<Window>(primary).unwrap().set_cursor_position(Some(point));
+            if press { app.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(MouseButton::Left); }
+            if release { app.world_mut().resource_mut::<ButtonInput<MouseButton>>().release(MouseButton::Left); }
+            app.update();
+            app.world_mut().resource_mut::<ButtonInput<MouseButton>>().clear();
+        };
+        pointer_step(&mut app, start, true, false);
+        pointer_step(&mut app, target, false, false);
+        assert!(app.world().resource::<Pointer>().spell_drag.as_ref().is_some_and(|d| d.active));
+        assert!(app.world().resource::<crate::ui_input::UiInput>().blocks(MouseButton::Left));
+        pointer_step(&mut app, target, false, true);
+        assert!(app.world_mut().resource_mut::<Pointer>().spell_drop.take().is_some());
+        assert!(app.world().resource::<SkillClicks>().0.is_none(), "dropping must not cast");
+
+        // Releasing outside the bar must leave the assignment unchanged.
+        pointer_step(&mut app, start, true, false);
+        pointer_step(&mut app, Vec2::new(10.0, 730.0), false, true);
+        assert!(app.world().resource::<Pointer>().spell_drop.is_none());
+        // The lock blocks edits, while normal slot clicks still cast.
+        app.world_mut().get_mut::<WindowControls>(bar).unwrap().locked = true;
+        pointer_step(&mut app, start, true, false);
+        pointer_step(&mut app, target, false, true);
+        assert!(app.world().resource::<Pointer>().spell_drop.is_none());
+        click_control(&mut app, primary, bar, "/QuickSlot1");
+        assert_eq!(app.world_mut().resource_mut::<SkillClicks>().0.take(), Some(2));
+        app.world_mut().get_mut::<WindowControls>(bar).unwrap().locked = false;
+        // Escape cancels the drag without closing the spell book.
+        pointer_step(&mut app, start, true, false);
+        pointer_step(&mut app, target, false, false);
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::Escape);
+        app.update();
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().reset(KeyCode::Escape);
+        pointer_step(&mut app, target, false, true);
+        assert!(app.world().resource::<Pointer>().spell_drop.is_none());
+        assert_eq!(*app.world().get::<Visibility>(book).unwrap(), Visibility::Inherited);
+        // Losing focus also cancels a captured drag.
+        pointer_step(&mut app, start, true, false);
+        app.world_mut().get_mut::<Window>(primary).unwrap().focused = false;
+        pointer_step(&mut app, target, false, true);
+        assert!(app.world().resource::<Pointer>().spell_drop.is_none());
+    }
+
+    #[test]
+    #[ignore = "requires locally converted game UI assets"]
+    fn current_rankings_select_one_group_and_one_header() {
+        let (mut app, primary, roots, layouts) = exported_app();
+        assert!(!roots.contains_key("pvpleaderboards"));
+        let root = roots["leaderboards"];
+        *app.world_mut().get_mut::<Visibility>(root).unwrap() = Visibility::Inherited;
+        app.update();
+        for group in 0..3 {
+            click_control(&mut app, primary, root, &format!("/RankGroupButton{group}"));
+            let c = app.world().get::<WindowControls>(root).unwrap();
+            for (i, part) in ["PvP", "PvE", "Event"].into_iter().enumerate() {
+                let w = layouts["leaderboards"].widgets.iter().find(|w| w.id.ends_with(&format!("/{part}"))).unwrap();
+                assert_eq!(c.visible(&c.gate("leaderboards", w)), group == i);
+            }
+            let headers: Vec<_> = layouts["leaderboards"].widgets.iter().filter(|w|
+                ["/DefaultTableColumnHeading", "/Header", "/HeaderOverallRanking"].iter().any(|suffix| w.id.ends_with(suffix)))
+                .filter(|w| c.visible(&c.gate("leaderboards", w))).collect();
+            assert_eq!(headers.len(), 1);
+            assert!(headers[0].id.ends_with("/HeaderOverallRanking"));
+            if group != 2 {
+                click_control(&mut app, primary, root, &format!("/RankGroup{group}/RankCategory1"));
+                let c = app.world().get::<WindowControls>(root).unwrap();
+                assert!(c.section_visible(Section::Ranking(group as u8, false)));
+                assert!(!c.section_visible(Section::Ranking(group as u8, true)));
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires locally converted game UI assets"]
+    fn every_navigation_shortcut_opens_its_own_panel_and_tracks_close() {
+        let (mut app, primary, roots, _) = exported_app();
+        app.update();
+        for (button, window) in [("char", "charactersheet"), ("quest", "questlog"), ("skills", "skilltalentswindow"),
+            ("inventory", "inventory"), ("dealer", "shopwindow"), ("travelmap", "travelmap"), ("minimap", "locationmap"),
+            ("socialscreen", "socialscreen"), ("pvp", "matchmakingwindow"), ("pvpleaderboards", "leaderboards"), ("events", "eventwindow")] {
+            click_control(&mut app, primary, roots["ingamemenu"], &format!("/{button}"));
+            assert_eq!(*app.world().get::<Visibility>(roots[window]).unwrap(), Visibility::Inherited, "{button}");
+            let c = app.world().get::<WindowControls>(roots["ingamemenu"]).unwrap();
+            assert!(c.selected(&Action::Window(window)), "shortcut must follow the opened panel");
+            let panel = app.world().get::<WindowControls>(roots[window]).unwrap();
+            assert!(panel.drag_handle.is_some(), "{window} must be draggable");
+            let close = panel.buttons.iter().find(|b| b.action == Action::Close).unwrap().id.clone();
+            click_control(&mut app, primary, roots[window], &close);
+            assert_eq!(*app.world().get::<Visibility>(roots[window]).unwrap(), Visibility::Hidden, "close {window}");
+            let c = app.world().get::<WindowControls>(roots["ingamemenu"]).unwrap();
+            assert!(!c.selected(&Action::Window(window)), "closed shortcut must lose its highlight");
+        }
+    }
+
+    #[test]
+    #[ignore = "requires locally converted game UI assets"]
+    fn panel_tabs_switch_pages_and_exported_hud_uses_one_variant() {
+        let (mut app, primary, roots, layouts) = exported_app();
+        app.update();
+        for (window, suffix, group, page) in [("questlog", "/DailyAchievementsTab", "quest", 3),
+            ("skilltalentswindow", "/KnowledgeTab", "talents", 1),
+            ("socialscreen", "/TabButtonFriends", "social", 1), ("shopwindow", "/ShopTab3", "shop", 2),
+            ("leaderboards", "/RankGroupButton1", "rank_group", 1), ("matchmakingwindow", "/TabButton02", "matchmaking", 1)] {
+            *app.world_mut().get_mut::<Visibility>(roots[window]).unwrap() = Visibility::Inherited;
+            app.update();
+            click_control(&mut app, primary, roots[window], suffix);
+            let c = app.world().get::<WindowControls>(roots[window]).unwrap();
+            assert_eq!(c.pages.get(group), Some(&page), "{window}");
+            assert!(c.section_visible(Section::Page(group, 1 << page)));
+            assert!(!c.section_visible(Section::Page(group, 1)));
+            *app.world_mut().get_mut::<Visibility>(roots[window]).unwrap() = Visibility::Hidden;
+        }
+        let gamebar = app.world().get::<WindowControls>(roots["gamebar"]).unwrap();
+        for w in &layouts["gamebar"].widgets {
+            if w.id.contains("/bgAutoplay") || w.id.contains("/Premium/") || w.id.contains("/Deluxe/") || w.id.contains("/SigninBtn/") {
+                assert!(!gamebar.visible(&gamebar.gate("gamebar", w)), "variant leaked: {}", w.id);
+            }
+        }
+        for name in ["bottombar_xp_bar", "bottombar_wisdom_bar"] {
+            let bar = layouts["bottombar"].widgets.iter().find(|w| w.id.ends_with(&format!("/{name}/progress"))).unwrap();
+            assert!(!bar.hidden && bar.art.is_some(), "progress bar must be exported: {name}");
+            assert!(gauge_of(&bar.id).is_some());
+            let label = layouts["bottombar"].widgets.iter().find(|w| w.id.contains(name) && w.id.ends_with("/Level")).unwrap();
+            assert!(!label.hidden && value_of(&label.id).is_some());
+        }
+        for w in &layouts["ingamemenu"].widgets {
+            if w.id.contains("/icon/Label_highlight") { assert!(w.hidden, "a common highlight must not stay lit"); }
+        }
+    }
+
+    #[test]
+    fn text_entries_edit_unicode_at_the_caret_and_replace_selected_text() {
+        let mut entry = TextEntry::default();
+        entry.edit(KeyCode::KeyA, Some("Алиса"), false);
+        entry.edit(KeyCode::ArrowLeft, None, false);
+        entry.edit(KeyCode::Backspace, None, false);
+        assert_eq!(entry.text, "Алиа");
+        entry.edit(KeyCode::KeyA, None, true);
+        entry.edit(KeyCode::KeyX, Some("XYZ"), false);
+        assert_eq!(entry.text, "XYZ");
+        entry.edit(KeyCode::Home, None, false);
+        entry.edit(KeyCode::Delete, None, false);
+        assert_eq!(entry.text, "YZ");
+    }
+
+    /// Exercise the actual ECS systems and shipped widget IDs, not just the
+    /// action/state helpers. Run with --ignored after exporting game assets.
+    #[test]
+    #[ignore = "requires locally converted game UI assets"]
+    fn exported_windows_respond_to_pointer_keyboard_tabs_and_resize() {
+        let (mut app, primary, roots, layouts) = exported_app();
+        let gear = app.world_mut().spawn((Element { root: roots["inventory"], gate: Gate { section: Section::Inventory(0), button: None } }, Visibility::Hidden)).id();
+        let ingredient = app.world_mut().spawn((Element { root: roots["inventory"], gate: Gate { section: Section::Inventory(1), button: None } }, Visibility::Hidden)).id();
+        app.update();
+        let click = |app: &mut App, name: &str, suffix: &str| {
+            let w = layouts[name].widgets.iter().find(|w| w.id.ends_with(suffix) && matches!(w.kind.as_str(), "Button" | "TextButton" | "SlotButton")).unwrap();
+            let offset = window_offset(app.world().get::<Transform>(roots[name]).unwrap());
+            let mut window = app.world_mut().get_mut::<Window>(primary).unwrap();
+            let scale = window.height() / BASE_H;
+            let [l, t, r, b] = w.rect;
+            let x = ((l + r) * 0.5 + offset.x) * scale + w.k * (window.width() - BASE_W * scale);
+            window.set_cursor_position(Some(Vec2::new(x, ((t + b) * 0.5 + offset.y) * scale)));
+            app.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(MouseButton::Left);
+            app.update();
+            app.world_mut().resource_mut::<ButtonInput<MouseButton>>().clear();
+            app.world_mut().resource_mut::<ButtonInput<MouseButton>>().release(MouseButton::Left);
+            app.update();
+            app.world_mut().resource_mut::<ButtonInput<MouseButton>>().clear();
+        };
+        click(&mut app, "ingamemenu", "/inventory");
+        assert_eq!(*app.world().get::<Visibility>(roots["inventory"]).unwrap(), Visibility::Inherited);
+        assert_eq!(*app.world().get::<Visibility>(gear).unwrap(), Visibility::Inherited);
+        assert_eq!(*app.world().get::<Visibility>(ingredient).unwrap(), Visibility::Hidden);
+        click(&mut app, "inventory", "/IngredientBagButton");
+        assert_eq!(app.world().get::<WindowControls>(roots["inventory"]).unwrap().inventory, 1);
+        assert_eq!(*app.world().get::<Visibility>(gear).unwrap(), Visibility::Hidden);
+        assert_eq!(*app.world().get::<Visibility>(ingredient).unwrap(), Visibility::Inherited);
+        click(&mut app, "inventory", "/InventoryReturnButton");
+        click(&mut app, "inventory", "/unten/Label_bg/BagButton1");
+        assert_eq!(app.world().get::<WindowControls>(roots["inventory"]).unwrap().bag, 1);
+        click(&mut app, "inventory", "/NextPageBtn");
+        assert_eq!(app.world().get::<WindowControls>(roots["inventory"]).unwrap().bag, 2);
+        click(&mut app, "inventory", "/FrameLabel/Button");
+        assert_eq!(*app.world().get::<Visibility>(roots["inventory"]).unwrap(), Visibility::Hidden);
+        assert!(app.world().get::<crate::ui_input::UiRegions>(roots["inventory"]).unwrap().0.is_empty());
+        click(&mut app, "ingamemenu", "/char");
+        click(&mut app, "charactersheet", "/TabButtonPVP");
+        assert_eq!(app.world().get::<WindowControls>(roots["charactersheet"]).unwrap().character, 1);
+        click(&mut app, "ingamemenu", "/skills");
+        assert_eq!(*app.world().get::<Visibility>(roots["charactersheet"]).unwrap(), Visibility::Hidden);
+        assert_eq!(*app.world().get::<Visibility>(roots["skilltalentswindow"]).unwrap(), Visibility::Inherited);
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::Escape);
+        app.update();
+        assert_eq!(*app.world().get::<Visibility>(roots["skilltalentswindow"]).unwrap(), Visibility::Hidden);
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().reset(KeyCode::Escape);
+        app.world_mut().get_mut::<Window>(primary).unwrap().resolution.set(1920.0, 1080.0);
+        click(&mut app, "ingamemenu", "/inventory");
+        click(&mut app, "inventory", "/TrinketBagButton");
+        assert_eq!(app.world().get::<WindowControls>(roots["inventory"]).unwrap().inventory, 2);
+    }
+
+    #[test]
+    #[ignore = "requires locally converted game UI assets"]
+    fn exported_title_drags_move_children_and_hits_without_leaking_world_input() {
+        let (mut app, primary, roots, _) = exported_app();
+        let move_cursor = |app: &mut App, point: Vec2| {
+            let mut window = app.world_mut().get_mut::<Window>(primary).unwrap();
+            let scale = window.height() / BASE_H;
+            window.set_cursor_position(Some(point * scale));
+        };
+        let press = |app: &mut App| {
+            app.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(MouseButton::Left);
+            app.update();
+            app.world_mut().resource_mut::<ButtonInput<MouseButton>>().clear();
+        };
+        let release = |app: &mut App| {
+            app.world_mut().resource_mut::<ButtonInput<MouseButton>>().release(MouseButton::Left);
+            app.update();
+            app.world_mut().resource_mut::<ButtonInput<MouseButton>>().clear();
+        };
+        for size in [(1024.0, 768.0), (1920.0, 1080.0)] {
+            app.world_mut().get_mut::<Window>(primary).unwrap().resolution.set(size.0, size.1);
+            let width = BASE_H * size.0 / size.1;
+            for name in ["inventory", "charactersheet", "skilltalentswindow", "gamemenu"] {
+                let root = roots[name];
+                for entity in roots.values() { *app.world_mut().get_mut::<Visibility>(*entity).unwrap() = Visibility::Hidden; }
+                *app.world_mut().get_mut::<Visibility>(root).unwrap() = Visibility::Inherited;
+                app.world_mut().get_mut::<Transform>(root).unwrap().translation.x = 0.0;
+                app.world_mut().get_mut::<Transform>(root).unwrap().translation.y = 0.0;
+                let child = app.world_mut().spawn((Transform::from_xyz(15.0, 25.0, 0.0), ChildOf(root))).id();
+                let handle = app.world().get::<WindowControls>(root).unwrap().drag_handle.expect("every menu needs a title handle");
+                let [l, t, r, _] = handle.rect;
+                let start = Vec2::new((l + r) * 0.5 + handle.k * (width - BASE_W), t + 12.0);
+                move_cursor(&mut app, start);
+                app.update();
+                assert_eq!(app.world().get::<CursorIcon>(primary), Some(&CursorIcon::from(SystemCursorIcon::Grab)));
+                let child_before = app.world().get::<GlobalTransform>(child).unwrap().translation();
+                press(&mut app);
+                assert_eq!(app.world().resource::<Pointer>().drag.as_ref().unwrap().root, root);
+                assert!(app.world().resource::<crate::ui_input::UiInput>().blocks(MouseButton::Left));
+                let delta = Vec2::new(if name == "inventory" { -160.0 } else if name == "skilltalentswindow" { -60.0 } else { 160.0 }, 45.0);
+                move_cursor(&mut app, start + delta);
+                app.update();
+                assert!(window_offset(app.world().get::<Transform>(root).unwrap()).distance(delta) < 0.001);
+                let moved = app.world().get::<GlobalTransform>(child).unwrap().translation() - child_before;
+                assert!(moved.truncate().distance(Vec2::new(delta.x, -delta.y)) < 0.001);
+                assert!(app.world().resource::<crate::ui_input::UiInput>().blocks(MouseButton::Left));
+                assert_eq!(app.world().get::<CursorIcon>(primary), Some(&CursorIcon::from(SystemCursorIcon::Grabbing)));
+                release(&mut app);
+                assert!(app.world().resource::<Pointer>().drag.is_none());
+                move_cursor(&mut app, start);
+                app.update();
+                assert!(window_offset(app.world().get::<Transform>(root).unwrap()).distance(delta) < 0.001, "released windows must stop following the mouse");
+
+                // The close button must use its moved rect and keep priority
+                // where it overlaps the title strip.
+                let c = app.world().get::<WindowControls>(root).unwrap();
+                let close = c.buttons.iter().find(|b| b.action == Action::Close).unwrap();
+                let [l, t, r, b] = close.rect;
+                let close_point = Vec2::new((l + r) * 0.5 + close.k * (width - BASE_W), (t + b) * 0.5) + delta;
+                move_cursor(&mut app, close_point);
+                press(&mut app);
+                assert!(app.world().resource::<Pointer>().drag.is_none());
+                assert!(app.world().resource::<crate::ui_input::UiInput>().blocks(MouseButton::Left), "moved buttons must block world input");
+                release(&mut app);
+                assert_eq!(*app.world().get::<Visibility>(root).unwrap(), Visibility::Hidden);
+                assert!(app.world().get::<crate::ui_input::UiRegions>(root).unwrap().0.is_empty());
+                app.world_mut().despawn(child);
+            }
+        }
+
+        let root = roots["inventory"];
+        app.world_mut().get_mut::<Window>(primary).unwrap().resolution.set(1024.0, 768.0);
+        app.world_mut().get_mut::<Transform>(root).unwrap().translation = Vec3::new(0.0, 0.0, 100.0);
+        *app.world_mut().get_mut::<Visibility>(root).unwrap() = Visibility::Inherited;
+        app.update();
+        let title = Vec2::new(800.0, 60.0);
+        // A world-origin hold crossing the title never starts dragging it.
+        move_cursor(&mut app, Vec2::new(500.0, 700.0));
+        press(&mut app);
+        move_cursor(&mut app, title);
+        app.update();
+        assert!(!app.world().resource::<crate::ui_input::UiInput>().blocks(MouseButton::Left));
+        assert!(app.world().resource::<Pointer>().drag.is_none());
+        release(&mut app);
+        let handle = app.world().get::<WindowControls>(root).unwrap().drag_handle.unwrap();
+        move_cursor(&mut app, Vec2::new(handle.rect[0] + 1.0, handle.rect[1] + 12.0));
+        press(&mut app);
+        // Bevy returns no cursor position outside the native window. Drag
+        // from the left of the title to the viewport edge to exercise clamps.
+        move_cursor(&mut app, Vec2::new(BASE_W - 1.0, 0.0));
+        app.update();
+        let c = app.world().get::<WindowControls>(root).unwrap();
+        let handle = c.drag_handle.unwrap();
+        let offset = window_offset(app.world().get::<Transform>(root).unwrap());
+        assert!((handle.rect[0] + offset.x - (BASE_W - 64.0)).abs() < 0.001);
+        assert!((handle.rect[1] + offset.y).abs() < 0.001, "title must remain vertically reachable");
+        assert!(app.world().resource::<crate::ui_input::UiInput>().blocks(MouseButton::Left));
+        app.world_mut().get_mut::<Window>(primary).unwrap().focused = false;
+        app.update();
+        assert!(app.world().resource::<Pointer>().drag.is_none(), "focus loss must cancel dragging");
+        release(&mut app);
+        app.world_mut().get_mut::<Window>(primary).unwrap().focused = true;
+        move_cursor(&mut app, title);
+        app.update();
+        assert_eq!(window_offset(app.world().get::<Transform>(root).unwrap()), offset);
+
+        // Closing and reopening preserves the offset during this session.
+        for _ in 0..2 {
+            app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::KeyI);
+            app.update();
+            app.world_mut().resource_mut::<ButtonInput<KeyCode>>().reset(KeyCode::KeyI);
+        }
+        assert_eq!(window_offset(app.world().get::<Transform>(root).unwrap()), offset);
+        assert_eq!(*app.world().get::<Visibility>(root).unwrap(), Visibility::Inherited);
+
+        // Overlapping windows use their visual stacking order. Opening one
+        // raises it; the modal game menu still prevents grabbing either.
+        let character = roots["charactersheet"];
+        *app.world_mut().get_mut::<Visibility>(character).unwrap() = Visibility::Inherited;
+        app.world_mut().get_mut::<Transform>(character).unwrap().translation = Vec3::new(0.0, 0.0, 120.0);
+        app.world_mut().get_mut::<Transform>(root).unwrap().translation = Vec3::new(-589.0, 0.0, 100.0);
+        let overlap = Vec2::new(200.0, 60.0);
+        move_cursor(&mut app, overlap);
+        app.update();
+        press(&mut app);
+        assert_eq!(app.world().resource::<Pointer>().drag.as_ref().unwrap().root, character);
+        release(&mut app);
+        for _ in 0..2 {
+            app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::KeyI);
+            app.update();
+            app.world_mut().resource_mut::<ButtonInput<KeyCode>>().reset(KeyCode::KeyI);
+        }
+        press(&mut app);
+        assert_eq!(app.world().resource::<Pointer>().drag.as_ref().unwrap().root, root);
+        *app.world_mut().get_mut::<Visibility>(roots["gamemenu"]).unwrap() = Visibility::Inherited;
+        app.update();
+        assert!(app.world().resource::<Pointer>().drag.is_none(), "opening a modal must cancel an underlying drag");
+        release(&mut app);
+        press(&mut app);
+        assert!(app.world().resource::<Pointer>().drag.is_none(), "cannot grab a window beneath a modal");
+        assert!(app.world().resource::<crate::ui_input::UiInput>().blocks(MouseButton::Left));
+        release(&mut app);
+    }
+}

@@ -358,8 +358,8 @@ fn write_slot_list(w: &mut BitWriter, v: &[QuickSlot]) {
     }
 }
 
-/// QuickSlotsInfoCommand (83): every quick bar, each a counted list of slots (the
-/// client keeps only bars of exactly 18 slots).
+/// QuickSlotsInfoCommand (0x50 in release261): every quick bar, each a counted
+/// list of slots. The release261 server stores 17 slots per bar.
 /// EVIDENCE: reader chain 0x9A99A6 -> 0x998748 -> 0x998F15 -> 0x9BAA43
 ///   (dsor/actionbar.py encode_quick_slots).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -379,8 +379,8 @@ impl Body for QuickSlotsInfo {
     }
 }
 
-/// QuickSlotsCommand (84), client -> server: one bar's slots, then a u32 the client
-/// writes from the command's +24 (differs per bar; index or counter, UNKNOWN).
+/// QuickSlotsCommand (0x51 in release261), client -> server: one complete
+/// 17-slot bar, then its u32 bar index (0..9).
 /// EVIDENCE: decoder 0x9A995C, encoder 0x9AD554 (dsor/quickslots.py).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct QuickSlots {

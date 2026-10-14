@@ -440,6 +440,12 @@ pub fn split_login_reply(reply: &str) -> Option<(u16, String)> {
 /// A blocking HTTP/1.1 POST of a JSON body to `host:port` + `path`; (status, body).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn http_post(host_port: &str, path: &str, body: &str) -> Result<(u16, String), String> {
+    http_request(host_port, "POST", path, body)
+}
+
+/// Blocking HTTP for the local account service; call from a worker thread.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn http_request(host_port: &str, method: &str, path: &str, body: &str) -> Result<(u16, String), String> {
     use std::io::{Read, Write};
     use std::net::{TcpStream, ToSocketAddrs};
     use std::time::Duration;
@@ -450,8 +456,9 @@ pub fn http_post(host_port: &str, path: &str, body: &str) -> Result<(u16, String
         .ok_or_else(|| format!("{host_port} does not resolve"))?;
     let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5)).map_err(|e| format!("{host_port}: {e}"))?;
     stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
+    stream.set_write_timeout(Some(Duration::from_secs(10))).ok();
     let request = format!(
-        "POST {path} HTTP/1.1\r\nHost: {host_port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "{method} {path} HTTP/1.1\r\nHost: {host_port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     stream.write_all(request.as_bytes()).map_err(|e| e.to_string())?;
