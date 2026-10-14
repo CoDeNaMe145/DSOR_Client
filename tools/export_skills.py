@@ -20,6 +20,7 @@ Tracks kept, by their TrackBar type:
   PointLightTrackBar          a point light
   ObserverCameraShakeTrackBar a camera shake
   HideEntityTrackBar          the actor hidden (teleports)
+  CharacterTrackBar           a character placed by a level sequence (export_deco.py)
   PlaySoundTrackBar           a sound (kept for later; the client has no audio yet)
 """
 import json, os, re, struct, sys
@@ -166,6 +167,13 @@ def sequence(layout):
                  "speed": num(v.get("animSpeed"), 100) / 100.0, "offset": num(v.get("animOffset"))}
         elif kind == "DrasaGraphicsObjectTrackBar":
             t = {"kind": "fx", "graphics": v.get("graphicsname", ""), "at": transform(v.get("graphicstrans"))}
+        elif kind == "CharacterTrackBar":
+            # A character the sequence places (the levels' guards, pigeons, sitting
+            # townsfolk): "<model>/<character set>/<clip>" (uniskel/deco_m_guard_01/
+            # male_idle_guard, deco_pigeon/deco_pigeon_01/idle_01). Drawn by
+            # client/src/npc.rs from tools/export_deco.py's placements.
+            t = {"kind": "character", "object": v.get("characterobject", ""), "at": transform(v.get("graphicstrans")),
+                 "speed": num(v.get("animSpeed"), 100) / 100.0, "offset": num(v.get("animOffset"))}
         elif kind == "AttachedGraphicsTrackBar":
             pos, rot = v.get("posOffset") or {}, v.get("rotOffset") or {}
             t = {"kind": "fx", "graphics": v.get("graphicsName", ""), "joint": v.get("jointName", ""),
@@ -255,15 +263,39 @@ bullets = {r["Id"]: r for r in db.execute("select * from _Template_SkillBullet")
 
 
 def statuses(text):
-    """'name,C:1.0,D:8.0,...;name2,...' -> [[name, duration]] (D:, 0 when absent)."""
+    """'name,C:1.0,D:8.0,...;name2,...' -> [[name, duration]] (D:, 0 when absent).
+
+    C: is the chance it applies. 0 is the rule for the talent, item and set effects
+    (only a talent or an item raises it): left out, as offline play applies every
+    one listed -- jump's lightning field and adrenalin's frost explosion showed on
+    every cast ("une zone d'eclair qui apparait sans aucune raison")."""
     out = []
     for part in (text or "").split(";"):
         fields = [f.strip() for f in part.split(",") if f.strip()]
         if not fields:
             continue
+        chance = next((float(f[2:]) for f in fields[1:] if f.startswith("C:")), 1.0)
+        if chance <= 0.0:
+            continue
         d = next((float(f[2:]) for f in fields[1:] if f.startswith("D:")), 0.0)
         out.append([fields[0], d])
     return out
+def delays(text):
+    """{name: DE seconds} of the effects statuses() keeps that wait before they
+    start: the grenade lies 1.2 s (DE:1.2) before skill_grenade_damage_aura's
+    explosion."""
+    out = {}
+    for part in (text or "").split(";"):
+        fields = [f.strip() for f in part.split(",") if f.strip()]
+        if not fields:
+            continue
+        chance = next((float(f[2:]) for f in fields[1:] if f.startswith("C:")), 1.0)
+        delay = next((float(f[3:]) for f in fields[1:] if f.startswith("DE:")), 0.0)
+        if chance > 0.0 and delay > 0.0:
+            out[fields[0]] = delay
+    return out
+
+
 skills = {}
 for r in db.execute("select rowid, * from _Template_Skill order by rowid"):
     b = bullets.get(r["SkillBulletId"] or "")
@@ -278,6 +310,7 @@ for r in db.execute("select rowid, * from _Template_Skill order by rowid"):
         "range": r["AttackRange"] or 0.0,
         "cooldown": r["CoolDown"] or 0.0,
         "cooldown_category": r["CoolDownCategory"] or "",
+        "class": r["CharClass"] or "",
         "resource_cost": r["ResourceCost"] or 0.0,
         "pre": mapped(r["PreExecuteSequenceMapping"]),
         "execute": mapped(r["ExecuteSequenceMapping"]),
@@ -293,6 +326,7 @@ for r in db.execute("select rowid, * from _Template_Skill order by rowid"):
         "user_status": statuses(r["UserStatusEffects"]),
         "victim_status": statuses(r["VictimStatusEffects"]),
         "location_status": statuses(r["LocationStatusEffects"]),
+        "location_delay": delays(r["LocationStatusEffects"]),
         # What the skill summons (the server spawns them online): monster template,
         # how many, the offset from the caster (caster frame, 4 floats), the delay in
         # frames after the hit frame. Kept for offline play.

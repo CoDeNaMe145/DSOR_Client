@@ -367,3 +367,34 @@ Final build and regression logs: `.local/logs/character-selection-build-final.lo
 The rebuilt executable passed both native replays (seven offline captures and
 eight live-service captures), including the fifth-row scroll and world handoff.
 World drops remain deferred.
+
+## Upstream release261 integration (2026-10-15)
+
+Integrated upstream `release261` through `af0252e`: spell-effect timing and
+materials (`7264583`), decorative town characters and sequences (`b4d1266`),
+and asset-conversion documentation (`af0252e`). Upstream's literal `main`
+remains at `9f3dd83`, already in this fork; the recent work is on `release261`.
+
+Git merged the overlapping README, NPC, monster and exporter changes without
+text conflicts. Character selection, inventory behavior, equipment pose
+transitions, clothing coverage, English UI and the local-map overlay are
+preserved. The merged client regression suite passed all **67 tests**.
+
+Regenerated skills, decorations, monsters, material animations and stats in the
+local asset pack. This exposed two exporter compatibility problems, now fixed:
+release 261 uses `db.skill2.xml` for skill captions, and Windows' default text
+encoding produced unreadable monster JSON or failed to write stats. The stats
+exporter accepts both skill-caption filenames; both exporters write UTF-8.
+The resulting catalogs load successfully (7,964 monsters and 200 level curves).
+
+The optimized build and live-service replay passed: all five equipped previews,
+rotation, paging, and entry into Kingshill with the selected second character.
+Kingshill loaded 205 decorative characters and 34 effect sequences. The asset
+exporter generated decoration files for 211 maps; it skipped 38 character tracks
+whose clips are absent from this local asset pack. Existing optional sidecars
+for the selection map remain absent. No new skin-binding warnings or panics
+were observed.
+
+Validation logs are under `.local/logs/upstream-release261-merge-*` and
+`.local/logs/upstream-merge-*`; final native captures are in
+`.local/logs/upstream-merge-online/`. `git diff --check` passed.

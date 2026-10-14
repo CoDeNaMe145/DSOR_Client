@@ -160,6 +160,7 @@ fn project_decals(
     map_roots: Query<(), With<crate::map::MapRoot>>,
     mut plane: Local<Option<Handle<Mesh>>>,
     mut transforms: Query<&mut Transform>,
+    globals: Query<&GlobalTransform>,
 ) {
     if std::env::var("DSOR_NO_DECALS").is_ok() || crate::flag("nodecals") {
         return;
@@ -181,10 +182,29 @@ fn project_decals(
             // warrior_defiance_loop's circle never showed ("le drapeau n'a pas la
             // zone autour").
             let (_, gt, ..) = pending.get(e).unwrap();
-            if let Ok(mut tf) = transforms.get_mut(e) {
-                tf.translation.y += LIFT * tf.scale.y / gt.scale().y.abs().max(1e-4);
+            // Not propagated yet: next frame.
+            if *gt == GlobalTransform::IDENTITY {
+                continue;
             }
-            commands.entity(e).insert((Projected, Mesh3d(plane.get_or_insert_with(|| meshes.add(Plane3d::new(Vec3::Y, Vec2::splat(0.5)))).clone()), Visibility::Inherited));
+            // Level with the ground: the effect's root stands on it (the caster's
+            // feet). The box's mid plane is not: frostwind's three boxes centre
+            // 0.1 to 0.4 below it, and the ground hid one ("je ne vois que 2
+            // decals"). UNVERIFIED: flat ground under the box.
+            let root = parents.iter_ancestors(e).last().and_then(|r| globals.get(r).ok()).map(|g| g.translation().y);
+            let level = root.map(|y| {
+                let inv = gt.affine().inverse();
+                inv.transform_point3(Vec3::new(gt.translation().x, y + LIFT, gt.translation().z)).y.clamp(-0.5, 0.5)
+            });
+            let mesh = match level {
+                Some(y) if y.abs() > 1e-3 => meshes.add(Mesh::from(Plane3d::new(Vec3::Y, Vec2::splat(0.5))).translated_by(Vec3::Y * y)),
+                _ => {
+                    if let Ok(mut tf) = transforms.get_mut(e) {
+                        tf.translation.y += LIFT * tf.scale.y / gt.scale().y.abs().max(1e-4);
+                    }
+                    plane.get_or_insert_with(|| meshes.add(Plane3d::new(Vec3::Y, Vec2::splat(0.5)))).clone()
+                }
+            };
+            commands.entity(e).insert((Projected, Mesh3d(mesh), Visibility::Inherited));
         }
     }
     if map_pending == 0 {

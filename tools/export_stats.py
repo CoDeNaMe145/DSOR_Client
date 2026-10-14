@@ -57,17 +57,28 @@ for r in rows("select * from _Template_Player"):
                                        "AbsoluteSkillResourceRegeneration", "AnimRunSpeed")}
     player[cls]["resist"] = resist
 out["player"] = player
-out["curves"] = {str(r["Level"]): {k: r[k] for k in ("ArmorDamageReductionValue", "BlockChanceFactor", "CriticalChanceFactor",
-                                                        "ResistanceDamageReductionValue", "BasePowerFactor", "BasePowerFactorRelative")}
-                 for r in rows("select * from _Template_DmgLvlCurves")}
+# The 2018 client keeps these per-level factors in _Template_DmgLvlCurves; release 261
+# moved them to _Template_Progressions (and dropped BasePowerFactor).
+CURVE = ("ArmorDamageReductionValue", "BlockChanceFactor", "CriticalChanceFactor",
+         "ResistanceDamageReductionValue", "BasePowerFactor", "BasePowerFactorRelative")
+curves = rows("select * from _Template_DmgLvlCurves")
+if curves and "ArmorDamageReductionValue" not in curves[0]:
+    curves = rows("select * from _Template_Progressions")
+out["curves"] = {str(r["Level"]): {k: r[k] for k in CURVE if k in r} for r in curves}
 out["chance"] = next((r["ChanceMultiplier"] for r in rows("select * from _Template_DifficultyFactors") if str(r["Id"]) == "0"), 1.0)
 g = rows("select * from _Globals")[0]
 out["globals"] = {k: g[k] for k in ("MaxArmorDamageReduction", "MaxBlockChance", "MaxBlockDamageReduction", "MaxCriticalChance",
                                      "MaxResistanceDamageReduction", "MaxItemLevel", "ItemUpgradeProgressionVarA",
                                      "ItemUpgradeProgressionVarB", "ItemUpgradeProgressionVarC", "ItemUpgradeProgressionVarD")}
 
-skill_xml = open(os.path.join(export, "language", "en", "db.skill.xml"), encoding="utf-8-sig").read()
-titles = dict(re.findall(r'<item name="([^"]+)Title"><!\[CDATA\[(.*?)\]\]></item>', skill_xml, re.S))
+# Release 261 moved skill captions to db.skill2.xml. Keep the older table for
+# 2018 packs and prefer the newer captions when both are present.
+titles = {}
+for filename in ("db.skill.xml", "db.skill2.xml"):
+    skill_path = os.path.join(export, "language", "en", filename)
+    if os.path.isfile(skill_path):
+        with open(skill_path, encoding="utf-8-sig") as skill_file:
+            titles.update(re.findall(r'<item name="([^"]+)Title"><!\[CDATA\[(.*?)\]\]></item>', skill_file.read(), re.S))
 out["skills"] = {r["Id"]: [bool(r["UseWeaponDPS"]), r["DamageModifier"] if r["DamageModifier"] is not None else 1.0, titles.get(r["Id"], r["Id"])]
                  for r in rows("select Id, UseWeaponDPS, DamageModifier from _Template_Skill")}
 
@@ -84,12 +95,12 @@ out["items"] = {r["Id"]: {k: r[k] for k in ("ItemCategory", "SlotType", "CharCla
                                              "BlockDamageReduction", "CriticalRating", "HealthPoints", "Resistance",
                                              "BaseEnchantments", "BaseModifier", "UniqueModifier")}
                 for r in rows("select * from _Template_Item")}
-out["enchantments"] = {r["Id"]: {k: r[k] for k in ("BaseEnchantment", "UseRarityFactor", "ScalingMode", "ScaleReferenceLevel",
+out["enchantments"] = {r["Id"]: {k: r.get(k) for k in ("BaseEnchantment", "UseRarityFactor", "ScalingMode", "ScaleReferenceLevel",
                                                     "MaxOriginItemLevel", "Modifiers")}
                        for r in rows("select * from _Template_Enchantment")}
 out["tiers"] = {str(r["Tier"]): r for r in rows("select * from _Template_EnchantmentTiers")}
 
 path = os.path.join(assets, "characters", "stats.json")
-with open(path, "w") as f:
+with open(path, "w", encoding="utf-8") as f:
     json.dump(out, f, ensure_ascii=False, separators=(",", ":"), default=str)
 print({k: len(v) if hasattr(v, "__len__") else v for k, v in out.items()}, os.path.getsize(path))

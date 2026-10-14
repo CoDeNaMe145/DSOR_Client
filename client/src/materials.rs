@@ -55,6 +55,17 @@ fn decal_tiling(textures: &[Option<Handle<Image>>], material: &gltf::Material) -
     })
 }
 
+/// The colour and glow textures of an effect's decal (extras.dsor_decal_effect).
+fn decal_effect(textures: &[Option<Handle<Image>>], extras: &str) -> Option<(Handle<Image>, Handle<Image>)> {
+    if !extras.contains("dsor_decal_effect") {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_str(extras).ok()?;
+    let d = v.get("dsor_decal_effect")?;
+    let index = |k: &str| d.get(k).and_then(|x| x.as_u64()).map(|i| i as usize);
+    Some((textures.get(index("color")?)?.clone()?, textures.get(index("glow")?)?.clone()?))
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum State {
     Decal,
@@ -114,8 +125,19 @@ fn standard_material(m: &GltfMaterial) -> StandardMaterial {
 #[reflect(Component, Default)]
 pub struct ShaderAnim {
     tracks: Vec<VarTrack>,
-    /// Seconds since the model was spawned.
+    /// Seconds the model has been shown. Not since it was spawned: a skill's effect
+    /// waits hidden for its textures (crate::skills start_fx_animations), and
+    /// counting that wait played its fade-in out of sight -- arcane and fire
+    /// manifestation showed up whole ("pas d'animation d'apparition").
     t: f32,
+    /// Its materials hold the values at t. Hidden ones are left alone, except
+    /// once: shown before that, an effect drew one frame at its materials' rest
+    /// values (opaque, full glow) before the animators' first value (often 0) --
+    /// frostwind, the torrents, mighty360 and multishot "apparaissent 0.1 s avant
+    /// d'etre lancees, disparaissent puis reapparaissent".
+    primed: bool,
+    /// The same for animate_custom_vars.
+    custom_primed: bool,
 }
 
 #[derive(Reflect, Default, Clone)]
@@ -175,7 +197,10 @@ pub struct UvAnim {
     scale: Vec<[f32; 4]>,
     rot: Vec<[f32; 4]>,
     velocity: Vec2,
+    /// Seconds shown (see ShaderAnim::t).
     t: f32,
+    /// Its materials hold the values at t (see ShaderAnim::primed).
+    primed: bool,
 }
 
 fn keys_at(keys: &[[f32; 4]], t: f32, looping: bool, default: Vec3) -> Vec3 {
@@ -219,6 +244,7 @@ impl UvAnim {
             rot: keys("rot"),
             velocity,
             t: 0.0,
+            primed: false,
         };
         (!uv.pos.is_empty() || !uv.scale.is_empty() || !uv.rot.is_empty() || uv.velocity != Vec2::ZERO).then_some(uv)
     }
@@ -240,19 +266,31 @@ impl UvAnim {
 fn animate_uvs(
     mut commands: Commands,
     time: Res<Time>,
-    mut nodes: Query<(&mut UvAnim, &Children, &InheritedVisibility)>,
+    mut nodes: Query<(&mut UvAnim, &Children, &InheritedVisibility, Option<&ShaderAnim>)>,
     mut prims: Query<(Entity, &mut MeshMaterial3d<StandardMaterial>, Option<&AnimatedMaterial>)>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    for (mut uv, children, shown) in &mut nodes {
-        uv.t += time.delta_secs();
-        if !shown.get() {
+    for (mut uv, children, shown, shader_anim) in &mut nodes {
+        let scaled = shader_anim.is_some_and(|a| a.tracks.iter().any(|k| k.var == "MatEmissiveIntensity" || k.var.starts_with("Intensity")));
+        if shown.get() {
+            uv.t += time.delta_secs();
+        } else if uv.primed {
             continue;
         }
         let tf = uv.transform();
+        let mut all = true;
         for c in children.iter() {
             let Ok((e, mut handle, own)) = prims.get_mut(c) else { continue };
             if own.is_none() {
+                all = false;
+                // animate_shader_vars (just before) made this primitive's copy and
+                // keeps its unscaled colour; its AnimatedMaterial lands at the end
+                // of the frame. Copying again here would record the colour already
+                // scaled -- by 0 for a surface fading in (mage_arcanevortex_start's
+                // rings: invisible for good).
+                if scaled {
+                    continue;
+                }
                 let Some(m) = materials.get(&handle.0) else { continue };
                 let (base, emissive) = (m.base_color.to_linear(), m.emissive);
                 let copy = m.clone();
@@ -261,6 +299,97 @@ fn animate_uvs(
             }
             if let Some(mut m) = materials.get_mut(&handle.0) {
                 m.uv_transform = tf;
+            } else {
+                all = false;
+            }
+        }
+        uv.primed = all;
+    }
+}
+
+/// A refraction or Nebula surface primitive whose material an animator drives: its
+/// own copy and the values the animation replaces.
+#[derive(Component)]
+struct AnimatedCustom {
+    params: Vec4,
+    alpha: f32,
+}
+
+/// n3 animators on the Nebula shaders drawn by materials of ours, as their
+/// parameters' semantics say (tools/shader_dis.py params):
+///   refraction  Intensity1 = displacementFactor (params.x = 10 x it, as at load);
+///               417 of the 448 effect refraction nodes animate it, the blur that
+///               stayed after the spell had faded
+///   glow        Amplitude -> p0.y
+///   volumefog   Intensity0 -> p2.x, Intensity1 -> p2.y
+///   scroll      Intensity0 (mayaAnimableAlpha) -> base alpha
+/// ShaderAnim's clock is advanced by animate_shader_vars.
+fn animate_custom_vars(
+    mut commands: Commands,
+    mut nodes: Query<(&mut ShaderAnim, &Children, &InheritedVisibility)>,
+    mut refractions: Query<(Entity, &mut MeshMaterial3d<crate::refraction::RefractionMaterial>, Option<&AnimatedCustom>)>,
+    mut surfaces: Query<(Entity, &mut MeshMaterial3d<crate::surfaces::NebulaMaterial>, Option<&AnimatedCustom>), Without<MeshMaterial3d<crate::refraction::RefractionMaterial>>>,
+    mut refraction_materials: ResMut<Assets<crate::refraction::RefractionMaterial>>,
+    mut surface_materials: ResMut<Assets<crate::surfaces::NebulaMaterial>>,
+) {
+    use crate::surfaces::Kind;
+    for (mut anim, children, shown) in &mut nodes {
+        if !shown.get() && anim.custom_primed {
+            continue;
+        }
+        anim.custom_primed = true;
+        let value = |var: &str| anim.tracks.iter().find(|k| k.var == var).map(|k| k.at(anim.t));
+        let (i0, i1, amplitude) = (value("Intensity0"), value("Intensity1"), value("Amplitude"));
+        if i0.is_none() && i1.is_none() && amplitude.is_none() {
+            continue;
+        }
+        for c in children.iter() {
+            if let Ok((e, mut handle, own)) = refractions.get_mut(c) {
+                let Some(d) = i1 else { continue };
+                if own.is_none() {
+                    let Some(m) = refraction_materials.get(&handle.0).cloned() else { continue };
+                    commands.entity(e).insert(AnimatedCustom { params: m.extension.params, alpha: 1.0 });
+                    handle.0 = refraction_materials.add(m);
+                }
+                if let Some(mut m) = refraction_materials.get_mut(&handle.0) {
+                    m.extension.params.x = 10.0 * d;
+                }
+                continue;
+            }
+            let Ok((e, mut handle, own)) = surfaces.get_mut(c) else { continue };
+            let (params, alpha) = match own {
+                Some(a) => (a.params, a.alpha),
+                None => {
+                    let Some(m) = surface_materials.get(&handle.0).cloned() else { continue };
+                    let (params, alpha) = (m.extension.params.p0, m.base.base_color.alpha());
+                    commands.entity(e).insert(AnimatedCustom { params, alpha });
+                    let mut copy = m;
+                    copy.extension.params.p0 = params;
+                    handle.0 = surface_materials.add(copy);
+                    (params, alpha)
+                }
+            };
+            let Some(mut m) = surface_materials.get_mut(&handle.0) else { continue };
+            match params.x as u32 {
+                k if k == Kind::Glow as u32 => {
+                    if let Some(a) = amplitude {
+                        m.extension.params.p0.y = a;
+                    }
+                }
+                k if k == Kind::VolumeFog as u32 => {
+                    if let Some(d) = i0 {
+                        m.extension.params.p2.x = d;
+                    }
+                    if let Some(a) = i1 {
+                        m.extension.params.p2.y = a;
+                    }
+                }
+                k if k == Kind::Scroll as u32 => {
+                    if let Some(a) = i0 {
+                        m.base.base_color.set_alpha(alpha * a);
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -286,12 +415,14 @@ fn animate_shader_vars(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     for (mut anim, children, shown) in &mut nodes {
-        anim.t += time.delta_secs();
         // Not seen: its materials are left alone (every material change makes bevy
-        // re-check every mesh entity).
-        if !shown.get() {
+        // re-check every mesh entity), once they hold their first values.
+        if shown.get() {
+            anim.t += time.delta_secs();
+        } else if anim.primed {
             continue;
         }
+        anim.primed = true;
         let t = anim.t;
         // The intensity itself (the material holds the unscaled colour, see
         // NodeParams::glow_animated), as a linear factor (gamma_factor).
@@ -302,7 +433,10 @@ fn animate_shader_vars(
         }
         for c in children.iter() {
             let Ok((e, mut handle, own)) = prims.get_mut(c) else { continue };
-            let Some(m) = materials.get(&handle.0) else { continue };
+            let Some(m) = materials.get(&handle.0) else {
+                anim.primed = false;
+                continue;
+            };
             let (base, emissive) = match own {
                 Some(a) => (a.base, a.emissive),
                 None => {
@@ -472,7 +606,7 @@ impl GltfExtensionHandler for NebulaStates {
                 })
             })
             .collect();
-        entity.insert(ShaderAnim { tracks, t: 0.0 });
+        entity.insert(ShaderAnim { tracks, t: 0.0, primed: false, custom_primed: false });
     }
 
     fn on_texture(&mut self, gltf_texture: &gltf::Texture, texture: Handle<Image>) {
@@ -575,6 +709,14 @@ impl GltfExtensionHandler for NebulaStates {
             Some(State::Decal) => {
                 m.alpha_mode = AlphaMode::Blend;
                 m.depth_bias = crate::decals::DECAL_DEPTH_BIAS;
+                // An effect's decal (tools/embed_animators.py dsor_decal_effect):
+                // the colour map with its own alpha, lit, plus its second map as
+                // light x MatEmissiveIntensity -- not the map decals' merged mask.
+                if let Some((color, glow)) = decal_effect(&self.textures, &extras) {
+                    m.base_color_texture = Some(color);
+                    m.emissive_texture = Some(glow);
+                    m.emissive = LinearRgba::WHITE * (gamma_factor(intensity.unwrap_or(1.0)) * EMISSIVE_NITS);
+                }
             }
             Some(State::Additive) => {
                 m.alpha_mode = AlphaMode::Add;
@@ -713,7 +855,7 @@ impl Plugin for MaterialsPlugin {
         );
         app.register_type::<UvAnim>();
         // Chained: the first to copy a material marks it, the second reuses the copy.
-        app.add_systems(Update, (animate_shader_vars, animate_uvs).chain());
+        app.add_systems(Update, (animate_shader_vars, animate_uvs, animate_custom_vars).chain());
         // After bevy_pbr's own handler, so the material it set is replaced.
         let handlers = app.world().resource::<GltfExtensionHandlers>().0.clone();
         #[cfg(target_family = "wasm")]

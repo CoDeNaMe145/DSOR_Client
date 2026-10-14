@@ -208,6 +208,12 @@ fn start_map(
 
     let mut by_model = vec![Vec::new(); manifest.models.len()];
     for (i, inst) in manifest.instances.iter().enumerate() {
+        // The level editor's aids (helpers/ruler_200x200...: a black and white
+        // checkerboard under 58 release 261 levels, Kingshill among them) are not
+        // drawn by the game.
+        if manifest.models.get(inst.m).is_some_and(|m| m.starts_with("helpers/")) {
+            continue;
+        }
         if let Some(list) = by_model.get_mut(inst.m) {
             list.push(i);
         }

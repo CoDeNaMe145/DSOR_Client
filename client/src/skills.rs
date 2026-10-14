@@ -95,6 +95,9 @@ pub struct SkillDef {
     pub cooldown: f32,
     #[serde(default)]
     pub cooldown_category: String,
+    /// The class that has it (CharClass: "mage", ...), empty for monsters.
+    #[serde(default)]
+    pub class: String,
     #[serde(default)]
     pub resource_cost: f32,
     pub execute: HashMap<String, String>,
@@ -110,6 +113,9 @@ pub struct SkillDef {
     pub victim_status: Vec<(String, f32)>,
     #[serde(default)]
     pub location_status: Vec<(String, f32)>,
+    /// Location effects that start late (DE:): status id -> seconds.
+    #[serde(default)]
+    pub location_delay: HashMap<String, f32>,
     /// BulletCount bullets, BulletEmitDelay seconds apart (turned into whole ticks
     /// by SecondsToGameTicks, 0x4AED10).
     #[serde(default)]
@@ -165,6 +171,9 @@ pub enum Track {
     Shake { intensity: f32, range: f32, start: i32, end: i32 },
     Hide { start: i32, end: i32 },
     Sound { start: i32, end: i32 },
+    /// CharacterTrackBar: a character a level's sequence places (guards, pigeons),
+    /// drawn by crate::npc from maps/<map>.deco.json; nothing for the player.
+    Character { start: i32, end: i32 },
     /// ColorShaderParameterTrackBar: a shader colour of the actor (HitColor, the
     /// flash of a hit) while it runs, its alpha x the intensity curve; `default`
     /// once it ends.
@@ -190,6 +199,7 @@ impl Track {
             | Track::Shake { start, end, .. }
             | Track::Hide { start, end }
             | Track::Sound { start, end }
+            | Track::Character { start, end }
             | Track::Color { start, end, .. } => (*start, *end),
         }
     }
@@ -422,6 +432,8 @@ impl Plugin for SkillsPlugin {
             .register_asset_loader(SequenceTableLoader)
             .init_resource::<CameraShake>()
             .init_resource::<TestCastClock>()
+            .init_resource::<FxPreload>()
+            .add_systems(Update, preload_effects)
             .add_systems(Startup, load)
             .add_systems(
                 Update,
@@ -430,6 +442,56 @@ impl Plugin for SkillsPlugin {
                     .after(crate::net::NetSystems),
             );
     }
+}
+
+/// The effect models of the local player's class, loaded ahead: a skill's first
+/// cast then draws at once and whole (see start_fx_animations).
+#[derive(Resource, Default)]
+struct FxPreload {
+    class: Option<u8>,
+    models: Vec<Handle<Gltf>>,
+}
+
+/// Every effect model the class's skills draw: their execute, impact, shifted
+/// and bullet sequences' graphics, kept loaded while the class plays.
+fn preload_effects(
+    mut preload: ResMut<FxPreload>,
+    data: Option<Res<SkillData>>,
+    tables: Res<Assets<SkillTable>>,
+    sequences: Res<Assets<SequenceTable>>,
+    assets: Res<AssetServer>,
+    locals: Query<&Character, With<LocalPlayer>>,
+    others: Query<&Character>,
+) {
+    let Some(class) = locals.iter().next().or_else(|| others.iter().next()).map(|c| c.desc.class) else { return };
+    if preload.class == Some(class) {
+        return;
+    }
+    let Some(data) = data else { return };
+    let (Some(table), Some(seqs)) = (tables.get(&data.skills), sequences.get(&data.sequences)) else { return };
+    let class_name = crate::character::CLASSES.get(class as usize).copied().unwrap_or("mage");
+    // The class's skills: CharClass (release 261 names them "arcanevortex", ...),
+    // or the 2018 "<class>_" id prefix.
+    let prefix = format!("{class_name}_");
+    let mut names: Vec<&String> = Vec::new();
+    for skill in table.0.values().filter(|s| s.class == class_name || s.id.starts_with(&prefix)) {
+        names.extend(skill.execute.values());
+        names.extend([&skill.impact, &skill.shifted]);
+        if let Some(b) = &skill.bullet {
+            names.extend([&b.loop_seq, &b.impact, &b.death]);
+        }
+    }
+    let mut paths = std::collections::BTreeSet::new();
+    for name in names {
+        for track in seqs.0.get(name).map(|s| s.tracks.as_slice()).unwrap_or(&[]) {
+            if let Track::Fx { graphics, .. } = track {
+                paths.insert(format!("{graphics}.glb"));
+            }
+        }
+    }
+    info!("preloading {} effect models of the {class_name} skills", paths.len());
+    preload.models = paths.into_iter().map(|p| assets.load(p)).collect();
+    preload.class = Some(class);
 }
 
 fn load(mut commands: Commands, assets: Res<AssetServer>) {
@@ -756,43 +818,63 @@ fn cast_input(
         *r -= skill.resource_cost;
     }
     info!("cast {} (wire {wire}, {}) at {point:?}", skill.id, skill.kind);
-    // Offline nobody answers the cast: it lands at its hit frame (and after the
-    // bullet's flight), on the aimed monster or around the point.
-    if net.offline && !matches!(skill.kind.as_str(), "Ranged" | "RangedTarget") {
-        let mut after = skill.hit_frame.max(skill.loop_start) as f32 / FPS;
-        if let Some(b) = skill.bullet.as_ref().filter(|b| b.velocity > 0.0) {
-            after += Vec2::new(point.x - tf.translation.x, point.z - tf.translation.z).length() / b.velocity;
-        }
-        let target = aimed.map(|(_, _, a, _)| a);
-        // Items' and talents' effects (item_..., ..._talent) need what the player
-        // does not have offline.
-        let own = |v: &Vec<(String, f32)>| v.iter().filter(|(n, _)| !n.starts_with("item_") && !n.contains("talent")).cloned().collect();
-        // The caster's own effects (the shouts' auras), at the hit frame.
-        let mine: Vec<(String, f32)> = own(&skill.user_status);
-        let me = net.local_actor.unwrap_or(crate::net::OFFLINE_ACTOR);
-        for (status, seconds) in mine {
-            net.named_status_events.push((me, status, seconds.max(1.0)));
-        }
-        debug_monsters.strikes.push(crate::monsters::Strike {
-            after,
-            at: point,
-            radius: 2.5,
-            target,
-            victim: own(&skill.victim_status),
-            location: own(&skill.location_status),
-        });
-        // Its summons, beside the caster (UNVERIFIED: the offset's frame), standing
-        // still: no server moves them.
-        if let Some(sm) = &skill.summon {
-            let rot = Quat::from_rotation_y(facing);
-            for k in 0..sm.amount {
-                let side = (k as f32 - (sm.amount as f32 - 1.0) / 2.0) * 1.2;
-                let at = tf.translation + rot * Vec3::new(sm.offset[0] + side, 0.0, sm.offset[2].abs().max(1.0));
-                debug_monsters.delayed.push(((skill.hit_frame + sm.delay) as f32 / FPS, sm.id.clone(), at));
-            }
-        }
+    if net.offline {
+        offline_landing(&mut net, &mut debug_monsters, skill, tf.translation, facing, point, aimed.map(|(_, _, a, _)| a));
     }
     perform(&mut commands, skill, sequences, entity, Some(character), tf.translation, facing, point);
+}
+
+/// Offline nobody answers a cast: it lands at its hit frame (and after the
+/// bullet's flight), on the aimed monster or around the point -- the caster's,
+/// victims' and location's status effects (arcanevortex's 8 s vortex), its summons.
+fn offline_landing(net: &mut Net, debug_monsters: &mut crate::monsters::DebugMonsters, skill: &SkillDef, from: Vec3, facing: f32, point: Vec3, target: Option<u32>) {
+    if matches!(skill.kind.as_str(), "Ranged" | "RangedTarget") {
+        return;
+    }
+    let mut after = skill.hit_frame.max(skill.loop_start) as f32 / FPS;
+    // A bullet's landing, as perform flies it: from LoopStartFrame, from its
+    // StartOffset ahead of the caster (the grenade's 1.8 m: counted from the feet,
+    // its explosion came 0.2 s after the grenade had gone).
+    if let Some(b) = skill.bullet.as_ref().filter(|b| b.velocity > 0.0) {
+        let flat = Vec2::new(point.x - from.x, point.z - from.z);
+        let ahead = (-b.start[2]).max(0.0);
+        after = skill.loop_start as f32 / FPS + (flat.length() - ahead).max(0.0) / b.velocity;
+    }
+    // Items' and talents' effects (item_..., ..._talent) need what the player
+    // does not have offline.
+    let own = |v: &Vec<(String, f32)>| v.iter().filter(|(n, _)| !n.starts_with("item_") && !n.contains("talent")).cloned().collect();
+    // The caster's own effects (the shouts' auras), at the hit frame.
+    let mine: Vec<(String, f32)> = own(&skill.user_status);
+    let me = net.local_actor.unwrap_or(crate::net::OFFLINE_ACTOR);
+    for (status, seconds) in mine {
+        net.named_status_events.push((me, status, seconds.max(1.0)));
+    }
+    let location: Vec<(String, f32)> = own(&skill.location_status);
+    let (late, now): (Vec<_>, Vec<_>) = location.into_iter().partition(|(n, _)| skill.location_delay.contains_key(n));
+    debug_monsters.strikes.push(crate::monsters::Strike {
+        after,
+        at: point,
+        radius: 2.5,
+        target,
+        victim: own(&skill.victim_status),
+        location: now,
+    });
+    // DE: the effect waits that long after the hit -- the grenade lies its impact
+    // sequence's 30 frames (1.2 s, its fuse blinking) and DE:1.2 blows it.
+    for (name, seconds) in late {
+        let delay = skill.location_delay[&name];
+        debug_monsters.strikes.push(crate::monsters::Strike { after: after + delay, at: point, radius: 0.0, target: None, victim: Vec::new(), location: vec![(name, seconds)] });
+    }
+    // Its summons, beside the caster (UNVERIFIED: the offset's frame), standing
+    // still: no server moves them.
+    if let Some(sm) = &skill.summon {
+        let rot = Quat::from_rotation_y(facing);
+        for k in 0..sm.amount {
+            let side = (k as f32 - (sm.amount as f32 - 1.0) / 2.0) * 1.2;
+            let at = from + rot * Vec3::new(sm.offset[0] + side, 0.0, sm.offset[2].abs().max(1.0));
+            debug_monsters.delayed.push(((skill.hit_frame + sm.delay) as f32 / FPS, sm.id.clone(), at));
+        }
+    }
 }
 
 /// Skills other players used, as the server relays them.
@@ -980,7 +1062,7 @@ fn fly_bullets(
         if ending == 0 {
             continue;
         }
-        debug!("bullet ends ({}) at {here:?}, struck {struck:?}", if ending == 1 { "death" } else { "impact" });
+        debug!("bullet ends ({}) at {here:?}, struck {struck:?} ({:.2} s)", if ending == 1 { "death" } else { "impact" }, time.elapsed_secs());
         // Offline nobody answers the shot: the monster it reached takes the blow.
         if let (true, Some(actor)) = (offline, struck.or(b.target.filter(|_| b.to_point))) {
             debug_monsters.blows.push((actor, 0));
@@ -1182,7 +1264,9 @@ fn play_sequences(
                             WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(path.clone()))),
                             FxModel { gltf: assets.load(path), started: false, looping: p.looping },
                             place,
-                            Visibility::default(),
+                            // Shown by start_fx_animations once its model, textures
+                            // included, is in and its clip plays (see there).
+                            Visibility::Hidden,
                         ));
                         let unattached = joint.is_empty() && !p.follow;
                         if unattached {
@@ -1233,7 +1317,7 @@ fn play_sequences(
                             *v = Visibility::Hidden;
                         }
                     }
-                    Track::Phase { .. } | Track::Sound { .. } | Track::Anim { .. } | Track::Color { .. } => {}
+                    Track::Phase { .. } | Track::Sound { .. } | Track::Anim { .. } | Track::Color { .. } | Track::Character { .. } => {}
                 }
             }
             // Animated values (bezier curves over the sequence's frames).
@@ -1306,8 +1390,15 @@ fn play_sequences(
 }
 
 /// Effect models: their node animation (the "-loop" clip) plays once they are in.
+/// CONTRACT: an effect shows only once its model and every texture of it is in
+///   and its clip is started. Shown as soon as its glTF was parsed, a first cast
+///   drew it untextured, its textures popping in afterwards ("les sorts n'ont pas
+///   de texture", "certains chargent pas en entier tout de suite"), and for a
+///   frame at its rest pose before its clip took over ("une frame au debut ou le
+///   sort est lance et il se reaffiche apres").
 fn start_fx_animations(
     mut commands: Commands,
+    assets: Res<AssetServer>,
     mut fx: Query<(Entity, &mut FxModel)>,
     gltfs: Res<Assets<Gltf>>,
     children: Query<&Children>,
@@ -1322,12 +1413,20 @@ fn start_fx_animations(
             info!("fx {:?} pending, loaded: {}", m.gltf.path(), gltfs.get(&m.gltf).is_some());
         }
         let Some(gltf) = gltfs.get(&m.gltf) else { continue };
+        let failed = matches!(
+            assets.get_recursive_dependency_load_state(&m.gltf),
+            Some(bevy::asset::RecursiveDependencyLoadState::Failed(_))
+        );
+        if !failed && !assets.is_loaded_with_dependencies(&m.gltf) {
+            continue;
+        }
         if !m.started && std::env::var("DSOR_FX_DEBUG").is_ok() {
             let n = children.iter_descendants(e).count();
             info!("fx {:?}: {} descendants, {} with a player, {} clips", m.gltf.path(), n, children.iter_descendants(e).filter(|c| players.contains(*c)).count(), gltf.animations.len());
         }
         if gltf.animations.is_empty() {
             m.started = true;
+            commands.entity(e).insert(Visibility::Inherited);
             continue;
         }
         let Some(player) = children.iter_descendants(e).find(|c| players.contains(*c)) else { continue };
@@ -1340,6 +1439,7 @@ fn start_fx_animations(
             anim.play(node);
         }
         commands.entity(player).insert((AnimationGraphHandle(graphs.add(graph)), anim));
+        commands.entity(e).insert(Visibility::Inherited);
         m.started = true;
     }
 }
@@ -1358,7 +1458,7 @@ fn shake_camera(time: Res<Time>, mut shake: ResMut<CameraShake>, mut cameras: Qu
 }
 
 /// DSOR_CAST=<skill id>[,<every seconds>]: the map viewer's demo character
-/// (--character) casts that skill straight ahead, repeatedly -- to look at a
+/// (--character), or the offline player (debug map), casts that skill straight ahead, repeatedly -- to look at a
 /// skill's sequences without a server.
 #[allow(clippy::too_many_arguments)]
 fn test_cast(
@@ -1367,13 +1467,19 @@ fn test_cast(
     tables: Res<Assets<SkillTable>>,
     seqs: Res<Assets<SequenceTable>>,
     time: Res<Time>,
-    mut demo: Query<(Entity, &mut Transform, &Character, &CharacterAnim), Without<LocalPlayer>>,
+    // The map viewer's demo character, or the offline player (the game's camera).
+    mut demo: Query<(Entity, &mut Transform, &Character, &CharacterAnim)>,
     mut next: Local<f32>,
     mut clock: ResMut<TestCastClock>,
     mut count: Local<u32>,
     nav: Option<Res<CurrentNav>>,
     navmeshes: Res<Assets<NavMesh>>,
+    loading: Res<crate::loading::LoadingScreen>,
+    (net, mut debug_monsters): (Option<NonSendMut<Net>>, ResMut<crate::monsters::DebugMonsters>),
 ) {
+    if loading.active() {
+        return;
+    }
     // DSOR_TEST_RUN=<speed>: the demo character runs in a circle (reproducing a
     // body left behind while moving).
     if let Some(speed) = std::env::var("DSOR_TEST_RUN").ok().and_then(|v| v.parse::<f32>().ok()) {
@@ -1426,6 +1532,10 @@ fn test_cast(
         clock.0 = Some(time.elapsed_secs());
     }
     let point = tf.translation + Quat::from_rotation_y(facing) * Vec3::Z * 8.0;
+    // Offline (the debug map's player): what lands, as cast_input does.
+    if let Some(mut net) = net.filter(|n| n.offline) {
+        offline_landing(&mut net, &mut debug_monsters, skill, tf.translation, facing, point, None);
+    }
     perform(&mut commands, skill, sequences, e, Some(character), tf.translation, facing, point);
 }
 
@@ -1697,7 +1807,17 @@ fn status_visuals(
                 commands.entity(e).despawn();
             }
         }
-        let Some(seq) = StatusDef::first(&def.start).or_else(|| StatusDef::first(&def.tick)).and_then(|n| sequences.0.get(n)) else { return };
+        let end = StatusDef::first(&def.done).or_else(|| StatusDef::first(&def.stop)).cloned();
+        let Some(seq) = StatusDef::first(&def.start).or_else(|| StatusDef::first(&def.tick)).and_then(|n| sequences.0.get(n)) else {
+            // Nothing while it lasts, only its end: skill_grenade_damage_aura (0 s)
+            // is the grenade's explosion, dwarf_grenade_explode -- dropped with
+            // the effect, the grenade landed without one.
+            if end.is_some() {
+                let ends = Some(now + seconds.filter(|s| *s > 0.0).unwrap_or(def.duration.max(0.0)));
+                commands.spawn(StatusVisual { key, player: anchor, anchor, holder, ends, end });
+            }
+            return;
+        };
         let player = play_with(commands, seq.clone(), holder, anchor, seq.repeat, true);
         let ends = seconds.filter(|s| *s > 0.0).map(|s| now + s).or(if seq.repeat { Some(now + def.duration.max(0.5)) } else { None });
         commands.spawn(StatusVisual {
@@ -1706,7 +1826,7 @@ fn status_visuals(
             anchor,
             holder,
             ends,
-            end: StatusDef::first(&def.done).or_else(|| StatusDef::first(&def.stop)).cloned(),
+            end,
         });
     };
     for (holder, name, seconds) in named {
@@ -1722,6 +1842,7 @@ fn status_visuals(
     }
     for ev in net_events {
         let Some(def) = by_name.get(&ev.status).and_then(|i| table.0.get(i)) else { continue };
+        debug!("location effect {} at {:?} ({now:.2} s)", ev.status, ev.position);
         // A ground effect stays where it was placed.
         let anchor = commands
             .spawn((Transform::from_translation(ev.position).with_rotation(entity_rotation(aim_to_facing(ev.heading))), Visibility::default()))

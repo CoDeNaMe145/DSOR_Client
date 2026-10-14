@@ -46,7 +46,7 @@ HIT = {
 COLS = ["Id", "Graphics", "CharacterSet", "AnimSet", "StartAnimationState", "LoopStartAnimation",
         "CriticalHitSequence", "HeavyHitSequence", "DeathSequence", "DeathDuration",
         "DespawnSequence", "DespawnDuration", "CapsuleRadius", "CapsuleHeight",
-        "PrimaryColor", "SecondaryColor"] + list(HIT.values())
+        "PrimaryColor", "SecondaryColor", "SummonSequence", "MinionType"] + list(HIT.values())
 db = sqlite3.connect(f"file:{os.path.join(export, 'db', 'static.db4')}?mode=ro", uri=True)
 templates = {}
 for row in db.execute(f"select {','.join(COLS)} from _Template_Monster"):
@@ -64,13 +64,16 @@ for row in db.execute(f"select {','.join(COLS)} from _Template_Monster"):
         "death": r["DeathSequence"] or "",
         "death_s": float(r["DeathDuration"] or 0.0),
         "despawn": r["DespawnSequence"] or "",
+        # Played as it appears when summoned (a player's minion, a boss's add).
+        "summon": r["SummonSequence"] or "",
+        "minion": bool(r["MinionType"]),
         "despawn_s": float(r["DespawnDuration"] or 0.0),
         "dye": [list(struct.unpack("<4f", r["PrimaryColor"])) if r["PrimaryColor"] else [1, 1, 1, 0],
                 list(struct.unpack("<4f", r["SecondaryColor"])) if r["SecondaryColor"] else [1, 1, 1, 0]],
         "radius": float(r["CapsuleRadius"] or 0.0),
         "height": float(r["CapsuleHeight"] or 0.0),
     }
-with open(os.path.join(chars, "monster_templates.json"), "w") as f:
+with open(os.path.join(chars, "monster_templates.json"), "w", encoding="utf-8") as f:
     json.dump(templates, f, separators=(",", ":"), ensure_ascii=False)
 
 # The players' own hit sequences (_Template_Player, one row per class:
@@ -135,6 +138,33 @@ for name in raw:
         anims[name] = out
 with open(os.path.join(chars, "monster_anims.json"), "w") as f:
     json.dump(anims, f, separators=(",", ":"))
+
+# A summon's own Spawn animation (arcanemanifestation_appear): its SummonSequence
+# holds effects only, the rise is the anim set's "Spawn" row. Its clip's length,
+# from the model's animations, so the client plays it whole and then idles.
+clip_cache = {}
+
+
+def clip_seconds(graphics, clip):
+    if graphics not in clip_cache:
+        lengths = {}
+        try:
+            doc, _ = read_glb(os.path.join(assets, graphics + ".glb"))
+            for a in doc.get("animations", []):
+                lengths[a.get("name", "")] = max(doc["accessors"][sm["input"]]["max"][0] for sm in a["samplers"])
+        except Exception:  # noqa: BLE001 -- a uniskel monster, or no model: no spawn rise
+            pass
+        clip_cache[graphics] = lengths
+    lengths = clip_cache[graphics]
+    return lengths.get(clip) or next((v for k, v in lengths.items() if k.endswith(clip) or clip in k), 0.0)
+
+
+for t in templates.values():
+    clip = anims.get(t["anim_set"], {}).get("Spawn")
+    if t["summon"] and clip:
+        t["spawn_s"] = round(clip_seconds(t["graphics"], clip), 3)
+with open(os.path.join(chars, "monster_templates.json"), "w", encoding="utf-8") as f:
+    json.dump(templates, f, separators=(",", ":"), ensure_ascii=False)
 
 # --- character sets of whole models ---------------------------------------
 

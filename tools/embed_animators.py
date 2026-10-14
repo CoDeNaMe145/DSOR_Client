@@ -249,6 +249,23 @@ def animators(d):
             at += 4
 
 
+
+def merged_decal(doc, m):
+    """{color, mask} texture indices of a decal whose base colour is the merged
+    <colour>__<mask>.png (fix_materials.py), or None."""
+    base = m.get("pbrMetallicRoughness", {}).get("baseColorTexture")
+    images, textures = doc.get("images", []), doc.get("textures", [])
+    if base is None:
+        return None
+    merged = images[textures[base["index"]]["source"]]["uri"]
+    stem, _, mask_name = os.path.splitext(merged)[0].rpartition("__")
+    if not stem:
+        return None
+    find = lambda tail: next((i for i, t in enumerate(textures)
+                              if os.path.splitext(images[t["source"]]["uri"])[0].endswith(tail)), None)
+    color, mask = find(os.path.basename(stem)), find(mask_name)
+    return None if color is None or mask is None else {"color": color, "mask": mask}
+
 stats = {"models": 0, "animated nodes": 0, "unmatched": 0}
 for root, _dirs, files in os.walk(models):
     for name in files:
@@ -357,7 +374,9 @@ for root, _dirs, files in os.walk(models):
         #   time, ps alpha x alphaBlendFactor x mayaAnimableAlpha (preshader c1).
         ALPHA_SHADERS = {"shd:standard", "shd:unlit", "shd:uvanimated", "shd:uvanimated2", "shd:decal", "shd:simplelayer"}
         SCROLL_SHADERS = {"shd:uvanimated", "shd:uvanimated2"}
+        ALPHA_PASSES = {"AlphaUnlit", "PostAlphaUnlit", "PreAlphaUnlit", "Alpha", "AlphaUnlitDepthtest", "ParticleLit"}
         for m in doc.get("materials", []):
+            m.get("extras", {}).pop("dsor_decal_effect", None)
             if m.get("extras", {}).pop("dsor_alpha", None) is not None or m.get("extras", {}).pop("dsor_scroll", None) is not None:
                 shaded += 1
         for i, nd in enumerate(nodes):
@@ -378,6 +397,29 @@ for root, _dirs, files in os.walk(models):
                     shaded += 1
                 if shader in SCROLL_SHADERS and any(abs(v) > 1e-6 for v in vel) and "dsor_uvanim" not in ex and not anims:
                     mex["dsor_scroll"] = vel
+                    shaded += 1
+                # A node of an alpha batch (frame/default.xml: b_alpha, SrcAlpha /
+                # InvSrcAlpha) is blended even when its texture has no alpha
+                # channel (DSO_Godot then exports it OPAQUE): its opacity is the
+                # vertex alpha x mayaAnimableAlpha (Intensity0), animated or not.
+                # mage_arcanevortex_start's smoke_tileable_noalpha ring, invisible
+                # until 0.76 s, showed as a solid disc from the first frame.
+                # An effect's decal (DecalEffect batch) is not the map's Decal: its
+                # opacity is the colour map's own alpha x mayaAnimableAlpha, and
+                # its second map is added light, not a mask.
+                # EVIDENCE: shaders_sm30 "decal" DecalEffect ps_3_0: rgb = light x
+                #   effectDecalColor x 2 + decalAlphaMask x MatEmissiveIntensity,
+                #   a = effectDecalColor.a x mayaAnimableAlpha. Merged as the map's
+                #   decals (mask -> alpha), pw019_lightning_field_aura's flat yellow
+                #   "mask" filled its whole box: a dark square under lightningstrike.
+                dec = mex.get("dsor_decal") or merged_decal(doc, m)
+                if ex.get("dsor_pass") == "DecalEffect" and mex.get("dsor_state") == "Decal" and dec:
+                    mex["dsor_decal_effect"] = {"color": dec["color"], "glow": dec["mask"],
+                                                "intensity": ex.get("dsor_shader", {}).get("MatEmissiveIntensity", 1.0)}
+                    shaded += 1
+                if ex.get("dsor_pass") in ALPHA_PASSES and m.get("alphaMode", "OPAQUE") == "OPAQUE" \
+                        and shader in ALPHA_SHADERS and mex.get("dsor_state") is None:
+                    m["alphaMode"] = "BLEND"
                     shaded += 1
         if by_node or shaded or sprites:
             write_glb(glb, doc, rest)

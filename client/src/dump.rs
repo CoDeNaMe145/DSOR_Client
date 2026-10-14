@@ -192,12 +192,20 @@ fn save(name: &str, text: &str) {
     options.set_type("application/json");
     let Ok(blob) = web_sys::Blob::new_with_str_sequence_and_options(&parts, &options) else { return };
     let Ok(url) = web_sys::Url::create_object_url_with_blob(&blob) else { return };
-    if let Some(a) = document.create_element("a").ok().and_then(|a| a.dyn_into::<web_sys::HtmlAnchorElement>().ok()) {
-        a.set_href(&url);
-        a.set_download(name);
+    let Some(a) = document.create_element("a").ok().and_then(|a| a.dyn_into::<web_sys::HtmlAnchorElement>().ok()) else { return };
+    a.set_href(&url);
+    a.set_download(name);
+    // CONTRACT: clicked from a timeout, never from inside a frame. A click is
+    //   dispatched synchronously; from a key press winit was handling it re-entered
+    //   winit's event loop: "RefCell already borrowed" (winit runner.rs:599), the
+    //   game crashed on every F9 (13 dumps, all that panic).
+    let click = wasm_bindgen::closure::Closure::once_into_js(move || {
         a.click();
+        let _ = web_sys::Url::revoke_object_url(&url);
+    });
+    if let Some(window) = web_sys::window() {
+        let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(click.unchecked_ref(), 0);
     }
-    let _ = web_sys::Url::revoke_object_url(&url);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
