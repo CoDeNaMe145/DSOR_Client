@@ -46,8 +46,10 @@ pub struct PlayerRow {
     pub resist: [f32; 6],
 }
 
+/// UNVERIFIED for release261: its _Template_DmgLvlCurves has none of these columns
+/// (tools/export_stats.py leaves them out), so they read as 0 there.
 #[derive(Deserialize, Debug, Clone, Default)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "PascalCase", default)]
 pub struct Curve {
     pub armor_damage_reduction_value: f32,
     pub block_chance_factor: f32,
