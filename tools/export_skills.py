@@ -20,6 +20,7 @@ Tracks kept, by their TrackBar type:
   PointLightTrackBar          a point light
   ObserverCameraShakeTrackBar a camera shake
   HideEntityTrackBar          the actor hidden (teleports)
+  CharacterTrackBar           a character placed by a level sequence (export_deco.py)
   PlaySoundTrackBar           a sound (kept for later; the client has no audio yet)
 """
 import json, os, re, struct, sys
@@ -166,6 +167,13 @@ def sequence(layout):
                  "speed": num(v.get("animSpeed"), 100) / 100.0, "offset": num(v.get("animOffset"))}
         elif kind == "DrasaGraphicsObjectTrackBar":
             t = {"kind": "fx", "graphics": v.get("graphicsname", ""), "at": transform(v.get("graphicstrans"))}
+        elif kind == "CharacterTrackBar":
+            # A character the sequence places (the levels' guards, pigeons, sitting
+            # townsfolk): "<model>/<character set>/<clip>" (uniskel/deco_m_guard_01/
+            # male_idle_guard, deco_pigeon/deco_pigeon_01/idle_01). Drawn by
+            # client/src/npc.rs from tools/export_deco.py's placements.
+            t = {"kind": "character", "object": v.get("characterobject", ""), "at": transform(v.get("graphicstrans")),
+                 "speed": num(v.get("animSpeed"), 100) / 100.0, "offset": num(v.get("animOffset"))}
         elif kind == "AttachedGraphicsTrackBar":
             pos, rot = v.get("posOffset") or {}, v.get("rotOffset") or {}
             t = {"kind": "fx", "graphics": v.get("graphicsName", ""), "joint": v.get("jointName", ""),

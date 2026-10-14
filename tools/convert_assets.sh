@@ -89,6 +89,7 @@ echo "[convert] Nebula states and tables (log: $logs/post.log)"
     python3 "$tools/export_npcs.py" "$root" "$out"
     python3 "$tools/export_exits.py" "$root" "$out"
     python3 "$tools/export_ambience.py" "$root" "$out"
+    python3 "$tools/export_deco.py" "$root" "$out"
     python3 "$tools/export_ui.py" "$root" "$out" "$godot"
     if [ -n "${EXPERIMENTAL:-}" ]; then python3 "$tools/export_navmesh.py" "$root" "$out"; fi
 } > "$logs/post.log" 2>&1

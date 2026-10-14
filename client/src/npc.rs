@@ -100,6 +100,40 @@ json_loader!(NpcTemplatesLoader, NpcTemplates, "npc_templates.json");
 json_loader!(NpcPlacementsLoader, NpcPlacements, "npcs.json");
 json_loader!(OutfitsLoader, Outfits, "outfits.json");
 json_loader!(VariationsLoader, Variations, "variations.json");
+json_loader!(DecoLoader, DecoFile, "deco.json");
+
+/// `maps/<map>.deco.json` (tools/export_deco.py): the level's decorative
+/// sequences -- the guards at their posts, townsfolk, pigeons, cats, light beams
+/// -- which the client plays itself, online too: no server sends them.
+#[derive(Asset, TypePath, Deserialize, Debug)]
+pub struct DecoFile {
+    chars: Vec<DecoChar>,
+    seqs: Vec<DecoSeq>,
+}
+
+#[derive(Deserialize, Debug)]
+struct DecoChar {
+    g: String,
+    outfit: String,
+    /// The anim set playing its clip as "Idle" (characters/anims.json "deco:...").
+    set: String,
+    m: [f32; 16],
+    speed: f32,
+}
+
+#[derive(Deserialize, Debug)]
+struct DecoSeq {
+    seq: String,
+    m: [f32; 16],
+}
+
+/// The current map's decorations: (map, file, spawned for it, entities).
+#[derive(Resource, Default)]
+struct Deco {
+    file: Option<(String, Handle<DecoFile>)>,
+    done: bool,
+    spawned: Vec<Entity>,
+}
 
 #[derive(Resource)]
 struct NpcData {
@@ -154,6 +188,10 @@ struct ModelNpc {
     gltf: Handle<Gltf>,
     anim_set: String,
     state: String,
+    /// Its character set, for a model holding several (horse: 48): the other
+    /// sets' skins are hidden.
+    set: Option<(Handle<crate::monsters::ModelSets>, String)>,
+    speed: f32,
 }
 
 pub struct NpcPlugin;
@@ -168,8 +206,11 @@ impl Plugin for NpcPlugin {
             .register_asset_loader(NpcTemplatesLoader)
             .register_asset_loader(NpcPlacementsLoader)
             .register_asset_loader(OutfitsLoader)
+            .init_asset::<DecoFile>()
+            .register_asset_loader(DecoLoader)
+            .init_resource::<Deco>()
             .add_systems(Startup, load)
-            .add_systems(Update, (follow_map, offline_npcs, spawn_npcs, animate_models, cull_actors, npc_no_shadow).chain());
+            .add_systems(Update, (follow_map, offline_npcs, spawn_npcs, spawn_deco, animate_models, cull_actors, npc_no_shadow).chain());
     }
 }
 
@@ -301,7 +342,7 @@ fn spawn_npcs(
                     Name::new(format!("npc {}", spawn.template)),
                     transform,
                     Visibility::default(),
-                    ModelNpc { gltf, anim_set: template.anim_set.clone(), state: template.state.clone() },
+                    ModelNpc { gltf, anim_set: template.anim_set.clone(), state: template.state.clone(), set: None, speed: 1.0 },
                 ))
                 .id();
             commands.spawn((
@@ -332,6 +373,8 @@ fn animate_models(
     npcs: Query<(Entity, &ModelNpc)>,
     children: Query<&Children>,
     players: Query<(), With<AnimationPlayer>>,
+    extras: Query<&bevy::gltf::GltfExtras>,
+    sets: Res<Assets<crate::monsters::ModelSets>>,
     gltfs: Res<Assets<Gltf>>,
     library: Option<Res<CharacterLibrary>>,
     tables: Res<Assets<AnimTable>>,
@@ -340,6 +383,21 @@ fn animate_models(
     for (entity, npc) in &npcs {
         let Some(gltf) = gltfs.get(&npc.gltf) else { continue };
         let Some(player) = children.iter_descendants(entity).find(|e| players.contains(*e)) else { continue };
+        if let Some((handle, name)) = &npc.set {
+            let Some(file) = sets.get(handle) else { continue };
+            if let Some(set) = file.0.get(name) {
+                for d in children.iter_descendants(entity) {
+                    let skin = extras
+                        .get(d)
+                        .ok()
+                        .and_then(|x| serde_json::from_str::<serde_json::Value>(&x.value).ok())
+                        .and_then(|v| v.get("dsor_skin").and_then(|s| s.as_str()).map(str::to_owned));
+                    if skin.is_some_and(|s| !set.skins.contains(&s)) {
+                        commands.entity(d).insert(Visibility::Hidden);
+                    }
+                }
+            }
+        }
         let from_table = library
             .as_ref()
             .and_then(|l| tables.get(&l.anims))
@@ -359,7 +417,7 @@ fn animate_models(
         info!("npc model {:?}: playing {:?}", npc.gltf.path(), clip.path());
         let (graph, node) = AnimationGraph::from_clip(clip.clone());
         let mut anim = AnimationPlayer::default();
-        anim.play(node).repeat();
+        anim.play(node).repeat().set_speed(npc.speed);
         commands.entity(player).insert((AnimationGraphHandle(graphs.add(graph)), anim));
     }
 }
@@ -405,3 +463,104 @@ fn npc_no_shadow(
         }
     }
 }
+
+/// The level's decorative sequences (DecoFile), once per map: their characters
+/// as NPCs nobody can talk to, their effects as looping sequences.
+#[allow(clippy::too_many_arguments)]
+fn spawn_deco(
+    mut commands: Commands,
+    current: Option<Res<CurrentMap>>,
+    mut deco: ResMut<Deco>,
+    files: Res<Assets<DecoFile>>,
+    data: Res<NpcData>,
+    outfits: Res<Assets<Outfits>>,
+    variations: Res<Assets<Variations>>,
+    assets: Res<AssetServer>,
+    (skill_data, seqs): (Option<Res<crate::skills::SkillData>>, Res<Assets<crate::skills::SequenceTable>>),
+) {
+    let Some(current) = current else { return };
+    if deco.file.as_ref().is_none_or(|(m, _)| *m != current.name) {
+        for e in std::mem::take(&mut deco.spawned) {
+            commands.entity(e).try_despawn();
+        }
+        deco.file = Some((current.name.clone(), assets.load(format!("maps/{}.deco.json", current.name))));
+        deco.done = false;
+    }
+    if deco.done || std::env::var("DSOR_NO_DECO").is_ok() {
+        return;
+    }
+    let Some((_, handle)) = &deco.file else { return };
+    let Some(file) = files.get(handle) else {
+        deco.done = assets.load_state(handle).is_failed();
+        return;
+    };
+    let ready = data.outfits.values().all(|h| outfits.get(h).is_some() || assets.load_state(h).is_failed())
+        && data.variations.values().all(|h| variations.get(h).is_some() || assets.load_state(h).is_failed());
+    let Some(table) = skill_data.as_ref().and_then(|d| seqs.get(d.sequences())) else { return };
+    if !ready {
+        return;
+    }
+    deco.done = true;
+    let mut spawned = Vec::new();
+    for (i, c) in file.chars.iter().enumerate() {
+        // As the NPCs: the level faces them down -Z, the models face +Z.
+        let m = Mat4::from_cols_array(&c.m);
+        let (scale, rotation, at) = m.to_scale_rotation_translation();
+        let transform = Transform { translation: at, rotation: rotation * Quat::from_rotation_y(std::f32::consts::PI), scale };
+        let skeleton = c.g.strip_prefix("characters/").unwrap_or(&c.g).to_owned();
+        let entity = if skeleton == "uniskel" || skeleton == "uniskel_dwarf" {
+            let outfit = data.outfits.get(skeleton.as_str()).and_then(|h| outfits.get(h)).and_then(|o| o.outfits.iter().find(|o| o.name == c.outfit));
+            let Some(outfit) = outfit else {
+                debug!("deco: no outfit {}", c.outfit);
+                continue;
+            };
+            let variation = outfit
+                .variation
+                .as_ref()
+                .and_then(|v| data.variations.get(skeleton.as_str()).and_then(|h| variations.get(h)).and_then(|all| all.variations.get(v)))
+                .map(|shape| shape.iter().map(|j| (j.bone.clone(), Vec3::from(j.t), Vec3::from(j.s))).collect())
+                .unwrap_or_default();
+            let desc = CharacterDesc { look: Some(NpcLook { skeleton, parts: outfit.parts.clone(), anim_set: c.set.clone(), variation }), ..default() };
+            let e = spawn_character(&mut commands, desc, transform);
+            if c.speed != 1.0 {
+                let mut anim = CharacterAnim::default();
+                anim.speed = c.speed;
+                commands.entity(e).insert(anim);
+            }
+            e
+        } else {
+            let path = format!("{}.glb", c.g);
+            let e = commands
+                .spawn((
+                    Name::new(format!("deco {}", c.outfit)),
+                    transform,
+                    Visibility::default(),
+                    ModelNpc {
+                        gltf: assets.load(path.clone()),
+                        anim_set: c.set.clone(),
+                        state: "Idle".into(),
+                        set: Some((assets.load(format!("{}.sets.json", c.g)), c.outfit.clone())),
+                        speed: c.speed,
+                    },
+                ))
+                .id();
+            commands.spawn((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(path))), ChildOf(e), Transform::default(), Visibility::default()));
+            e
+        };
+        // An actor id of its own, for the distance culling (cull_actors); no
+        // picking: nobody answers.
+        commands.entity(entity).insert((Npc { actor: DECO_ACTORS + i as u32 }, crate::character::AnimLod::new(3, i as u32 % 3)));
+        spawned.push(entity);
+    }
+    for s in &file.seqs {
+        let Some(seq) = table.0.get(&s.seq) else { continue };
+        let anchor = commands.spawn((Transform::from_matrix(Mat4::from_cols_array(&s.m)), Visibility::default())).id();
+        crate::skills::play(&mut commands, seq.clone(), None, anchor, true);
+        spawned.push(anchor);
+    }
+    info!("{}: {} decorative characters, {} decorative sequences", current.name, file.chars.len(), file.seqs.len());
+    deco.spawned = spawned;
+}
+
+/// Actor ids of the decorations' characters (no server actor has them).
+const DECO_ACTORS: u32 = 0x7800_0000;

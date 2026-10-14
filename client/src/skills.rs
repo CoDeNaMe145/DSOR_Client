@@ -171,6 +171,9 @@ pub enum Track {
     Shake { intensity: f32, range: f32, start: i32, end: i32 },
     Hide { start: i32, end: i32 },
     Sound { start: i32, end: i32 },
+    /// CharacterTrackBar: a character a level's sequence places (guards, pigeons),
+    /// drawn by crate::npc from maps/<map>.deco.json; nothing for the player.
+    Character { start: i32, end: i32 },
     /// ColorShaderParameterTrackBar: a shader colour of the actor (HitColor, the
     /// flash of a hit) while it runs, its alpha x the intensity curve; `default`
     /// once it ends.
@@ -196,6 +199,7 @@ impl Track {
             | Track::Shake { start, end, .. }
             | Track::Hide { start, end }
             | Track::Sound { start, end }
+            | Track::Character { start, end }
             | Track::Color { start, end, .. } => (*start, *end),
         }
     }
@@ -1313,7 +1317,7 @@ fn play_sequences(
                             *v = Visibility::Hidden;
                         }
                     }
-                    Track::Phase { .. } | Track::Sound { .. } | Track::Anim { .. } | Track::Color { .. } => {}
+                    Track::Phase { .. } | Track::Sound { .. } | Track::Anim { .. } | Track::Color { .. } | Track::Character { .. } => {}
                 }
             }
             // Animated values (bezier curves over the sequence's frames).
