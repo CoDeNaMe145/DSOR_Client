@@ -101,6 +101,13 @@ pub fn character_generation(data: &[u8], bits: usize) -> Option<crate::commands:
     }
 }
 
+/// Complete selection payload, including operation 9's preview equipment.
+pub fn character_selection(data: &[u8], bits: usize) -> Option<crate::commands::player::CharacterSelection> {
+    crate::commands::decode_message(data, bits).ok()?.into_iter().find_map(|(command, _)| {
+        if let crate::commands::ServerCommand::CharacterSelection(c) = command { Some(c) } else { None }
+    })
+}
+
 /// The 0x1B clock sync the client sends: RakNet time, then 0x83 and its game tick.
 pub fn clock_sync(now_ms: u64, tick: u32) -> Vec<u8> {
     let mut out = vec![TIMESTAMP];

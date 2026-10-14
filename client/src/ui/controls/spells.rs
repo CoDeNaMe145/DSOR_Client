@@ -185,8 +185,8 @@ pub(in crate::ui) fn overlay(
                 commands.spawn((SpellOverlay, Sprite { image: assets.load(s.icon.clone()), custom_size: Some(Vec2::splat(34.0)), ..default() },
                     tf, RenderLayers::layer(LAYER)));
             } else {
-                let hint = if s.wire.is_none() { "Talent passif".to_owned() } else if available { "Glisser vers la barre d’action".to_owned() }
-                    else { format!("Niveau {} — non disponible", s.unlock) };
+                let hint = if s.wire.is_none() { "Passive talent".to_owned() } else if available { "Drag to the action bar".to_owned() }
+                    else { format!("Level {} — unavailable", s.unlock) };
                 let root = commands.spawn((SpellOverlay, tf, Visibility::Inherited)).id();
                 commands.spawn((Sprite::from_color(Color::srgba(0.035, 0.025, 0.02, 0.96), Vec2::new(260.0, 66.0)),
                     Anchor::TOP_LEFT, RenderLayers::layer(LAYER), ChildOf(root)));

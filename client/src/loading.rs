@@ -67,8 +67,8 @@ impl LoadingScreen {
 }
 
 /// Used only on input systems: simulation and asset streaming must keep running.
-pub fn gameplay_ready(login: Option<Res<crate::LoginGate>>, loading: Res<LoadingScreen>) -> bool {
-    login.is_none() && !loading.active()
+pub fn gameplay_ready(login: Option<Res<crate::LoginGate>>, loading: Res<LoadingScreen>, selection: Option<Res<crate::selection::Selection>>) -> bool {
+    login.is_none() && !loading.active() && !selection.is_some_and(|s| s.active)
 }
 
 #[derive(Resource, Clone, Default)]
@@ -157,7 +157,8 @@ fn settled(assets: &AssetServer, handle: &UntypedHandle) -> bool {
 fn update_progress(mut commands: Commands, mut loading: ResMut<LoadingScreen>, current: Option<Res<CurrentMap>>,
     assets: Res<AssetServer>, player: Query<&CharacterAnim, With<LocalPlayer>>,
     online: Option<Res<crate::net::NetActive>>, failure: Option<Res<crate::net::ConnectionFailure>>,
-    art: Res<Art>, busy: Res<RendererBusy>, time: Res<Time<Real>>) {
+    art: Res<Art>, busy: Res<RendererBusy>, time: Res<Time<Real>>,
+    selection: Option<Res<crate::selection::Selection>>, previews: Query<(&CharacterAnim, &crate::character::Character), With<crate::selection::Preview>>) {
     if !loading.active() { return; }
     let (fraction, ready) = match loading.work.as_ref().unwrap() {
         Work::Assets(handles) => {
@@ -174,7 +175,9 @@ fn update_progress(mut commands: Commands, mut loading: ResMut<LoadingScreen>, c
             }
             let (done, total) = current.progress(&assets);
             let map_ready = current.spawned && done == total;
-            let player_ready = online.is_none() || player.iter().any(CharacterAnim::is_ready);
+            let player_ready = if name == crate::selection::MAP {
+                selection.as_ref().is_some_and(|s| s.active && (s.characters.is_empty() || previews.iter().any(|(a, c)| a.is_ready() && c.outfit_ready())))
+            } else { online.is_none() || player.iter().any(CharacterAnim::is_ready) };
             let fraction = if total == 0 { 0.0 } else { done as f32 / total as f32 * 0.9 };
             (fraction + if map_ready && player_ready { 0.1 } else { 0.0 }, map_ready && player_ready)
         }

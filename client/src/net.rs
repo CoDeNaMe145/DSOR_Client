@@ -13,6 +13,7 @@
 //! header field). SEE: wire_to_game, game_to_wire.
 
 use std::f32::consts::TAU;
+use std::collections::HashMap;
 
 use bevy::input::mouse::MouseButton;
 use bevy::prelude::*;
@@ -24,6 +25,7 @@ use dsor_raknet::Reliability;
 use dsor_transport::Transport;
 
 use crate::character::{redress, spawn_character, AnimState, Character, CharacterAnim, CharacterDesc, CharacterLibrary, ItemSkins};
+use crate::appearance::{self, Equipment};
 use crate::map::{CurrentMap, MapManifest, MapRoot};
 use crate::nav::{CurrentNav, NavMesh};
 use crate::nameplate::Nameplate;
@@ -118,7 +120,7 @@ pub struct NetConfig {
     pub new_character: Option<(String, u8, u8)>,
     /// The WebSocket relay, required in the browser ("ws://host:2290").
     pub relay: Option<String>,
-    /// Which character to pick (its id); the first of the roster when None.
+    /// Which character to highlight initially in the selection screen.
     pub character: Option<u32>,
 }
 
@@ -178,6 +180,8 @@ pub struct Net {
     pub bar: Vec<Option<String>>,
     /// Preserve all slot kinds and bars when saving an edited bar (0x51).
     pub quickbars: dsor_proto::commands::inventory::QuickSlotsInfo,
+    pub inventory: crate::inventory::InventoryState,
+    pub corrections: crate::corrections::Corrections,
     pub skill_book: Option<dsor_proto::commands::inventory::SkillBookInfo>,
     /// Skills other actors used, relayed by the server (73-77), for crate::skills.
     pub skill_events: Vec<SkillEvent>,
@@ -192,10 +196,11 @@ pub struct Net {
     remote_gone: Vec<u32>,
     /// (actor, where, facing, the record's own start tick).
     remote_moves: Vec<(u32, Vec3, f32, u32)>,
-    /// What this player wears, as the inventory names it: (slots, item template).
-    local_worn: Option<Vec<(Vec<i8>, String)>>,
+    /// Re-resolve after full inventory or compact item updates; retained until
+    /// the local entity, item records and skin table are available.
+    local_appearance_dirty: bool,
     /// Another player re-dressed (RemotePlayerInfo): actor, skins, armament.
-    remote_redress: Vec<(u32, Vec<(u8, Vec<String>)>, i8)>,
+    remote_redress: HashMap<u32, (Vec<Equipment>, i8)>,
 }
 
 /// A status effect started on an actor (StatusEffectCommand 82): its
@@ -380,6 +385,40 @@ mod smoothing_tests {
         LocalPlayer { actor: 1, target, facing: 0.0, last_sent_tick: 0, snapped: true, casting: 0.0 }
     }
 
+    #[test]
+    fn forced_transform_replaces_position_and_stops_stale_movement() {
+        let mut app = App::new();
+        app.init_resource::<Time<Real>>().add_systems(Update, apply_corrections);
+        start_offline(app.world_mut(), 1, 0);
+        let mut animation = CharacterAnim::default();
+        animation.state = AnimState::Run;
+        let actor = app.world_mut().spawn((Transform::default(), local(Some(Vec3::splat(100.0))), animation)).id();
+        let remote = app.world_mut().spawn((Transform::default(), CharacterAnim::default(), RemotePlayer {
+            actor: 2, target: Vec3::splat(200.0), facing: 0.0, still_for: 0.0, held: 3.0, held_until_tick: Some(100),
+        })).id();
+        let at = Vec3::new(14.0, 0.0, 45.0);
+        {
+            let mut net = app.world_mut().non_send_mut::<Net>();
+            net.local_actor = Some(1);
+            net.centre = Some(Vec3::new(100.0, 200.0, 300.0));
+            for id in [1, 2] {
+                on_command(&mut net, ServerCommand::ForceTransform(dsor_proto::commands::movement::ForceTransform {
+                    position: at.to_array(), heading: 1.0,
+                }), Some(id));
+            }
+        }
+        app.update();
+        for e in [actor, remote] {
+            let tf = app.world().get::<Transform>(e).unwrap();
+            assert_eq!(tf.translation, at, "force positions are absolute, not relative to the map centre");
+            assert!(tf.rotation.angle_between(Quat::from_rotation_y(1.0)) < 0.001);
+        }
+        assert!(app.world().get::<LocalPlayer>(actor).unwrap().target.is_none());
+        assert_eq!(app.world().get::<RemotePlayer>(remote).unwrap().target, at);
+        assert!(app.world().get::<RemotePlayer>(remote).unwrap().held_until_tick.is_none());
+        assert!(app.world().non_send::<Net>().corrections.pending.is_empty());
+    }
+
     fn step(app: &mut App, dt: f32) {
         app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs_f32(dt));
         app.update();
@@ -538,13 +577,15 @@ impl Plugin for NetPlugin {
             )
             .add_systems(
                 Update,
-                (debug_hierarchy, spawn_local, dress, apply_remotes, move_remotes,
+                (debug_hierarchy, spawn_local, apply_remotes, dress, move_remotes,
                     click_to_move.run_if(crate::loading::gameplay_ready), walk_local.run_if(crate::loading::gameplay_ready),
-                    zoom_camera.run_if(crate::loading::gameplay_ready), follow_camera, send_moves.run_if(crate::loading::gameplay_ready))
+                    apply_corrections, zoom_camera.run_if(crate::loading::gameplay_ready), follow_camera, send_moves.run_if(crate::loading::gameplay_ready))
                     .chain()
                     .in_set(NetSystems)
                     .run_if(net_exists),
             );
+        #[cfg(not(target_arch = "wasm32"))]
+        app.add_systems(Update, replay_equipment.before(NetSystems).run_if(net_exists));
     }
 }
 
@@ -590,8 +631,8 @@ pub fn start_offline(world: &mut World, class: u8, gender: u8) {
         remote_spawns: Vec::new(),
         remote_gone: Vec::new(),
         remote_moves: Vec::new(),
-        local_worn: None,
-        remote_redress: Vec::new(),
+        local_appearance_dirty: false,
+        remote_redress: HashMap::new(),
         npc_spawns: Vec::new(),
         npc_gone: Vec::new(),
         monster_spawns: Vec::new(),
@@ -604,6 +645,8 @@ pub fn start_offline(world: &mut World, class: u8, gender: u8) {
         kills: Vec::new(),
         bar: default_bar(class),
         quickbars: default(),
+        inventory: default(),
+        corrections: default(),
         skill_book: None,
         skill_events: Vec::new(),
         status_events: Vec::new(),
@@ -614,6 +657,67 @@ pub fn start_offline(world: &mut World, class: u8, gender: u8) {
         resource: None,
         health: None,
     });
+    // Explicit offline packet replay for UI inspection, with no account mutation.
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Ok(path) = std::env::var("DSOR_INVENTORY_PREVIEW") {
+        match std::fs::read(path).ok().and_then(|b| dsor_proto::commands::decode_message(&b, b.len() * 8).ok()) {
+            Some(commands) => {
+                let mut net = world.non_send_mut::<Net>();
+                for (command, actor) in commands {
+                    if matches!(command, ServerCommand::InventoryInfo(_) | ServerCommand::MembershipUpdate(_) | ServerCommand::ItemUpdate(_)) {
+                        on_command(&mut net, command, Some(OFFLINE_ACTOR));
+                    } else if matches!(command, ServerCommand::NewRemotePlayer(_) | ServerCommand::RemotePlayerInfo(_)) {
+                        on_command(&mut net, command, actor);
+                    }
+                }
+            }
+            None => warn!("DSOR_INVENTORY_PREVIEW could not read an inventory packet"),
+        }
+    }
+}
+
+/// Explicit offline regression replay, scheduled after the initial outfits load.
+/// Records are {"frame": N, "hex": server_packet, "bits": exact_bit_count}.
+#[cfg(not(target_arch = "wasm32"))]
+fn replay_equipment(
+    mut net: NonSendMut<Net>,
+    characters: Query<&Character>,
+    loading: Res<crate::loading::LoadingScreen>,
+    mut loaded: Local<bool>,
+    mut records: Local<std::collections::VecDeque<(u32, Vec<(ServerCommand, Option<u32>)>)>>,
+    mut frame: Local<u32>,
+) {
+    if !net.offline { return; }
+    if !*loaded {
+        *loaded = true;
+        if let Ok(path) = std::env::var("DSOR_EQUIPMENT_REPLAY") {
+            let values = std::fs::read(path).ok().and_then(|data| serde_json::from_slice::<Vec<serde_json::Value>>(&data).ok());
+            for record in values.into_iter().flatten() {
+                let Some(hex) = record["hex"].as_str() else { continue };
+                let data: Option<Vec<u8>> = hex.as_bytes().chunks(2).map(|b| std::str::from_utf8(b).ok().and_then(|s| u8::from_str_radix(s, 16).ok())).collect();
+                if let Some(data) = data {
+                    if let Ok(commands) = dsor_proto::commands::decode_message(&data, record["bits"].as_u64().unwrap_or((data.len() * 8) as u64) as usize) {
+                        records.push_back((record["frame"].as_u64().unwrap_or(0) as u32, commands));
+                    }
+                }
+            }
+            records.make_contiguous().sort_by_key(|r| r.0);
+        }
+    }
+    if records.is_empty() { return; }
+    if *frame == 0 && (loading.active() || characters.is_empty() || !characters.iter().all(Character::outfit_ready)) { return; }
+    *frame += 1;
+    while records.front().is_some_and(|r| r.0 <= *frame) {
+        let (_, commands) = records.pop_front().unwrap();
+        info!("equipment replay frame {}", *frame);
+        for (command, actor) in commands {
+            if matches!(command, ServerCommand::InventoryInfo(_) | ServerCommand::ItemUpdate(_)) {
+                on_command(&mut net, command, Some(OFFLINE_ACTOR));
+            } else if matches!(command, ServerCommand::RemotePlayerInfo(_)) {
+                on_command(&mut net, command, actor);
+            }
+        }
+    }
 }
 
 /// The announcements of one batch, the last one per actor.
@@ -738,8 +842,8 @@ pub(crate) fn start_session(world: &mut World, config: NetConfig) {
         remote_spawns: Vec::new(),
         remote_gone: Vec::new(),
         remote_moves: Vec::new(),
-        local_worn: None,
-        remote_redress: Vec::new(),
+        local_appearance_dirty: false,
+        remote_redress: HashMap::new(),
         npc_spawns: Vec::new(),
         npc_gone: Vec::new(),
         monster_spawns: Vec::new(),
@@ -752,6 +856,8 @@ pub(crate) fn start_session(world: &mut World, config: NetConfig) {
         kills: Vec::new(),
         bar: Vec::new(),
         quickbars: default(),
+        inventory: default(),
+        corrections: default(),
         skill_book: None,
         skill_events: Vec::new(),
         status_events: Vec::new(),
@@ -836,10 +942,22 @@ fn pump(
     manifests: Res<Assets<MapManifest>>,
     left_behind: Query<Entity, Or<(With<crate::npc::Npc>, With<RemotePlayer>, With<LocalPlayer>)>>,
     mut loading: ResMut<crate::loading::LoadingScreen>,
+    mut selection: ResMut<crate::selection::Selection>,
 ) {
     let now = now_ms(&time);
     let mut changed_map = false;
     let net = &mut *net;
+    for request in std::mem::take(&mut selection.requests) {
+        use crate::selection::Request;
+        match request {
+            Request::Preview(id) => net.session.character_operation(8, id, now),
+            Request::Play(id) => { net.session.select_character(id, now); loading.connecting(); }
+            Request::OpenEditor => net.session.open_character_editor(now),
+            Request::Back => net.session.character_operation(2, 0, now),
+            Request::Create(name, class, gender) => net.session.create_character(&name, class, gender, now),
+            Request::Delete(id) => net.session.character_operation(6, id, now),
+        }
+    }
     if net.offline {
         if net.centre.is_none() {
             if let Some(manifest) = current.as_ref().and_then(|c| manifests.get(&c.manifest)) {
@@ -882,22 +1000,22 @@ fn pump(
             }
             SessionEvent::Service(name) => info!("service: {name}"),
             SessionEvent::Roster(roster) => {
-                let pick = net.wanted_character.or_else(|| roster.first().map(|e| e.character));
                 info!("characters: {:?}", roster.iter().map(|e| (&e.name, e.character, e.level)).collect::<Vec<_>>());
-                if let Some(c) = pick {
-                    net.session.select_character(c, now);
-                }
+            }
+            SessionEvent::CharacterSelection(reply) => {
+                if reply.operation == 4 { loading.cancel(); }
+                selection.receive(reply, net.wanted_character);
             }
             SessionEvent::CharacterEditor => {
-                let (name, class, gender) = net.new_character.clone();
-                info!("no character yet: creating {name} (class {class}, gender {gender})");
-                net.session.create_character(&name, class, gender, now);
+                selection.editor(&net.new_character);
             }
             SessionEvent::CreationRefused(reason) => {
-                error!("the server refused the new character {:?} (deny reason {reason}: 1 name taken, 2 empty, 3 invalid, 7 already made)", net.new_character.0);
-                commands.insert_resource(ConnectionFailure("The character name was refused. Choose another name in Settings and sign in again.".into()));
+                selection.creation_refused(reason);
             }
             SessionEvent::MapAssigned { name, rule_set } => {
+                selection.active = name == crate::selection::MAP;
+                if !selection.active { selection.entering = false; selection.dialog = crate::selection::Dialog::None; }
+                net.corrections = default();
                 loading.map(name.clone());
                 info!("map {name} (rule set {rule_set})");
                 if current.as_ref().is_some_and(|c| c.name == name) {
@@ -980,6 +1098,9 @@ fn pump(
 fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
     match command {
         ServerCommand::NewPlayer(p) => {
+            net.inventory = default();
+            net.local_appearance_dirty = false;
+            net.corrections = default();
             let desc = CharacterDesc {
                 class: p.parts[0],
                 gender: p.parts[1],
@@ -988,6 +1109,7 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
                 // the server sends (dsor/newplayer.py DEFAULT_ARMAMENT).
                 armament: p.rank.max(0),
                 look: None,
+                cosmetics: Vec::new(),
             };
             info!("I am {} ({}), actor {:?}, at {:?}", p.name, desc.animation_set(), actor, p.position);
             net.local_actor = actor;
@@ -1013,6 +1135,8 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
         }
         ServerCommand::ActorsLeftVicinity(v) => {
             for a in v.actors {
+                net.remote_redress.remove(&a);
+                net.remote_spawns.retain(|p| p.0 != a);
                 net.requested.remove(&a);
                 net.remote_gone.push(a);
                 net.npc_gone.push(a);
@@ -1027,13 +1151,18 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
                 info!("{} (actor {actor:#x}) is our own previous session; not drawn", p.name);
                 return;
             }
+            let equipment = appearance::normalize(p.equipment);
+            let armament = appearance::remote_armament(&equipment, "");
             let desc = CharacterDesc {
                 class: p.parts[0],
                 gender: p.parts[1],
-                equipment: p.equipment.iter().map(|w| (w.slot, w.skin_parts.clone())).collect(),
-                armament: p.armament.max(0),
+                equipment,
+                armament,
                 look: None,
+                cosmetics: Vec::new(),
             };
+            // A spawn is a newer complete snapshot than any pending update.
+            net.remote_redress.remove(&actor);
             info!("{} ({}) is here, actor {actor:#x}, {} worn slot(s)", p.name, desc.animation_set(), desc.equipment.len());
             net.remote_spawns.push((actor, desc, Vec3::from(p.position), p.heading, p.name, p.flags[2]));
         }
@@ -1104,6 +1233,7 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
         }
         ServerCommand::DiscardMonster(_) => {
             if let Some(a) = actor {
+                net.corrections.pending.remove(&a);
                 net.requested.remove(&a);
                 net.remote_gone.push(a);
             }
@@ -1137,6 +1267,24 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
                 net.kills.push((a, k));
             }
         }
+        ServerCommand::ItemUpdate(update) => {
+            if actor.is_some() && actor != net.local_actor { return; }
+            if let Some(item) = net.inventory.items.get_mut(&update.item) {
+                item.third = update.third;
+                item.tenth = update.tenth.min(255) as u8;
+                item.durability = update.level;
+                item.fifty_second = update.unknown_u32_0;
+                item.flag_0 = update.flags[0]; item.flag_1 = update.flags[1];
+                item.twentieth = update.twentieth; item.twenty_eighth = update.twenty_eighth;
+                item.names = update.unknown_strings_0;
+                item.fourth_name = update.appearance; item.flag_2 = update.flag_2;
+                net.inventory.revision = net.inventory.revision.wrapping_add(1);
+                net.local_appearance_dirty = true;
+            }
+        }
+        ServerCommand::MembershipUpdate(m) => {
+            if actor.is_none() || actor == net.local_actor { net.inventory.membership(m.tier, m.active); }
+        }
         ServerCommand::InventoryInfo(inv) => {
             // release261: the health and skill resource come here, not in
             // NewPlayer, so a skill the character cannot pay for is never cast.
@@ -1144,26 +1292,29 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
                 net.health = Some(inv.health);
                 net.resource = Some(inv.resource);
             }
-            let worn = inv
-                .slots
-                .iter()
-                .filter_map(|(item, slots)| {
-                    inv.items.iter().find(|i| i.id == *item).map(|i| (slots.clone(), i.template.clone()))
-                })
-                .collect::<Vec<_>>();
-            info!("wearing {} item(s)", worn.len());
-            net.local_worn = Some(worn);
+            if actor.is_some() && actor != net.local_actor { return; }
+            net.inventory.apply(inv);
+            net.local_appearance_dirty = true;
         }
         ServerCommand::RemotePlayerInfo(p) => {
             if let Some(a) = actor {
-                let equipment = p.equipment.iter().map(|w| (w.slot, w.skin_parts.clone())).collect();
-                net.remote_redress.push((a, equipment, p.armament.max(0)));
+                let equipment = appearance::normalize(p.equipment);
+                let armament = appearance::remote_armament(&equipment, &p.animation_set);
+                net.remote_redress.insert(a, (equipment, armament));
             }
         }
         ServerCommand::DiscardPlayer(_) => {
             if let Some(a) = actor {
+                net.remote_redress.remove(&a);
+                net.remote_spawns.retain(|p| p.0 != a);
+                net.corrections.pending.remove(&a);
                 net.requested.remove(&a);
                 net.remote_gone.push(a);
+            }
+        }
+        ServerCommand::ForceTransform(t) => {
+            if let Some(a) = actor {
+                net.corrections.force(a, Vec3::from(t.position), t.heading, Some(a) == net.local_actor);
             }
         }
         ServerCommand::Move(m) => {
@@ -1172,10 +1323,29 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
                     let at = net.wire_to_game(m.x, m.elevation, m.y);
                     let facing = m.facing as f32 / 256.0 * TAU;
                     net.remote_moves.push((a, at, facing, m.start_tick));
+                } else if net.corrections.corrected_echo(&m) {
+                    let at = net.wire_to_game(m.x, m.elevation, m.y);
+                    let facing = m.facing as f32 / 256.0 * TAU;
+                    net.corrections.force(a, at, facing, true);
                 }
             }
         }
         _ => {}
+    }
+}
+
+fn apply_corrections(
+    mut net: NonSendMut<Net>,
+    mut actors: Query<(&mut Transform, Option<&mut LocalPlayer>, Option<&mut RemotePlayer>, &mut CharacterAnim), Or<(With<LocalPlayer>, With<RemotePlayer>)>>,
+) {
+    for (mut transform, local, remote, mut animation) in &mut actors {
+        let actor = local.as_ref().map(|p| p.actor).or_else(|| remote.as_ref().map(|p| p.actor));
+        let Some((position, heading)) = actor.and_then(|a| net.corrections.pending.remove(&a)) else { continue };
+        transform.translation = position;
+        transform.rotation = Quat::from_rotation_y(heading);
+        if let Some(mut p) = local { p.target = None; p.facing = heading; p.casting = 0.0; p.snapped = true; }
+        if let Some(mut p) = remote { p.target = position; p.facing = heading; p.held = 0.0; p.held_until_tick = None; p.still_for = 1.0; }
+        if !animation.dead { animation.state = AnimState::Idle; }
     }
 }
 
@@ -1282,6 +1452,7 @@ fn spawn_local(
         commands.entity(e).despawn();
     }
     let entity = spawn_character(&mut commands, desc, Transform::from_translation(at).with_rotation(Quat::from_rotation_y(heading)));
+    net.local_appearance_dirty |= net.inventory.ready;
     // DSOR_MARKER=1: a bright pillar on the player, to find them while debugging.
     if std::env::var("DSOR_MARKER").is_ok() {
         let marker = commands
@@ -1456,9 +1627,11 @@ fn zoom_camera(mut wheel: MessageReader<bevy::input::mouse::MouseWheel>, mut zoo
 /// The DSO camera: fixed pitch and yaw, looking at the player from `zoom` above.
 fn follow_camera(
     zoom: Res<CameraZoom>,
+    opts: Option<Res<crate::Options>>,
     players: Query<&Transform, With<LocalPlayer>>,
     mut cameras: Query<(&mut Transform, &mut Projection), (With<Camera3d>, Without<crate::highlight::HighlightCamera>, Without<LocalPlayer>)>,
 ) {
+    if opts.is_some_and(|o| o.cam.is_some()) { return; }
     let Ok(player) = players.single() else { return };
     let rotation = Quat::from_euler(EulerRot::YXZ, CAM_YAW_DEG.to_radians(), CAM_PITCH_DEG.to_radians(), 0.0);
     let back = rotation * Vec3::Z;
@@ -1503,53 +1676,32 @@ fn send_moves(mut net: NonSendMut<Net>, time: Res<Time<Real>>, mut players: Quer
     if net.offline {
         return;
     }
+    if let ClientCommand::Move(m) = &command { net.corrections.sent(*m); }
     let (bytes, bits) = command.encode();
     net.session.send_command_with(&bytes, bits, Reliability::UnreliableSequenced);
     let _ = TICK_SECONDS;
 }
 
-/// The ArmamentState the hands give (the 2018 rule the experimental server's
-/// World.armament_of mirrors): a weapon in both hand slots is TwoHand (5); a weapon
-/// with something in the off hand 4; a weapon alone 3; nothing 0.
-/// INFERRED: Small/Large weapons are not told apart here (no item categories yet).
-fn armament(worn: &[(Vec<i8>, String)]) -> i8 {
-    let right = worn.iter().find(|(s, _)| s.contains(&5));
-    let left = worn.iter().find(|(s, _)| s.contains(&6));
-    match (right, left) {
-        (Some((s, _)), _) if s.contains(&6) => 5,
-        (Some(_), Some(_)) => 4,
-        (Some(_), None) => 3,
-        _ => 0,
-    }
-}
-
 /// Dress the player from the inventory, and other players from RemotePlayerInfo.
 #[allow(clippy::type_complexity)]
 fn dress(
-    mut commands: Commands,
     mut net: NonSendMut<Net>,
     library: Option<Res<CharacterLibrary>>,
     skins: Res<Assets<ItemSkins>>,
-    mut locals: Query<(&mut Character, &mut CharacterAnim, Option<&Children>), (With<LocalPlayer>, Without<RemotePlayer>)>,
-    mut remotes: Query<(&RemotePlayer, &mut Character, &mut CharacterAnim, Option<&Children>), Without<LocalPlayer>>,
+    mut locals: Query<&mut Character, (With<LocalPlayer>, Without<RemotePlayer>)>,
+    mut remotes: Query<(&RemotePlayer, &mut Character), Without<LocalPlayer>>,
 ) {
-    for (actor, equipment, armament) in std::mem::take(&mut net.remote_redress) {
-        for (r, mut c, mut a, kids) in &mut remotes {
-            if r.actor == actor {
-                redress(&mut commands, &mut c, &mut a, kids, equipment.clone(), armament);
-            }
+    for (r, mut c) in &mut remotes {
+        if let Some((equipment, armament)) = net.remote_redress.remove(&r.actor) {
+            redress(&mut c, equipment, armament);
         }
     }
+    if !net.local_appearance_dirty { return; }
     let Some(table) = library.as_ref().and_then(|l| skins.get(&l.item_skins)) else { return };
-    let Ok((mut c, mut a, kids)) = locals.single_mut() else { return };
-    let Some(worn) = net.local_worn.take() else { return };
-    let equipment = worn
-        .iter()
-        .filter_map(|(slots, template)| {
-            table.0.get(template).map(|parts| (slots.first().copied().unwrap_or(0).max(0) as u8, parts.clone()))
-        })
-        .collect();
-    redress(&mut commands, &mut c, &mut a, kids, equipment, armament(&worn));
+    let Ok(mut c) = locals.single_mut() else { return };
+    let Some((equipment, armament)) = appearance::local(&net.inventory, table) else { return };
+    net.local_appearance_dirty = false;
+    redress(&mut c, equipment, armament);
 }
 
 /// DSOR_DEBUG_HIER=1: once, four seconds in, where the player's body really is.
@@ -1591,6 +1743,123 @@ pub fn debug_hierarchy(
             if shown > 4 {
                 break;
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod appearance_tests {
+    use super::*;
+    use crate::character::CharacterVisual;
+    use bevy::ecs::system::RunSystemOnce;
+    use dsor_proto::commands::{inventory::{InventoryInfo, ItemInfo}, actors::ItemUpdate, player::{NewRemotePlayer, RemotePlayerInfo}};
+
+    fn app() -> App {
+        let mut app = App::new();
+        app.insert_resource(Time::<Real>::default())
+            .init_resource::<Assets<ItemSkins>>()
+            .init_resource::<Assets<NavMesh>>()
+            .add_systems(Update, (apply_remotes, dress).chain());
+        start_offline(app.world_mut(), 1, 0);
+        let table = app.world_mut().resource_mut::<Assets<ItemSkins>>().add(serde_json::from_str::<ItemSkins>(
+            r#"{"items":{"chest":["mage_torso_01"]},"appearances":{"changed":["mage_torso_02"]}}"#).unwrap());
+        app.insert_resource(CharacterLibrary::for_test(table));
+        app
+    }
+
+    fn receive(app: &mut App, command: ServerCommand, actor: u32) {
+        on_command(&mut app.world_mut().non_send_mut::<Net>(), command, Some(actor));
+    }
+
+    #[test]
+    fn local_inventory_and_compact_updates_redress_only_changed_visuals() {
+        let mut app = app();
+        let packet = InventoryInfo { items: vec![ItemInfo { id: 10, template: "chest".into(), ..default() }], slots: vec![(10, vec![2])], ..default() };
+        receive(&mut app, ServerCommand::InventoryInfo(packet.clone()), OFFLINE_ACTOR);
+        app.update();
+        assert!(app.world().non_send::<Net>().local_appearance_dirty, "wait for local spawn");
+        let root = app.world_mut().run_system_once(|mut commands: Commands| {
+            let root = spawn_character(&mut commands, CharacterDesc { class: 1, ..default() }, Transform::default());
+            commands.entity(root).insert(LocalPlayer { actor: OFFLINE_ACTOR, target: None, facing: 0.0, last_sent_tick: 0, snapped: true, casting: 0.0 });
+            root
+        }).unwrap();
+        app.update();
+        assert_eq!(app.world().get::<Character>(root).unwrap().desc.equipment[0].skin_parts, ["mage_torso_01"]);
+        let visual = app.world_mut().spawn((CharacterVisual, ChildOf(root))).id();
+        let attachment = app.world_mut().spawn(ChildOf(root)).id();
+        app.world_mut().get_mut::<CharacterAnim>(root).unwrap().state = AnimState::Run;
+        receive(&mut app, ServerCommand::InventoryInfo(packet), OFFLINE_ACTOR);
+        app.update();
+        assert!(app.world().get_entity(visual).is_ok(), "unchanged equipment must preserve the current skeleton");
+        receive(&mut app, ServerCommand::ItemUpdate(ItemUpdate { item: 10, appearance: "changed".into(), twentieth: 0xFFFF0000, ..default() }), OFFLINE_ACTOR);
+        app.update();
+        let desc = &app.world().get::<Character>(root).unwrap().desc;
+        assert_eq!(desc.equipment[0].skin_parts, ["mage_torso_02"]);
+        assert_eq!(desc.equipment[0].colour, Some([1.0, 0.0, 0.0, 1.0]));
+        assert!(app.world().get_entity(visual).is_ok(), "keep old visuals until their replacement is loaded");
+        assert!(app.world().get_entity(attachment).is_ok(), "non-outfit attachments survive");
+        assert_eq!(app.world().get::<CharacterAnim>(root).unwrap().state, AnimState::Run);
+        receive(&mut app, ServerCommand::InventoryInfo(InventoryInfo::default()), OFFLINE_ACTOR);
+        app.update();
+        assert!(app.world().get::<Character>(root).unwrap().desc.equipment.is_empty());
+    }
+
+    #[test]
+    fn remote_spawn_then_update_in_same_batch_uses_latest_outfit_and_pose() {
+        let mut app = app();
+        let equipment = vec![Equipment { slot: 5, skin_parts: vec!["staff".into()], colour: None }];
+        receive(&mut app, ServerCommand::NewRemotePlayer(NewRemotePlayer { name: "Other".into(), equipment: equipment.clone(), armament: 5, parts: [1, 0, 0, 0, 0, 0], ..default() }), 100);
+        let equipment = vec![Equipment { slot: 2, skin_parts: vec!["robe; robe_fx".into()], colour: Some([0.0, 0.0, 1.0, 1.0]) }];
+        receive(&mut app, ServerCommand::RemotePlayerInfo(RemotePlayerInfo { equipment, animation_set: "mage_1h_weapon".into(), armament: 5, ..default() }), 100);
+        app.update();
+        let mut query = app.world_mut().query::<(Entity, &RemotePlayer, &Character)>();
+        let (entity, _, character) = query.single(app.world()).unwrap();
+        assert_eq!(character.desc.armament, 3, "player kind 5 is not two-hand armament");
+        assert_eq!(character.desc.equipment[0].skin_parts, ["robe", "robe_fx"]);
+        assert_eq!(character.desc.equipment[0].colour, Some([0.0, 0.0, 1.0, 1.0]));
+        let visual = app.world_mut().spawn((CharacterVisual, ChildOf(entity))).id();
+        for set in ["mage_2h_weapon", "mage_1h_weapon_shield"] {
+            receive(&mut app, ServerCommand::RemotePlayerInfo(RemotePlayerInfo { animation_set: set.into(), ..default() }), 100);
+        }
+        app.update();
+        assert_eq!(app.world().get::<Character>(entity).unwrap().desc.armament, 4);
+        assert!(app.world().get_entity(visual).is_ok(), "the outfit loader publishes the replacement later");
+        assert!(app.world().non_send::<Net>().remote_redress.is_empty());
+    }
+
+    #[test]
+    fn server_encoded_appearance_batches_drive_both_player_types() {
+        let vectors: Vec<serde_json::Value> = serde_json::from_str(include_str!("../../crates/proto/tests/data/appearance_release261.json")).unwrap();
+        for vector in vectors {
+            let mut app = app();
+            let table = app.world_mut().resource_mut::<Assets<ItemSkins>>().add(serde_json::from_str::<ItemSkins>(
+                r#"{"items":{"mage_base_torso_armor_block_critical":["mage_torso_01"]},"appearances":{"mage_basic_torso_06":["mage_torso_06"]}}"#).unwrap());
+            app.insert_resource(CharacterLibrary::for_test(table));
+            let root = app.world_mut().run_system_once(|mut commands: Commands| {
+                let root = spawn_character(&mut commands, CharacterDesc { class: 1, ..default() }, Transform::default());
+                commands.entity(root).insert(LocalPlayer { actor: OFFLINE_ACTOR, target: None, facing: 0.0, last_sent_tick: 0, snapped: true, casting: 0.0 });
+                root
+            }).unwrap();
+            let hex = vector["hex"].as_str().unwrap();
+            let data: Vec<_> = (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(&hex[i..i+2], 16).unwrap()).collect();
+            let commands = dsor_proto::commands::decode_message(&data, vector["bits"].as_u64().unwrap() as usize).unwrap();
+            for (command, actor) in commands {
+                receive(&mut app, command, if actor == Some(1) { OFFLINE_ACTOR } else { actor.unwrap() });
+            }
+            app.update();
+            let local = &app.world().get::<Character>(root).unwrap().desc;
+            let expected = match vector["name"].as_str().unwrap() {
+                "appearance_initial" => Some("mage_torso_01"),
+                "appearance_changed" => Some("mage_torso_06"),
+                "appearance_unequipped" => None,
+                name => panic!("unexpected fixture {name}"),
+            };
+            assert_eq!(local.equipment.first().map(|e| e.skin_parts[0].as_str()), expected);
+            let mut query = app.world_mut().query_filtered::<&Character, With<RemotePlayer>>();
+            let remote = &query.single(app.world()).unwrap().desc;
+            assert_eq!(remote.equipment.first().map(|e| e.skin_parts[0].as_str()), expected);
+            assert_ne!(remote.armament, 5);
+            if expected.is_some() { assert_eq!(remote.equipment[0].colour, Some([0.1, 0.9, 0.2, 1.0])); }
         }
     }
 }

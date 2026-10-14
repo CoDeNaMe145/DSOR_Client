@@ -20,16 +20,18 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use bevy::asset::{io::Reader, AssetLoader, LoadContext};
+use bevy::asset::{io::Reader, AssetLoader, LoadContext, VisitAssetDependencies};
 use bevy::gltf::{Gltf, GltfAssetLabel};
 use bevy::mesh::skinning::SkinnedMesh;
 use bevy::animation::AnimatedBy;
 use bevy::prelude::*;
 use bevy::world_serialization::WorldInstanceReady;
 use serde::Deserialize;
+use crate::appearance::Equipment;
 
 /// The blend between two animations.
 const BLEND: Duration = Duration::from_millis(150);
+const EQUIPMENT_BLEND: Duration = Duration::from_millis(220);
 
 const BODY_PARTS: [&str; 12] = [
     "ears", "feet", "hands", "head", "hips", "lowerarms", "lowerlegs", "midbody", "neck",
@@ -43,15 +45,75 @@ pub const CLASSES: [&str; 4] = ["warrior", "mage", "ranger", "dwarf"];
 #[serde(transparent)]
 pub struct AnimTable(pub HashMap<String, HashMap<String, String>>);
 
-/// The part names one skeleton family has.
+/// Available meshes and authored region masks/layers from gfxskintags.bin.
 #[derive(Asset, TypePath, Deserialize, Debug)]
-#[serde(transparent)]
-pub struct PartList(pub Vec<String>);
+#[serde(from = "PartCatalog")]
+pub struct PartList {
+    parts: Vec<String>,
+    tags: HashMap<String, SkinTag>,
+}
+
+#[derive(Clone, Copy, Deserialize, Debug)]
+struct SkinTag { mask: u32, layer: u16 }
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum PartCatalog {
+    Current { parts: Vec<String>, tags: HashMap<String, SkinTag> },
+    Legacy(Vec<String>),
+}
+
+impl From<PartCatalog> for PartList {
+    fn from(catalog: PartCatalog) -> Self {
+        match catalog {
+            PartCatalog::Current { parts, tags } => Self { parts, tags },
+            PartCatalog::Legacy(parts) => Self { parts, tags: default() },
+        }
+    }
+}
+
+/// Only visible higher layers occlude lower ones. Parts at the same layer may
+/// share regions (a robe and boots); unknown meshes are preserved conservatively.
+fn cull_covered_parts(parts: &mut Vec<(String, Option<[f32; 4]>)>, tags: &HashMap<String, SkinTag>) {
+    let mut layers: Vec<_> = parts.iter().filter_map(|(name, _)| tags.get(name).map(|tag| tag.layer)).collect();
+    layers.sort_unstable();
+    layers.dedup();
+    let mut covered = 0;
+    for layer in layers.into_iter().rev() {
+        let mut this_layer = 0;
+        parts.retain(|(name, _)| {
+            let Some(tag) = tags.get(name).filter(|tag| tag.layer == layer) else { return true };
+            if tag.mask & covered != 0 { return false; }
+            this_layer |= tag.mask;
+            true
+        });
+        covered |= this_layer;
+    }
+}
 
 /// Item template -> its Skin parts (tools/character_tables.py, from _Template_Item).
-#[derive(Asset, TypePath, Deserialize, Debug)]
-#[serde(transparent)]
-pub struct ItemSkins(pub HashMap<String, Vec<String>>);
+#[derive(Asset, TypePath, Deserialize, Debug, Default)]
+#[serde(from = "SkinTable")]
+pub struct ItemSkins {
+    pub items: HashMap<String, Vec<String>>,
+    pub appearances: HashMap<String, Vec<String>>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum SkinTable {
+    Current { items: HashMap<String, Vec<String>>, appearances: HashMap<String, Vec<String>> },
+    Legacy(HashMap<String, Vec<String>>),
+}
+
+impl From<SkinTable> for ItemSkins {
+    fn from(table: SkinTable) -> Self {
+        match table {
+            SkinTable::Current { items, appearances } => Self { items, appearances },
+            SkinTable::Legacy(items) => Self { items, appearances: default() },
+        }
+    }
+}
 
 #[derive(Default, TypePath)]
 pub struct ItemSkinsLoader;
@@ -108,11 +170,13 @@ pub struct CharacterDesc {
     pub class: u8,
     /// 0 male, 1 female.
     pub gender: u8,
-    /// (equipment slot, Skin part names) of every worn item.
-    pub equipment: Vec<(u8, Vec<String>)>,
+    /// Visible worn slots, their Skin parts and optional RGBA dye.
+    pub equipment: Vec<Equipment>,
     /// ArmamentState: 0 empty, 1/2 one-hand small (+off hand), 3/4 one-hand large
     /// (+off hand), 5 two-hand.
     pub armament: i8,
+    /// Hair/beard resolved from the roster's customization indices.
+    pub cosmetics: Vec<String>,
     /// An NPC: its outfit replaces class, gender and equipment (crate::npc).
     pub look: Option<NpcLook>,
 }
@@ -175,7 +239,7 @@ impl CharacterDesc {
         }
         let class = self.class_name();
         let suffix = if class == "ranger" {
-            if self.armament >= 3 { "large_weapon" } else { "small_weapon" }
+            if self.armament == 5 { "large_weapon" } else { "small_weapon" }
         } else {
             match self.armament {
                 2 | 4 => "1h_weapon_shield",
@@ -188,16 +252,24 @@ impl CharacterDesc {
     }
 
     /// Every part to dress, resolved against the parts that exist.
-    fn parts(&self, exists: &dyn Fn(&str) -> bool) -> Vec<String> {
+    fn parts(&self, exists: &dyn Fn(&str) -> bool, tags: &HashMap<String, SkinTag>) -> Vec<(String, Option<[f32; 4]>)> {
         if let Some(look) = &self.look {
-            return look.parts.iter().filter(|p| exists(p)).cloned().collect();
+            return look.parts.iter().filter(|p| exists(p)).map(|p| (p.clone(), None)).collect();
         }
         let (class, gender) = (self.class_name(), self.gender_name());
         let mut out = Vec::new();
+        let resolve = |skin: &str| {
+            let female = format!("{skin}_female");
+            if self.gender == 1 && exists(&female) { Some(female) }
+            else if exists(skin) { Some(skin.to_owned()) }
+            else { None }
+        };
+        let worn: Vec<_> = self.equipment.iter().flat_map(|e| e.skin_parts.iter()
+            .filter_map(|skin| resolve(skin).map(|part| (part, e.colour)))).collect();
         for p in BODY_PARTS {
             for candidate in [format!("{class}_{gender}_{p}"), format!("{gender}_{p}")] {
                 if exists(&candidate) {
-                    out.push(candidate);
+                    out.push((candidate, None));
                     break;
                 }
             }
@@ -208,31 +280,31 @@ impl CharacterDesc {
         //   lists the body parts plus mage_torso_00 and mage_boots_00 (rangers also
         //   ranger_gloves_00) -- characters/uniskel/outfits.json.
         // FAILURE (2026-10-06): "mon perso est en slibard".
-        for kind in ["torso", "boots", "gloves"] {
-            let covered = self.equipment.iter().flat_map(|(_, skins)| skins).any(|s| s.contains(kind));
+        for (slot, kind) in [(2, "torso"), (4, "boots"), (3, "gloves")] {
+            // A missing converted mesh must not also remove the base clothing.
+            let covered = self.equipment.iter().any(|e| e.slot == slot && e.skin_parts.iter().any(|p| resolve(p).is_some()));
             if covered {
                 continue;
             }
             let base = format!("{class}_{kind}_00");
             let female = format!("{base}_female");
             if self.gender == 1 && exists(&female) {
-                out.push(female);
+                out.push((female, None));
             } else if exists(&base) {
-                out.push(base);
+                out.push((base, None));
             }
         }
-        for (_slot, skins) in &self.equipment {
-            for skin in skins {
-                let female = format!("{skin}_female");
-                if self.gender == 1 && exists(&female) {
-                    out.push(female);
-                } else if exists(skin) {
-                    out.push(skin.clone());
-                } else {
-                    debug!("no part named {skin}");
-                }
+        for (part, colour) in worn {
+            // A two-handed item appears in both remote hand slots, but its mesh
+            // belongs to the character only once.
+            if !out.iter().any(|(name, _)| name == &part) { out.push((part, colour)); }
+        }
+        for part in &self.cosmetics {
+            if exists(part) && !out.iter().any(|(name, _)| name == part) {
+                out.push((part.clone(), None));
             }
         }
+        cull_covered_parts(&mut out, tags);
         out
     }
 }
@@ -304,7 +376,13 @@ pub struct CharacterAnim {
     /// Asked to park this frame (done after the loop).
     parking: bool,
     fading: Vec<(AnimationNodeIndex, f32)>,
+    fade_elapsed: f32,
+    fade_duration: f32,
     nodes: HashMap<String, (AnimationNodeIndex, bool)>,
+    clip_nodes: HashMap<String, AnimationNodeIndex>,
+    durations: HashMap<AnimationNodeIndex, f32>,
+    set: Option<String>,
+    set_changed: bool,
     /// Killed (KillCommand): the death animation keeps its last pose; no sequence
     /// or movement brings the actor back to Idle.
     pub dead: bool,
@@ -312,7 +390,9 @@ pub struct CharacterAnim {
 
 impl Default for CharacterAnim {
     fn default() -> Self {
-        Self { state: AnimState::Idle, speed: 1.0, applied: None, player: None, nodes: HashMap::new(), current: None, fading: Vec::new(), parked: Vec::new(), parking: false, dead: false }
+        Self { state: AnimState::Idle, speed: 1.0, applied: None, player: None, nodes: HashMap::new(), current: None,
+            fading: Vec::new(), fade_elapsed: 0.0, fade_duration: BLEND.as_secs_f32(), clip_nodes: HashMap::new(),
+            durations: HashMap::new(), set: None, set_changed: false, parked: Vec::new(), parking: false, dead: false }
     }
 }
 
@@ -349,6 +429,56 @@ impl CharacterAnim {
         self.fading.clear();
         self.applied = None;
     }
+
+    fn advance_blend(&mut self, player: &mut AnimationPlayer, dt: f32) {
+        if self.fading.is_empty() { return; }
+        self.fade_elapsed += dt;
+        let remaining = 1.0 - (self.fade_elapsed / self.fade_duration).clamp(0.0, 1.0);
+        let mut outgoing = 0.0;
+        self.fading.retain(|&(node, weight)| {
+            if remaining == 0.0 { player.stop(node); return false; }
+            if let Some(a) = player.animation_mut(node) {
+                a.set_weight(weight * remaining);
+                outgoing += weight * remaining;
+            }
+            true
+        });
+        if let Some(a) = self.current.and_then(|node| player.animation_mut(node)) {
+            a.set_weight((1.0 - outgoing).clamp(0.0, 1.0));
+        }
+    }
+
+    fn transition(&mut self, player: &mut AnimationPlayer, node: AnimationNodeIndex, looping: bool) {
+        let same_state = self.applied.as_ref().is_some_and(|(state, _)| *state == self.state);
+        let preserve_phase = self.set_changed && same_state;
+        let seek = if preserve_phase && self.current != Some(node) {
+            self.current.and_then(|old| {
+                let duration = *self.durations.get(&old)?;
+                let next_duration = *self.durations.get(&node)?;
+                let at = player.animation(old)?.seek_time();
+                (duration > 0.0).then(|| (at / duration).clamp(0.0, 1.0) * next_duration)
+            })
+        } else { None };
+        if self.current != Some(node) {
+            // Snapshot the actual mixed pose, including interrupted transitions.
+            // Starting the new clip at weight 1 would jump halfway to its pose.
+            let total: f32 = player.playing_animations().map(|(_, a)| a.weight()).sum();
+            self.fading = player.playing_animations().filter(|(n, a)| **n != node && a.weight() > 0.0)
+                .map(|(n, a)| (*n, a.weight() / total.max(f32::EPSILON))).collect();
+            let outgoing: f32 = self.fading.iter().map(|(_, w)| *w).sum();
+            self.fade_elapsed = 0.0;
+            self.fade_duration = if self.set_changed { EQUIPMENT_BLEND } else { BLEND }.as_secs_f32();
+            player.play(node).set_weight((1.0 - outgoing).clamp(0.0, 1.0));
+        }
+        let active = player.play(node);
+        active.set_speed(self.speed);
+        if looping { active.repeat(); }
+        else if !preserve_phase { active.replay(); }
+        if let Some(at) = seek { active.set_seek_time(at); }
+        self.current = Some(node);
+        self.applied = Some((self.state.clone(), self.speed));
+        self.set_changed = false;
+    }
 }
 
 /// The joints of a whole model (not on the shared skeleton), by name, for effects
@@ -362,15 +492,21 @@ pub struct Character {
     built: bool,
     bones: Option<HashMap<String, Entity>>,
     pending_parts: Vec<Entity>,
-    /// Which dressing this is: bumped by `redress`, so the skeleton and parts of a
-    /// previous dressing, ready only after it was replaced, are ignored.
-    /// FAILURE (2026-10-06): the first skeleton reported ready after the inventory
-    /// re-dressed the player; the new parts bound to its despawned bones and the body
-    /// stayed behind as the player walked ("j'ai quitte le corps du perso").
+    skeleton: Option<Entity>,
+    displayed_set: String,
+    drawn_parts: Vec<OutfitPart>,
+    pending_outfit: Option<PendingOutfit>,
+    /// Identity of the shared skeleton; equipment swaps retain this generation.
     generation: u32,
 }
 
+#[derive(Clone)]
+struct OutfitPart { entity: Entity, name: String, colour: Option<[f32; 4]> }
+
+struct PendingOutfit { parts: Vec<OutfitPart>, introduced: Vec<Entity>, animation_set: String }
+
 impl Character {
+    pub fn outfit_ready(&self) -> bool { self.built && self.pending_outfit.is_none() && !self.drawn_parts.is_empty() }
     /// A joint of this character's shared skeleton, by name (once it is in).
     pub fn bone(&self, name: &str) -> Option<Entity> {
         self.bones.as_ref()?.get(name).copied()
@@ -382,6 +518,16 @@ struct SkeletonOf(Entity, u32);
 #[derive(Component)]
 struct PartOf(Entity, u32);
 
+/// Only these children belong to the outfit; attachments survive a redress.
+#[derive(Component)]
+pub struct CharacterVisual;
+
+#[derive(Component)]
+struct EquipmentDye([f32; 4]);
+
+#[derive(Component)]
+struct EquipmentDyed;
+
 #[derive(Resource)]
 pub struct CharacterLibrary {
     pub anims: Handle<AnimTable>,
@@ -390,6 +536,13 @@ pub struct CharacterLibrary {
     skeletons: HashMap<&'static str, Handle<Gltf>>,
     /// The skeletons' body shapes, for the players' own (see body_variation).
     variations: HashMap<&'static str, Handle<crate::npc::Variations>>,
+}
+
+#[cfg(test)]
+impl CharacterLibrary {
+    pub(crate) fn for_test(item_skins: Handle<ItemSkins>) -> Self {
+        Self { item_skins, anims: default(), parts: default(), skeletons: default(), variations: default() }
+    }
 }
 
 pub struct CharacterPlugin;
@@ -403,7 +556,8 @@ impl Plugin for CharacterPlugin {
             .register_asset_loader(AnimTableLoader)
             .register_asset_loader(PartListLoader)
             .add_systems(Startup, load_library)
-            .add_systems(Update, (build_characters, revive_skeletons, keep_parts_bound, drive_animations, check_skins, prune_idle_targets).chain())
+            .add_systems(Update, (build_characters, revive_skeletons, keep_parts_bound, apply_equipment_dyes,
+                finish_outfits, update_animation_sets, drive_animations, check_skins, prune_idle_targets).chain().after(crate::net::NetSystems))
             .add_systems(
                 PostUpdate,
                 apply_variations.after(bevy::app::AnimationSystems).before(TransformSystems::Propagate),
@@ -447,10 +601,12 @@ fn body_variation(desc: &CharacterDesc, library: Option<&CharacterLibrary>, vari
 
 /// Spawn a character; it dresses and animates itself once its assets are in.
 pub fn spawn_character(commands: &mut Commands, desc: CharacterDesc, transform: Transform) -> Entity {
+    let displayed_set = desc.animation_set();
     commands
         .spawn((
             Name::new(format!("character {}", desc.animation_set())),
-            Character { desc, built: false, bones: None, pending_parts: Vec::new(), generation: 0 },
+            Character { desc, built: false, bones: None, pending_parts: Vec::new(), generation: 0,
+                skeleton: None, displayed_set, drawn_parts: Vec::new(), pending_outfit: None },
             CharacterAnim::default(),
             transform,
             Visibility::default(),
@@ -480,31 +636,158 @@ fn build_characters(
         {
             continue;
         }
-        let names: std::collections::HashSet<&str> = list.0.iter().map(String::as_str).collect();
-        let parts = character.desc.parts(&|n| names.contains(n));
+        let names: std::collections::HashSet<&str> = list.parts.iter().map(String::as_str).collect();
+        let parts = character.desc.parts(&|n| names.contains(n), &list.tags);
         character.built = true;
+        // Cancel only unpublished parts when a newer equipment packet arrives.
+        if let Some(pending) = character.pending_outfit.take() {
+            for part in pending.introduced { commands.entity(part).try_despawn(); }
+        }
         let skeleton_scene = assets.load(GltfAssetLabel::Scene(0).from_asset(format!("characters/{skel}/__animations.glb")));
         // CONTRACT: a Transform (and Visibility) on every child, or the hierarchy
         //   does not carry the character's movement down to the skeleton.
         // FAILURE (2026-10-06): without them the body stayed where the player had
         //   arrived while the player walked on ("je suis un fantome qui se deplace").
-        commands.spawn((
+        if character.skeleton.is_none() {
+            character.skeleton = Some(commands.spawn((
             SkeletonOf(entity, character.generation),
+            CharacterVisual,
             WorldAssetRoot(skeleton_scene),
             ChildOf(entity),
             Transform::default(),
             Visibility::default(),
-        ));
-        for part in parts {
+            )).id());
+        }
+        let mut outfit = Vec::new();
+        let mut introduced = Vec::new();
+        for (part, colour) in parts {
+            if let Some(existing) = character.drawn_parts.iter().find(|p| p.name == part && p.colour == colour) {
+                outfit.push(existing.clone());
+                continue;
+            }
             let scene = assets.load(GltfAssetLabel::Scene(0).from_asset(format!("characters/{skel}/parts/{part}.glb")));
-            commands.spawn((
+            let mut entity = commands.spawn((
                 PartOf(entity, character.generation),
+                CharacterVisual,
                 WorldAssetRoot(scene),
                 ChildOf(entity),
-                Name::new(part),
+                Name::new(part.clone()),
                 Transform::default(),
-                Visibility::default(),
+                Visibility::Hidden,
             ));
+            if let Some(colour) = colour { entity.insert(EquipmentDye(colour)); }
+            introduced.push(entity.id());
+            outfit.push(OutfitPart { entity: entity.id(), name: part, colour });
+        }
+        character.pending_outfit = Some(PendingOutfit { parts: outfit, introduced, animation_set: character.desc.animation_set() });
+    }
+}
+
+/// Publish an outfit atomically after its scene, textures and bindings are ready.
+/// Common body/clothing parts stay on the same skeleton throughout the swap.
+#[derive(bevy::ecs::system::SystemParam)]
+struct OutfitReadiness<'w, 's> {
+    parts: Query<'w, 's, (&'static bevy::world_serialization::WorldInstance, &'static WorldAssetRoot)>,
+    instances: Res<'w, bevy::world_serialization::WorldInstanceSpawner>,
+    children: Query<'w, 's, &'static Children>,
+    meshes: Query<'w, 's, (&'static Mesh3d, Option<&'static MeshMaterial3d<StandardMaterial>>,
+        Option<&'static MeshMaterial3d<crate::surfaces::NebulaMaterial>>, Option<&'static MeshMaterial3d<crate::refraction::RefractionMaterial>>)>,
+    standard: Res<'w, Assets<StandardMaterial>>,
+    surfaces: Res<'w, Assets<crate::surfaces::NebulaMaterial>>,
+    refractions: Res<'w, Assets<crate::refraction::RefractionMaterial>>,
+    mesh_assets: Res<'w, Assets<Mesh>>,
+    images: Res<'w, Assets<Image>>,
+    assets: Res<'w, AssetServer>,
+}
+
+fn material_textures_ready(base: &StandardMaterial, extra: &[&Option<Handle<Image>>], loaded: impl Fn(bevy::asset::UntypedAssetId) -> bool) -> bool {
+    let mut ready = true;
+    base.visit_dependencies(&mut |id| ready &= loaded(id));
+    ready && extra.iter().all(|image| image.as_ref().is_none_or(|image| loaded(image.id().untyped())))
+}
+
+impl OutfitReadiness<'_, '_> {
+    fn ready(&self, entity: Entity) -> bool {
+        let Ok((instance, _)) = self.parts.get(entity) else { return false };
+        if !self.instances.instance_is_ready(**instance) { return false; }
+        // A glTF scene's recursive dependency status can stay Loading after all
+        // its render assets arrive. Check the actual mesh/material textures,
+        // including cloned dye materials and extension textures, instead.
+        self.children.iter_descendants(entity).all(|e| {
+            let Ok((mesh, standard, surface, refraction)) = self.meshes.get(e) else { return true };
+            if !self.mesh_assets.contains(mesh.id()) && !self.assets.is_loaded(mesh.id()) { return false; }
+            let loaded = |id: bevy::asset::UntypedAssetId| self.assets.is_loaded(id)
+                || id.try_typed::<Image>().is_ok_and(|id| self.images.contains(id));
+            standard.is_none_or(|h| self.standard.get(&h.0).is_some_and(|m| material_textures_ready(m, &[], loaded)))
+                && surface.is_none_or(|h| self.surfaces.get(&h.0).is_some_and(|m|
+                    material_textures_ready(&m.base, &[&m.extension.cube, &m.extension.layer, &m.extension.mask], loaded)))
+                && refraction.is_none_or(|h| self.refractions.get(&h.0).is_some_and(|m|
+                    material_textures_ready(&m.base, &[&m.extension.dudv], loaded)))
+        })
+    }
+}
+
+fn finish_outfits(
+    mut commands: Commands,
+    mut characters: Query<(&mut Character, &CharacterAnim)>,
+    readiness: OutfitReadiness,
+    time: Res<Time>,
+    mut diagnostic: Local<f32>,
+) {
+    *diagnostic += time.delta_secs();
+    let diagnose = *diagnostic > 2.0 && std::env::var("DSOR_CHECK_SKIN").is_ok();
+    if *diagnostic > 2.0 { *diagnostic = 0.0; }
+    for (mut character, anim) in &mut characters {
+        if character.bones.is_none() || (character.desc.look.is_none() && anim.current.is_none()) { continue; }
+        let Some(pending) = &character.pending_outfit else { continue };
+        // Ask the spawner directly: scene replacement during asynchronous loading
+        // does not reliably deliver another WorldInstanceReady event.
+        if !pending.introduced.iter().all(|e| readiness.ready(*e)) {
+            if diagnose {
+                for e in &pending.introduced {
+                    match readiness.parts.get(*e) {
+                        Ok((_, scene)) if !readiness.ready(*e) =>
+                            info!("outfit waiting {e:?} {:?}: scene or render assets not ready", readiness.assets.get_path(scene.id())),
+                        Err(_) => info!("outfit waiting {e:?}: no scene instance"),
+                        _ => {}
+                    }
+                }
+            }
+            continue;
+        }
+        publish_outfit(&mut commands, &mut character);
+    }
+}
+
+fn publish_outfit(commands: &mut Commands, character: &mut Character) {
+    let Some(pending) = character.pending_outfit.take() else { return };
+    for part in &character.drawn_parts {
+        if !pending.parts.iter().any(|p| p.entity == part.entity) { commands.entity(part.entity).try_despawn(); }
+    }
+    for part in pending.introduced { commands.entity(part).insert(Visibility::Inherited); }
+    character.drawn_parts = pending.parts;
+    character.displayed_set = pending.animation_set;
+}
+
+/// Clone the material for this mesh: modifying a loaded asset would dye every
+/// player wearing it. The existing character shader applies colour through its
+/// authored dye mask, leaving skin, metal trim and glow materials alone.
+fn apply_equipment_dyes(
+    mut commands: Commands,
+    parts: Query<(Entity, &EquipmentDye)>,
+    children: Query<&Children>,
+    meshes: Query<&MeshMaterial3d<crate::surfaces::NebulaMaterial>, Without<EquipmentDyed>>,
+    mut materials: ResMut<Assets<crate::surfaces::NebulaMaterial>>,
+) {
+    for (part, dye) in &parts {
+        for entity in children.iter_descendants(part) {
+            let Ok(handle) = meshes.get(entity) else { continue };
+            let Some(original) = materials.get(&handle.0) else { continue };
+            if original.extension.params.p0.x != crate::surfaces::Kind::Character as u32 as f32 { continue; }
+            let mut material = original.clone();
+            // surface.wgsl mixes character dyes in gamma space, like Nebula.
+            material.extension.params.p1 = Vec4::from_array(dye.0);
+            commands.entity(entity).insert((MeshMaterial3d(materials.add(material)), EquipmentDyed));
         }
     }
 }
@@ -520,8 +803,6 @@ struct SkeletonCtx<'w, 's> {
     skinned: Query<'w, 's, (&'static SkinnedMesh, Option<&'static JointNames>)>,
     characters: Query<'w, 's, (&'static mut Character, &'static mut CharacterAnim)>,
     library: Option<Res<'w, CharacterLibrary>>,
-    tables: Res<'w, Assets<AnimTable>>,
-    gltfs: Res<'w, Assets<Gltf>>,
     graphs: ResMut<'w, Assets<AnimationGraph>>,
     joints: Query<'w, 's, (&'static Transform, Option<&'static ChildOf>)>,
     parents: Query<'w, 's, &'static ChildOf>,
@@ -580,28 +861,24 @@ fn adopt_skeleton(ctx: &mut SkeletonCtx, entity: Entity, owner: Entity, generati
     if character.generation != generation {
         return;
     }
-    // Animations: one graph per character, every state of its set.
-    if let (Some(player), Some(library)) = (player, ctx.library.as_ref()) {
-        let set = character.desc.animation_set();
-        let gltf = library.skeletons.get(character.desc.skeleton()).and_then(|h| ctx.gltfs.get(h));
-        let table = ctx.tables.get(&library.anims).and_then(|t| t.0.get(&set));
-        if let (Some(gltf), Some(table)) = (gltf, table) {
-            let mut graph = AnimationGraph::new();
-            for (state, clip) in table {
-                if let Some(handle) = gltf.named_animations.get(clip.as_str()) {
-                    let node = graph.add_clip(handle.clone(), 1.0, graph.root);
-                    anim.nodes.insert(state.clone(), (node, clip.ends_with("-loop")));
-                }
-            }
+    // Equipment swaps keep this player and graph. A genuinely replaced scene
+    // instance needs a new binding; animation tables may finish loading later.
+    if let Some(player) = player {
+        if anim.player != Some(player) {
             commands
                 .entity(player)
-                .insert((AnimationGraphHandle(ctx.graphs.add(graph)), crate::anim_cull::ManagedAnimation));
+                .insert((AnimationGraphHandle(ctx.graphs.add(AnimationGraph::new())), crate::anim_cull::ManagedAnimation));
             anim.player = Some(player);
             anim.current = None;
             anim.fading.clear();
             anim.applied = None;
-        } else {
-            warn!("no animation set {set} (or its skeleton is not loaded yet)");
+            anim.nodes.clear();
+            anim.clip_nodes.clear();
+            anim.durations.clear();
+            anim.set = None;
+            anim.set_changed = false;
+            anim.parked.clear();
+            anim.parking = false;
         }
     }
     let variation = match &character.desc.look {
@@ -647,6 +924,43 @@ fn on_instance_ready(ready: On<WorldInstanceReady>, skeletons: Query<&SkeletonOf
             }
             None => character.pending_parts.push(entity),
         }
+    }
+}
+
+/// Append newly needed clips to the existing graph, retaining old clips while
+/// they fade out. Reusing nodes also keeps a common clip's playback uninterrupted.
+fn update_animation_sets(
+    mut characters: Query<(&Character, &mut CharacterAnim)>,
+    players: Query<&AnimationGraphHandle>,
+    library: Option<Res<CharacterLibrary>>,
+    tables: Res<Assets<AnimTable>>,
+    gltfs: Res<Assets<Gltf>>,
+    clips: Res<Assets<AnimationClip>>,
+    mut graphs: ResMut<Assets<AnimationGraph>>,
+) {
+    let Some(library) = library else { return };
+    for (character, mut anim) in &mut characters {
+        let set = &character.displayed_set;
+        if anim.set.as_ref() == Some(set) { continue; }
+        let Some(player) = anim.player else { continue };
+        let Ok(handle) = players.get(player) else { continue };
+        let Some(mut graph) = graphs.get_mut(&handle.0) else { continue };
+        let Some(gltf) = library.skeletons.get(character.desc.skeleton()).and_then(|h| gltfs.get(h)) else { continue };
+        let Some(table) = tables.get(&library.anims).and_then(|t| t.0.get(set)) else { continue };
+        if table.values().filter_map(|name| gltf.named_animations.get(name.as_str())).any(|clip| clips.get(clip).is_none()) { continue; }
+        let mut nodes = HashMap::new();
+        let root = graph.root;
+        for (state, name) in table {
+            let Some(clip) = gltf.named_animations.get(name.as_str()) else { continue };
+            let Some(data) = clips.get(clip) else { continue };
+            let node = *anim.clip_nodes.entry(name.clone()).or_insert_with(|| graph.add_clip(clip.clone(), 1.0, root));
+            anim.durations.insert(node, data.duration());
+            nodes.insert(state.clone(), (node, name.ends_with("-loop")));
+        }
+        if nodes.is_empty() { continue; }
+        anim.nodes = nodes;
+        anim.set = Some(set.clone());
+        anim.set_changed = anim.current.is_some();
     }
 }
 
@@ -894,7 +1208,7 @@ struct VariedChild;
 fn drive_animations(
     time: Res<Time>,
     mut frame: Local<u32>,
-    mut characters: Query<(&mut CharacterAnim, &GlobalTransform, &InheritedVisibility, Option<&mut AnimLod>)>,
+    mut characters: Query<(&mut CharacterAnim, &GlobalTransform, &InheritedVisibility, Option<&mut AnimLod>, Option<&crate::selection::Preview>)>,
     targets: Query<(Entity, &AnimatedBy)>,
     mut commands: Commands,
     mut players: Query<&mut AnimationPlayer>,
@@ -906,15 +1220,14 @@ fn drive_animations(
     // whatever the camera looks at.
     let focus = cameras.iter().next().map(|(_, g)| crate::map::camera_focus(g, me.iter().next().map(|p| p.translation()), 0.0));
     let near = |p: Vec3| focus.is_none_or(|f| Vec2::new(p.x - f.x, p.z - f.z).length() <= crate::map::CULL_DISTANCE);
-    let fade_step = time.delta_secs() / BLEND.as_secs_f32();
     *frame = frame.wrapping_add(1);
-    for (mut anim, at, shown, mut lod) in &mut characters {
+    for (mut anim, at, shown, mut lod, preview) in &mut characters {
         let Some(player) = anim.player else { continue };
         let Ok(mut p) = players.get_mut(player) else { continue };
         // A lower-rate character between its frames: held still, unevaluated.
         if let Some(lod) = lod.as_mut() {
             let mine = (*frame + lod.phase) % lod.stride == 0;
-            let steady = anim.fading.is_empty() && anim.applied.as_ref() == Some(&(anim.state.clone(), anim.speed));
+            let steady = !anim.set_changed && anim.fading.is_empty() && anim.applied.as_ref() == Some(&(anim.state.clone(), anim.speed));
             if let (true, Some(node)) = (steady, anim.current) {
                 if !mine {
                     match lod.held.as_mut() {
@@ -946,7 +1259,8 @@ fn drive_animations(
         // evaluated at all -- a paused animation is still applied every frame
         // (7 ms a frame for Kingshill's NPCs, bevy trace_chrome). Played again
         // from their state once back in view.
-        let far = crate::flag("noanim") || !shown.get() || !near(at.translation());
+        // A pending portrait must have its pose evaluated before it is revealed.
+        let far = crate::flag("noanim") || (preview.is_none() && (!shown.get() || !near(at.translation())));
         if far {
             if anim.applied.is_some() {
                 p.stop_all();
@@ -975,42 +1289,16 @@ fn drive_animations(
         // started again while its previous fade-out was still running: after two
         // quick casts the character played nothing at all ("je le lance 2x l'anim
         // marche apres ca marche plus").
-        let current = anim.current;
-        anim.fading.retain_mut(|(node, w)| {
-            if Some(*node) == current {
-                return false;
-            }
-            *w -= fade_step;
-            if *w <= 0.0 {
-                p.stop(*node);
-                return false;
-            }
-            if let Some(a) = p.animation_mut(*node) {
-                a.set_weight(*w);
-            }
-            true
-        });
+        anim.advance_blend(&mut p, time.delta_secs());
         let wanted = (anim.state.clone(), anim.speed);
-        if anim.applied.as_ref() == Some(&wanted) {
+        if !anim.set_changed && anim.applied.as_ref() == Some(&wanted) {
             continue;
         }
         let key = anim.state.key().to_owned();
         let Some(&(node, looping)) = anim.nodes.get(&key).or_else(|| anim.nodes.get("Idle")) else {
             continue;
         };
-        if let Some(old) = anim.current.filter(|old| *old != node) {
-            anim.fading.push((old, 1.0));
-        }
-        anim.fading.retain(|(n, _)| *n != node);
-        let active = p.play(node);
-        active.set_weight(1.0).set_speed(anim.speed);
-        if looping {
-            active.repeat();
-        } else {
-            active.replay();
-        }
-        anim.current = Some(node);
-        anim.applied = Some(wanted);
+        anim.transition(&mut p, node, looping);
     }
     if !to_park.is_empty() {
         let wanted: std::collections::HashSet<Entity> = to_park.drain(..).collect();
@@ -1029,33 +1317,17 @@ fn drive_animations(
     }
 }
 
-/// Dress a character again with new equipment: its skeleton and parts are rebuilt,
-/// its animation state kept.
+/// Request a new outfit without touching the live skeleton, animation or parts.
+/// build_characters and finish_outfits prepare and publish the replacement.
 pub fn redress(
-    commands: &mut Commands,
     character: &mut Character,
-    anim: &mut CharacterAnim,
-    children: Option<&Children>,
-    equipment: Vec<(u8, Vec<String>)>,
+    equipment: Vec<Equipment>,
     armament: i8,
 ) {
-    if let Some(children) = children {
-        for c in children.iter() {
-            commands.entity(c).despawn();
-        }
-    }
+    if character.desc.equipment == equipment && character.desc.armament == armament { return; }
     character.desc.equipment = equipment;
     character.desc.armament = armament;
     character.built = false;
-    character.generation = character.generation.wrapping_add(1);
-    character.bones = None;
-    character.pending_parts.clear();
-    anim.player = None;
-    anim.nodes.clear();
-    anim.applied = None;
-    anim.current = None;
-    anim.fading.clear();
-    anim.parked.clear();
 }
 
 /// DSOR_CHECK_SKIN=1: every frame, every skinned mesh under a character must point
@@ -1146,5 +1418,256 @@ fn prune_idle_targets(
         if idle {
             commands.entity(e).remove::<AnimatedBy>();
         }
+    }
+}
+
+#[cfg(test)]
+mod appearance_tests {
+    use super::*;
+    use bevy::ecs::system::RunSystemOnce;
+
+    #[test]
+    fn clothing_coverage_keeps_exposed_skin_and_restores_defaults() {
+        // Actual gfxskintags.bin masks: the female torso leaves the upper chest
+        // exposed; starter boots leave feet visible, armored boots cover them.
+        let mut tags = HashMap::new();
+        for gender in ["male", "female"] {
+            for (part, mask) in [("head", 1), ("ears", 2), ("neck", 4), ("upperarms", 8),
+                ("lowerarms", 0x10), ("hands", 0x20), ("upperbody", 0x40), ("midbody", 0x80),
+                ("hips", 0x100), ("upperlegs", 0x200), ("lowerlegs", 0x400), ("feet", 0x800)] {
+                tags.insert(format!("warrior_{gender}_{part}"), SkinTag { mask, layer: 0 });
+            }
+        }
+        for (part, mask) in [("warrior_torso_00", 0x100180), ("warrior_torso_00_female", 0x100780),
+            ("warrior_torso_01", 0x1003c0), ("warrior_torso_01_female", 0x100780),
+            ("warrior_boots_00", 0x20000), ("warrior_boots_01", 0x20800), ("warrior_gloves_01", 0x10020)] {
+            tags.insert(part.into(), SkinTag { mask, layer: 1 });
+        }
+        let exists = |name: &str| tags.contains_key(name);
+        for gender in [0, 1] {
+            let mut desc = CharacterDesc { gender, ..default() };
+            let base = desc.parts(&exists, &tags);
+            desc.equipment = vec![Equipment { slot: 2, skin_parts: vec!["warrior_torso_01".into()], colour: Some([1.0, 0.0, 0.0, 1.0]) },
+                Equipment { slot: 3, skin_parts: vec!["warrior_gloves_01".into()], ..default() },
+                Equipment { slot: 4, skin_parts: vec!["warrior_boots_01".into()], ..default() }];
+            let parts = desc.parts(&exists, &tags);
+            let has = |name: &str| parts.iter().any(|(p, _)| p == name);
+            let prefix = if gender == 0 { "warrior_male" } else { "warrior_female" };
+            assert_eq!(has(&format!("{prefix}_upperbody")), gender == 1);
+            for part in ["hands", "feet", "midbody", "hips", "upperlegs"] { assert!(!has(&format!("{prefix}_{part}"))); }
+            for part in ["head", "neck", "upperarms"] { assert!(has(&format!("{prefix}_{part}"))); }
+            assert!(!has("warrior_torso_00") && !has("warrior_torso_00_female"));
+            assert!(parts.iter().any(|(_, colour)| *colour == Some([1.0, 0.0, 0.0, 1.0])));
+            desc.equipment.clear();
+            assert_eq!(desc.parts(&exists, &tags), base);
+            desc.equipment = vec![Equipment { slot: 2, skin_parts: vec!["missing_armor".into()], ..default() }];
+            assert_eq!(desc.parts(&exists, &tags), base, "unavailable gear must not hide the fallback outfit");
+        }
+    }
+
+    #[test]
+    fn only_visible_higher_layers_occlude_and_equal_layers_coexist() {
+        let tags = [("chest", 0x40, 0), ("armor", 0x4040, 1), ("hood", 0x4000, 3),
+            ("gloves", 0x20, 1), ("sleeves", 0x20, 1), ("hands", 0x20, 0)]
+            .into_iter().map(|(name, mask, layer)| (name.into(), SkinTag { mask, layer })).collect();
+        let mut parts = ["chest", "armor", "hood", "gloves", "sleeves", "hands", "unknown_fx"]
+            .into_iter().map(|name| (name.to_owned(), None)).collect();
+        cull_covered_parts(&mut parts, &tags);
+        assert_eq!(parts.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>(), ["chest", "hood", "gloves", "sleeves", "unknown_fx"]);
+    }
+
+    #[test]
+    fn part_catalog_reads_coverage_and_accepts_legacy_assets() {
+        let catalog: PartList = serde_json::from_str(r#"{"parts":["body","robe"],"tags":{"body":{"mask":64,"layer":0},"robe":{"mask":1048640,"layer":1}}}"#).unwrap();
+        let mut parts = catalog.parts.iter().map(|name| (name.clone(), None)).collect();
+        cull_covered_parts(&mut parts, &catalog.tags);
+        assert_eq!(parts, vec![("robe".into(), None)]);
+        let legacy: PartList = serde_json::from_str(r#"["body","robe"]"#).unwrap();
+        assert_eq!(legacy.parts, catalog.parts);
+        assert!(legacy.tags.is_empty());
+    }
+
+    #[test]
+    fn outfit_readiness_waits_for_base_and_extension_textures() {
+        let mut images = Assets::<Image>::default();
+        let diffuse = images.add(Image::default());
+        let normal = images.add(Image::default());
+        let dye = Some(images.add(Image::default()));
+        let material = StandardMaterial { base_color_texture: Some(diffuse.clone()), normal_map_texture: Some(normal.clone()), ..default() };
+        assert!(!material_textures_ready(&material, &[&dye], |id| id != diffuse.id().untyped()));
+        assert!(!material_textures_ready(&material, &[&dye], |id| id != normal.id().untyped()));
+        assert!(!material_textures_ready(&material, &[&dye], |id| id != dye.as_ref().unwrap().id().untyped()));
+        assert!(material_textures_ready(&material.clone(), &[&dye, &None], |id| images.contains(id.typed::<Image>())));
+    }
+
+    #[test]
+    fn weapon_blends_start_at_the_current_pose_and_survive_rapid_reversal() {
+        use bevy::animation::{AnimationPlugin, AnimationTargetId, animated_field};
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default(), AnimationPlugin));
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(Duration::from_secs_f32(1.0 / 60.0)));
+        let target = AnimationTargetId::from_name(&Name::new("arm"));
+        let handles: Vec<_> = [0.0, 1.2].into_iter().map(|angle| {
+            let mut clip = AnimationClip::default();
+            clip.add_curve_to_target(target, AnimatableCurve::new(animated_field!(Transform::rotation),
+                UnevenSampleAutoCurve::new([(0.0, Quat::from_rotation_x(angle)), (2.0, Quat::from_rotation_x(angle))]).unwrap()));
+            app.world_mut().resource_mut::<Assets<AnimationClip>>().add(clip)
+        }).collect();
+        let (graph, nodes) = AnimationGraph::from_clips(handles);
+        let graph = app.world_mut().resource_mut::<Assets<AnimationGraph>>().add(graph);
+        let player = app.world_mut().spawn((AnimationPlayer::default(), AnimationGraphHandle(graph))).id();
+        let bone = app.world_mut().spawn((target, AnimatedBy(player), Transform::default())).id();
+        let mut anim = CharacterAnim::default();
+        anim.transition(&mut app.world_mut().get_mut::<AnimationPlayer>(player).unwrap(), nodes[0], true);
+        app.update(); app.update();
+        anim.set_changed = true;
+        anim.transition(&mut app.world_mut().get_mut::<AnimationPlayer>(player).unwrap(), nodes[1], true);
+        app.update();
+        assert!(app.world().get::<Transform>(bone).unwrap().rotation.angle_between(Quat::IDENTITY) < 1e-5, "no first-frame posture jump");
+        for frame in 0..20 {
+            if frame == 4 {
+                let before = app.world().get::<Transform>(bone).unwrap().rotation;
+                anim.set_changed = true;
+                anim.transition(&mut app.world_mut().get_mut::<AnimationPlayer>(player).unwrap(), nodes[0], true);
+                app.update();
+                assert!(before.angle_between(app.world().get::<Transform>(bone).unwrap().rotation) < 0.001,
+                    "rapidly switching back must start from the mixed pose");
+            }
+            let before = app.world().get::<Transform>(bone).unwrap().rotation;
+            anim.advance_blend(&mut app.world_mut().get_mut::<AnimationPlayer>(player).unwrap(), 1.0 / 60.0);
+            app.update();
+            let after = app.world().get::<Transform>(bone).unwrap().rotation;
+            assert!(before.angle_between(after) < 0.15, "pose must change gradually");
+            let total: f32 = app.world().get::<AnimationPlayer>(player).unwrap().playing_animations().map(|(_, a)| a.weight()).sum();
+            assert!((total - 1.0).abs() < 1e-5);
+        }
+        assert!(anim.fading.is_empty());
+        assert!(app.world().get::<Transform>(bone).unwrap().rotation.angle_between(Quat::IDENTITY) < 0.001);
+        assert!(app.world().get::<AnimationPlayer>(player).unwrap().is_playing_animation(nodes[0]));
+        assert!(!app.world().get::<AnimationPlayer>(player).unwrap().is_playing_animation(nodes[1]));
+    }
+
+    #[test]
+    fn changing_weapon_keeps_gait_phase_and_does_not_restart_a_shared_clip() {
+        let (_, nodes) = AnimationGraph::from_clips([Handle::default(), Handle::default()]);
+        let mut player = AnimationPlayer::default();
+        let mut anim = CharacterAnim { state: AnimState::Run, ..default() };
+        anim.durations = [(nodes[0], 2.0), (nodes[1], 4.0)].into_iter().collect();
+        anim.transition(&mut player, nodes[0], true);
+        player.animation_mut(nodes[0]).unwrap().set_seek_time(1.5);
+        anim.set_changed = true;
+        anim.transition(&mut player, nodes[1], true);
+        assert_eq!(player.animation(nodes[1]).unwrap().seek_time(), 3.0);
+        assert_eq!(player.animation(nodes[1]).unwrap().weight(), 0.0);
+        anim.advance_blend(&mut player, EQUIPMENT_BLEND.as_secs_f32());
+        anim.set_changed = true;
+        anim.transition(&mut player, nodes[1], true);
+        assert_eq!(player.animation(nodes[1]).unwrap().seek_time(), 3.0);
+        // One-shot progress also survives a set change; no old events are replayed.
+        anim.state = AnimState::Death;
+        anim.applied = Some((AnimState::Death, 1.0));
+        anim.dead = true;
+        anim.set_changed = true;
+        anim.transition(&mut player, nodes[0], false);
+        assert_eq!(player.animation(nodes[0]).unwrap().seek_time(), 1.5);
+        assert!(anim.dead);
+    }
+
+    #[test]
+    fn outfit_swap_keeps_skeleton_and_common_parts_until_replacements_are_ready() {
+        let mut world = World::new();
+        let root = world.run_system_once(|mut commands: Commands| spawn_character(&mut commands, CharacterDesc::default(), Transform::default())).unwrap();
+        let skeleton = world.spawn((AnimationPlayer::default(), ChildOf(root))).id();
+        let body = world.spawn((ChildOf(root), Visibility::Inherited)).id();
+        let old = world.spawn((ChildOf(root), Visibility::Inherited)).id();
+        let new = world.spawn((ChildOf(root), Visibility::Hidden)).id();
+        let body_part = OutfitPart { entity: body, name: "body".into(), colour: None };
+        let mut character = world.get_mut::<Character>(root).unwrap();
+        character.skeleton = Some(skeleton);
+        character.bones = Some([("bone".into(), skeleton)].into_iter().collect());
+        character.drawn_parts = vec![body_part.clone(), OutfitPart { entity: old, name: "shield".into(), colour: None }];
+        redress(&mut character, vec![], 5);
+        assert_eq!(character.skeleton, Some(skeleton));
+        assert_eq!(character.bone("bone"), Some(skeleton));
+        character.pending_outfit = Some(PendingOutfit { parts: vec![body_part, OutfitPart { entity: new, name: "two_hand".into(), colour: None }],
+            introduced: vec![new], animation_set: "warrior_2h_weapon".into() });
+        assert_eq!(*world.get::<Visibility>(old).unwrap(), Visibility::Inherited);
+        assert_eq!(*world.get::<Visibility>(new).unwrap(), Visibility::Hidden);
+        world.run_system_once(|mut commands: Commands, mut characters: Query<&mut Character>| {
+            publish_outfit(&mut commands, &mut characters.single_mut().unwrap());
+        }).unwrap();
+        assert!(world.get_entity(skeleton).is_ok());
+        assert!(world.get_entity(body).is_ok());
+        assert!(world.get_entity(old).is_err());
+        assert_eq!(*world.get::<Visibility>(new).unwrap(), Visibility::Inherited);
+        assert_eq!(world.get::<Character>(root).unwrap().displayed_set, "warrior_2h_weapon");
+    }
+
+    #[test]
+    fn hidden_selection_preview_poses_before_reveal_while_hidden_world_actors_stay_culled() {
+        let mut world = World::new();
+        world.insert_resource(Time::<()>::default());
+        let (_, nodes) = AnimationGraph::from_clips([Handle::default()]);
+        let mut roots = Vec::new();
+        for preview in [false, true] {
+            let player = world.spawn(AnimationPlayer::default()).id();
+            let anim = CharacterAnim { player: Some(player), state: AnimState::Named("CharSelectIdle".into()),
+                nodes: [("CharSelectIdle".into(), (nodes[0], true))].into_iter().collect(), ..default() };
+            let root = world.spawn((anim, GlobalTransform::default(), InheritedVisibility::HIDDEN)).id();
+            if preview { world.entity_mut(root).insert(crate::selection::Preview); }
+            roots.push(root);
+        }
+        world.run_system_once(drive_animations).unwrap();
+        assert!(!world.get::<CharacterAnim>(roots[0]).unwrap().is_animating());
+        assert!(world.get::<CharacterAnim>(roots[1]).unwrap().is_animating(),
+            "outfit readiness waits for a pose, so hidden previews must animate before publication");
+    }
+
+    #[test]
+    fn parts_use_gender_variants_deduplicate_two_hand_meshes_and_restore_base_clothes() {
+        let available = ["mage_female_head", "mage_torso_00_female", "mage_boots_00", "robe_female", "staff"];
+        let exists = |s: &str| available.contains(&s);
+        let mut desc = CharacterDesc { class: 1, gender: 1, ..default() };
+        desc.equipment = vec![Equipment { slot: 2, skin_parts: vec!["missing_torso".into()], ..default() }];
+        assert!(desc.parts(&exists, &default()).iter().any(|(p, _)| p == "mage_torso_00_female"));
+        desc.equipment = vec![Equipment { slot: 2, skin_parts: vec!["robe".into()], colour: Some([1.0, 0.0, 0.0, 1.0]) },
+            Equipment { slot: 5, skin_parts: vec!["staff".into()], ..default() },
+            Equipment { slot: 6, skin_parts: vec!["staff".into()], ..default() }];
+        let parts = desc.parts(&exists, &default());
+        assert!(!parts.iter().any(|(p, _)| p == "mage_torso_00_female"));
+        assert_eq!(parts.iter().filter(|(p, _)| p == "staff").count(), 1);
+        assert!(parts.contains(&("robe_female".into(), Some([1.0, 0.0, 0.0, 1.0]))));
+        assert!(parts.contains(&("mage_female_head".into(), None)));
+        desc.class = 2;
+        desc.armament = 3;
+        assert_eq!(desc.animation_set(), "ranger_female_small_weapon");
+        desc.armament = 5;
+        assert_eq!(desc.animation_set(), "ranger_female_large_weapon");
+    }
+
+    #[test]
+    fn dyes_are_per_instance_mask_parameters_and_retry_delayed_materials() {
+        use crate::surfaces::{NebulaMaterial, NebulaSurface, Kind, SurfaceParams};
+        let mut app = App::new();
+        app.init_resource::<Assets<NebulaMaterial>>().add_systems(Update, apply_equipment_dyes);
+        let original = app.world_mut().resource_mut::<Assets<NebulaMaterial>>().add(NebulaMaterial {
+            base: default(), extension: NebulaSurface { params: SurfaceParams { p0: Vec4::new(Kind::Character as u32 as f32, 0.0, 0.0, 0.0), ..default() }, cube: None, layer: None, mask: None },
+        });
+        let plain = app.world_mut().spawn(MeshMaterial3d(original.clone())).id();
+        let root = app.world_mut().spawn(EquipmentDye([0.5, 0.0, 0.0, 0.75])).id();
+        let dyed = app.world_mut().spawn((MeshMaterial3d(original.clone()), ChildOf(root))).id();
+        app.update();
+        let handle = app.world().get::<MeshMaterial3d<NebulaMaterial>>(dyed).unwrap().0.clone();
+        assert_ne!(handle, original);
+        assert_eq!(app.world().get::<MeshMaterial3d<NebulaMaterial>>(plain).unwrap().0, original);
+        let materials = app.world().resource::<Assets<NebulaMaterial>>();
+        assert_eq!(materials.get(&original).unwrap().extension.params.p1, Vec4::ZERO);
+        assert_eq!(materials.get(&handle).unwrap().extension.params.p1, Vec4::new(0.5, 0.0, 0.0, 0.75));
+        app.update();
+        assert_eq!(app.world().get::<MeshMaterial3d<NebulaMaterial>>(dyed).unwrap().0, handle, "no fresh material each frame");
+        // A later scene instance gets its own material when the child arrives.
+        let late = app.world_mut().spawn((MeshMaterial3d(original.clone()), ChildOf(root))).id();
+        app.update();
+        assert_ne!(app.world().get::<MeshMaterial3d<NebulaMaterial>>(late).unwrap().0, original);
     }
 }

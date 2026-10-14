@@ -50,7 +50,7 @@ impl Plugin for NameplatePlugin {
 fn place(
     mut commands: Commands,
     windows: Query<&Window>,
-    cameras: Query<(&Camera, &GlobalTransform), (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
+    cameras: Query<(Entity, &Camera, &GlobalTransform), (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
     actors: Query<(Entity, &Nameplate, &GlobalTransform, &InheritedVisibility, Option<&Label>)>,
     mut labels: Query<(Entity, &mut Node, &mut Visibility, &mut TextColor, &mut Text), With<LabelOf>>,
     owners: Query<&LabelOf>,
@@ -64,7 +64,7 @@ fn place(
     if crate::flag("nonames") {
         return;
     }
-    let Ok((camera, cam_at)) = cameras.single() else { return };
+    let Ok((camera_entity, camera, cam_at)) = cameras.single() else { return };
     let height = windows.iter().next().map(|w| w.height()).unwrap_or(LAYOUT_HEIGHT);
     // Points to pixels at the layout height, then as a share of the window
     // height, so the name scales with the window as the game's layout does.
@@ -74,6 +74,9 @@ fn place(
             let node = commands
                 .spawn((
                     LabelOf(entity),
+                    // Render with the scene, before the mesh HUD and menus on
+                    // the later UI camera. ZIndex cannot order across cameras.
+                    UiTargetCamera(camera_entity),
                     Node { position_type: PositionType::Absolute, width: Val::Px(BOX), justify_content: JustifyContent::Center, ..default() },
                     Text::new(plate.text.clone()),
                     TextFont { font: font.clone().into(), font_size: FontSize::Vh(vh), ..default() },

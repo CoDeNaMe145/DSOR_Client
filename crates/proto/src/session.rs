@@ -38,6 +38,42 @@ pub enum Stage {
     Map,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::{ClientCommand, player::{CharacterSelection, SelectionCharacter, SelectionEquipment}};
+
+    fn packet(c: CharacterSelection) -> (Vec<u8>, usize) {
+        let (mut bytes, bits) = ClientCommand::CharacterSelection(c).encode();
+        bytes[0] = messages::COMMAND;
+        (bytes, bits)
+    }
+
+    #[test]
+    fn character_service_exposes_equipment_and_refreshes_without_committing_a_character() {
+        let mut session = Session::new("127.0.0.1:2190".parse().unwrap(), Credentials { account: 1, session: [0; 16] }, 1, 0);
+        session.events.clear(); session.stage = Stage::Characters;
+        let roster = CharacterSelection { operation: 1, character: 10, free: 5,
+            characters: vec![SelectionCharacter { character: 10, name: "Hero".into(), ..Default::default() }], ..Default::default() };
+        let (bytes, bits) = packet(roster.clone());
+        session.on_message(&bytes, bits, 1); session.on_message(&bytes, bits, 2);
+        assert_eq!(session.events.iter().filter(|e| matches!(e, SessionEvent::Roster(_))).count(), 1);
+        assert_eq!(session.events.iter().filter(|e| matches!(e, SessionEvent::CharacterSelection(_))).count(), 2);
+        session.events.clear();
+        session.character_operation(8, 10, 3);
+        assert_eq!(session.character(), None, "preview must retain the short service hello");
+        let equipment = CharacterSelection { operation: 9, character: 10, equipment: vec![SelectionEquipment {
+            template: "sword".into(), slot: "transmog".into(), colour: [0.1, 0.2, 0.3, 1.0], ..Default::default()
+        }], ..Default::default() };
+        let (bytes, bits) = packet(equipment.clone()); session.on_message(&bytes, bits, 4);
+        assert_eq!(session.poll_event(), Some(SessionEvent::CharacterSelection(equipment)));
+        let (bytes, bits) = packet(CharacterSelection { characters: vec![], ..roster });
+        session.on_message(&bytes, bits, 5);
+        assert!(matches!(session.poll_event(), Some(SessionEvent::CharacterSelection(c)) if c.characters.is_empty()));
+        session.select_character(10, 6); assert_eq!(session.character(), Some(10));
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum SessionEvent {
     /// Send `farewell` on the current transport (if any), then open one to `target`;
@@ -46,6 +82,9 @@ pub enum SessionEvent {
     Service(String),
     /// The character service's roster: answer with `select_character`.
     Roster(Vec<RosterEntry>),
+    /// Full roster and preview replies. Browsing (op 8/9) does not select a
+    /// gameplay character; only select_character (op 3) starts that handoff.
+    CharacterSelection(crate::commands::player::CharacterSelection),
     /// The account has no character: the server opened the character editor
     /// (CharacterGeneration op 2); answer with `create_character`.
     CharacterEditor,
@@ -146,6 +185,20 @@ impl Session {
         self.character = Some(character);
         let (bytes, bits) = messages::select_character(character);
         self.conn.send(&bytes, bits, Reliability::ReliableOrdered, 0);
+        self.conn.flush(now);
+    }
+
+    pub fn character_operation(&mut self, operation: u8, character: u32, now: u64) {
+        let c = crate::commands::player::CharacterSelection { operation, character, ..Default::default() };
+        let (bytes, bits) = crate::commands::ClientCommand::CharacterSelection(c).encode();
+        self.send_command(&bytes, bits);
+        self.conn.flush(now);
+    }
+
+    pub fn open_character_editor(&mut self, now: u64) {
+        let c = crate::commands::player::CharacterGeneration { operation: 1, ..Default::default() };
+        let (bytes, bits) = crate::commands::ClientCommand::CharacterGeneration(c).encode();
+        self.send_command(&bytes, bits);
         self.conn.flush(now);
     }
 
@@ -282,6 +335,9 @@ impl Session {
                             self.rostered = true;
                             self.events.push_back(SessionEvent::Roster(roster));
                         }
+                    }
+                    if let Some(selection) = messages::character_selection(&data, bits) {
+                        self.events.push_back(SessionEvent::CharacterSelection(selection));
                     }
                     return;
                 }

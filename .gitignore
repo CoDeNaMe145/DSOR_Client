@@ -21,3 +21,4 @@ __pycache__/
 /launcher/dist/
 /client-auth.json
 /client-auth.json.tmp
+/map-settings.json

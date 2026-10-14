@@ -6,6 +6,7 @@ use bevy::window::{CursorIcon, MonitorSelection, SystemCursorIcon, WindowMode};
 use bevy::input::keyboard::KeyboardInput;
 mod panels;
 pub(super) mod spells;
+pub(super) mod items;
 
 /// Reference pixels, scaled by the same factor as the rest of the interface.
 const DRAG_HANDLE_HEIGHT: f32 = 32.0;
@@ -61,6 +62,8 @@ enum Section {
     Always,
     Inventory(u8),
     InventoryReturn,
+    OverflowFooter,
+    BagFourthRow,
     Character(u8),
     /// Allowed pages as a bitmask; some shared headers serve several tabs.
     Page(&'static str, u32),
@@ -104,6 +107,8 @@ fn section(window: &str, id: &str) -> Section {
     let parts: Vec<_> = id.split('/').collect();
     if let Some(section) = panels::section(window, &parts) { return section; }
     if window == "inventory" {
+        if id.contains("/unten/Label_bg/Label_empty") { return Section::OverflowFooter; }
+        if id.contains("/unten/Label_bg/icon_area/TemplateSlot#3_") { return Section::BagFourthRow; }
         for (name, page) in [("oben", 0), ("IngredientBag", 1), ("TrinketBag", 2), ("mercenary", 3)] {
             if parts.contains(&name) { return Section::Inventory(page); }
         }
@@ -142,6 +147,9 @@ enum Action {
     Lock,
     Skill(usize),
     Spell,
+    Item(items::Cell),
+    Split(i32),
+    SplitSlider,
     Unavailable,
 }
 
@@ -150,6 +158,13 @@ fn action(window: &str, w: &Widget) -> Action {
     if w.spell.is_some() { return Action::Spell; }
     if w.kind == "TextEntry" { return Action::Edit(w.id.clone()); }
     if w.event == "Close" { return Action::Close; }
+    if window == "unstackwindow" {
+        return match w.event.as_str() { "split" => Action::Split(0), "increase" => Action::Split(1), "decrease" => Action::Split(-1),
+            _ if w.kind == "Slider" => Action::SplitSlider, _ => Action::Unavailable };
+    }
+    if window == "inventory" {
+        if let Some(cell) = items::cell(w) { return Action::Item(cell); }
+    }
     if let Some(action) = panels::action(window, w) { return action; }
     if window == "ingamemenu" {
         return match leaf {
@@ -194,8 +209,8 @@ fn action(window: &str, w: &Widget) -> Action {
             return Action::Rarity(rarity);
         }
         return match leaf {
-            "ExtraBagButton" => Action::Bag(8),
-            "OverflowBagButton" => Action::Bag(9),
+            "ExtraBagButton" => Action::Bag(items::EXTRA),
+            "OverflowBagButton" => Action::Bag(items::OVERFLOW),
             _ => Action::Unavailable,
         };
     }
@@ -233,12 +248,17 @@ struct Button {
 
 #[derive(Component)]
 pub(super) struct WindowControls {
+    pub(super) map_mode: local_map::MapMode,
     buttons: Vec<Button>,
     regions: Vec<(f32, [f32; 4], Gate)>,
     drag_handle: Option<DragHandle>,
     inventory: u8,
     character: u8,
     bag: usize,
+    bag_pages: usize,
+    premium_bag: bool,
+    overflow_page: usize,
+    overflow_pages: usize,
     ingredient: usize,
     rarity: usize,
     locked: bool,
@@ -255,7 +275,7 @@ pub(super) struct WindowControls {
 impl WindowControls {
     pub(super) fn new(layout: &Layout) -> Self {
         let buttons = layout.widgets.iter()
-            .filter(|w| !w.hidden && !w.click_through && matches!(w.kind.as_str(), "Button" | "TextButton" | "SlotButton" | "TextEntry"))
+            .filter(|w| layout.window != "locationmap" && !w.hidden && !w.click_through && (matches!(w.kind.as_str(), "Button" | "TextButton" | "SlotButton" | "TextEntry" | "Slider") || (layout.window == "inventory" && items::cell(w).is_some())))
             .map(|w| Button {
                 id: w.id.clone(), k: w.k, rect: w.rect,
                 section: section(&layout.window, &w.id), action: action(&layout.window, w), authored_enabled: w.enabled,
@@ -263,8 +283,26 @@ impl WindowControls {
                 states: layout.widgets.iter().filter(|s| !s.hidden && s.button.as_ref() == Some(&w.id))
                     .filter_map(|s| s.state.as_deref().and_then(State::parse)).fold(0, |bits, state| bits | state.bit()),
             }).collect();
-        Self { buttons, regions: Vec::new(), drag_handle: DragHandle::from_layout(layout), inventory: 0, character: 0, bag: 0, ingredient: 0, rarity: 5, locked: false, hovered: None, pressed: None,
-            pages: HashMap::new(), toggles: default(), open_windows: Vec::new(), entries: HashMap::new(), choices: HashMap::new(), spells: default() }
+        let mut controls = Self { map_mode: local_map::MapMode::Compact, buttons, regions: Vec::new(), drag_handle: DragHandle::from_layout(layout), inventory: 0, character: 0, bag: 0, bag_pages: 8, premium_bag: false, overflow_page: 0, overflow_pages: 1, ingredient: 0, rarity: 1, locked: false, hovered: None, pressed: None,
+            pages: HashMap::new(), toggles: default(), open_windows: Vec::new(), entries: HashMap::new(), choices: HashMap::new(), spells: default() };
+        // Together with DSOR_UI_OPEN=locationmap, capture either overlay size.
+        if layout.window == "locationmap" && std::env::var("DSOR_MAP_VIEW").is_ok_and(|v| v == "expanded") {
+            controls.map_mode = local_map::MapMode::Expanded;
+        }
+        // Native fixture captures without desktop input (only with packet replay).
+        if layout.window == "inventory" && std::env::var_os("DSOR_INVENTORY_PREVIEW").is_some() {
+            if let Ok(view) = std::env::var("DSOR_INVENTORY_VIEW") {
+                let mut parts = view.split(',');
+                match parts.next() {
+                    Some("ingredients") => controls.inventory = 1,
+                    Some("premium") => controls.bag = items::EXTRA,
+                    Some("overflow") => controls.bag = items::OVERFLOW,
+                    _ => {}
+                }
+                controls.rarity = parts.next().and_then(|n| n.parse::<usize>().ok()).unwrap_or(1).clamp(1, 5);
+            }
+        }
+        controls
     }
 
     pub(super) fn gate(&self, window: &str, widget: &Widget) -> Gate {
@@ -285,6 +323,8 @@ impl WindowControls {
             Section::Always => true,
             Section::Inventory(page) => self.inventory == page,
             Section::InventoryReturn => self.inventory != 0,
+            Section::OverflowFooter => self.bag == items::OVERFLOW,
+            Section::BagFourthRow => self.bag != items::OVERFLOW,
             Section::Character(page) => self.character == page,
             Section::Page(group, mask) => mask & (1 << self.pages.get(group).copied().unwrap_or(0)) != 0,
             Section::SkillClass(class) => self.spells.class == class && self.pages.get("talents").copied().unwrap_or(0) == 0,
@@ -298,8 +338,11 @@ impl WindowControls {
         button.authored_enabled && match button.action {
             Action::Unavailable => false,
             Action::Spell => button.spell.as_ref().is_some_and(|s| self.spells.available(s)),
-            Action::Page(-1) => self.bag > 0 && self.bag < 8,
-            Action::Page(1) => self.bag < 7,
+            Action::Bag(items::EXTRA) => self.premium_bag,
+            Action::Bag(items::OVERFLOW) => true,
+            Action::Bag(page) => page < self.bag_pages,
+            Action::Page(-1) => self.bag == items::OVERFLOW && self.overflow_page > 0,
+            Action::Page(1) => self.bag == items::OVERFLOW && self.overflow_page + 1 < self.overflow_pages,
             _ => true,
         }
     }
@@ -377,6 +420,7 @@ pub(super) struct Pointer {
     focus: Option<(Entity, String)>,
     spell_drag: Option<spells::DragSpell>,
     spell_drop: Option<spells::DropSpell>,
+    item_command: Option<i32>,
 }
 
 #[derive(Component)]
@@ -454,6 +498,20 @@ fn raise(entity: Entity, windows: &mut Windows) {
 }
 
 fn toggle(name: &str, windows: &mut Windows) {
+    if name == "locationmap" {
+        for (_, w, mut controls, mut visibility, _) in windows.iter_mut() {
+            if w.0 != name { continue; }
+            if *visibility == Visibility::Hidden {
+                controls.map_mode = local_map::MapMode::Compact;
+                *visibility = Visibility::Inherited;
+            } else if controls.map_mode == local_map::MapMode::Compact {
+                controls.map_mode = local_map::MapMode::Expanded;
+            } else {
+                *visibility = Visibility::Hidden;
+            }
+        }
+        return;
+    }
     let open = windows.iter().any(|(_, w, _, v, _)| w.0 == name && *v == Visibility::Hidden);
     for (_, w, mut controls, mut v, _) in windows.iter_mut() {
         if w.0 == name {
@@ -469,7 +527,8 @@ fn toggle(name: &str, windows: &mut Windows) {
     }
 }
 
-pub(super) fn keyboard(keys: Res<ButtonInput<KeyCode>>, mut windows: Windows, mut pointer: ResMut<Pointer>) {
+pub(super) fn keyboard(keys: Res<ButtonInput<KeyCode>>, mut windows: Windows, mut pointer: ResMut<Pointer>, mut items: ResMut<items::Interaction>) {
+    if keys.just_pressed(KeyCode::Escape) && items.cancel_drag() { pointer.down = None; return; }
     if keys.just_pressed(KeyCode::Escape) && pointer.spell_drag.take().is_some() {
         pointer.down = None;
         return;
@@ -489,6 +548,7 @@ pub(super) fn keyboard(keys: Res<ButtonInput<KeyCode>>, mut windows: Windows, mu
     for (name, key, _) in MENU_WINDOWS {
         if key != KeyCode::Escape && keys.just_pressed(key) { toggle(name, &mut windows); }
     }
+    if keys.just_pressed(KeyCode::Tab) { toggle("locationmap", &mut windows); }
 }
 
 pub(super) fn interact(
@@ -505,7 +565,8 @@ pub(super) fn interact(
     let point = window.cursor_position().filter(|_| window.focused && window.height() > 0.0)
         .map(|p| p * (BASE_H / window.height()));
     let width = BASE_H * window.width() / window.height().max(1.0);
-    let modal = windows.iter().find(|(_, w, _, v, _)| w.0 == "gamemenu" && *v != Visibility::Hidden).map(|(e, _, _, _, _)| e);
+    let modal = windows.iter().filter(|(_, w, _, v, _)| matches!(w.0.as_str(), "gamemenu" | "unstackwindow") && *v != Visibility::Hidden)
+        .max_by(|a, b| a.4.translation.z.total_cmp(&b.4.translation.z)).map(|(e, _, _, _, _)| e);
     if !window.focused || mouse.just_pressed(MouseButton::Left) { pointer.focus = None; }
 
     if !window.focused || mouse.just_pressed(MouseButton::Left) {
@@ -572,6 +633,8 @@ pub(super) fn interact(
     let action = controls.buttons[index].action.clone();
     info!("ui {}: {} ({action:?})", name.0, controls.buttons[index].id);
     match action {
+        Action::Item(_) | Action::SplitSlider => {},
+        Action::Split(delta) => pointer.item_command = Some(delta),
         Action::Close => *visibility = Visibility::Hidden,
         Action::Inventory(page) => controls.inventory = page,
         Action::Character(page) => controls.character = page,
@@ -585,7 +648,7 @@ pub(super) fn interact(
         Action::Bag(page) => controls.bag = page,
         Action::Ingredient(page) => controls.ingredient = page,
         Action::Rarity(rarity) => controls.rarity = rarity,
-        Action::Page(delta) => controls.bag = (controls.bag as i32 + delta).clamp(0, 7) as usize,
+        Action::Page(delta) => controls.overflow_page = (controls.overflow_page as i32 + delta).clamp(0, controls.overflow_pages.saturating_sub(1) as i32) as usize,
         Action::Lock => controls.locked = !controls.locked,
         Action::Skill(slot) => skill_clicks.0 = Some(slot),
         Action::Fullscreen => window.mode = if window.mode == WindowMode::Windowed { WindowMode::BorderlessFullscreen(MonitorSelection::Current) } else { WindowMode::Windowed },
@@ -644,7 +707,7 @@ pub(super) fn paint(
                     if text.0 != display { text.0 = display; }
                 }
             } else if matches!(value, Some(Value(ValueKind::Page))) {
-                let page = if name.0 == "inventory" && controls.bag < 8 { format!("{}/8", controls.bag + 1) } else { "1/1".to_owned() };
+                let page = if name.0 == "inventory" { format!("{}/{}", controls.overflow_page + 1, controls.overflow_pages) } else { "1/1".to_owned() };
                 if text.0 != page { text.0 = page; }
             }
         }
@@ -656,7 +719,7 @@ pub(super) fn paint(
         regions.0.extend(controls.regions.iter().filter(|(_, _, gate)| controls.visible(gate)).map(|(k, rect, _)| (*k, translated(*rect, offset))));
         regions.0.extend(controls.buttons.iter().filter(|b| controls.section_visible(b.section)).map(|b| (b.k, translated(b.rect, offset))));
         if let Some(h) = controls.drag_handle { regions.0.push((h.k, translated(h.rect, offset))); }
-        if name.0 == "gamemenu" { regions.0.push((0.0, [-1.0e6, -1.0e6, 1.0e6, 1.0e6])); }
+        if matches!(name.0.as_str(), "gamemenu" | "unstackwindow") { regions.0.push((0.0, [-1.0e6, -1.0e6, 1.0e6, 1.0e6])); }
     }
 }
 
@@ -754,26 +817,29 @@ mod tests {
         assert_eq!(app.world().resource::<Assets<UiMaterial>>().get(&mat).unwrap().clip, clip + Vec4::new(150.0, -45.0, 150.0, -45.0));
     }
 
-    fn exported_app() -> (App, Entity, HashMap<&'static str, Entity>, HashMap<&'static str, Layout>) {
+    pub(super) fn exported_app() -> (App, Entity, HashMap<&'static str, Entity>, HashMap<&'static str, Layout>) {
         let mut app = App::new();
         app.add_plugins((TransformPlugin, crate::ui_input::UiInputPlugin))
             .add_message::<KeyboardInput>()
             .init_resource::<ButtonInput<MouseButton>>()
             .init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<Pointer>()
+            .init_resource::<items::Interaction>()
             .init_resource::<SkillClicks>()
+            .init_resource::<local_map::MapSettings>()
             .add_systems(Update, (keyboard, interact, edit_text, paint).chain());
         let primary = app.world_mut().spawn((Window { focused: true, resolution: (1024, 768).into(), ..default() }, PrimaryWindow)).id();
         let mut roots = HashMap::new();
         let mut layouts = HashMap::new();
         let definitions = HUD_WINDOWS.into_iter().chain(MENU_WINDOWS.map(|(name, _, z)| (name, z)))
-            .chain(NAV_WINDOWS.into_iter().enumerate().map(|(i, name)| (name, 160.0 + i as f32 * 20.0)));
+            .chain(NAV_WINDOWS.into_iter().enumerate().map(|(i, name)| (name, 160.0 + i as f32 * 20.0)))
+            .chain([("unstackwindow", 600.0)]);
         for (name, z) in definitions {
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../assets/interface/{name}.ui.json"));
             let layout: Layout = serde_json::from_slice(&std::fs::read(path).expect("export the original UI first")).unwrap();
             let mut c = WindowControls::new(&layout);
             for w in &layout.widgets {
-                if !w.hidden {
+                if !w.hidden && name != "locationmap" {
                     if let Some(a) = &w.art { c.region(w.k, bounds(&a.pos), c.gate(name, w)); }
                 }
             }
@@ -801,6 +867,46 @@ mod tests {
         app.world_mut().resource_mut::<ButtonInput<MouseButton>>().release(MouseButton::Left);
         app.update();
         app.world_mut().resource_mut::<ButtonInput<MouseButton>>().clear();
+    }
+
+    #[test]
+    #[ignore = "requires locally converted game UI assets"]
+    fn map_cycles_compact_expanded_off_without_capturing_world_input() {
+        let (mut app, primary, roots, _) = exported_app();
+        let root = roots["locationmap"];
+        let press = |app: &mut App, key| {
+            app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(key);
+            app.update();
+            app.world_mut().resource_mut::<ButtonInput<KeyCode>>().reset(key);
+        };
+        for _ in 0..2 {
+            for mode in [local_map::MapMode::Compact, local_map::MapMode::Expanded] {
+                press(&mut app, KeyCode::Tab);
+                assert_eq!(*app.world().get::<Visibility>(root).unwrap(), Visibility::Inherited);
+                let controls = app.world().get::<WindowControls>(root).unwrap();
+                assert_eq!(controls.map_mode, mode);
+                assert!(controls.buttons.is_empty() && controls.drag_handle.is_none());
+                for size in [Vec2::new(1024.0, 768.0), Vec2::new(1920.0, 1080.0)] {
+                    let mut window = app.world_mut().get_mut::<Window>(primary).unwrap();
+                    window.resolution.set(size.x, size.y);
+                    window.set_cursor_position(Some(Vec2::new(120.0, 180.0) * (size.y / BASE_H)));
+                    app.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(MouseButton::Left);
+                    app.update();
+                    assert!(!app.world().resource::<crate::ui_input::UiInput>().blocks(MouseButton::Left));
+                    assert!(app.world().get::<crate::ui_input::UiRegions>(root).unwrap().0.is_empty());
+                    app.world_mut().resource_mut::<ButtonInput<MouseButton>>().reset(MouseButton::Left);
+                }
+            }
+            press(&mut app, KeyCode::Tab);
+            assert_eq!(*app.world().get::<Visibility>(root).unwrap(), Visibility::Hidden);
+        }
+        // Escape resets the next opening to compact, even from the large map.
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Escape);
+        assert_eq!(*app.world().get::<Visibility>(root).unwrap(), Visibility::Hidden);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.world().get::<WindowControls>(root).unwrap().map_mode, local_map::MapMode::Compact);
     }
 
     #[test]
@@ -910,9 +1016,16 @@ mod tests {
             let c = app.world().get::<WindowControls>(roots["ingamemenu"]).unwrap();
             assert!(c.selected(&Action::Window(window)), "shortcut must follow the opened panel");
             let panel = app.world().get::<WindowControls>(roots[window]).unwrap();
-            assert!(panel.drag_handle.is_some(), "{window} must be draggable");
-            let close = panel.buttons.iter().find(|b| b.action == Action::Close).unwrap().id.clone();
-            click_control(&mut app, primary, roots[window], &close);
+            if window == "locationmap" {
+                assert!(panel.drag_handle.is_none());
+                app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::Escape);
+                app.update();
+                app.world_mut().resource_mut::<ButtonInput<KeyCode>>().reset(KeyCode::Escape);
+            } else {
+                assert!(panel.drag_handle.is_some(), "{window} must be draggable");
+                let close = panel.buttons.iter().find(|b| b.action == Action::Close).unwrap().id.clone();
+                click_control(&mut app, primary, roots[window], &close);
+            }
             assert_eq!(*app.world().get::<Visibility>(roots[window]).unwrap(), Visibility::Hidden, "close {window}");
             let c = app.world().get::<WindowControls>(roots["ingamemenu"]).unwrap();
             assert!(!c.selected(&Action::Window(window)), "closed shortcut must lose its highlight");
@@ -1005,7 +1118,8 @@ mod tests {
         click(&mut app, "inventory", "/InventoryReturnButton");
         click(&mut app, "inventory", "/unten/Label_bg/BagButton1");
         assert_eq!(app.world().get::<WindowControls>(roots["inventory"]).unwrap().bag, 1);
-        click(&mut app, "inventory", "/NextPageBtn");
+        assert!(!app.world().get::<WindowControls>(roots["inventory"]).unwrap().section_visible(Section::OverflowFooter));
+        click(&mut app, "inventory", "/unten/Label_bg/BagButton2");
         assert_eq!(app.world().get::<WindowControls>(roots["inventory"]).unwrap().bag, 2);
         click(&mut app, "inventory", "/FrameLabel/Button");
         assert_eq!(*app.world().get::<Visibility>(roots["inventory"]).unwrap(), Visibility::Hidden);

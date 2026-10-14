@@ -1,0 +1,76 @@
+--- a/protocol/inventory_codec.py
++++ b/protocol/inventory_codec.py
+@@ -437,8 +437,13 @@
+ def write_inventory_info_body(writer: BitWriter, info: InventoryInfo) -> None:
+     """Write generated InventoryInfo fields, excluding server actor context."""
+ 
+-    writer.write_uint32_le(len(info.items))
+-    for item in info.items:
++    # Loose inventory items are visible in bag ten, but stay outside the
++    # server's usable item table. Even allocation-only acknowledgements carry
++    # these display records so a reconnect/expiry cannot leave blank cells.
++    registered = {item.item_id for item in info.items}
++    loose = [item for item in info.premium_inventory_overflow if item.item_id not in registered]
++    writer.write_uint32_le(len(info.items) + len(loose))
++    for item in (*info.items, *loose):
+         encode_item_info(writer, item)
+ 
+     writer.write_uint32_le(len(info.equipment_slots))
+@@ -455,7 +460,8 @@
+         info.storage_d0,
+     ):
+         _write_u32_map(writer, values)
+-    for values in (info.field_f8, info.field_118, info.changed_item_ids):
++    overflow = list(dict.fromkeys((*info.field_f8, *(item.item_id for item in info.premium_inventory_overflow))))
++    for values in (overflow, info.field_118, info.changed_item_ids):
+         _write_u32_array(writer, values)
+     _write_u32_map(writer, info.field_158)
+     _write_u32_array(writer, info.field_180)
+--- a/tests/test_premium_bags.py
++++ b/tests/test_premium_bags.py
+@@ -1,4 +1,4 @@
+-"""Premium bag expiry never deletes items or exposes unavailable overflow."""
++"""Premium expiry preserves items; loose inventory is visible but unusable."""
+ 
+ import copy
+ from datetime import datetime, timedelta, timezone
+@@ -96,7 +96,7 @@
+     assert not reconcile_premium_bags(inventory, active=False).restored_items
+ 
+ 
+-def test_unavailable_items_cannot_be_used_or_sent_to_the_client():
++def test_unavailable_items_are_visible_but_cannot_be_used():
+     inventory = full_bags()
+     reconcile_premium_bags(inventory, active=False)
+     for action in (
+@@ -108,7 +108,9 @@
+         with pytest.raises(ValueError):
+             action()
+     wire = decode_inventory_info(*encode_inventory_info(inventory))
+-    assert [i.item_id for i in wire.items] == [1, 2]
++    assert [i.item_id for i in wire.items] == [1, 2, 3, 4]
++    assert wire.field_f8 == [3, 4]
++    assert [i.item_id for i in inventory.items] == [1, 2]
+     assert not wire.storage_80 and not wire.storage_d0
+     assert not wire.premium_inventory_overflow and not wire.premium_storage_overflow
+     with pytest.raises(ValueError, match="unavailable"):
+@@ -225,7 +227,8 @@
+     assert len(saves[-1].premium_storage_overflow) == 2
+     updates = outgoing(session, INVENTORY_INFO_COMMAND)
+     assert updates[0].changed_item_ids == [3, 4, 5, 6]
+-    assert not updates[0].items
++    assert [i.item_id for i in updates[0].items] == [3, 4]
++    assert updates[0].field_f8 == [3, 4]
+     assert updates[-1].extra_storage_size == updates[-1].extra_bank_storage_size == 0
+     assert outgoing(session, MEMBERSHIP_UPDATE_COMMAND)[-1].active is False
+ 
+@@ -252,7 +255,8 @@
+     assert not inventory.premium_inventory_overflow
+     assert saves[-1] == inventory
+     definitions = [i.item_id for update in outgoing(session, INVENTORY_INFO_COMMAND) for i in update.items]
+-    assert definitions == [2]
++    assert definitions and set(definitions) == {2}
++    assert outgoing(session, INVENTORY_INFO_COMMAND)[-1].field_f8 == []
+ 
+ 
+ def test_renewal_reschedules_and_disconnect_cancels_the_deadline(live):

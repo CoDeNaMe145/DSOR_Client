@@ -19,6 +19,26 @@ use dsor_raknet::{BitReader, BitWriter};
 use super::wire::{counted, list, Body, ReadExt, WriteExt, MOST};
 use super::DecodeError;
 
+/// Release261 membership (36). CalendarTime wire order is year, day, hour,
+/// minute, second, millisecond, weekday, month. The server expires it live.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct MembershipUpdate {
+    pub tier: u32,
+    pub expires: [u32; 8],
+    pub active: bool,
+}
+
+impl Body for MembershipUpdate {
+    fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self { tier: r.u32()?, expires: fixed_u32(r)?, active: r.bit()? })
+    }
+    fn encode(&self, w: &mut BitWriter) {
+        w.u32(self.tier);
+        for n in self.expires { w.u32(n); }
+        w.bit(self.active);
+    }
+}
+
 fn invalid(what: &'static str, value: i64) -> DecodeError {
     DecodeError::Invalid { what, value }
 }
@@ -881,7 +901,7 @@ pub struct NewRemotePlayer {
     pub max_health: u32,
     /// +248.
     pub unknown_u32_248: u32,
-    /// +252: armament.
+    /// Legacy name: release261 sends player kind here (5), not hand armament.
     pub armament: i8,
     /// +256.
     pub faction: Faction,
@@ -984,7 +1004,7 @@ pub struct RemotePlayerInfo {
     pub max_health: u32,
     /// +0xC0.
     pub unknown_u32_c0: u32,
-    /// +0xC4.
+    /// +0xC4. Legacy name: release261 player kind (5); use animation_set for pose.
     pub armament: i8,
     /// +0xC8.
     pub faction: Faction,

@@ -45,7 +45,7 @@ if "--database" in only:
     database = only[at + 1]
     del only[at:at + 2]
 only = only or sorted(f[:-5] for f in os.listdir(os.path.join(root, "ui")) if f.endswith(".bxml"))
-from ui_catalog import spell_grid, ranking_categories
+from ui_catalog import localized, spell_grid, ranking_categories
 catalog = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
 if only == ["--hud"]:
     only = ["bottombar", "currencybar", "inventory", "gamebar"]
@@ -72,8 +72,8 @@ RUNTIME = re.compile(
 
 # Slots the game clones from a template over an area, row by row: (window,
 # template id, area id). The template itself is a runtime ghost ("?" icon).
-GRIDS = [("inventory", "TemplateSlot", "icon_area")]
-GRID_FOOTER = 45.0  # the area's bottom left free for the page buttons
+GRIDS = [("inventory", "TemplateSlot", "icon_area"),
+         ("inventory", "IngredientBag/Label_bg/icon_area/TemplateSlot", "IngredientBag/Label_bg/icon_area")]
 
 
 def grid(widgets, template, area):
@@ -88,7 +88,7 @@ def grid(widgets, template, area):
     step_x, step_y = (r - l) + 2.0, (b - top) + 2.0
     al, at, ar, ab = a["rect"]
     cols = int((ar - al + 2.0) // step_x)
-    rows = int((ab - GRID_FOOTER - top) // step_y)
+    rows = int((ab - top + 2.0) // step_y)
     # Fit the grid to the AREA, not the template's arbitrary authored offset.
     # The inventory template starts 11px inside its area; using it as the left
     # boundary lost the seventh column in the current client's assets.
@@ -173,31 +173,17 @@ def widget_art(node, mesh, cx0, cy0):
 
 
 def local_map_controls(widgets):
-    """locationmap's map is a runtime render target, with no painted controls.
+    """The runtime overlay owns its size, caption and click-through behaviour."""
+    return [dict(w, click_through=True) for w in widgets if w["id"] in {"Canvas", "Canvas/map"}]
 
-    Supply a movable frame and close control for our nav-mesh map renderer.
-    """
-    target = next(w for w in widgets if w["id"] == "Canvas/map")
-    l, t, r, b = target["rect"]
-    def quad(wid, rect, color, **extra):
-        x, y, right, bottom = rect
-        return dict(id=wid, type="Label", k=target["k"], rect=rect, hidden=False,
-                    art=dict(tex=None, pos=[x,y,right,y,right,bottom,x,bottom], uv=[0,0,1,0,1,1,0,1],
-                             color=color*4, idx=[0,1,2,0,2,3]), **extra)
-    frame = [quad("Canvas/MapFrame", [l,t,r,b], [.52,.39,.20,1]),
-             quad("Canvas/MapBackground", [l+2,t+2,r-2,b-2], [.07,.06,.045,.96])]
-    for w in widgets:
-        if w["id"] == "Canvas/LocationName":
-            w["rect"] = [l+12,t+4,r-40,t+29]
-        if w["id"] == "Canvas/LocationType": w["hidden"] = True
-    close = "Canvas/MapClose"
-    rect = [r-30,t+3,r-3,t+30]
-    controls = [dict(id=close, type="Button", event="Close", k=target["k"], rect=rect, hidden=False)]
-    for state, color in [("normal", [.28,.20,.10,1]), ("mouseover", [.60,.45,.23,1]), ("pressed", [.14,.10,.05,1])]:
-        controls.append(quad(close+"/"+state, rect, color, button=close, state=state))
-    controls.append(dict(id=close+"/Text", type="TextLabel", k=target["k"], rect=rect, hidden=False,
-                         text=dict(text="×",key="×",size=14,color=[.95,.85,.65,1],align=[1,1])))
-    return frame + widgets + controls
+
+def export_map_names(loca, out_dir):
+    """Use the same English localization as the rest of the current interface."""
+    prefix = "maps.names_"
+    names = {key[len(prefix):]: text for key, text in loca.get("en", {}).items()
+             if key.startswith(prefix) and text.strip()}
+    with open(os.path.join(out_dir, "maps.names.json"), "w", encoding="utf-8") as f:
+        json.dump(names, f, ensure_ascii=False, separators=(",", ":"))
 
 
 def export(name):
@@ -217,6 +203,10 @@ def export(name):
     def walk(node, prefix, parent_rect, pk, hidden_parent, button=None, state=None):
         hide_idx = gx.exclusive(node)
         children = list(enumerate(node.children))
+        if name == "inventory" and prefix.endswith("/IngredientBag/Label_bg"):
+            # The authored background comes last in XML but belongs behind
+            # the category/tier controls and the collection slots.
+            children.sort(key=lambda pair: pair[1].attrs.get("id") != "Artwork")
         if name == "skilltalentswindow":
             # These authored backgrounds appear after the controls in the XML;
             # the original window controller sends them behind its content.
@@ -277,7 +267,7 @@ def export(name):
                 text = raw
                 if raw.startswith("gui."):
                     used_keys.add(raw)
-                    text = loca.get("fr", {}).get(raw) or loca.get("en", {}).get(raw) or raw
+                    text = localized(loca, raw, raw)
                 entry["text"] = {
                     "text": text, "key": raw,
                     "size": float(a.get("fontSize", "10") or 10),
@@ -296,6 +286,14 @@ def export(name):
             walk(c, wid, (l, t, r, b), ks, hidden, owner, visual_state)
 
     walk(doc, "", (0.0, 0.0, BASE_W, BASE_H), (0.0, 1.0), False)
+    if name == "inventory":
+        for w in widgets:
+            if w["id"].endswith("/unten/Label_bg/Label_empty/TextLabel_message"):
+                key = "gui.window.inventory_overflowSlotsDescribtion"
+                w["text"].update(text=localized(loca, key, "Free up slots to collect these items automatically."), key=key)
+            if "/IngredientBag/" in w["id"] and any(part in w["id"].split('/') for part in ("icon_area_cores", "RecipesInfotextArea")):
+                # Alternative runtime templates must not cover the tier buttons.
+                w["hidden"] = True
     if name == "skilltalentswindow":
         for w in widgets:
             # These four vertical progression models are not supplied yet.
@@ -313,8 +311,9 @@ def export(name):
         for w in list(widgets):
             if w["id"].endswith("/Headline/WindowTitle"):
                 # The source keeps the skills-window placeholder title.
-                w["text"].update(text="Boutique", key="gui.client.shop.title")
-            caption = {"ShopTab1": "Offres", "ShopTab2": "Objets", "ShopTab3": "Code bonus"}.get(w["id"].rsplit("/", 1)[-1])
+                key = "gui.window.shop_windowTitle"
+                w["text"].update(text=localized(loca, key, "Shop"), key=key)
+            caption = {"ShopTab1": "Offers", "ShopTab2": "Items", "ShopTab3": "Bonus Code"}.get(w["id"].rsplit("/", 1)[-1])
             if caption and w["type"] == "Button":
                 widgets.append(dict(id=w["id"]+"/Caption", type="TextLabel", k=w["k"], rect=w["rect"], hidden=w["hidden"],
                                     text=dict(text=caption, key="gui.client.shop.tab", size=10, color=[.90,.78,.54,1], align=[1,1])))
@@ -332,7 +331,7 @@ def export(name):
         empty = next(w for w in widgets if w["id"].endswith("/BottomNoEvent"))
         widgets.append(dict(id=empty["id"]+"/EmptyMessage", type="TextLabel", k=empty["k"],
                             rect=[90,270,920,320], hidden=False,
-                            text=dict(text="Aucun événement disponible.",key="gui.client.events.empty",size=12,color=[.90,.78,.54,1],align=[1,1])))
+                            text=dict(text="No events available.",key="gui.client.events.empty",size=12,color=[.90,.78,.54,1],align=[1,1])))
     for (win, template, area) in GRIDS:
         if win == name:
             widgets = grid(widgets, template, area)
@@ -344,6 +343,7 @@ def export(name):
         if (not w["hidden"] and w.get("art") and parent and not parent["hidden"]
                 and parent.get("art") == w["art"] and parent.get("state") == w.get("state")):
             parent.pop("art")
+    used_keys.update(w["text"]["key"] for w in widgets if w.get("text") and w["text"]["key"].startswith(("gui.", "db.")))
     with open(os.path.join(out_dir, name + ".ui.json"), "w", encoding="utf-8") as f:
         json.dump({"window": name, "base": [BASE_W, BASE_H], "widgets": widgets}, f, ensure_ascii=False, separators=(",", ":"))
     return stats
@@ -378,9 +378,15 @@ for sid, brush, char_class in con.execute("select Id, IconBrush, CharClass from 
 with open(os.path.join(out_dir, "skills.icons.json"), "w") as f:
     json.dump(icons, f, separators=(",", ":"))
 print(f"skill icons: {len(icons)}")
+export_map_names(loca, out_dir)
 for lang in ("fr", "en"):
     table = loca.get(lang, {})
     with open(os.path.join(out_dir, f"loca_{lang}.json"), "w", encoding="utf-8") as f:
         json.dump({k: table[k] for k in sorted(used_keys) if k in table}, f, ensure_ascii=False, indent=0)
 if tex.missing:
     print("missing textures:", sorted(tex.missing))
+if "inventory" in only:
+    from inventory_catalog import export_inventory
+    from equipment_visuals import export_equipment
+    print("inventory catalog (items, collection entries):", export_inventory(catalog, tex, loca, assets))
+    export_equipment(catalog, assets)

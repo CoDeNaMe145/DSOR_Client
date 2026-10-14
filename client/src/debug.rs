@@ -11,6 +11,7 @@
 //!   model has clips for); a row plays it, looping ones loop.
 //! - Heroes: the offline character's class and gender (switches in place).
 //! - Skills: the class's skills; a row puts it on the right mouse button.
+//! The footer holds map transparency until the settings window is implemented.
 //! While the menu is open the keyboard types into its filter (the game sees no
 //! key): Enter acts on the first row, Up / Down page, Escape clears, F3 closes.
 //! Hit / Crit / Kill strike the selected monster as the server's HitCommand /
@@ -138,6 +139,10 @@ struct Action(u8);
 struct FilterText;
 #[derive(Component)]
 struct StatusText;
+#[derive(Component)]
+struct MapTransparencyStep(i8);
+#[derive(Component)]
+struct MapTransparencyText;
 
 pub struct DebugPlugin;
 
@@ -147,7 +152,7 @@ impl Plugin for DebugPlugin {
             .register_asset_loader(DebugIndexLoader)
             .add_systems(Startup, setup)
             .add_systems(PreUpdate, keyboard.after(bevy::input::InputSystems))
-            .add_systems(Update, (buttons, refresh).chain());
+            .add_systems(Update, (buttons, map_controls, refresh).chain());
     }
 }
 
@@ -211,7 +216,32 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>) {
                 }
             });
             p.spawn((StatusText, Text::new(""), font.clone(), TextColor(Color::srgb(0.7, 0.9, 1.0))));
+            p.spawn(Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(8), margin: UiRect::top(px(6)), ..default() })
+                .with_children(|row| {
+                    row.spawn((MapTransparencyText, Text::new(""), font.clone(), Node { width: px(285), ..default() }));
+                    for (delta, caption) in [(-5, "-"), (5, "+")] {
+                        row.spawn((MapTransparencyStep(delta), button(48.0))).with_children(|b| {
+                            b.spawn((Text::new(caption), font.clone()));
+                        });
+                    }
+                });
         });
+}
+
+/// Temporary home for the map preference until the settings window is built.
+fn map_controls(
+    settings: Option<ResMut<crate::ui::MapSettings>>,
+    buttons: Query<(&Interaction, &MapTransparencyStep, &InheritedVisibility), Changed<Interaction>>,
+    mut labels: Query<&mut Text, With<MapTransparencyText>>,
+) {
+    let Some(mut settings) = settings else { return };
+    for (interaction, step, visibility) in &buttons {
+        if visibility.get() && *interaction == Interaction::Pressed { settings.adjust(step.0); }
+    }
+    let caption = format!("Map transparency: {}%", settings.transparency());
+    for mut text in &mut labels {
+        if text.0 != caption { text.0.clone_from(&caption); }
+    }
 }
 
 /// F3, and the filter's typing; the game sees no key while the menu is open.
@@ -576,5 +606,35 @@ fn refresh(
     }
     for (TabButton(t), mut bg) in tabs {
         bg.0 = if *t == debug.tab { Color::srgb(0.45, 0.35, 0.15) } else { Color::srgb(0.22, 0.22, 0.28) };
+    }
+}
+
+#[cfg(test)]
+mod map_tests {
+    use super::*;
+
+    #[test]
+    fn debug_map_buttons_adjust_transparency_and_ignore_hidden_controls() {
+        let mut app = App::new();
+        app.init_resource::<crate::ui::MapSettings>().add_systems(Update, map_controls);
+        let label = app.world_mut().spawn((MapTransparencyText, Text::new(""))).id();
+        let increase = app.world_mut().spawn((MapTransparencyStep(5), Interaction::None, InheritedVisibility::VISIBLE)).id();
+        let decrease = app.world_mut().spawn((MapTransparencyStep(-5), Interaction::None, InheritedVisibility::VISIBLE)).id();
+        let click = |app: &mut App, entity| {
+            *app.world_mut().get_mut::<Interaction>(entity).unwrap() = Interaction::None;
+            app.update();
+            *app.world_mut().get_mut::<Interaction>(entity).unwrap() = Interaction::Pressed;
+            app.update();
+        };
+        click(&mut app, increase);
+        assert_eq!(app.world().resource::<crate::ui::MapSettings>().transparency(), 50);
+        assert_eq!(app.world().get::<Text>(label).unwrap().0, "Map transparency: 50%");
+        for _ in 0..25 { click(&mut app, increase); }
+        assert_eq!(app.world().resource::<crate::ui::MapSettings>().transparency(), 100);
+        for _ in 0..25 { click(&mut app, decrease); }
+        assert_eq!(app.world().resource::<crate::ui::MapSettings>().transparency(), 0);
+        *app.world_mut().get_mut::<InheritedVisibility>(increase).unwrap() = InheritedVisibility::HIDDEN;
+        click(&mut app, increase);
+        assert_eq!(app.world().resource::<crate::ui::MapSettings>().transparency(), 0);
     }
 }

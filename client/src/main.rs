@@ -8,6 +8,7 @@
 //! so the browser build fetches them over HTTP.
 
 mod character;
+mod appearance;
 mod clamp;
 mod combat_text;
 mod debug;
@@ -16,10 +17,13 @@ mod dump;
 mod exits;
 mod highlight;
 mod hud;
+mod inventory;
+mod corrections;
 mod anim_cull;
 mod refraction;
 mod lighting;
 mod loading;
+mod selection;
 #[cfg(not(target_arch = "wasm32"))]
 mod login;
 mod map;
@@ -391,6 +395,7 @@ fn main() {
         .add_plugins(ui::UiPlugin)
         .add_plugins(ui_input::UiInputPlugin)
         .add_plugins(loading::LoadingPlugin)
+        .add_plugins(selection::SelectionPlugin)
         .add_plugins((anim_cull::AnimCullPlugin, refraction::RefractionPlugin, surfaces::SurfacesPlugin, exits::ExitsPlugin, monsters::MonstersPlugin, combat_text::CombatTextPlugin, debug::DebugPlugin, stats::StatsPlugin, clamp::ClampPlugin, nebula_bloom::NebulaBloomPlugin))
         .add_plugins((highlight::HighlightPlugin, picking::PickingPlugin))
         .insert_resource(ClearColor(Color::srgb(0.05, 0.06, 0.08)))
@@ -520,6 +525,7 @@ fn screenshot_when_loaded(
     mut frames: Local<u32>,
     mut taken: Local<Option<u32>>,
     demo: Query<&character::CharacterAnim>,
+    outfits: Query<&character::Character>,
 ) {
     let Some(path) = &opts.screenshot else { return };
     *frames += 1;
@@ -548,7 +554,8 @@ fn screenshot_when_loaded(
     if !current.spawned {
         return;
     }
-    if (opts.character.is_some() || opts.net.is_some()) && (demo.is_empty() || !demo.iter().all(|a| a.is_ready())) {
+    if (opts.character.is_some() || opts.net.is_some() || opts.play.is_some())
+        && (demo.is_empty() || !demo.iter().all(|a| a.is_ready()) || !outfits.iter().all(character::Character::outfit_ready)) {
         return;
     }
     let (done, total) = current.progress(&asset_server);
@@ -568,16 +575,16 @@ fn screenshot_when_loaded(
 }
 
 /// The skins each class wears in the demo: the converted char_sel_p1 outfits.
-fn demo_equipment(class: u8) -> Vec<(u8, Vec<String>)> {
-    let skins: &[&str] = match class {
-        1 => &["unique_mage_shoulders_01_sargon", "unique_mage_helmet_01_sargon", "unique_mage_torso_01_sargon",
-               "unique_mage_boots_02_kingshill", "mage_gloves_01", "unique_mage_2h_staff2h_01_heroic_bossdrop"],
-        2 => &["unique_ranger_helmet_01_sargon", "unique_ranger_shoulders_01_sargon", "unique_ranger_torso_01_sargon",
-               "unique_ranger_boots_02_lvl40", "ranger_gloves_05", "unique_ranger_rh_shortbow_sargon_01"],
-        _ => &["unique_warrior_torso_01_sargon", "unique_warrior_shoulders_01_sargon", "unique_warrior_helmet_01_sargon",
-               "warrior_boots_06", "unique_warrior_lh_shield_sargon_01", "unique_warrior_rh_mace_sargon_01"],
+fn demo_equipment(class: u8) -> Vec<appearance::Equipment> {
+    let skins: &[(u8, &str)] = match class {
+        1 => &[(1, "unique_mage_shoulders_01_sargon"), (0, "unique_mage_helmet_01_sargon"), (2, "unique_mage_torso_01_sargon"),
+               (4, "unique_mage_boots_02_kingshill"), (3, "mage_gloves_01"), (5, "unique_mage_2h_staff2h_01_heroic_bossdrop")],
+        2 => &[(0, "unique_ranger_helmet_01_sargon"), (1, "unique_ranger_shoulders_01_sargon"), (2, "unique_ranger_torso_01_sargon"),
+               (4, "unique_ranger_boots_02_lvl40"), (3, "ranger_gloves_05"), (5, "unique_ranger_rh_shortbow_sargon_01")],
+        _ => &[(2, "unique_warrior_torso_01_sargon"), (1, "unique_warrior_shoulders_01_sargon"), (0, "unique_warrior_helmet_01_sargon"),
+               (4, "warrior_boots_06"), (6, "unique_warrior_lh_shield_sargon_01"), (5, "unique_warrior_rh_mace_sargon_01")],
     };
-    skins.iter().enumerate().map(|(i, s)| (i as u8, vec![s.to_string()])).collect()
+    skins.iter().map(|(slot, s)| appearance::Equipment { slot: *slot, skin_parts: vec![s.to_string()], colour: None }).collect()
 }
 
 /// `--character <class> <gender> [--anim State]`: one dressed character at the map

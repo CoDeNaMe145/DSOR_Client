@@ -10,7 +10,6 @@ pub(super) fn frame_suffix(window: &str) -> Option<&'static str> {
     Some(match window {
         "questlog" => "/BackGroundLabel/Frame2",
         "travelmap" => "/Travelmap/Frame/Frame/Frame",
-        "locationmap" => "Canvas/map",
         "socialscreen" => "/FrameLabel/BorderLabel",
         "leaderboards" => "/WindowBackground/Frame",
         "eventwindow" => "/BackGroundLabel/Frame",

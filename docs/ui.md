@@ -26,7 +26,10 @@ icon), `loca_fr.json` / `loca_en.json`, and the atlases and icons as PNG under
 `<assets>/textures/`. The current source tree contains 160 windows.
 
 Each widget: its id path, its rect in reference pixels, `k`, its artwork
-(triangles, UVs, vertex colours, atlas) and its text (French, else English).
+(triangles, UVs, vertex colours, atlas) and its English text. UI, item and skill
+catalogues use the English localization; missing entries keep their source key
+or template fallback instead of switching languages. Re-export the assets after
+updating the localization code: translations are baked into the JSON files.
 `k` is how far the widget follows the screen's extra width: the client scales the
 interface by the window height and widens the reference screen; widget sizes are
 fixed and only full-screen top-level canvases stretch, so a widget's x is its
@@ -48,7 +51,7 @@ offers, the alternative stacks DSO_Godot already spots, the character preview
 area (`figur`, a runtime render target), placeholder icons (`icon_dummy`, "?"),
 templates outside a window's root (`ROOTS`: the inventory's drag ghosts, the
 payment variants of the money display). Template slots the game clones are laid
-out (`GRIDS`: the inventory bag, 7 x 3 empty slots, fitted to the area's width).
+out (`GRIDS`: the inventory bag, 7 x 4 empty slots, fitted to the area's width).
 Readable, lossless copies of the source BXML are also written to
 `interface/xml/<window>.xml`. BXML is a binary XML tree, not a compressed text
 file; the exporter decodes its node, attribute and string tables.
@@ -68,7 +71,7 @@ Drawn:
   resource bars, XP and wisdom bars with level labels, five quick slots plus
   left/right mouse slots, mount and home teleport; the money (`currencybar`), the menu buttons
   (`gamebar`), and the central navigation (`ingamemenu`);
-- menus: inventory (I: equipment slots, bag tabs I-VIII, 7 x 3 bag, page),
+- menus: inventory (I: equipment slots, eight 7 x 4 bags, premium and loose-item bags),
   character sheet (C), current skill/talent window (K: `skilltalentswindow`),
   quest log, travel map, local map, shop, social window, PvP matchmaking,
   leaderboards, events and game menu (Escape). Natively `DSOR_UI_OPEN=inventory,...` opens
@@ -91,7 +94,7 @@ control that received the press; dragging off, losing focus, or closing the
 window cancels it. The highest visible window owns the pointer at its bounds.
 The game menu blocks pointer input to the windows and world below it.
 
-All top-navigation windows and the game menu can be dragged with the left
+Top-navigation panels (except the location-map overlay) and the game menu can be dragged with the left
 mouse button from the top 32 reference pixels of their painted frame (scaled
 with the interface). The cursor changes to a hand there; close buttons retain
 priority over dragging. Clicking a window brings it forward below the modal
@@ -126,13 +129,69 @@ authored multiline labels wrap within their source rectangles. Hidden legacy
 gauges and quick slots cannot contribute artwork, fill bounds or hit regions.
 
 The original `locationmap` is a runtime drawing area with no map bitmap. Its
-client implementation (`local_map.rs`) projects the loaded navigation mesh and
-player position into a framed, draggable map with a close button.
+client implementation (`local_map.rs`) projects the loaded navigation mesh into
+a Path of Exile-inspired transparent overlay: muted gold boundary lines, a faint
+walkable-area tint and a mint player arrow that follows position and facing.
+Terrain and player markers share the scene camera's ground-plane projection,
+so map directions match the world view without a mirrored vertical axis.
+Shared triangle edges are removed, so the overlay shows terrain boundaries.
+Tab cycles from off to a compact upper-left preview, then a larger centered
+preview, then off. The navigation map button uses the same cycle. Escape hides
+the map; its next opening starts compact. Both sizes, including their captions,
+are click-through and have no header or settings controls. A right-aligned
+localized map name sits just below the preview's bottom-right corner; names
+come from the original English `maps.names` localization, matching the rest of
+the current interface. The exporter writes them to `interface/maps.names.json`.
+Until the settings window is implemented, the F3 debug menu's "Map transparency"
+row adjusts terrain transparency in 5% steps from 0-100% (default 45%), while
+the player arrow and map name stay visible.
+The setting survives restarts in `map-settings.json` natively or `dsor.map` in
+browser localStorage. Re-export the UI to generate the localized name table.
+For native captures, use `DSOR_UI_OPEN=locationmap` and optionally
+`DSOR_MAP_VIEW=expanded`; the default capture shows the compact map.
 
-The bag tabs and page arrows navigate the eight authored bag pages, plus the
-extra/overflow bag views. This is currently UI selection, not a server-backed
-inventory model: item contents and purchased capacities are not bound yet.
-Ingredient category and rarity selection retain their selected button state.
+Inventory contents now follow the server's item records and slot allocations.
+The eight ordinary tabs each address 28 slots (4 rows x 7 columns), accounting
+for the server's 224-slot bag. They have no footer arrows or page counter.
+Bag IX is the 28-slot premium bag, enabled only by the server's active paid
+membership and premium capacity. Expiry disables it and returns its open view to bag I.
+Bag X contains loose inventory items waiting for space. Only that bag displays
+the paging footer (21 items per overflow page, with the fourth row reserved for
+paging). These items can be inspected but cannot be dragged,
+split, used, swapped or receive drops. The server automatically moves them into
+free inventory slots and sends the new allocation. Bank overflow remains in the
+bank's separate recovery queue. Unavailable ordinary cells are dimmed.
+Equipment and bag cells show icons and stack counts. Ingredient category and
+rarity tabs populate the collection grid from `_Template_IngredientBag`, including
+dimmed uncollected items and owned quantities from the ingredient allocation.
+The five tier selectors retain their original normal/hover/selected artwork;
+the ingredient background is painted first and unused recipe/core overlays stay
+hidden, so these selectors remain visible.
+
+`tools/inventory_catalog.py`, called when exporting `inventory`, writes
+`inventory.items.json` from the server database and original localizations/icons.
+Export `inventory tooltip unstackwindow` together. Hovering an item shows its
+name, description, level, enchantments, sockets and quantity in the original
+tooltip border. Ctrl+left-click opens the original split dialog: choose the
+amount using its input, +/- buttons or slider, then confirm with its button or
+Enter. The new stack goes into the first free slot in the same storage.
+
+Drag items between slots to move/swap; drop a compatible stack onto another to
+merge up to its maximum. Excess remains in the source slot. Escape, loss of
+focus or a stale inventory revision cancels a drag. Splits and merges wait for
+the server's replacement IDs and amounts; an empty final mutation packet does
+not erase retained item records. Dropping outside inventory cancels the drag.
+The split dialog is modal and cannot send movement to the world underneath.
+See [implementation progress](client-progress.md) for the required local server
+merge patch and remaining inventory services.
+
+For native visual inspection, `DSOR_INVENTORY_PREVIEW=<packet.bin>` replays
+InventoryInfo and MembershipUpdate from a binary server message in offline
+`--play` mode. It changes no account, and offline inventory mutations stay
+disabled. With packet replay enabled, `DSOR_INVENTORY_VIEW=ingredients,3`,
+`premium` or `overflow` selects the view for renderer captures without desktop
+input. Use `DSOR_UI_OPEN=inventory` to open the panel.
+
 Hotbar skill clicks enter the existing skill casting path, with its ordinary
 resource/cooldown validation.
 
@@ -178,8 +237,9 @@ respects the UI under the cursor.
 
 - Text uses `assets/fonts/tahoma.ttf`; the original bitmap font and text effects
   are not reproduced.
-- Inventory item contents, capacity/unlock state, item tooltips, drag/drop,
-  sort, bank access and purchases still need a server-backed inventory controller.
+- Inventory sorting, bank access, slot purchases and additional item actions
+  (use, sell, repair, identify, sockets and customization) need their controllers.
+  Equipment comparison tooltips remain.
 - Character preview render targets and list scrolling are not implemented.
 - Server-backed quests, catalogue entries, social rosters, event payloads,
   leaderboard rows and talent allocation are not bound yet; opening their

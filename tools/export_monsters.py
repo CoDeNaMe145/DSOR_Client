@@ -8,7 +8,7 @@ Writes:
       _Template_Monster Id -> {graphics, set, anim_set, state, loop, title,
       hit: {damage type -> sequence}, critical, heavy, death, death_s,
       despawn, despawn_s, dye [PrimaryColor, SecondaryColor], radius, height}
-      (title: language/fr/db.monster.xml "<Id>Title")
+      (title: language/en/db.monster.xml "<Id>Title")
   characters/monster_anims.json
       every animation set of data/tables/anims.xml -> state -> clip base name,
       "*<set>" cells resolved. The client looks the name up in the model's own
@@ -34,7 +34,7 @@ chars = os.path.join(assets, "characters")
 
 # --- templates -------------------------------------------------------------
 titles = {}
-xml = open(os.path.join(export, "language", "fr", "db.monster.xml"), encoding="utf-8-sig").read()
+xml = open(os.path.join(export, "language", "en", "db.monster.xml"), encoding="utf-8-sig").read()
 for name, text in re.findall(r'<item name="([^"]+)Title"><!\[CDATA\[(.*?)\]\]></item>', xml, re.S):
     titles[name] = text
 
@@ -73,7 +73,7 @@ for row in db.execute(f"select {','.join(COLS)} from _Template_Monster"):
         "radius": float(r["CapsuleRadius"] or 0.0),
         "height": float(r["CapsuleHeight"] or 0.0),
     }
-with open(os.path.join(chars, "monster_templates.json"), "w") as f:
+with open(os.path.join(chars, "monster_templates.json"), "w", encoding="utf-8") as f:
     json.dump(templates, f, separators=(",", ":"), ensure_ascii=False)
 
 # The players' own hit sequences (_Template_Player, one row per class:
@@ -163,7 +163,7 @@ for t in templates.values():
     clip = anims.get(t["anim_set"], {}).get("Spawn")
     if t["summon"] and clip:
         t["spawn_s"] = round(clip_seconds(t["graphics"], clip), 3)
-with open(os.path.join(chars, "monster_templates.json"), "w") as f:
+with open(os.path.join(chars, "monster_templates.json"), "w", encoding="utf-8") as f:
     json.dump(templates, f, separators=(",", ":"), ensure_ascii=False)
 
 # --- character sets of whole models ---------------------------------------

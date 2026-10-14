@@ -15,8 +15,8 @@ Writes characters/stats.json:
             BasePowerFactorRelative}
   chance    _Template_DifficultyFactors row 0 ChanceMultiplier
   globals   _Globals Max* reductions and chances, MaxItemLevel, ItemUpgradeProgressionVarA..D
-  skills    _Template_Skill: id -> [UseWeaponDPS, DamageModifier, French title]
-  texts     language/fr/gui.window.xml, categories gui.window.charsheet and gui.window.general
+  skills    _Template_Skill: id -> [UseWeaponDPS, DamageModifier, English title]
+  texts     language/en/gui.window.xml, categories gui.window.charsheet and gui.window.general
   items, enchantments, tiers, item_attrs   for the worn items (SEE: stats.rs)
 SEE: the spec of the 2018 computation in client/src/stats.rs (addresses there).
 """
@@ -71,13 +71,19 @@ out["globals"] = {k: g[k] for k in ("MaxArmorDamageReduction", "MaxBlockChance",
                                      "MaxResistanceDamageReduction", "MaxItemLevel", "ItemUpgradeProgressionVarA",
                                      "ItemUpgradeProgressionVarB", "ItemUpgradeProgressionVarC", "ItemUpgradeProgressionVarD")}
 
-skill_xml = open(os.path.join(export, "language", "fr", "db.skill.xml"), encoding="utf-8-sig").read()
-titles = dict(re.findall(r'<item name="([^"]+)Title"><!\[CDATA\[(.*?)\]\]></item>', skill_xml, re.S))
+# Release 261 moved skill captions to db.skill2.xml. Keep the older table for
+# 2018 packs and prefer the newer captions when both are present.
+titles = {}
+for filename in ("db.skill.xml", "db.skill2.xml"):
+    skill_path = os.path.join(export, "language", "en", filename)
+    if os.path.isfile(skill_path):
+        with open(skill_path, encoding="utf-8-sig") as skill_file:
+            titles.update(re.findall(r'<item name="([^"]+)Title"><!\[CDATA\[(.*?)\]\]></item>', skill_file.read(), re.S))
 out["skills"] = {r["Id"]: [bool(r["UseWeaponDPS"]), r["DamageModifier"] if r["DamageModifier"] is not None else 1.0, titles.get(r["Id"], r["Id"])]
                  for r in rows("select Id, UseWeaponDPS, DamageModifier from _Template_Skill")}
 
 texts = {}
-root = ET.parse(os.path.join(export, "language", "fr", "gui.window.xml")).getroot()
+root = ET.parse(os.path.join(export, "language", "en", "gui.window.xml")).getroot()
 for cat in root.iter("category"):
     if cat.get("name") in ("gui.window.charsheet", "gui.window.general"):
         for item in cat.iter("item"):
@@ -95,6 +101,6 @@ out["enchantments"] = {r["Id"]: {k: r.get(k) for k in ("BaseEnchantment", "UseRa
 out["tiers"] = {str(r["Tier"]): r for r in rows("select * from _Template_EnchantmentTiers")}
 
 path = os.path.join(assets, "characters", "stats.json")
-with open(path, "w") as f:
+with open(path, "w", encoding="utf-8") as f:
     json.dump(out, f, ensure_ascii=False, separators=(",", ":"), default=str)
 print({k: len(v) if hasattr(v, "__len__") else v for k, v in out.items()}, os.path.getsize(path))

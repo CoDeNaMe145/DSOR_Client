@@ -14,7 +14,7 @@
 //!   SkillExecutionSpeed 1.0 with SkillSpeedMin as its lower limit; the rest
 //!   _Template_ActorAttributes' defaults;
 //! - the texts (CharacterSheetWidget::Refresh 0x641996): integers rounded
-//!   floor(v + 0.5); "fmtN" numbers with a comma and N decimals
+//!   floor(v + 0.5); "fmtN" numbers with a decimal point and N decimals
 //!   (FloatToString 0x75BFF9, floatingPointNumberN); armor and resistance % =
 //!   100 min(v / (curve.<Armor|Resistance>DamageReductionValue + v), cap); block and
 //!   critical % = 100 clamp(v × ChanceMultiplier × curve.<Block|Critical>ChanceFactor,
@@ -140,11 +140,11 @@ fn round(v: f32) -> i64 {
     (v + 0.5).floor() as i64
 }
 
-/// FloatToString(v, decimals): comma, trailing zeros kept.
+/// FloatToString(v, decimals): English decimal point, trailing zeros kept.
 fn fmt(v: f32, decimals: u32) -> String {
     let p = 10i64.pow(decimals);
     let n = (v as f64 * p as f64 + 0.5).floor() as i64;
-    format!("{},{:0width$}", n / p, (n % p).abs(), width = decimals as usize)
+    format!("{}.{:0width$}", n / p, (n % p).abs(), width = decimals as usize)
 }
 
 fn fill(template: &str, args: &[String]) -> String {
