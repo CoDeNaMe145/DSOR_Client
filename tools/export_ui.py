@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Export the 2018 client's interface windows for client/src/ui.
 
-Usage: export_ui.py <export_win32> <assets> <DSO_Godot> [window ...]
+Usage: export_ui.py <export_win32> <assets> <DSO_Godot> [window ...] [--database static.db4]
 
 A window (export_win32/ui/<name>.bxml, Nebula binary XML) is a tree of widgets;
 each one has a rect in fractions of a 1024 x 768 reference screen and an anchor
@@ -33,12 +33,20 @@ atlases as <assets>/textures/ui/*.png and <assets>/interface/loca_<lang>.json
 Button states and runtime pages are preserved for the client controller.
 Decorative alternatives and data templates remain hidden until needed.
 """
-import json, os, sys
+import json, os, sys, sqlite3
 from PIL import Image  # Fail before writing any layouts if conversion deps are missing.
 
 root, assets, godot = sys.argv[1], sys.argv[2], sys.argv[3]
 # Every window by default ("--hud": the four the HUD needs).
-only = sys.argv[4:] or sorted(f[:-5] for f in os.listdir(os.path.join(root, "ui")) if f.endswith(".bxml"))
+only = sys.argv[4:]
+database = os.path.join(root, "db", "static.db4")
+if "--database" in only:
+    at = only.index("--database")
+    database = only[at + 1]
+    del only[at:at + 2]
+only = only or sorted(f[:-5] for f in os.listdir(os.path.join(root, "ui")) if f.endswith(".bxml"))
+from ui_catalog import spell_grid, ranking_categories
+catalog = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
 if only == ["--hud"]:
     only = ["bottombar", "currencybar", "inventory", "gamebar"]
 sys.path.insert(0, godot)
@@ -123,7 +131,7 @@ PANELS = {"oben", "IngredientBag", "TrinketBag", "mercenary", "StatsCharacter",
           "OptionsGroup", "OptionsGroupFinder", "OptionsGuild", "OptionsFriends",
           "TableHeadSearch", "TableHeadFriends", "TableHeadGroup", "TableHeadGroupFinder", "TableHeadGuild", "TableHeadIgnore",
           "Duria", "Teganswall", "Northlands", "Dwarflands", "Parallelworlds", "Atlantis", "Lortac", "Qaizah", "LandOfImmortals",
-          "DealsPage", "OffersPage", "TieredSpenderLabel"}
+          "DealsPage", "OffersPage", "TieredSpenderLabel", "PvP", "PvE", "Event"}
 BUTTONS = {"Button", "TextButton", "SlotButton"}
 STATES = {"normal", "mouseover", "pressed", "mouseoverpressed", "disabled"}
 
@@ -296,6 +304,8 @@ def export(name):
                 w["hidden"] = True
             if "/LevelBar/" in w["id"] and w["id"].endswith("/LevelLabel"):
                 w["text"].update(text="—", key="—")
+    if name == "skilltalentswindow": widgets = spell_grid(widgets, catalog, tex, loca)
+    if name == "leaderboards": widgets = ranking_categories(widgets, catalog, loca)
     if name == "locationmap": widgets = local_map_controls(widgets)
     if name == "shopwindow":
         # The game assigns these labels along with its catalogue. Keep the
@@ -356,13 +366,13 @@ for f in failed:
     print("  !!", f)
 # Skill icons: _Template_Skill.IconBrush ("icons/mage_skill02b") as PNG, by id.
 import sqlite3  # noqa: E402
-con = sqlite3.connect(f"file:{os.path.join(root, 'db', 'static.db4')}?mode=ro", uri=True)
+con = catalog
 icons = {}
 for sid, brush, char_class in con.execute("select Id, IconBrush, CharClass from _Template_Skill"):
     if brush and tex.get(brush):
         icons[sid] = f"textures/{brush}.png"
-        # Quickbar packets and offline characters use the full default-skill
-        # name; the static table stores its shorter template id.
+        # Keep the old aliases readable; release261 packets and offline play
+        # use the canonical template id.
         if char_class in {"warrior", "mage", "ranger", "dwarf"}:
             icons[f"{char_class}_{sid}_default"] = icons[sid]
 with open(os.path.join(out_dir, "skills.icons.json"), "w") as f:

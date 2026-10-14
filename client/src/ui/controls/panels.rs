@@ -5,7 +5,6 @@ use super::{Action, Section, Widget};
 const REGIONS: [&str; 9] = ["Duria", "Teganswall", "Northlands", "Dwarflands", "Parallelworlds", "Atlantis", "Lortac", "Qaizah", "LandOfImmortals"];
 const QUEST_PAGES: [&str; 5] = ["QuestlogLabel", "CompendiumLabel", "AchievementsLabel", "DailyAchievementsLabel", "WantedMissionsLabel"];
 const SOCIAL_TABS: [&str; 6] = ["Search", "Friends", "Group", "Guild", "Ignore", "Invite"];
-const LEADERBOARD_TABS: [&str; 7] = ["Tab1v1", "Tab3v3", "Tab5v5", "Tab6v6", "TabHP", "TabHPDay", "TabHPWeek"];
 
 pub(super) fn frame_suffix(window: &str) -> Option<&'static str> {
     Some(match window {
@@ -13,7 +12,7 @@ pub(super) fn frame_suffix(window: &str) -> Option<&'static str> {
         "travelmap" => "/Travelmap/Frame/Frame/Frame",
         "locationmap" => "Canvas/map",
         "socialscreen" => "/FrameLabel/BorderLabel",
-        "pvpleaderboards" => "/WindowTitleBar/Frame",
+        "leaderboards" => "/WindowBackground/Frame",
         "eventwindow" => "/BackGroundLabel/Frame",
         "shopwindow" => "/Frame/Frame/Frame1",
         "matchmakingwindow" => "/WindowTitleLabel/Frame/Frame2",
@@ -33,6 +32,9 @@ pub(super) fn section(window: &str, parts: &[&str]) -> Option<Section> {
     match window {
         "skilltalentswindow" => {
             if has("ExperienceLabel") && has("OptionsLabel") { return Some(Section::Hidden); }
+            if let Some(class) = parts.iter().find_map(|p| p.strip_prefix("Class").and_then(|s| s.parse().ok())) {
+                return Some(Section::SkillClass(class));
+            }
             for (i, name) in ["ExperienceLabel", "WisdomLabel", "GroupLabel", "FameLabel"].iter().enumerate() {
                 if has(name) { return Some(page("talents", i)); }
             }
@@ -63,11 +65,18 @@ pub(super) fn section(window: &str, parts: &[&str]) -> Option<Section> {
             }
             if has("MenuBackground") || has("DummyScrollbarDown") || has("DummyScrollbarUp") { return Some(Section::Hidden); }
         }
-        "pvpleaderboards" => {
-            if has("TableBackgroundPvE") { return Some(Section::Hidden); }
-            if has("DefaultTableColumnHeading") { return Some(Section::Page("leaderboard", 0b0001011)); }
-            if has("CTFTableColumnHeading") { return Some(page("leaderboard", 2)); }
-            if has("HonorPointsTableColumnHeading") { return Some(Section::Page("leaderboard", 0b1110000)); }
+        "leaderboards" => {
+            if parts.iter().any(|p| matches!(*p, "TimerBackgroundLabel" | "PlayerLabelTop")) { return Some(Section::Hidden); }
+            for (i, name) in ["PvP", "PvE", "Event"].iter().enumerate() {
+                if has(name) {
+                    if has("HeaderOverallRanking") { return Some(Section::Ranking(i as u8, true)); }
+                    if has("DefaultTableColumnHeading") || has("Header") { return Some(Section::Ranking(i as u8, false)); }
+                    return Some(page("rank_group", i));
+                }
+            }
+            if let Some(group) = parts.iter().find_map(|p| p.strip_prefix("RankGroup").and_then(|s| s.parse().ok())) {
+                return Some(page("rank_group", group));
+            }
         }
         "shopwindow" => {
             if has("FlagLabelCategory") || has("AdvertisementArtwork") { return Some(Section::Hidden); }
@@ -127,8 +136,10 @@ pub(super) fn action(window: &str, widget: &Widget) -> Option<Action> {
                 if let Some(i) = REGIONS.iter().position(|s| *s == leaf) { return tab("region", i + 1); }
             }
         }
-        "pvpleaderboards" => {
-            if let Some(i) = LEADERBOARD_TABS.iter().position(|e| *e == event) { return tab("leaderboard", i); }
+        "leaderboards" => {
+            if let Some(i) = event.strip_prefix("RankGroup:").and_then(|s| s.parse().ok()) { return tab("rank_group", i); }
+            if let Some(i) = event.strip_prefix("RankCategory:").and_then(|s| s.parse().ok()) { return tab("rank_category", i); }
+            if let Some(i) = leaf.strip_prefix("TabButton0").and_then(|s| s.parse::<usize>().ok()) { return tab("rank_class", i.saturating_sub(1)); }
         }
         "shopwindow" => {
             if let Some(i) = leaf.strip_prefix("ShopTab").and_then(|s| s.parse::<usize>().ok()) { return tab("shop", i.saturating_sub(1)); }
@@ -137,12 +148,12 @@ pub(super) fn action(window: &str, widget: &Widget) -> Option<Action> {
         "matchmakingwindow" => {
             if leaf == "TabButton01" { return tab("matchmaking", 0); }
             if leaf == "TabButton02" { return tab("matchmaking", 1); }
-            if event == "openLeaderboard" { return Some(Action::Window("pvpleaderboards")); }
+            if event == "openLeaderboard" { return Some(Action::Window("leaderboards")); }
         }
         "eventwindow" => {
             if let Some(i) = leaf.strip_prefix("TabEvent").and_then(|s| s.parse::<usize>().ok()) { return tab("event", i); }
             if matches!(event, "OpenShop" | "OpenEventShop" | "OpenRealMoneyShop") { return Some(Action::Window("shopwindow")); }
-            if event == "OpenLeaderboards" { return Some(Action::Window("pvpleaderboards")); }
+            if event == "OpenLeaderboards" { return Some(Action::Window("leaderboards")); }
             if event == "OpenAchievements" { return Some(Action::Window("questlog")); }
         }
         _ => return None,

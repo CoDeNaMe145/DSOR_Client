@@ -174,8 +174,11 @@ pub struct Net {
     /// CurrencyChanged 137). EVIDENCE: experimental dsor/mapinstance.py WALLET_RC /
     /// WALLET_VC (handler 0x513E39).
     pub wallet: Option<[u64; 5]>,
-    /// The first quick slot bar (QuickSlotsInfo 83): skill ids by wire slot.
+    /// The first quick slot bar (QuickSlotsInfo 0x50): skill ids by wire slot.
     pub bar: Vec<Option<String>>,
+    /// Preserve all slot kinds and bars when saving an edited bar (0x51).
+    pub quickbars: dsor_proto::commands::inventory::QuickSlotsInfo,
+    pub skill_book: Option<dsor_proto::commands::inventory::SkillBookInfo>,
     /// Skills other actors used, relayed by the server (73-77), for crate::skills.
     pub skill_events: Vec<SkillEvent>,
     /// Status effects the server started on actors (82), and ground effects it
@@ -558,11 +561,10 @@ pub fn default_bar(class: u8) -> Vec<Option<String>> {
     let ids: &[&str] = match class {
         0 => &["angrystrike", "mightyswing", "mightybash", "battlecry", "enragingleap", "seismicslam", "bloody360"],
         2 => &["markshot", "multishot", "stab", "explosiveshot", "jump", "stunshot", "whirlwind"],
-        3 => &["SimpleShot", "HeavyShot", "Grenade", "CombatTurret", "HoverJump", "ShrapnelShot", "Barrier"],
+        3 => &["SimpleShot", "HeavyShot", "Grenade", "TurretCombat", "HoverJump", "ShrapnelShot", "SteamConductor"],
         _ => &["magicmissile", "fireball", "frostnova", "iceball", "teleport", "lightningstrike", "frostwind"],
     };
-    let class_name = ["warrior", "mage", "ranger", "dwarf"][class.min(3) as usize];
-    ids.iter().map(|s| Some(format!("{class_name}_{s}_default"))).collect()
+    ids.iter().map(|s| Some((*s).to_owned())).collect()
 }
 
 /// Offline play (no server): a Net that connects nowhere, and a character of
@@ -601,6 +603,8 @@ pub fn start_offline(world: &mut World, class: u8, gender: u8) {
         hits: Vec::new(),
         kills: Vec::new(),
         bar: default_bar(class),
+        quickbars: default(),
+        skill_book: None,
         skill_events: Vec::new(),
         status_events: Vec::new(),
         location_events: Vec::new(),
@@ -747,6 +751,8 @@ pub(crate) fn start_session(world: &mut World, config: NetConfig) {
         hits: Vec::new(),
         kills: Vec::new(),
         bar: Vec::new(),
+        quickbars: default(),
+        skill_book: None,
         skill_events: Vec::new(),
         status_events: Vec::new(),
         location_events: Vec::new(),
@@ -1038,11 +1044,13 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
             }
         }
         ServerCommand::QuickSlotsInfo(q) => {
+            net.quickbars = q.clone();
             if let Some(first) = q.bars.first() {
-                net.bar = first.iter().map(|s| if s.kind == -1 { None } else { s.id.clone() }).collect();
+                net.bar = first.iter().map(|s| if s.kind == 0 { s.id.clone() } else { None }).collect();
                 info!("quick slots: {:?}", net.bar.iter().flatten().collect::<Vec<_>>());
             }
         }
+        ServerCommand::SkillBookInfo(book) => net.skill_book = Some(book.clone()),
         // Skills the server relays from other actors (our own are played as cast).
         ServerCommand::StatusEffect(c) => {
             for e in &c.elements {

@@ -75,7 +75,7 @@ const MENU_WINDOWS: [(&str, KeyCode, f32); 4] = [
 ];
 
 /// Other top-navigation panels, loaded once and opened by their own shortcut.
-const NAV_WINDOWS: [&str; 8] = ["questlog", "travelmap", "locationmap", "shopwindow", "socialscreen", "pvpleaderboards", "matchmakingwindow", "eventwindow"];
+const NAV_WINDOWS: [&str; 8] = ["questlog", "travelmap", "locationmap", "shopwindow", "socialscreen", "leaderboards", "matchmakingwindow", "eventwindow"];
 
 fn is_menu(name: &str) -> bool {
     MENU_WINDOWS.iter().any(|(n, _, _)| *n == name) || NAV_WINDOWS.contains(&name)
@@ -120,6 +120,8 @@ struct Widget {
     button: Option<String>,
     #[serde(default)]
     state: Option<String>,
+    #[serde(default)]
+    spell: Option<controls::spells::Spell>,
     k: f32,
     rect: [f32; 4],
     hidden: bool,
@@ -357,7 +359,7 @@ impl Plugin for UiPlugin {
             .add_systems(Startup, setup)
             .add_systems(
                 Update,
-                (match_scene_camera, spawn_windows, follow_screen, read_figures, controls::keyboard, controls::interact, controls::edit_text, (update_fills, update_values, update_slots, local_map::update), controls::paint, show_hover_window).chain().run_if(crate::loading::gameplay_ready),
+                (match_scene_camera, spawn_windows, follow_screen, controls::spells::sync, controls::keyboard, controls::interact, controls::spells::apply_drop, read_figures, controls::edit_text, (update_fills, update_values, update_slots, local_map::update), controls::paint, controls::spells::overlay, show_hover_window).chain().run_if(crate::loading::gameplay_ready),
             );
     }
 }

@@ -5,6 +5,7 @@ use bevy::ui::RelativeCursorPosition;
 use bevy::window::{CursorIcon, MonitorSelection, SystemCursorIcon, WindowMode};
 use bevy::input::keyboard::KeyboardInput;
 mod panels;
+pub(super) mod spells;
 
 /// Reference pixels, scaled by the same factor as the rest of the interface.
 const DRAG_HANDLE_HEIGHT: f32 = 32.0;
@@ -63,6 +64,8 @@ enum Section {
     Character(u8),
     /// Allowed pages as a bitmask; some shared headers serve several tabs.
     Page(&'static str, u32),
+    SkillClass(u8),
+    Ranking(u8, bool),
     Hidden,
 }
 
@@ -138,11 +141,13 @@ enum Action {
     Fullscreen,
     Lock,
     Skill(usize),
+    Spell,
     Unavailable,
 }
 
 fn action(window: &str, w: &Widget) -> Action {
     let leaf = w.id.rsplit('/').next().unwrap_or("");
+    if w.spell.is_some() { return Action::Spell; }
     if w.kind == "TextEntry" { return Action::Edit(w.id.clone()); }
     if w.event == "Close" { return Action::Close; }
     if let Some(action) = panels::action(window, w) { return action; }
@@ -156,7 +161,7 @@ fn action(window: &str, w: &Widget) -> Action {
             "minimap" => Action::Window("locationmap"),
             "dealer" => Action::Window("shopwindow"),
             "socialscreen" => Action::Window("socialscreen"),
-            "pvpleaderboards" => Action::Window("pvpleaderboards"),
+            "pvpleaderboards" => Action::Window("leaderboards"),
             "pvp" => Action::Window("matchmakingwindow"),
             "events" => Action::Window("eventwindow"),
             _ => Action::Unavailable,
@@ -223,6 +228,7 @@ struct Button {
     action: Action,
     authored_enabled: bool,
     states: u8,
+    spell: Option<spells::Spell>,
 }
 
 #[derive(Component)]
@@ -243,6 +249,7 @@ pub(super) struct WindowControls {
     open_windows: Vec<String>,
     entries: HashMap<String, TextEntry>,
     choices: HashMap<&'static str, String>,
+    spells: spells::Model,
 }
 
 impl WindowControls {
@@ -252,11 +259,12 @@ impl WindowControls {
             .map(|w| Button {
                 id: w.id.clone(), k: w.k, rect: w.rect,
                 section: section(&layout.window, &w.id), action: action(&layout.window, w), authored_enabled: w.enabled,
+                spell: w.spell.clone(),
                 states: layout.widgets.iter().filter(|s| !s.hidden && s.button.as_ref() == Some(&w.id))
                     .filter_map(|s| s.state.as_deref().and_then(State::parse)).fold(0, |bits, state| bits | state.bit()),
             }).collect();
-        Self { buttons, regions: Vec::new(), drag_handle: DragHandle::from_layout(layout), inventory: 0, character: 0, bag: 0, ingredient: 0, rarity: 5, locked: true, hovered: None, pressed: None,
-            pages: HashMap::new(), toggles: default(), open_windows: Vec::new(), entries: HashMap::new(), choices: HashMap::new() }
+        Self { buttons, regions: Vec::new(), drag_handle: DragHandle::from_layout(layout), inventory: 0, character: 0, bag: 0, ingredient: 0, rarity: 5, locked: false, hovered: None, pressed: None,
+            pages: HashMap::new(), toggles: default(), open_windows: Vec::new(), entries: HashMap::new(), choices: HashMap::new(), spells: default() }
     }
 
     pub(super) fn gate(&self, window: &str, widget: &Widget) -> Gate {
@@ -279,6 +287,9 @@ impl WindowControls {
             Section::InventoryReturn => self.inventory != 0,
             Section::Character(page) => self.character == page,
             Section::Page(group, mask) => mask & (1 << self.pages.get(group).copied().unwrap_or(0)) != 0,
+            Section::SkillClass(class) => self.spells.class == class && self.pages.get("talents").copied().unwrap_or(0) == 0,
+            Section::Ranking(group, overall) => self.pages.get("rank_group").copied().unwrap_or(0) == group
+                && (self.pages.get("rank_category").copied().unwrap_or(0) == 0) == overall,
             Section::Hidden => false,
         }
     }
@@ -286,6 +297,7 @@ impl WindowControls {
     fn enabled(&self, button: &Button) -> bool {
         button.authored_enabled && match button.action {
             Action::Unavailable => false,
+            Action::Spell => button.spell.as_ref().is_some_and(|s| self.spells.available(s)),
             Action::Page(-1) => self.bag > 0 && self.bag < 8,
             Action::Page(1) => self.bag < 7,
             _ => true,
@@ -363,6 +375,8 @@ pub(super) struct Pointer {
     down: Option<(Entity, usize)>,
     drag: Option<Drag>,
     focus: Option<(Entity, String)>,
+    spell_drag: Option<spells::DragSpell>,
+    spell_drop: Option<spells::DropSpell>,
 }
 
 #[derive(Component)]
@@ -456,6 +470,10 @@ fn toggle(name: &str, windows: &mut Windows) {
 }
 
 pub(super) fn keyboard(keys: Res<ButtonInput<KeyCode>>, mut windows: Windows, mut pointer: ResMut<Pointer>) {
+    if keys.just_pressed(KeyCode::Escape) && pointer.spell_drag.take().is_some() {
+        pointer.down = None;
+        return;
+    }
     if pointer.focus.is_some() {
         if keys.just_pressed(KeyCode::Escape) { pointer.focus = None; }
         return;
@@ -536,9 +554,12 @@ pub(super) fn interact(
     let hovered = top.filter(|_| pointer.drag.is_none()).and_then(|(e, b, _)| b.map(|i| (e, i)));
     let hit = hovered.filter(|(e, index)| windows.get(*e).is_ok_and(|(_, _, c, _, _)| c.enabled(&c.buttons[*index])));
     if !window.focused || blocked || pointer.down.is_some_and(|(e, _)| !windows.get(e).is_ok_and(|(_, _, _, v, _)| *v != Visibility::Hidden)) { pointer.down = None; }
-    let clicked = pointer.update(hit, mouse.just_pressed(MouseButton::Left), mouse.just_released(MouseButton::Left));
+    let mut clicked = pointer.update(hit, mouse.just_pressed(MouseButton::Left), mouse.just_released(MouseButton::Left));
+    if spells::drag(&mut pointer, &windows, &mouse, hit, point, window.focused && !blocked && modal.is_none()) {
+        clicked = None;
+    }
     if !mouse.pressed(MouseButton::Left) { pointer.down = None; }
-    let want: CursorIcon = if pointer.drag.is_some() { SystemCursorIcon::Grabbing }
+    let want: CursorIcon = if pointer.drag.is_some() || pointer.spell_drag.as_ref().is_some_and(|d| d.active) { SystemCursorIcon::Grabbing }
         else if !mouse.pressed(MouseButton::Left) && top.is_some_and(|(_, button, title)| title && button.is_none()) { SystemCursorIcon::Grab }
         else { SystemCursorIcon::Default }.into();
     if cursor != Some(&want) { commands.entity(primary).insert(want); }
@@ -554,7 +575,10 @@ pub(super) fn interact(
         Action::Close => *visibility = Visibility::Hidden,
         Action::Inventory(page) => controls.inventory = page,
         Action::Character(page) => controls.character = page,
-        Action::Tab(group, page) => { controls.pages.insert(group, page); }
+        Action::Tab(group, page) => {
+            controls.pages.insert(group, page);
+            if group == "rank_group" { controls.pages.insert("rank_category", 0); }
+        }
         Action::Toggle(id) => { if !controls.toggles.remove(&id) { controls.toggles.insert(id); } }
         Action::Edit(id) => { controls.entries.entry(id.clone()).or_default(); pointer.focus = Some((entity, id)); }
         Action::Choose(group, id) => { controls.choices.insert(group, id); }
@@ -573,7 +597,7 @@ pub(super) fn interact(
             }
             if let Some(e) = windows.iter().find(|(_, w, _, _, _)| w.0 == "charactersheet").map(|(e, _, _, _, _)| e) { raise(e, &mut windows); }
         }
-        Action::Unavailable => {}
+        Action::Spell | Action::Unavailable => {}
     }
 }
 
@@ -678,7 +702,7 @@ mod tests {
     fn hover_press_disabled_and_release_use_authored_states() {
         let mut c = WindowControls::new(&fixture("inventory", serde_json::json!([])));
         c.buttons.push(Button { id: "Close".into(), k: 0.0, rect: [0.0; 4], section: Section::Always,
-            action: Action::Close, authored_enabled: true, states: 31 });
+            action: Action::Close, authored_enabled: true, states: 31, spell: None });
         assert_eq!(c.state(0), State::Normal);
         c.hovered = Some(0);
         assert_eq!(c.state(0), State::Hover);
@@ -781,12 +805,106 @@ mod tests {
 
     #[test]
     #[ignore = "requires locally converted game UI assets"]
+    fn spell_grid_matches_class_and_drag_owns_release_and_cancellation() {
+        let (mut app, primary, roots, layouts) = exported_app();
+        let book = roots["skilltalentswindow"];
+        let bar = roots["bottombar"];
+        *app.world_mut().get_mut::<Visibility>(book).unwrap() = Visibility::Inherited;
+        *app.world_mut().get_mut::<Visibility>(bar).unwrap() = Visibility::Inherited;
+        let cards: Vec<_> = layouts["skilltalentswindow"].widgets.iter().filter(|w| w.spell.is_some()).collect();
+        for (class, count) in [(0, 15), (1, 18), (2, 16), (3, 16)] {
+            let mut c = app.world_mut().get_mut::<WindowControls>(book).unwrap();
+            c.spells.class = class;
+            let visible: Vec<_> = cards.iter().filter(|w| c.visible(&c.gate("skilltalentswindow", w))).collect();
+            assert!(visible.iter().all(|w| w.spell.as_ref().unwrap().class_id == class));
+            assert_eq!(visible.iter().filter(|w| w.spell.as_ref().unwrap().wire.is_some()).count(), count);
+        }
+        app.world_mut().get_mut::<WindowControls>(book).unwrap().spells.class = 1;
+        app.update();
+        let spell = cards.iter().find(|w| w.spell.as_ref().unwrap().id == "magicmissile").unwrap();
+        let center = |rect: [f32; 4]| Vec2::new((rect[0] + rect[2]) / 2.0, (rect[1] + rect[3]) / 2.0);
+        let start = center(spell.rect);
+        let target = center(app.world().get::<WindowControls>(bar).unwrap().buttons.iter().find(|b| b.action == Action::Skill(2)).unwrap().rect);
+        let pointer_step = |app: &mut App, point, press, release| {
+            app.world_mut().get_mut::<Window>(primary).unwrap().set_cursor_position(Some(point));
+            if press { app.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(MouseButton::Left); }
+            if release { app.world_mut().resource_mut::<ButtonInput<MouseButton>>().release(MouseButton::Left); }
+            app.update();
+            app.world_mut().resource_mut::<ButtonInput<MouseButton>>().clear();
+        };
+        pointer_step(&mut app, start, true, false);
+        pointer_step(&mut app, target, false, false);
+        assert!(app.world().resource::<Pointer>().spell_drag.as_ref().is_some_and(|d| d.active));
+        assert!(app.world().resource::<crate::ui_input::UiInput>().blocks(MouseButton::Left));
+        pointer_step(&mut app, target, false, true);
+        assert!(app.world_mut().resource_mut::<Pointer>().spell_drop.take().is_some());
+        assert!(app.world().resource::<SkillClicks>().0.is_none(), "dropping must not cast");
+
+        // Releasing outside the bar must leave the assignment unchanged.
+        pointer_step(&mut app, start, true, false);
+        pointer_step(&mut app, Vec2::new(10.0, 730.0), false, true);
+        assert!(app.world().resource::<Pointer>().spell_drop.is_none());
+        // The lock blocks edits, while normal slot clicks still cast.
+        app.world_mut().get_mut::<WindowControls>(bar).unwrap().locked = true;
+        pointer_step(&mut app, start, true, false);
+        pointer_step(&mut app, target, false, true);
+        assert!(app.world().resource::<Pointer>().spell_drop.is_none());
+        click_control(&mut app, primary, bar, "/QuickSlot1");
+        assert_eq!(app.world_mut().resource_mut::<SkillClicks>().0.take(), Some(2));
+        app.world_mut().get_mut::<WindowControls>(bar).unwrap().locked = false;
+        // Escape cancels the drag without closing the spell book.
+        pointer_step(&mut app, start, true, false);
+        pointer_step(&mut app, target, false, false);
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::Escape);
+        app.update();
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().reset(KeyCode::Escape);
+        pointer_step(&mut app, target, false, true);
+        assert!(app.world().resource::<Pointer>().spell_drop.is_none());
+        assert_eq!(*app.world().get::<Visibility>(book).unwrap(), Visibility::Inherited);
+        // Losing focus also cancels a captured drag.
+        pointer_step(&mut app, start, true, false);
+        app.world_mut().get_mut::<Window>(primary).unwrap().focused = false;
+        pointer_step(&mut app, target, false, true);
+        assert!(app.world().resource::<Pointer>().spell_drop.is_none());
+    }
+
+    #[test]
+    #[ignore = "requires locally converted game UI assets"]
+    fn current_rankings_select_one_group_and_one_header() {
+        let (mut app, primary, roots, layouts) = exported_app();
+        assert!(!roots.contains_key("pvpleaderboards"));
+        let root = roots["leaderboards"];
+        *app.world_mut().get_mut::<Visibility>(root).unwrap() = Visibility::Inherited;
+        app.update();
+        for group in 0..3 {
+            click_control(&mut app, primary, root, &format!("/RankGroupButton{group}"));
+            let c = app.world().get::<WindowControls>(root).unwrap();
+            for (i, part) in ["PvP", "PvE", "Event"].into_iter().enumerate() {
+                let w = layouts["leaderboards"].widgets.iter().find(|w| w.id.ends_with(&format!("/{part}"))).unwrap();
+                assert_eq!(c.visible(&c.gate("leaderboards", w)), group == i);
+            }
+            let headers: Vec<_> = layouts["leaderboards"].widgets.iter().filter(|w|
+                ["/DefaultTableColumnHeading", "/Header", "/HeaderOverallRanking"].iter().any(|suffix| w.id.ends_with(suffix)))
+                .filter(|w| c.visible(&c.gate("leaderboards", w))).collect();
+            assert_eq!(headers.len(), 1);
+            assert!(headers[0].id.ends_with("/HeaderOverallRanking"));
+            if group != 2 {
+                click_control(&mut app, primary, root, &format!("/RankGroup{group}/RankCategory1"));
+                let c = app.world().get::<WindowControls>(root).unwrap();
+                assert!(c.section_visible(Section::Ranking(group as u8, false)));
+                assert!(!c.section_visible(Section::Ranking(group as u8, true)));
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires locally converted game UI assets"]
     fn every_navigation_shortcut_opens_its_own_panel_and_tracks_close() {
         let (mut app, primary, roots, _) = exported_app();
         app.update();
         for (button, window) in [("char", "charactersheet"), ("quest", "questlog"), ("skills", "skilltalentswindow"),
             ("inventory", "inventory"), ("dealer", "shopwindow"), ("travelmap", "travelmap"), ("minimap", "locationmap"),
-            ("socialscreen", "socialscreen"), ("pvp", "matchmakingwindow"), ("pvpleaderboards", "pvpleaderboards"), ("events", "eventwindow")] {
+            ("socialscreen", "socialscreen"), ("pvp", "matchmakingwindow"), ("pvpleaderboards", "leaderboards"), ("events", "eventwindow")] {
             click_control(&mut app, primary, roots["ingamemenu"], &format!("/{button}"));
             assert_eq!(*app.world().get::<Visibility>(roots[window]).unwrap(), Visibility::Inherited, "{button}");
             let c = app.world().get::<WindowControls>(roots["ingamemenu"]).unwrap();
@@ -809,7 +927,7 @@ mod tests {
         for (window, suffix, group, page) in [("questlog", "/DailyAchievementsTab", "quest", 3),
             ("skilltalentswindow", "/KnowledgeTab", "talents", 1),
             ("socialscreen", "/TabButtonFriends", "social", 1), ("shopwindow", "/ShopTab3", "shop", 2),
-            ("pvpleaderboards", "/Tab_HonorPoints", "leaderboard", 4), ("matchmakingwindow", "/TabButton02", "matchmaking", 1)] {
+            ("leaderboards", "/RankGroupButton1", "rank_group", 1), ("matchmakingwindow", "/TabButton02", "matchmaking", 1)] {
             *app.world_mut().get_mut::<Visibility>(roots[window]).unwrap() = Visibility::Inherited;
             app.update();
             click_control(&mut app, primary, roots[window], suffix);

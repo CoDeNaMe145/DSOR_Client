@@ -136,6 +136,36 @@ Ingredient category and rarity selection retain their selected button state.
 Hotbar skill clicks enter the existing skill casting path, with its ordinary
 resource/cooldown validation.
 
+`tools/ui_catalog.py` instantiates the current spell book from
+`_Template_SkillTalent` joined to `_Template_SkillUIConfig` and `_Template_Skill`.
+Pass `--database <server>/data/db/static.db4` to `tools/export_ui.py` to use the
+server's exact release data. Rows/columns come from that table, and wire skill
+indices are `rowid - 1`. The four class grids contain 15/18/16/16 live active
+spells plus their passive talent cards. Only the local character's grid and
+class backdrop are visible. The generic blue overlay and old preset strip are
+excluded. Names use `db.skill2.table` / `db.skilltalent2.table` localization.
+
+Drag an available spell onto LMB, RMB or keys 1–5. Dragging an existing hotbar
+spell swaps its slot with the target; dropping elsewhere or pressing Escape
+cancels. A four-reference-pixel threshold keeps ordinary slot clicks working.
+The lock button prevents edits; the bar starts unlocked. Ghost icons and
+tooltips do not intercept input. Online availability comes from `SkillBookInfo`
+(owned and not hidden), while offline play allows all class spells for testing.
+`QuickSlotsInfo` is retained in full, including item slots and inactive bars.
+Each completed edit sends `QuickSlots` (0x51) with exactly 17 slots and bar index
+0. An incomplete server snapshot cannot be edited. The server persists this
+command; the client updates the displayed bar immediately.
+
+The navigation audit selects `leaderboards` (PvP/PvE/event), `skilltalentswindow`
+and `questlog`; the older `pvpleaderboards`, `skillwindow2`, `talentwindow`,
+`questscreen` and `questscreen2` are not loaded by runtime navigation. Inventory,
+character sheet, social, shop, matchmaking and events each use their named
+current layout. Ranking categories are cloned from the current templates using
+`_Template_LeaderBoardCategory` and `RankPriority`. Only the selected group's
+table and the appropriate overall/category header render. Class filters and
+category selection work locally; rows, seasonal rewards and pagination await
+the ranking service.
+
 Visible artwork and buttons populate `UiRegions` using the same page/state
 gates as rendering. Hidden pages cannot intercept input. These regions integrate
 with `ui_input` so a UI press remains captured through its release and cannot

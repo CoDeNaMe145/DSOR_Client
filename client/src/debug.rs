@@ -328,6 +328,7 @@ impl Ctx<'_, '_> {
                 // Re-made where the current one stands; its own sequences end with it.
                 let (pos, facing) = self.locals.iter().next().map(|(_, g, l)| (g.translation(), l.facing)).unwrap_or((at, 0.0));
                 net.bar = crate::net::default_bar(class);
+                net.quickbars.bars.clear();
                 net.queue_local(CharacterDesc { class, gender, ..default() }, pos, facing);
                 debug.status = format!("playing {} ({})", CLASSES[class as usize], if gender == 1 { "female" } else { "male" });
             }
@@ -337,6 +338,7 @@ impl Ctx<'_, '_> {
                     net.bar.resize(2, None);
                 }
                 net.bar[1] = Some(id.clone());
+                if net.offline { net.quickbars.bars.clear(); }
                 debug.status = format!("right button: {id}");
             }
         }
