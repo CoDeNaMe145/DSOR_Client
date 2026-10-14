@@ -27,6 +27,7 @@ use bevy::animation::AnimatedBy;
 use bevy::prelude::*;
 use bevy::world_serialization::WorldInstanceReady;
 use serde::Deserialize;
+use crate::appearance::Equipment;
 
 /// The blend between two animations.
 const BLEND: Duration = Duration::from_millis(150);
@@ -49,9 +50,28 @@ pub struct AnimTable(pub HashMap<String, HashMap<String, String>>);
 pub struct PartList(pub Vec<String>);
 
 /// Item template -> its Skin parts (tools/character_tables.py, from _Template_Item).
-#[derive(Asset, TypePath, Deserialize, Debug)]
-#[serde(transparent)]
-pub struct ItemSkins(pub HashMap<String, Vec<String>>);
+#[derive(Asset, TypePath, Deserialize, Debug, Default)]
+#[serde(from = "SkinTable")]
+pub struct ItemSkins {
+    pub items: HashMap<String, Vec<String>>,
+    pub appearances: HashMap<String, Vec<String>>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum SkinTable {
+    Current { items: HashMap<String, Vec<String>>, appearances: HashMap<String, Vec<String>> },
+    Legacy(HashMap<String, Vec<String>>),
+}
+
+impl From<SkinTable> for ItemSkins {
+    fn from(table: SkinTable) -> Self {
+        match table {
+            SkinTable::Current { items, appearances } => Self { items, appearances },
+            SkinTable::Legacy(items) => Self { items, appearances: default() },
+        }
+    }
+}
 
 #[derive(Default, TypePath)]
 pub struct ItemSkinsLoader;
@@ -108,8 +128,8 @@ pub struct CharacterDesc {
     pub class: u8,
     /// 0 male, 1 female.
     pub gender: u8,
-    /// (equipment slot, Skin part names) of every worn item.
-    pub equipment: Vec<(u8, Vec<String>)>,
+    /// Visible worn slots, their Skin parts and optional RGBA dye.
+    pub equipment: Vec<Equipment>,
     /// ArmamentState: 0 empty, 1/2 one-hand small (+off hand), 3/4 one-hand large
     /// (+off hand), 5 two-hand.
     pub armament: i8,
@@ -175,7 +195,7 @@ impl CharacterDesc {
         }
         let class = self.class_name();
         let suffix = if class == "ranger" {
-            if self.armament >= 3 { "large_weapon" } else { "small_weapon" }
+            if self.armament == 5 { "large_weapon" } else { "small_weapon" }
         } else {
             match self.armament {
                 2 | 4 => "1h_weapon_shield",
@@ -188,16 +208,24 @@ impl CharacterDesc {
     }
 
     /// Every part to dress, resolved against the parts that exist.
-    fn parts(&self, exists: &dyn Fn(&str) -> bool) -> Vec<String> {
+    fn parts(&self, exists: &dyn Fn(&str) -> bool) -> Vec<(String, Option<[f32; 4]>)> {
         if let Some(look) = &self.look {
-            return look.parts.iter().filter(|p| exists(p)).cloned().collect();
+            return look.parts.iter().filter(|p| exists(p)).map(|p| (p.clone(), None)).collect();
         }
         let (class, gender) = (self.class_name(), self.gender_name());
         let mut out = Vec::new();
+        let resolve = |skin: &str| {
+            let female = format!("{skin}_female");
+            if self.gender == 1 && exists(&female) { Some(female) }
+            else if exists(skin) { Some(skin.to_owned()) }
+            else { None }
+        };
+        let worn: Vec<_> = self.equipment.iter().flat_map(|e| e.skin_parts.iter()
+            .filter_map(|skin| resolve(skin).map(|part| (part, e.colour)))).collect();
         for p in BODY_PARTS {
             for candidate in [format!("{class}_{gender}_{p}"), format!("{gender}_{p}")] {
                 if exists(&candidate) {
-                    out.push(candidate);
+                    out.push((candidate, None));
                     break;
                 }
             }
@@ -208,30 +236,24 @@ impl CharacterDesc {
         //   lists the body parts plus mage_torso_00 and mage_boots_00 (rangers also
         //   ranger_gloves_00) -- characters/uniskel/outfits.json.
         // FAILURE (2026-10-06): "mon perso est en slibard".
-        for kind in ["torso", "boots", "gloves"] {
-            let covered = self.equipment.iter().flat_map(|(_, skins)| skins).any(|s| s.contains(kind));
+        for (slot, kind) in [(2, "torso"), (4, "boots"), (3, "gloves")] {
+            // A missing converted mesh must not also remove the base clothing.
+            let covered = self.equipment.iter().any(|e| e.slot == slot && e.skin_parts.iter().any(|p| resolve(p).is_some()));
             if covered {
                 continue;
             }
             let base = format!("{class}_{kind}_00");
             let female = format!("{base}_female");
             if self.gender == 1 && exists(&female) {
-                out.push(female);
+                out.push((female, None));
             } else if exists(&base) {
-                out.push(base);
+                out.push((base, None));
             }
         }
-        for (_slot, skins) in &self.equipment {
-            for skin in skins {
-                let female = format!("{skin}_female");
-                if self.gender == 1 && exists(&female) {
-                    out.push(female);
-                } else if exists(skin) {
-                    out.push(skin.clone());
-                } else {
-                    debug!("no part named {skin}");
-                }
-            }
+        for (part, colour) in worn {
+            // A two-handed item appears in both remote hand slots, but its mesh
+            // belongs to the character only once.
+            if !out.iter().any(|(name, _)| name == &part) { out.push((part, colour)); }
         }
         out
     }
@@ -382,6 +404,16 @@ struct SkeletonOf(Entity, u32);
 #[derive(Component)]
 struct PartOf(Entity, u32);
 
+/// Only these children belong to the outfit; attachments survive a redress.
+#[derive(Component)]
+pub struct CharacterVisual;
+
+#[derive(Component)]
+struct EquipmentDye([f32; 4]);
+
+#[derive(Component)]
+struct EquipmentDyed;
+
 #[derive(Resource)]
 pub struct CharacterLibrary {
     pub anims: Handle<AnimTable>,
@@ -390,6 +422,13 @@ pub struct CharacterLibrary {
     skeletons: HashMap<&'static str, Handle<Gltf>>,
     /// The skeletons' body shapes, for the players' own (see body_variation).
     variations: HashMap<&'static str, Handle<crate::npc::Variations>>,
+}
+
+#[cfg(test)]
+impl CharacterLibrary {
+    pub(crate) fn for_test(item_skins: Handle<ItemSkins>) -> Self {
+        Self { item_skins, anims: default(), parts: default(), skeletons: default(), variations: default() }
+    }
 }
 
 pub struct CharacterPlugin;
@@ -403,7 +442,7 @@ impl Plugin for CharacterPlugin {
             .register_asset_loader(AnimTableLoader)
             .register_asset_loader(PartListLoader)
             .add_systems(Startup, load_library)
-            .add_systems(Update, (build_characters, revive_skeletons, keep_parts_bound, drive_animations, check_skins, prune_idle_targets).chain())
+            .add_systems(Update, (build_characters, revive_skeletons, keep_parts_bound, apply_equipment_dyes, drive_animations, check_skins, prune_idle_targets).chain())
             .add_systems(
                 PostUpdate,
                 apply_variations.after(bevy::app::AnimationSystems).before(TransformSystems::Propagate),
@@ -490,21 +529,47 @@ fn build_characters(
         //   arrived while the player walked on ("je suis un fantome qui se deplace").
         commands.spawn((
             SkeletonOf(entity, character.generation),
+            CharacterVisual,
             WorldAssetRoot(skeleton_scene),
             ChildOf(entity),
             Transform::default(),
             Visibility::default(),
         ));
-        for part in parts {
+        for (part, colour) in parts {
             let scene = assets.load(GltfAssetLabel::Scene(0).from_asset(format!("characters/{skel}/parts/{part}.glb")));
-            commands.spawn((
+            let mut entity = commands.spawn((
                 PartOf(entity, character.generation),
+                CharacterVisual,
                 WorldAssetRoot(scene),
                 ChildOf(entity),
                 Name::new(part),
                 Transform::default(),
                 Visibility::default(),
             ));
+            if let Some(colour) = colour { entity.insert(EquipmentDye(colour)); }
+        }
+    }
+}
+
+/// Clone the material for this mesh: modifying a loaded asset would dye every
+/// player wearing it. The existing character shader applies colour through its
+/// authored dye mask, leaving skin, metal trim and glow materials alone.
+fn apply_equipment_dyes(
+    mut commands: Commands,
+    parts: Query<(Entity, &EquipmentDye)>,
+    children: Query<&Children>,
+    meshes: Query<&MeshMaterial3d<crate::surfaces::NebulaMaterial>, Without<EquipmentDyed>>,
+    mut materials: ResMut<Assets<crate::surfaces::NebulaMaterial>>,
+) {
+    for (part, dye) in &parts {
+        for entity in children.iter_descendants(part) {
+            let Ok(handle) = meshes.get(entity) else { continue };
+            let Some(original) = materials.get(&handle.0) else { continue };
+            if original.extension.params.p0.x != crate::surfaces::Kind::Character as u32 as f32 { continue; }
+            let mut material = original.clone();
+            // surface.wgsl mixes character dyes in gamma space, like Nebula.
+            material.extension.params.p1 = Vec4::from_array(dye.0);
+            commands.entity(entity).insert((MeshMaterial3d(materials.add(material)), EquipmentDyed));
         }
     }
 }
@@ -1036,12 +1101,14 @@ pub fn redress(
     character: &mut Character,
     anim: &mut CharacterAnim,
     children: Option<&Children>,
-    equipment: Vec<(u8, Vec<String>)>,
+    visual_roots: &Query<(), With<CharacterVisual>>,
+    equipment: Vec<Equipment>,
     armament: i8,
 ) {
+    if character.desc.equipment == equipment && character.desc.armament == armament { return; }
     if let Some(children) = children {
         for c in children.iter() {
-            commands.entity(c).despawn();
+            if visual_roots.contains(c) { commands.entity(c).despawn(); }
         }
     }
     character.desc.equipment = equipment;
@@ -1146,5 +1213,58 @@ fn prune_idle_targets(
         if idle {
             commands.entity(e).remove::<AnimatedBy>();
         }
+    }
+}
+
+#[cfg(test)]
+mod appearance_tests {
+    use super::*;
+
+    #[test]
+    fn parts_use_gender_variants_deduplicate_two_hand_meshes_and_restore_base_clothes() {
+        let available = ["mage_female_head", "mage_torso_00_female", "mage_boots_00", "robe_female", "staff"];
+        let exists = |s: &str| available.contains(&s);
+        let mut desc = CharacterDesc { class: 1, gender: 1, ..default() };
+        desc.equipment = vec![Equipment { slot: 2, skin_parts: vec!["missing_torso".into()], ..default() }];
+        assert!(desc.parts(&exists).iter().any(|(p, _)| p == "mage_torso_00_female"));
+        desc.equipment = vec![Equipment { slot: 2, skin_parts: vec!["robe".into()], colour: Some([1.0, 0.0, 0.0, 1.0]) },
+            Equipment { slot: 5, skin_parts: vec!["staff".into()], ..default() },
+            Equipment { slot: 6, skin_parts: vec!["staff".into()], ..default() }];
+        let parts = desc.parts(&exists);
+        assert!(!parts.iter().any(|(p, _)| p == "mage_torso_00_female"));
+        assert_eq!(parts.iter().filter(|(p, _)| p == "staff").count(), 1);
+        assert!(parts.contains(&("robe_female".into(), Some([1.0, 0.0, 0.0, 1.0]))));
+        assert!(parts.contains(&("mage_female_head".into(), None)));
+        desc.class = 2;
+        desc.armament = 3;
+        assert_eq!(desc.animation_set(), "ranger_female_small_weapon");
+        desc.armament = 5;
+        assert_eq!(desc.animation_set(), "ranger_female_large_weapon");
+    }
+
+    #[test]
+    fn dyes_are_per_instance_mask_parameters_and_retry_delayed_materials() {
+        use crate::surfaces::{NebulaMaterial, NebulaSurface, Kind, SurfaceParams};
+        let mut app = App::new();
+        app.init_resource::<Assets<NebulaMaterial>>().add_systems(Update, apply_equipment_dyes);
+        let original = app.world_mut().resource_mut::<Assets<NebulaMaterial>>().add(NebulaMaterial {
+            base: default(), extension: NebulaSurface { params: SurfaceParams { p0: Vec4::new(Kind::Character as u32 as f32, 0.0, 0.0, 0.0), ..default() }, cube: None, layer: None, mask: None },
+        });
+        let plain = app.world_mut().spawn(MeshMaterial3d(original.clone())).id();
+        let root = app.world_mut().spawn(EquipmentDye([0.5, 0.0, 0.0, 0.75])).id();
+        let dyed = app.world_mut().spawn((MeshMaterial3d(original.clone()), ChildOf(root))).id();
+        app.update();
+        let handle = app.world().get::<MeshMaterial3d<NebulaMaterial>>(dyed).unwrap().0.clone();
+        assert_ne!(handle, original);
+        assert_eq!(app.world().get::<MeshMaterial3d<NebulaMaterial>>(plain).unwrap().0, original);
+        let materials = app.world().resource::<Assets<NebulaMaterial>>();
+        assert_eq!(materials.get(&original).unwrap().extension.params.p1, Vec4::ZERO);
+        assert_eq!(materials.get(&handle).unwrap().extension.params.p1, Vec4::new(0.5, 0.0, 0.0, 0.75));
+        app.update();
+        assert_eq!(app.world().get::<MeshMaterial3d<NebulaMaterial>>(dyed).unwrap().0, handle, "no fresh material each frame");
+        // A later scene instance gets its own material when the child arrives.
+        let late = app.world_mut().spawn((MeshMaterial3d(original.clone()), ChildOf(root))).id();
+        app.update();
+        assert_ne!(app.world().get::<MeshMaterial3d<NebulaMaterial>>(late).unwrap().0, original);
     }
 }

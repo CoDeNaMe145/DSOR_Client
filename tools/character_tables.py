@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build the character tables the client reads, from the client's own data.
 
-Usage: character_tables.py <export_win32> <assets>
+Usage: character_tables.py <export_win32> <assets> [--database static.db4]
 
 Writes:
   <assets>/characters/anims.json   animation set -> state -> clip name, as
@@ -14,7 +14,13 @@ Writes:
 import json, os, struct, sys
 import xml.etree.ElementTree as ET
 
-src, assets = sys.argv[1], sys.argv[2]
+import argparse
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('source')
+parser.add_argument('assets')
+parser.add_argument('--database')
+args = parser.parse_args()
+src, assets = args.source, args.assets
 NS = {"ss": "urn:schemas-microsoft-com:office:spreadsheet"}
 IDX = "{urn:schemas-microsoft-com:office:spreadsheet}Index"
 
@@ -92,14 +98,9 @@ for skel in ("uniskel", "uniskel_dwarf"):
             json.dump(names, f)
         print(f"{skel}/parts.json: {len(names)} parts")
 
-# Item template -> its Skin parts (_Template_Item.Skin, ';'-separated), so the client
-# can dress its own player from the inventory, which names templates, not skins.
+# Use the same static database as the server, including appearance overrides and
+# EquipmentSkinId indirection in releases whose direct Skin columns are empty.
 import sqlite3
-db = sqlite3.connect(os.path.join(src, "db", "static.db4"))
-skins = {
-    template: [p.strip() for p in skin.split(";") if p.strip()]
-    for template, skin in db.execute("select Id, Skin from _Template_Item where Skin <> ''")
-}
-with open(os.path.join(assets, "characters", "item_skins.json"), "w") as f:
-    json.dump(skins, f, separators=(",", ":"))
-print(f"item_skins.json: {len(skins)} items")
+from equipment_visuals import export_equipment
+with sqlite3.connect(args.database or os.path.join(src, "db", "static.db4")) as db:
+    export_equipment(db, assets)

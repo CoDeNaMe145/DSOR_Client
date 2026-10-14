@@ -397,4 +397,6 @@ if tex.missing:
     print("missing textures:", sorted(tex.missing))
 if "inventory" in only:
     from inventory_catalog import export_inventory
+    from equipment_visuals import export_equipment
     print("inventory catalog (items, collection entries):", export_inventory(catalog, tex, loca, assets))
+    export_equipment(catalog, assets)

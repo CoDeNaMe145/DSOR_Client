@@ -901,7 +901,7 @@ pub struct NewRemotePlayer {
     pub max_health: u32,
     /// +248.
     pub unknown_u32_248: u32,
-    /// +252: armament.
+    /// Legacy name: release261 sends player kind here (5), not hand armament.
     pub armament: i8,
     /// +256.
     pub faction: Faction,
@@ -1004,7 +1004,7 @@ pub struct RemotePlayerInfo {
     pub max_health: u32,
     /// +0xC0.
     pub unknown_u32_c0: u32,
-    /// +0xC4.
+    /// +0xC4. Legacy name: release261 player kind (5); use animation_set for pose.
     pub armament: i8,
     /// +0xC8.
     pub faction: Faction,
