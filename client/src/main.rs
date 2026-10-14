@@ -16,6 +16,8 @@ mod dump;
 mod exits;
 mod highlight;
 mod hud;
+mod inventory;
+mod corrections;
 mod anim_cull;
 mod refraction;
 mod lighting;

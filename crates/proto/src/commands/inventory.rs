@@ -70,6 +70,7 @@ pub struct ItemStatistic {
     pub value: f32,
     /// The enchantment's level (stored at the entry's +4 by 0x980AFC); at least 1.
     pub kind: i8,
+    /// Number of items in this stack (production amount).
     pub third: u32,
     pub fourth: u32,
     /// The attribute's name.
@@ -97,9 +98,9 @@ pub struct ItemInfo {
     pub twentieth: u32,
     pub twenty_eighth: u32,
     pub named: String,
-    /// Current durability (ItemInfo+40; GameItem+52).
+    /// Item level in release261 (production item_level).
     pub durability: u32,
-    /// GameItem::SetBaseLevel; must be above 0.
+    /// Stack sale value in release261 (production field_30).
     pub level: u32,
     pub fifty_second: u32,
     pub flag_0: bool,

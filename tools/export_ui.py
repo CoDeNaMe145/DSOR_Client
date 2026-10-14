@@ -72,8 +72,8 @@ RUNTIME = re.compile(
 
 # Slots the game clones from a template over an area, row by row: (window,
 # template id, area id). The template itself is a runtime ghost ("?" icon).
-GRIDS = [("inventory", "TemplateSlot", "icon_area")]
-GRID_FOOTER = 45.0  # the area's bottom left free for the page buttons
+GRIDS = [("inventory", "TemplateSlot", "icon_area"),
+         ("inventory", "IngredientBag/Label_bg/icon_area/TemplateSlot", "IngredientBag/Label_bg/icon_area")]
 
 
 def grid(widgets, template, area):
@@ -88,7 +88,7 @@ def grid(widgets, template, area):
     step_x, step_y = (r - l) + 2.0, (b - top) + 2.0
     al, at, ar, ab = a["rect"]
     cols = int((ar - al + 2.0) // step_x)
-    rows = int((ab - GRID_FOOTER - top) // step_y)
+    rows = int((ab - top + 2.0) // step_y)
     # Fit the grid to the AREA, not the template's arbitrary authored offset.
     # The inventory template starts 11px inside its area; using it as the left
     # boundary lost the seventh column in the current client's assets.
@@ -217,6 +217,10 @@ def export(name):
     def walk(node, prefix, parent_rect, pk, hidden_parent, button=None, state=None):
         hide_idx = gx.exclusive(node)
         children = list(enumerate(node.children))
+        if name == "inventory" and prefix.endswith("/IngredientBag/Label_bg"):
+            # The authored background comes last in XML but belongs behind
+            # the category/tier controls and the collection slots.
+            children.sort(key=lambda pair: pair[1].attrs.get("id") != "Artwork")
         if name == "skilltalentswindow":
             # These authored backgrounds appear after the controls in the XML;
             # the original window controller sends them behind its content.
@@ -296,6 +300,13 @@ def export(name):
             walk(c, wid, (l, t, r, b), ks, hidden, owner, visual_state)
 
     walk(doc, "", (0.0, 0.0, BASE_W, BASE_H), (0.0, 1.0), False)
+    if name == "inventory":
+        for w in widgets:
+            if w["id"].endswith("/unten/Label_bg/Label_empty/TextLabel_message"):
+                w["text"].update(text="Libérez des cases pour récupérer automatiquement ces objets.", key="")
+            if "/IngredientBag/" in w["id"] and any(part in w["id"].split('/') for part in ("icon_area_cores", "RecipesInfotextArea")):
+                # Alternative runtime templates must not cover the tier buttons.
+                w["hidden"] = True
     if name == "skilltalentswindow":
         for w in widgets:
             # These four vertical progression models are not supplied yet.
@@ -384,3 +395,6 @@ for lang in ("fr", "en"):
         json.dump({k: table[k] for k in sorted(used_keys) if k in table}, f, ensure_ascii=False, indent=0)
 if tex.missing:
     print("missing textures:", sorted(tex.missing))
+if "inventory" in only:
+    from inventory_catalog import export_inventory
+    print("inventory catalog (items, collection entries):", export_inventory(catalog, tex, loca, assets))

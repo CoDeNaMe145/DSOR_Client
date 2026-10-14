@@ -78,7 +78,7 @@ const MENU_WINDOWS: [(&str, KeyCode, f32); 4] = [
 const NAV_WINDOWS: [&str; 8] = ["questlog", "travelmap", "locationmap", "shopwindow", "socialscreen", "leaderboards", "matchmakingwindow", "eventwindow"];
 
 fn is_menu(name: &str) -> bool {
-    MENU_WINDOWS.iter().any(|(n, _, _)| *n == name) || NAV_WINDOWS.contains(&name)
+    MENU_WINDOWS.iter().any(|(n, _, _)| *n == name) || NAV_WINDOWS.contains(&name) || name == "unstackwindow"
 }
 
 // -- data ------------------------------------------------------------------------
@@ -352,14 +352,17 @@ impl Plugin for UiPlugin {
             .init_asset::<SkillIcons>()
             .init_asset_loader::<LayoutLoader>()
             .init_asset_loader::<SkillIconsLoader>()
+            .init_asset::<controls::items::Catalog>()
+            .init_asset_loader::<controls::items::CatalogLoader>()
+            .init_resource::<controls::items::Interaction>()
             .init_resource::<Screen>()
             .init_resource::<Figures>()
             .init_resource::<controls::Pointer>()
             .init_resource::<SkillClicks>()
-            .add_systems(Startup, setup)
+            .add_systems(Startup, (setup, controls::items::setup))
             .add_systems(
                 Update,
-                (match_scene_camera, spawn_windows, follow_screen, controls::spells::sync, controls::keyboard, controls::interact, controls::spells::apply_drop, read_figures, controls::edit_text, (update_fills, update_values, update_slots, local_map::update), controls::paint, controls::spells::overlay, show_hover_window).chain().run_if(crate::loading::gameplay_ready),
+                (match_scene_camera, spawn_windows, follow_screen, controls::spells::sync, controls::items::sync, controls::keyboard, controls::interact, controls::spells::apply_drop, read_figures, controls::edit_text, controls::items::input, (update_fills, update_values, update_slots, local_map::update), controls::paint, controls::items::render, (controls::spells::overlay, controls::items::overlay), show_hover_window).chain().run_if(crate::loading::gameplay_ready),
             );
     }
 }
@@ -383,6 +386,7 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>) {
         RenderLayers::layer(LAYER),
     ));
     let mut loaded = Loaded { icons: assets.load("interface/skills.icons.json"), ..default() };
+    loaded.layouts.push((assets.load("interface/unstackwindow.ui.json"), 600.0, None));
     for (name, z) in HUD_WINDOWS {
         loaded.layouts.push((assets.load(format!("interface/{name}.ui.json")), z, None));
     }

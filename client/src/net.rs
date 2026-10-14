@@ -178,6 +178,8 @@ pub struct Net {
     pub bar: Vec<Option<String>>,
     /// Preserve all slot kinds and bars when saving an edited bar (0x51).
     pub quickbars: dsor_proto::commands::inventory::QuickSlotsInfo,
+    pub inventory: crate::inventory::InventoryState,
+    pub corrections: crate::corrections::Corrections,
     pub skill_book: Option<dsor_proto::commands::inventory::SkillBookInfo>,
     /// Skills other actors used, relayed by the server (73-77), for crate::skills.
     pub skill_events: Vec<SkillEvent>,
@@ -380,6 +382,40 @@ mod smoothing_tests {
         LocalPlayer { actor: 1, target, facing: 0.0, last_sent_tick: 0, snapped: true, casting: 0.0 }
     }
 
+    #[test]
+    fn forced_transform_replaces_position_and_stops_stale_movement() {
+        let mut app = App::new();
+        app.init_resource::<Time<Real>>().add_systems(Update, apply_corrections);
+        start_offline(app.world_mut(), 1, 0);
+        let mut animation = CharacterAnim::default();
+        animation.state = AnimState::Run;
+        let actor = app.world_mut().spawn((Transform::default(), local(Some(Vec3::splat(100.0))), animation)).id();
+        let remote = app.world_mut().spawn((Transform::default(), CharacterAnim::default(), RemotePlayer {
+            actor: 2, target: Vec3::splat(200.0), facing: 0.0, still_for: 0.0, held: 3.0, held_until_tick: Some(100),
+        })).id();
+        let at = Vec3::new(14.0, 0.0, 45.0);
+        {
+            let mut net = app.world_mut().non_send_mut::<Net>();
+            net.local_actor = Some(1);
+            net.centre = Some(Vec3::new(100.0, 200.0, 300.0));
+            for id in [1, 2] {
+                on_command(&mut net, ServerCommand::ForceTransform(dsor_proto::commands::movement::ForceTransform {
+                    position: at.to_array(), heading: 1.0,
+                }), Some(id));
+            }
+        }
+        app.update();
+        for e in [actor, remote] {
+            let tf = app.world().get::<Transform>(e).unwrap();
+            assert_eq!(tf.translation, at, "force positions are absolute, not relative to the map centre");
+            assert!(tf.rotation.angle_between(Quat::from_rotation_y(1.0)) < 0.001);
+        }
+        assert!(app.world().get::<LocalPlayer>(actor).unwrap().target.is_none());
+        assert_eq!(app.world().get::<RemotePlayer>(remote).unwrap().target, at);
+        assert!(app.world().get::<RemotePlayer>(remote).unwrap().held_until_tick.is_none());
+        assert!(app.world().non_send::<Net>().corrections.pending.is_empty());
+    }
+
     fn step(app: &mut App, dt: f32) {
         app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs_f32(dt));
         app.update();
@@ -540,7 +576,7 @@ impl Plugin for NetPlugin {
                 Update,
                 (debug_hierarchy, spawn_local, dress, apply_remotes, move_remotes,
                     click_to_move.run_if(crate::loading::gameplay_ready), walk_local.run_if(crate::loading::gameplay_ready),
-                    zoom_camera.run_if(crate::loading::gameplay_ready), follow_camera, send_moves.run_if(crate::loading::gameplay_ready))
+                    apply_corrections, zoom_camera.run_if(crate::loading::gameplay_ready), follow_camera, send_moves.run_if(crate::loading::gameplay_ready))
                     .chain()
                     .in_set(NetSystems)
                     .run_if(net_exists),
@@ -604,6 +640,8 @@ pub fn start_offline(world: &mut World, class: u8, gender: u8) {
         kills: Vec::new(),
         bar: default_bar(class),
         quickbars: default(),
+        inventory: default(),
+        corrections: default(),
         skill_book: None,
         skill_events: Vec::new(),
         status_events: Vec::new(),
@@ -614,6 +652,21 @@ pub fn start_offline(world: &mut World, class: u8, gender: u8) {
         resource: None,
         health: None,
     });
+    // Explicit offline packet replay for UI inspection, with no account mutation.
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Ok(path) = std::env::var("DSOR_INVENTORY_PREVIEW") {
+        match std::fs::read(path).ok().and_then(|b| dsor_proto::commands::decode_message(&b, b.len() * 8).ok()) {
+            Some(commands) => {
+                let mut net = world.non_send_mut::<Net>();
+                for (command, _) in commands {
+                    if matches!(command, ServerCommand::InventoryInfo(_) | ServerCommand::MembershipUpdate(_)) {
+                        on_command(&mut net, command, Some(OFFLINE_ACTOR));
+                    }
+                }
+            }
+            None => warn!("DSOR_INVENTORY_PREVIEW could not read an inventory packet"),
+        }
+    }
 }
 
 /// The announcements of one batch, the last one per actor.
@@ -752,6 +805,8 @@ pub(crate) fn start_session(world: &mut World, config: NetConfig) {
         kills: Vec::new(),
         bar: Vec::new(),
         quickbars: default(),
+        inventory: default(),
+        corrections: default(),
         skill_book: None,
         skill_events: Vec::new(),
         status_events: Vec::new(),
@@ -898,6 +953,7 @@ fn pump(
                 commands.insert_resource(ConnectionFailure("The character name was refused. Choose another name in Settings and sign in again.".into()));
             }
             SessionEvent::MapAssigned { name, rule_set } => {
+                net.corrections = default();
                 loading.map(name.clone());
                 info!("map {name} (rule set {rule_set})");
                 if current.as_ref().is_some_and(|c| c.name == name) {
@@ -980,6 +1036,8 @@ fn pump(
 fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
     match command {
         ServerCommand::NewPlayer(p) => {
+            net.inventory = default();
+            net.corrections = default();
             let desc = CharacterDesc {
                 class: p.parts[0],
                 gender: p.parts[1],
@@ -1104,6 +1162,7 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
         }
         ServerCommand::DiscardMonster(_) => {
             if let Some(a) = actor {
+                net.corrections.pending.remove(&a);
                 net.requested.remove(&a);
                 net.remote_gone.push(a);
             }
@@ -1137,6 +1196,23 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
                 net.kills.push((a, k));
             }
         }
+        ServerCommand::ItemUpdate(update) => {
+            if actor.is_some() && actor != net.local_actor { return; }
+            if let Some(item) = net.inventory.items.get_mut(&update.item) {
+                item.third = update.third;
+                item.tenth = update.tenth.min(255) as u8;
+                item.durability = update.level;
+                item.fifty_second = update.unknown_u32_0;
+                item.flag_0 = update.flags[0]; item.flag_1 = update.flags[1];
+                item.twentieth = update.twentieth; item.twenty_eighth = update.twenty_eighth;
+                item.names = update.unknown_strings_0;
+                item.fourth_name = update.appearance; item.flag_2 = update.flag_2;
+                net.inventory.revision = net.inventory.revision.wrapping_add(1);
+            }
+        }
+        ServerCommand::MembershipUpdate(m) => {
+            if actor.is_none() || actor == net.local_actor { net.inventory.membership(m.tier, m.active); }
+        }
         ServerCommand::InventoryInfo(inv) => {
             // release261: the health and skill resource come here, not in
             // NewPlayer, so a skill the character cannot pay for is never cast.
@@ -1144,11 +1220,14 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
                 net.health = Some(inv.health);
                 net.resource = Some(inv.resource);
             }
+            if actor.is_some() && actor != net.local_actor { return; }
+            net.inventory.apply(inv);
+            let inv = &net.inventory.allocation;
             let worn = inv
                 .slots
                 .iter()
                 .filter_map(|(item, slots)| {
-                    inv.items.iter().find(|i| i.id == *item).map(|i| (slots.clone(), i.template.clone()))
+                    net.inventory.items.get(item).map(|i| (slots.clone(), i.template.clone()))
                 })
                 .collect::<Vec<_>>();
             info!("wearing {} item(s)", worn.len());
@@ -1162,8 +1241,14 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
         }
         ServerCommand::DiscardPlayer(_) => {
             if let Some(a) = actor {
+                net.corrections.pending.remove(&a);
                 net.requested.remove(&a);
                 net.remote_gone.push(a);
+            }
+        }
+        ServerCommand::ForceTransform(t) => {
+            if let Some(a) = actor {
+                net.corrections.force(a, Vec3::from(t.position), t.heading, Some(a) == net.local_actor);
             }
         }
         ServerCommand::Move(m) => {
@@ -1172,10 +1257,29 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
                     let at = net.wire_to_game(m.x, m.elevation, m.y);
                     let facing = m.facing as f32 / 256.0 * TAU;
                     net.remote_moves.push((a, at, facing, m.start_tick));
+                } else if net.corrections.corrected_echo(&m) {
+                    let at = net.wire_to_game(m.x, m.elevation, m.y);
+                    let facing = m.facing as f32 / 256.0 * TAU;
+                    net.corrections.force(a, at, facing, true);
                 }
             }
         }
         _ => {}
+    }
+}
+
+fn apply_corrections(
+    mut net: NonSendMut<Net>,
+    mut actors: Query<(&mut Transform, Option<&mut LocalPlayer>, Option<&mut RemotePlayer>, &mut CharacterAnim), Or<(With<LocalPlayer>, With<RemotePlayer>)>>,
+) {
+    for (mut transform, local, remote, mut animation) in &mut actors {
+        let actor = local.as_ref().map(|p| p.actor).or_else(|| remote.as_ref().map(|p| p.actor));
+        let Some((position, heading)) = actor.and_then(|a| net.corrections.pending.remove(&a)) else { continue };
+        transform.translation = position;
+        transform.rotation = Quat::from_rotation_y(heading);
+        if let Some(mut p) = local { p.target = None; p.facing = heading; p.casting = 0.0; p.snapped = true; }
+        if let Some(mut p) = remote { p.target = position; p.facing = heading; p.held = 0.0; p.held_until_tick = None; p.still_for = 1.0; }
+        if !animation.dead { animation.state = AnimState::Idle; }
     }
 }
 
@@ -1503,6 +1607,7 @@ fn send_moves(mut net: NonSendMut<Net>, time: Res<Time<Real>>, mut players: Quer
     if net.offline {
         return;
     }
+    if let ClientCommand::Move(m) = &command { net.corrections.sent(*m); }
     let (bytes, bits) = command.encode();
     net.session.send_command_with(&bytes, bits, Reliability::UnreliableSequenced);
     let _ = TICK_SECONDS;

@@ -9,6 +9,17 @@ use dsor_raknet::{BitReader, BitWriter};
 use super::wire::{counted, Body, ReadExt, WriteExt, MOST};
 use super::DecodeError;
 
+/// release261 command 113: absolute world position and yaw, followed by actor
+/// in the envelope. These floats are NOT relative to the map coordinate frame.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ForceTransform { pub position: [f32; 3], pub heading: f32 }
+impl Body for ForceTransform {
+    fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self { position: r.vec3()?, heading: r.f32()? })
+    }
+    fn encode(&self, w: &mut BitWriter) { w.vec3(self.position); w.f32(self.heading); }
+}
+
 /// MoveCommand (103), both directions: where an actor's motion starts and how long the
 /// client dead-reckons it.
 ///

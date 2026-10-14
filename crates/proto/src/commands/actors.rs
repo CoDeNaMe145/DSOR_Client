@@ -422,15 +422,14 @@ pub struct ItemUpdate {
     pub twelfth: u32,
     /// +40 -> SetBaseLevel.
     pub level: u32,
-    /// +44 -> +52, the current durability.
-    pub durability: u32,
     pub flags: [bool; 2],
     /// +52 -> +108.
     pub twentieth: u32,
     /// +56 -> +104.
     pub twenty_eighth: u32,
     pub unknown_strings_0: Vec<String>,
-    pub unknown_strings_1: Vec<String>,
+    pub appearance: String,
+    pub flag_2: bool,
 }
 
 impl Body for ItemUpdate {
@@ -443,12 +442,12 @@ impl Body for ItemUpdate {
             unknown_u32_0: r.u32()?,
             twelfth: r.u32()?,
             level: r.u32()?,
-            durability: r.u32()?,
             flags: [r.bit()?, r.bit()?],
             twentieth: r.u32()?,
             twenty_eighth: r.u32()?,
             unknown_strings_0: counted(r, MOST, "item update list", |r| r.string())?,
-            unknown_strings_1: counted(r, MOST, "item update list", |r| r.string())?,
+            appearance: r.string()?,
+            flag_2: r.bit()?,
         })
     }
     fn encode(&self, w: &mut BitWriter) {
@@ -459,13 +458,13 @@ impl Body for ItemUpdate {
         w.u32(self.unknown_u32_0);
         w.u32(self.twelfth);
         w.u32(self.level);
-        w.u32(self.durability);
         w.bit(self.flags[0]);
         w.bit(self.flags[1]);
         w.u32(self.twentieth);
         w.u32(self.twenty_eighth);
         write_counted(w, &self.unknown_strings_0, |w, s| w.string(s));
-        write_counted(w, &self.unknown_strings_1, |w, s| w.string(s));
+        w.string(&self.appearance);
+        w.bit(self.flag_2);
     }
 }
 

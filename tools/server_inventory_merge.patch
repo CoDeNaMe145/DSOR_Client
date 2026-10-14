@@ -1,0 +1,132 @@
+--- a/protocol/inventory_economy_protocol.py
++++ b/protocol/inventory_economy_protocol.py
+@@ -572,6 +572,46 @@
+             raise ValueError(f"unknown inventory storage {storage_name!r}")
+         return capacities[storage_name]
+ 
++    def merge_stacks(self, source_id: int, target_id: int, *, storage_name: str,
++                     max_stack_size: int) -> int:
++        """Merge into the selected stack, retaining any overflow in its source slot."""
++        if source_id == target_id:
++            raise ValueError("cannot merge a stack into itself")
++        source, target = self.item(source_id), self.item(target_id)
++        if storage_name not in self.STORAGE_NAMES or target_id not in getattr(self.inventory, storage_name):
++            raise ValueError("merge destination does not belong to the requested storage")
++        if not any(source_id in getattr(self.inventory, name) for name in self.STORAGE_NAMES):
++            raise ValueError("merge source must be in storage")
++        fields = ("template_id", "item_level", "field_08", "socket_count", "field_11", "field_12",
++                  "field_20", "field_1c", "field_28", "field_3c", "field_3d", "field_34",
++                  "field_38", "field_80", "field_88", "field_f8", "field_3e", "quest_id",
++                  "enchantments", "socketed_templates")
++        if any(getattr(source, f) != getattr(target, f) for f in fields):
++            raise ValueError("these items cannot share a stack")
++        moved = min(int(source.amount), int(max_stack_size) - int(target.amount))
++        if int(max_stack_size) <= 1 or moved <= 0:
++            raise ValueError("destination stack is full or not stackable")
++        old_value, old_amount = int(source.field_30), int(source.amount)
++        moved_value = old_value * moved // old_amount
++        self.consume(source_id, moved)
++        if moved < old_amount:
++            remaining = self.item(self.next_item_id - 1)
++            remaining.field_30 = old_value - moved_value
++            for item in self.changed_items:
++                if item.item_id == remaining.item_id:
++                    item.field_30 = remaining.field_30
++        new_id = self.next_item_id
++        self.next_item_id += 1
++        target.item_id = new_id
++        target.field_18 = new_id & 0xFFFF
++        target.amount += moved
++        target.field_30 += moved_value
++        _replace_item_id(self.inventory, target_id, new_id)
++        self.removed_item_ids.append(target_id)
++        self.replacements[new_id] = target_id
++        self.changed_items.append(copy.deepcopy(target))
++        return moved
++
+     def split_stack(
+         self,
+         item_id: int,
+--- a/services/inventory_map.py
++++ b/services/inventory_map.py
+@@ -452,6 +452,31 @@
+             CharacterService._send_world_loot_state_batch(
+                 s, packet, packet_bits, label="inventory-item-identified")
+             CharacterService._request_account_save(s, "inventory item identified", flush=True)
++            return
++
++        if action.operation in (0x0D, 0x0E, 0x0F, 0x10):
++            try:
++                with s.flow_lock:
++                    if s.gameplay_inventory is None or len(action.arguments) != 1:
++                        raise ValueError("merge requires an inventory and one target item")
++                    builder = InventoryMutationBuilder(s.gameplay_inventory, s.gameplay_next_item_id)
++                    definition = load_purchase_item_definition(
++                        self.static_database_path, builder.item(action.item_id).template_id)
++                    builder.merge_stacks(action.item_id, int(action.arguments[0]),
++                        storage_name=("storage_58", "storage_80", "storage_a8", "storage_d0")[action.operation - 0x0D],
++                        max_stack_size=definition.max_stack_size)
++                    mutation = builder.finish()
++                    packet, packet_bits = encode_server_command_batch((
++                        ServerCommand(INVENTORY_INFO_COMMAND, mutation.delta, LOCAL_PLAYER_ACTOR_ID),
++                        ServerCommand(INVENTORY_INFO_COMMAND, mutation.final, LOCAL_PLAYER_ACTOR_ID),
++                    ), include_terminator=True)
++                    s.gameplay_inventory = mutation.inventory
++                    s.gameplay_next_item_id = mutation.next_item_id
++            except (ValueError, OSError) as exc:
++                print(f"[{GAMEPLAY_SERVICE_NAME}] rejected inventory merge: {exc}")
++                return
++            CharacterService._send_world_loot_state_batch(s, packet, packet_bits, label="inventory-stack-merged")
++            CharacterService._request_account_save(s, "inventory stack merged", flush=True)
+             return
+ 
+         if action.operation in SPLIT_STACK_OPERATIONS:
+--- /dev/null
++++ b/tests/test_inventory_merge.py
+@@ -0,0 +1,46 @@
++"""Drag-to-stack mutations preserve quantities, allocations and identity updates."""
++import unittest
++from dso_server.protocol.inventory_codec import InventoryInfo, ItemInfo
++from dso_server.protocol.inventory_economy_protocol import InventoryMutationBuilder
++
++
++class InventoryMergeTests(unittest.TestCase):
++    def inventory(self):
++        return InventoryInfo(items=[ItemInfo(1, amount=10, template_id="potion", field_30=100),
++                                    ItemInfo(2, amount=8, template_id="potion", field_30=80)],
++                             storage_58={1: 0, 2: 1}, storage_size=21)
++
++    def test_complete_merge_rekeys_target_and_frees_source(self):
++        original = self.inventory()
++        builder = InventoryMutationBuilder(original, 10)
++        self.assertEqual(builder.merge_stacks(1, 2, storage_name="storage_58", max_stack_size=99), 10)
++        result = builder.finish()
++        self.assertEqual([(i.item_id, i.amount, i.field_30) for i in result.inventory.items], [(10, 18, 180)])
++        self.assertEqual(result.inventory.storage_58, {10: 1})
++        self.assertEqual(result.delta.field_158, {10: 2})
++        self.assertEqual(set(result.delta.changed_item_ids), {1, 2})
++        self.assertEqual(result.final.items, [])
++        self.assertEqual(original.storage_58, {1: 0, 2: 1})
++
++    def test_overflow_leaves_source_in_its_slot(self):
++        builder = InventoryMutationBuilder(self.inventory(), 10)
++        self.assertEqual(builder.merge_stacks(1, 2, storage_name="storage_58", max_stack_size=12), 4)
++        result = builder.finish()
++        self.assertEqual(result.inventory.storage_58, {10: 0, 11: 1})
++        self.assertEqual([(i.amount, i.field_30) for i in result.inventory.items], [(6, 60), (12, 120)])
++        self.assertEqual(result.delta.field_158, {10: 1, 11: 2})
++
++    def test_rejects_incompatible_full_or_wrong_storage_without_mutation(self):
++        for mode in ["different", "full", "wrong_storage", "equipped", "self"]:
++            inventory = self.inventory()
++            if mode == "different": inventory.items[1].template_id = "another"
++            if mode == "equipped": inventory.storage_58.pop(1); inventory.equipment_slots[1] = (23,)
++            builder = InventoryMutationBuilder(inventory, 10)
++            with self.assertRaises(ValueError):
++                builder.merge_stacks(1, 1 if mode == "self" else 2,
++                    storage_name="storage_a8" if mode == "wrong_storage" else "storage_58",
++                    max_stack_size=8 if mode == "full" else 99)
++            self.assertEqual([i.amount for i in inventory.items], [10, 8])
++
++
++if __name__ == "__main__": unittest.main()

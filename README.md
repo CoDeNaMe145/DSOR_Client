@@ -158,6 +158,8 @@ HTTPS (and the relay over `wss://`) for others.
 |---|---|
 | left click | walk (online); Shift + left / right button, 1-5: quick slots |
 | I, C, K | inventory, character sheet, skills |
+| drag an inventory item | move/swap slots; drop onto a compatible stack to merge |
+| Ctrl + left click a stack | choose an amount to split into a free inventory slot |
 | F2 | the look panel: scale the level's sun, ambient, fog, bloom, vignette...; tonemapping on / off |
 | F9 or Ctrl+Shift+D | bug dump: downloads `dsor-dump-<time>.json` (natively: written in the working directory). Also written by itself on a crash or a rendering error. Send it with the bug report. |
 | W A S D, Q E, right mouse | free camera (offline viewer) |

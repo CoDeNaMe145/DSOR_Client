@@ -174,6 +174,8 @@ server_commands! {
     30 => DiscardPlayer(movement::DiscardPlayer),
     43 => DiscardMonster(movement::DiscardMonster),
     95 => Move(movement::Move),
+    36 => MembershipUpdate(player::MembershipUpdate),
+    113 => ForceTransform(movement::ForceTransform),
     115 => ActorsLeftVicinity(movement::ActorsLeftVicinity),
     116 => ActorsEnterVicinity(movement::ActorsEnterVicinity),
     123 => ActorStatsUpdate(movement::ActorStatsUpdate),
