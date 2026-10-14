@@ -222,19 +222,19 @@ fn description(d:&DisplayItem,catalog:&Catalog)->(String,String) {
     if let Some(i)=d.item {
         // release261 wire: +0x0c item level is the first word after dye;
         // older field names call it durability. Do not display sale value as level.
-        lines.push(format!("Niveau {}",i.durability));
-        if i.flag_0 {lines.push("Non identifié".into());}
+        lines.push(format!("Level {}",i.durability));
+        if i.flag_0 {lines.push("Unidentified".into());}
         else {for s in &i.statistics {lines.push(format!("{} : {:.2}",s.name,s.value));}}
         for gem in &i.names {lines.push(format!("◆ {}",catalog.items.get(gem).map_or(gem.as_str(),|m|m.name.as_str())));}
     }
     if let Some(m)=meta {
-        let required=m.required_level.max(d.unlock);if required>1 {lines.push(format!("Niveau requis : {required}"));}
+        let required=m.required_level.max(d.unlock);if required>1 {lines.push(format!("Required level: {required}"));}
         if !m.description.is_empty() {lines.push(m.description.replace("\\n","\n"));}
-        if m.max_stack>1 {lines.push(format!("Quantité : {} / {}",d.amount,m.max_stack));}
+        if m.max_stack>1 {lines.push(format!("Quantity: {} / {}",d.amount,m.max_stack));}
     }
-    if d.item.is_some() && d.amount>1 && !d.read_only {lines.push("Ctrl + clic : diviser la pile".into());}
-    if d.waiting {lines.push("Libérez une case : cet objet sera récupéré automatiquement.".into());}
-    if d.amount==0 {lines.push("À collectionner".into());}
+    if d.item.is_some() && d.amount>1 && !d.read_only {lines.push("Ctrl + click: split stack".into());}
+    if d.waiting {lines.push("Free up a slot to collect this item automatically.".into());}
+    if d.amount==0 {lines.push("Not yet collected".into());}
     (title,lines.join("\n"))
 }
 

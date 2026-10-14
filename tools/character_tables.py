@@ -8,8 +8,8 @@ Writes:
       data/tables/anims.xml says ("*<set>" cells resolved to that set's clip). Clip
       names are the converted ones: a looping clip carries "-loop" in
       characters/<skeleton>/__animations.glb, so the name is looked up both ways.
-  <assets>/characters/<skeleton>/parts.json   the part names that exist, so the
-      client can pick a "_female" variant without probing files.
+  <assets>/characters/<skeleton>/parts.json   available part names and authored
+      coverage masks/layers from tables/gfxskintags.bin.
 """
 import json, os, struct, sys
 import xml.etree.ElementTree as ET
@@ -90,17 +90,14 @@ with open(os.path.join(assets, "characters", "anims.json"), "w") as f:
     json.dump(table, f, separators=(",", ":"))
 print(f"anims.json: {len(table)} animation sets")
 
-for skel in ("uniskel", "uniskel_dwarf"):
-    d = os.path.join(assets, "characters", skel, "parts")
-    if os.path.isdir(d):
-        names = sorted(n[:-4] for n in os.listdir(d) if n.endswith(".glb"))
-        with open(os.path.join(assets, "characters", skel, "parts.json"), "w") as f:
-            json.dump(names, f)
-        print(f"{skel}/parts.json: {len(names)} parts")
+from skin_coverage import export_part_lists
+export_part_lists(src, assets)
 
 # Use the same static database as the server, including appearance overrides and
 # EquipmentSkinId indirection in releases whose direct Skin columns are empty.
 import sqlite3
 from equipment_visuals import export_equipment
+from export_character_selection import export_selection
 with sqlite3.connect(args.database or os.path.join(src, "db", "static.db4")) as db:
     export_equipment(db, assets)
+    export_selection(db, assets)

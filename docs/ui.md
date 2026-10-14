@@ -26,7 +26,10 @@ icon), `loca_fr.json` / `loca_en.json`, and the atlases and icons as PNG under
 `<assets>/textures/`. The current source tree contains 160 windows.
 
 Each widget: its id path, its rect in reference pixels, `k`, its artwork
-(triangles, UVs, vertex colours, atlas) and its text (French, else English).
+(triangles, UVs, vertex colours, atlas) and its English text. UI, item and skill
+catalogues use the English localization; missing entries keep their source key
+or template fallback instead of switching languages. Re-export the assets after
+updating the localization code: translations are baked into the JSON files.
 `k` is how far the widget follows the screen's extra width: the client scales the
 interface by the window height and widens the reference screen; widget sizes are
 fixed and only full-screen top-level canvases stretch, so a widget's x is its

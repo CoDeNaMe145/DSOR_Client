@@ -8,7 +8,7 @@ Writes:
       _Template_Monster Id -> {graphics, set, anim_set, state, loop, title,
       hit: {damage type -> sequence}, critical, heavy, death, death_s,
       despawn, despawn_s, dye [PrimaryColor, SecondaryColor], radius, height}
-      (title: language/fr/db.monster.xml "<Id>Title")
+      (title: language/en/db.monster.xml "<Id>Title")
   characters/monster_anims.json
       every animation set of data/tables/anims.xml -> state -> clip base name,
       "*<set>" cells resolved. The client looks the name up in the model's own
@@ -34,7 +34,7 @@ chars = os.path.join(assets, "characters")
 
 # --- templates -------------------------------------------------------------
 titles = {}
-xml = open(os.path.join(export, "language", "fr", "db.monster.xml"), encoding="utf-8-sig").read()
+xml = open(os.path.join(export, "language", "en", "db.monster.xml"), encoding="utf-8-sig").read()
 for name, text in re.findall(r'<item name="([^"]+)Title"><!\[CDATA\[(.*?)\]\]></item>', xml, re.S):
     titles[name] = text
 

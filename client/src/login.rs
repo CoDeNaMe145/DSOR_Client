@@ -334,13 +334,25 @@ fn poll(world: &mut World) {
                 world.insert_resource(config.clone());
                 net::start_session(world, config);
                 let mut form = world.resource_mut::<Form>();
-                form.connecting = Some(Instant::now()); form.message("Signed in. Entering the world...", false);
+                form.connecting = Some(Instant::now()); form.message("Signed in. Loading your characters...", false);
             }
             Err(error) => { let mut form = world.resource_mut::<Form>(); form.message(error, true); form.focus = 1; }
         }
         world.resource_mut::<Form>().redraw = true;
     }
     let Some(start) = world.resource::<Form>().connecting else { return; };
+    if world.get_resource::<crate::selection::Selection>().is_some_and(|s| s.active &&
+        (!s.characters.is_empty() || s.dialog != crate::selection::Dialog::None)) {
+        let roots: Vec<_> = world.query_filtered::<Entity, With<Root>>().iter(world).collect();
+        for root in roots { world.entity_mut(root).despawn(); }
+        world.remove_resource::<LoginGate>();
+        world.resource_mut::<Form>().connecting = None;
+        world.resource_mut::<Form>().redraw = false;
+        world.resource_mut::<Options>().login_screen = false;
+        for mut window in world.query::<&mut Window>().iter_mut(world) { window.title = "DSOR Kitty".into(); }
+        info!("in-client login: opened character selection");
+        return;
+    }
     let failure = world.remove_resource::<net::ConnectionFailure>().map(|e| e.0);
     if failure.is_some() || start.elapsed() > Duration::from_secs(60) {
         world.resource_mut::<crate::loading::LoadingScreen>().cancel();

@@ -4,15 +4,14 @@ A Drakensang Online client for the browser (WebAssembly) and the desktop, writte
 in Rust on Bevy, that plays against the DSO-Reconstruction server
 (`experimental`, branch `rust-18`, or the Python `multiplayer-2018`).
 
-The goal is a 1:1 reconstruction of the 2018 client (rel 206.7), built from its
-decompilation, with performance and the combat system first.
+The goal is a 1:1 reconstruction of the rel 261 client.
 
 ## Layout
 
 | Path | What |
 |---|---|
 | `crates/raknet` | RakNet 4.035 client protocol in pure Rust, transport-agnostic (no sockets): the same code runs natively over UDP and in the browser over the relay. |
-| `crates/proto` | The 2018 game protocol: RakNet BitStream codec and the game commands. |
+| `crates/proto` | Game protocol: RakNet BitStream codec and the game commands. |
 | `crates/relay` | WebSocket <-> UDP relay placed next to the server. Browsers cannot send UDP; the relay carries RakNet datagrams unchanged. |
 | `client` | The game, on Bevy. Builds natively and for `wasm32-unknown-unknown`. |
 | `tools` | Asset conversion (wraps DSO_Godot) and helpers. |
@@ -50,7 +49,7 @@ Details: `docs/assets.md`.
 
 Running `dsor-client.exe` without arguments opens its built-in login screen.
 On Windows, `Play.cmd` opens this same executable. Sign in or create an account,
-then press **PLAY** to enter the game in the same window. The client uses the
+then choose a character and press **Play Now** to enter the game in the same window. The client uses the
 account-service protocol from `dso_custom_client` and passes the returned
 account ID and session directly to its game connection.
 
@@ -65,8 +64,11 @@ The account service defaults to `http://127.0.0.1:8080`. The Rust client connect
 to the advertised game host on login port 2190 (or `launch.login_port` when
 provided), rather than the retired client's gateway port 80. The service must
 be running before signing in. **Settings** configures this address and the name,
-class and gender to use if the account has no character. Existing accounts enter
-with their first character. Preferences live in the ignored `client-auth.json`;
+class and gender suggested when creating a character. Existing accounts open
+the original forest selection scene with their roster and an animated equipment
+preview. Click a row or use Up/Down to select; drag the preview or hold its arrow
+buttons to rotate it. The list arrows scroll additional characters. Creation and
+deletion require their own confirmation. Preferences live in the ignored `client-auth.json`;
 passwords and sessions stay in memory. Tab switches fields, Ctrl+V pastes, and
 Enter submits the form. Failed authentication and connection errors appear in
 the game window and allow another attempt.
@@ -88,18 +90,6 @@ cargo run -p dsor-client --release -- --server 127.0.0.1:2190 --account <id> --s
 | `--no-shadows`, `--npcs` | no sun shadows / place the level's NPCs |
 | `--character <class> <gender>` `[--anim <state>]` | a dressed demo character at the map centre (class 0 warrior, 1 mage, 2 ranger, 3 dwarf) |
 | `--server <host:port>` `--account <id>` `--sid <session>` `--char <id>` | play online against the login server |
-
-Fog distances now start beyond the camera's focus, keeping the top-down play
-area clear as the camera moves or zooms. Each map retains its fog colour and
-fade. Open **F2** and adjust **Fog range x** to move the haze farther away or
-closer; **Fog x** controls opacity. Both settings are saved with the other look
-controls. Default factors: sun **1.00**, back light **0.90**, ambient **0.90**,
-level lights **1.75**, exposure **0.25**, fog **0.55**, fog range **0.50**, bloom
-**0.80**, saturation **1.28**, vignette **0.00**, tonemapping **off**, shadows **on**.
-Opaque and alpha-masked models cast animated shadows, including NPCs, players,
-their equipment and solid summoned objects. Transparent effects remain unshadowed.
-The native client also applies ambient occlusion for contact shading beneath
-objects and in creases, including areas already covered by a sun shadow.
 
 Clicks over the HUD, open game windows, and F2/F3 panels are captured by the
 interface until release. They do not issue movement, attacks or exit requests;

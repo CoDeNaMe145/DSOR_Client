@@ -198,5 +198,172 @@ batches as well as ordinary inventory packets. Packet-driven ECS tests exercise
 updates on existing entities; captures replay the final fixture states. No live
 account or multiplayer session was modified. `git diff --check` passed.
 
-The appearance changes remain in the working tree after the inventory push.
+The appearance changes were committed and pushed as `c151885` to
+`origin/release261` on 2026-10-14.
+World drops remain deferred.
+
+## Smooth equipment transitions
+
+The reported weapon/shield flicker came from rebuilding the complete skeleton
+on every outfit change, resetting playback, and starting the incoming animation
+at full weight. The current fix retains the skeleton, animation player, graph,
+bone attachments and unchanged body/clothing meshes. Replacement parts load
+hidden; the old outfit remains visible until its replacement and textures are
+ready. Readiness checks the live scene instance, meshes and material textures
+(including dye masks). Native testing exposed a Bevy scene whose recursive
+dependency status remained `Loading` after its assets were present; the handoff
+therefore checks the actual render assets instead of that aggregate status.
+Publishing the new outfit also selects its weapon animation set.
+`DSOR_CHECK_SKIN=1` also reports pending outfit loads.
+
+Weapon posture changes blend over 220 ms. The incoming clip starts at its
+existing weight (zero for a new clip), and outgoing weights decrease while the
+total stays at one. A second change during the blend starts from the current
+mixed pose. Equivalent movement and one-shot states retain normalized clip
+progress across sets; common clips continue without restarting. Ordinary state
+changes retain the existing 150 ms blend duration.
+
+- [x] Preserve the live skeleton and defer replacing equipment until it is ready.
+- [x] Blend weapon poses with normalized weights and retain animation progress.
+- [x] Exercise real animated joint rotations, rapid reversal, shared clips,
+      one-shot progress, and retaining the old outfit during loading.
+- [x] Cover waiting for base, normal and dye textures before publishing outfits.
+- [x] Final client regression run: **51 tests passed**.
+- [x] Final optimized native build succeeded.
+- [x] Three timed local/remote renderer runs, with 181 captured frames each.
+
+All three final replays completed six equipment updates during capture, including
+a rapid reversal, two-handed weapons, empty hands and sword/shield restoration.
+Key transition frames were visually inspected. Both characters retained their
+skeletons throughout the updates; there were no skin-binding warnings or stalled
+outfits. Logs and frames are under `.local/logs/equipment-transition-verified1/`
+through `equipment-transition-verified3/`. The final test/build logs are
+`.local/logs/equipment-blend-tests-final.log` and
+`.local/logs/equipment-blend-build.log`. `git diff --check` passed.
+
+`tools/equipment_transition_preview.py` generates an initial server packet and
+six timed equipment updates without opening an account. On the debug map,
+`DSOR_INVENTORY_PREVIEW=<output>/initial.bin` supplies the initial outfits and
+`DSOR_EQUIPMENT_REPLAY=<output>/sequence.json` schedules updates by frame after
+both initial outfits are ready and the loading screen closes. Use `--play 0 0`
+and the existing `DSOR_SHOT_BURST` capture option to inspect the transitions.
+
+The transition fix is included in the character-selection and equipment update;
+the earlier appearance commit is `c151885`. World drops remain deferred.
+
+## Clothing and body coverage
+
+The default torso item was already replaced when a torso was equipped, but
+the client still drew every base body segment. Those segments protruded through
+the replacement armor. The new selection step uses the original
+`tables/gfxskintags.bin`: each named mesh has a region mask and layer. Only
+visible higher layers hide matching lower layers; equal layers coexist.
+This applies to local and remote players, including base clothes, boots,
+gloves and transmog. The male/female mesh is resolved before its mask is used.
+Authored NPC outfits retain their explicit part lists.
+
+Coverage is calculated for the entire desired outfit, then published through
+the existing atomic outfit swap. Removing equipment restores the newly exposed
+body segments and default clothes. Missing converted equipment cannot hide the
+fallback outfit; unknown coverage is left visible conservatively.
+
+- [x] Read and export the original version-2 coverage table.
+- [x] Regenerate both local part catalogs (1,714 human and 905 dwarf rules).
+- [x] Cull lower layers when assembling player outfits.
+- [x] Add regression cases for gender-specific cuts, body restoration,
+      unavailable armor, equal layers, hidden occluders and legacy catalogs.
+- [x] Two Python exporter tests passed.
+- [x] Final client regression run: **54 tests passed**.
+- [x] Optimized build and native before/after captures.
+
+The human before/after captures show the protruding base geometry removed on
+both local male and remote female characters, while exposed skin remains
+visible. The initial scene drops from 34 to 22 rendered character surfaces.
+Final human and dwarf replays each captured 181 frames and completed all six
+equipment updates. Visually inspected frames cover different torso cuts,
+removing boots/gloves, restoring default clothing and re-equipping the outfit.
+Both characters retained their skeletons, with no new skin-binding warnings or
+recurring outfit waits. The dwarf replay briefly retained the old outfit while
+the replacement torso loaded.
+
+Capture logs and frames are under `.local/logs/clothing-coverage-before/`,
+`clothing-coverage-after/` and `clothing-coverage-dwarf/`. The final test/build
+logs are `.local/logs/clothing-coverage-tests.log` and
+`.local/logs/clothing-coverage-build.log`. `git diff --check` passed.
+
+Regenerate older asset packs with `python tools/skin_coverage.py <export_win32>
+<assets>`. The full character-table export also includes this step. The native
+regression fixture can be generated with
+`python tools/equipment_transition_preview.py <server> <output> --clothing`;
+it swaps torso models, boots and gloves on local male and remote female players,
+then restores the base outfit. The coverage changes are included in the
+character-selection and equipment update.
+World drops remain deferred.
+
+## Character selection scene
+
+The previous client automatically selected the first roster entry (and created
+a default character on empty accounts). The character service now stays open
+until the player chooses **Play Now**. The selection screen uses the converted
+`charselectionwindow.bxml` geometry, textures, button states and roster-row
+template, together with the original `a0000_char` forest scene, fire, fog and
+lighting. Camera pitch/yaw, offset and FOV come from `_Globals.CharGen*` in
+`static.db4`, exported as `characters/selection.json`.
+
+- [x] Preserve full roster and operation-9 preview equipment replies.
+- [x] Request operation 8 when browsing; send operation 3 only on Play Now.
+- [x] Clone four XML roster rows, page additional characters, support keyboard
+      selection, drag rotation and the original rotation buttons.
+- [x] Resolve sparse equipment slots from `_Template_Item.SlotType`, preserving
+      transmog, dye, gender variants, coverage culling and class proportions.
+- [x] Resolve roster hair/beard indices and use `CharSelectIdle` animations.
+- [x] Keep the previous portrait until its replacement outfit is ready.
+- [x] Gate gameplay input/HUD until the actual game map loads.
+- [x] Add name/class/gender creation and explicit deletion-confirmation dialogs.
+- [x] Native rendering: all four classes, both genders, five equipped previews,
+      portrait rotation and live-server selection-to-Kingshill handoff.
+- [x] Final client regression suite: **67 tests passed**, including XML input,
+      hidden-preview animation readiness and preselected roster scrolling.
+- [x] Protocol regression suite: **11 tests passed**.
+- [x] Python exporter/fixture compilation and `git diff --check`.
+- [x] Final optimized executable build and capture check.
+
+The roster's historical codec field `free` is release261's total
+`character_slots`; remaining slots are calculated from the account roster.
+Repeated initial rosters preserve selection and newer equipment replies; late
+preview replies are cached by character ID and cannot switch the active model.
+Character creation currently uses a compact dialog; recreating the separate
+`chargenwindow.bxml` customization screen is outside this selection-screen work.
+Purchasing slots, instance switching and paid appearance editing remain deferred.
+
+`python tools/export_character_selection.py <static.db4> <assets>` regenerates
+the camera/cosmetic/slot catalog; `character_tables.py` also runs this export.
+`python tools/character_selection_preview.py <server-package> <output.json>`
+creates a five-character fixture using the real server packet encoder. Run
+`dsor-client a0000_char` with `DSOR_SELECTION_PREVIEW=<output.json>` to exercise
+the roster without opening or changing an account.
+
+Native regression captures are under `.local/logs/character-selection-verified/`
+and `.local/logs/character-selection-online/`. The online run used the real
+Python services on a separate loopback address with disposable player stores:
+it browsed all five entries, returned to the first, rotated the preview, then
+explicitly played the second character into Kingshill. The selection UI and
+portrait were removed on handoff; the normal world camera and HUD returned.
+No account on the normal server was changed.
+
+`DSOR_SELECTION_REPLAY=<steps.json>` optionally automates this native check.
+Steps are an array of objects with a `frame` and any of `select` (character ID),
+`rotate` (radians), `capture` (PNG path), `play: true` or `quit: true`. Frames
+advance only after the map and current portrait have loaded. Normal sessions
+do not replay actions. The input regression separately drives the actual XML
+hit regions through pointer selection, keyboard navigation, list scrolling,
+resizing, rotation and deletion confirmation. It caught an authored overlap
+between the portrait drag area and rotation arrows; explicit buttons now win
+that hit test. Preselected characters beyond the first four rows scroll into
+view automatically.
+
+Final build and regression logs: `.local/logs/character-selection-build-final.log`,
+`character-selection-client-tests-final.log` and `character-selection-protocol-tests.log`.
+The rebuilt executable passed both native replays (seven offline captures and
+eight live-service captures), including the fifth-row scroll and world handoff.
 World drops remain deferred.

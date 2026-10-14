@@ -36,6 +36,7 @@ use serde::Deserialize;
 
 mod controls;
 mod local_map;
+mod selection;
 pub(crate) use local_map::MapSettings;
 use controls::{Element, Gate, WindowControls};
 pub(crate) use controls::SkillClicks;
@@ -351,6 +352,7 @@ impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         bevy::asset::embedded_asset!(app, "ui.wgsl");
         app.add_plugins(Material2dPlugin::<UiMaterial>::default())
+            .add_plugins(selection::SelectionUiPlugin)
             .init_asset::<Layout>()
             .init_asset::<SkillIcons>()
             .init_asset::<local_map::MapNames>()
@@ -366,9 +368,10 @@ impl Plugin for UiPlugin {
             .init_resource::<SkillClicks>()
             .insert_resource(local_map::MapSettings::load())
             .add_systems(Startup, (setup, controls::items::setup))
+            .add_systems(Update, (match_scene_camera, follow_screen).chain())
             .add_systems(
                 Update,
-                (match_scene_camera, spawn_windows, follow_screen, controls::spells::sync, controls::items::sync, controls::keyboard, controls::interact, controls::spells::apply_drop, read_figures, controls::edit_text, controls::items::input, (update_fills, update_values, update_slots, (local_map::update, local_map::appearance).chain()), controls::paint, controls::items::render, (controls::spells::overlay, controls::items::overlay), show_hover_window).chain().run_if(crate::loading::gameplay_ready),
+                (spawn_windows, controls::spells::sync, controls::items::sync, controls::keyboard, controls::interact, controls::spells::apply_drop, read_figures, controls::edit_text, controls::items::input, (update_fills, update_values, update_slots, (local_map::update, local_map::appearance).chain()), controls::paint, controls::items::render, (controls::spells::overlay, controls::items::overlay), show_hover_window).chain().run_if(crate::loading::gameplay_ready),
             );
     }
 }

@@ -23,6 +23,7 @@ mod anim_cull;
 mod refraction;
 mod lighting;
 mod loading;
+mod selection;
 #[cfg(not(target_arch = "wasm32"))]
 mod login;
 mod map;
@@ -394,6 +395,7 @@ fn main() {
         .add_plugins(ui::UiPlugin)
         .add_plugins(ui_input::UiInputPlugin)
         .add_plugins(loading::LoadingPlugin)
+        .add_plugins(selection::SelectionPlugin)
         .add_plugins((anim_cull::AnimCullPlugin, refraction::RefractionPlugin, surfaces::SurfacesPlugin, exits::ExitsPlugin, monsters::MonstersPlugin, combat_text::CombatTextPlugin, debug::DebugPlugin, stats::StatsPlugin, clamp::ClampPlugin, nebula_bloom::NebulaBloomPlugin))
         .add_plugins((highlight::HighlightPlugin, picking::PickingPlugin))
         .insert_resource(ClearColor(Color::srgb(0.05, 0.06, 0.08)))
@@ -523,6 +525,7 @@ fn screenshot_when_loaded(
     mut frames: Local<u32>,
     mut taken: Local<Option<u32>>,
     demo: Query<&character::CharacterAnim>,
+    outfits: Query<&character::Character>,
 ) {
     let Some(path) = &opts.screenshot else { return };
     *frames += 1;
@@ -551,7 +554,8 @@ fn screenshot_when_loaded(
     if !current.spawned {
         return;
     }
-    if (opts.character.is_some() || opts.net.is_some()) && (demo.is_empty() || !demo.iter().all(|a| a.is_ready())) {
+    if (opts.character.is_some() || opts.net.is_some() || opts.play.is_some())
+        && (demo.is_empty() || !demo.iter().all(|a| a.is_ready()) || !outfits.iter().all(character::Character::outfit_ready)) {
         return;
     }
     let (done, total) = current.progress(&asset_server);

@@ -5,7 +5,7 @@ Usage: export_npcs.py <export_win32> <assets>
 
 Writes:
   characters/npc_templates.json  template Id -> {graphics, outfit, anim_set, state, loop, title}
-                           (static.db4 _Template_NPC; title from language/fr/db.npc.xml,
+                           (static.db4 _Template_NPC; title from language/en/db.npc.xml,
                            item "<Id>Title")
   maps/<map>.npcs.json     level Guid (hex, upper) -> {id, m}: the instance's template
                            and its 4x4 transform (16 floats, DirectX row-major: the
@@ -20,7 +20,7 @@ import json, os, re, sqlite3, struct, sys
 export, assets = sys.argv[1], sys.argv[2]
 
 titles = {}
-xml = open(os.path.join(export, "language", "fr", "db.npc.xml"), encoding="utf-8-sig").read()
+xml = open(os.path.join(export, "language", "en", "db.npc.xml"), encoding="utf-8-sig").read()
 for name, text in re.findall(r'<item name="([^"]+)Title"><!\[CDATA\[(.*?)\]\]></item>', xml, re.S):
     titles[name] = text
 

@@ -15,18 +15,16 @@ SLOTS = {'HelmetSlot':[0], 'ShoulderSlot':[1], 'TorsoSlot':[2], 'GlovesSlot':[3]
 
 
 def export_inventory(db, textures, loca, assets):
-    short = {lang: {k.split('_', 1)[-1]: v for k, v in table.items() if k.startswith('db.')}
-             for lang, table in loca.items()}
+    table = loca.get('en', {})
+    short = {k.split('_', 1)[-1]: v for k, v in table.items() if k.startswith('db.')}
     def local(key, fallback=''):
         if not key:
             return fallback
-        for lang in ('fr', 'en'):
-            table = loca.get(lang, {})
-            for candidate in (key, 'db.item.table_' + key, 'db.item2.table_' + key):
-                if candidate in table:
-                    return re.sub(r'<[^>]*>', '', table[candidate])
-            if key in short.get(lang, {}):
-                return re.sub(r'<[^>]*>', '', short[lang][key])
+        for candidate in (key, 'db.item.table_' + key, 'db.item2.table_' + key):
+            if candidate in table:
+                return re.sub(r'<[^>]*>', '', table[candidate])
+        if key in short:
+            return re.sub(r'<[^>]*>', '', short[key])
         return fallback
 
     result = dict(items={}, ingredients=[], colors={})

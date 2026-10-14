@@ -24,7 +24,7 @@ use dsor_proto::session::{Session, SessionEvent};
 use dsor_raknet::Reliability;
 use dsor_transport::Transport;
 
-use crate::character::{redress, spawn_character, AnimState, Character, CharacterAnim, CharacterDesc, CharacterLibrary, CharacterVisual, ItemSkins};
+use crate::character::{redress, spawn_character, AnimState, Character, CharacterAnim, CharacterDesc, CharacterLibrary, ItemSkins};
 use crate::appearance::{self, Equipment};
 use crate::map::{CurrentMap, MapManifest, MapRoot};
 use crate::nav::{CurrentNav, NavMesh};
@@ -120,7 +120,7 @@ pub struct NetConfig {
     pub new_character: Option<(String, u8, u8)>,
     /// The WebSocket relay, required in the browser ("ws://host:2290").
     pub relay: Option<String>,
-    /// Which character to pick (its id); the first of the roster when None.
+    /// Which character to highlight initially in the selection screen.
     pub character: Option<u32>,
 }
 
@@ -584,6 +584,8 @@ impl Plugin for NetPlugin {
                     .in_set(NetSystems)
                     .run_if(net_exists),
             );
+        #[cfg(not(target_arch = "wasm32"))]
+        app.add_systems(Update, replay_equipment.before(NetSystems).run_if(net_exists));
     }
 }
 
@@ -670,6 +672,50 @@ pub fn start_offline(world: &mut World, class: u8, gender: u8) {
                 }
             }
             None => warn!("DSOR_INVENTORY_PREVIEW could not read an inventory packet"),
+        }
+    }
+}
+
+/// Explicit offline regression replay, scheduled after the initial outfits load.
+/// Records are {"frame": N, "hex": server_packet, "bits": exact_bit_count}.
+#[cfg(not(target_arch = "wasm32"))]
+fn replay_equipment(
+    mut net: NonSendMut<Net>,
+    characters: Query<&Character>,
+    loading: Res<crate::loading::LoadingScreen>,
+    mut loaded: Local<bool>,
+    mut records: Local<std::collections::VecDeque<(u32, Vec<(ServerCommand, Option<u32>)>)>>,
+    mut frame: Local<u32>,
+) {
+    if !net.offline { return; }
+    if !*loaded {
+        *loaded = true;
+        if let Ok(path) = std::env::var("DSOR_EQUIPMENT_REPLAY") {
+            let values = std::fs::read(path).ok().and_then(|data| serde_json::from_slice::<Vec<serde_json::Value>>(&data).ok());
+            for record in values.into_iter().flatten() {
+                let Some(hex) = record["hex"].as_str() else { continue };
+                let data: Option<Vec<u8>> = hex.as_bytes().chunks(2).map(|b| std::str::from_utf8(b).ok().and_then(|s| u8::from_str_radix(s, 16).ok())).collect();
+                if let Some(data) = data {
+                    if let Ok(commands) = dsor_proto::commands::decode_message(&data, record["bits"].as_u64().unwrap_or((data.len() * 8) as u64) as usize) {
+                        records.push_back((record["frame"].as_u64().unwrap_or(0) as u32, commands));
+                    }
+                }
+            }
+            records.make_contiguous().sort_by_key(|r| r.0);
+        }
+    }
+    if records.is_empty() { return; }
+    if *frame == 0 && (loading.active() || characters.is_empty() || !characters.iter().all(Character::outfit_ready)) { return; }
+    *frame += 1;
+    while records.front().is_some_and(|r| r.0 <= *frame) {
+        let (_, commands) = records.pop_front().unwrap();
+        info!("equipment replay frame {}", *frame);
+        for (command, actor) in commands {
+            if matches!(command, ServerCommand::InventoryInfo(_) | ServerCommand::ItemUpdate(_)) {
+                on_command(&mut net, command, Some(OFFLINE_ACTOR));
+            } else if matches!(command, ServerCommand::RemotePlayerInfo(_)) {
+                on_command(&mut net, command, actor);
+            }
         }
     }
 }
@@ -896,10 +942,22 @@ fn pump(
     manifests: Res<Assets<MapManifest>>,
     left_behind: Query<Entity, Or<(With<crate::npc::Npc>, With<RemotePlayer>, With<LocalPlayer>)>>,
     mut loading: ResMut<crate::loading::LoadingScreen>,
+    mut selection: ResMut<crate::selection::Selection>,
 ) {
     let now = now_ms(&time);
     let mut changed_map = false;
     let net = &mut *net;
+    for request in std::mem::take(&mut selection.requests) {
+        use crate::selection::Request;
+        match request {
+            Request::Preview(id) => net.session.character_operation(8, id, now),
+            Request::Play(id) => { net.session.select_character(id, now); loading.connecting(); }
+            Request::OpenEditor => net.session.open_character_editor(now),
+            Request::Back => net.session.character_operation(2, 0, now),
+            Request::Create(name, class, gender) => net.session.create_character(&name, class, gender, now),
+            Request::Delete(id) => net.session.character_operation(6, id, now),
+        }
+    }
     if net.offline {
         if net.centre.is_none() {
             if let Some(manifest) = current.as_ref().and_then(|c| manifests.get(&c.manifest)) {
@@ -942,22 +1000,21 @@ fn pump(
             }
             SessionEvent::Service(name) => info!("service: {name}"),
             SessionEvent::Roster(roster) => {
-                let pick = net.wanted_character.or_else(|| roster.first().map(|e| e.character));
                 info!("characters: {:?}", roster.iter().map(|e| (&e.name, e.character, e.level)).collect::<Vec<_>>());
-                if let Some(c) = pick {
-                    net.session.select_character(c, now);
-                }
+            }
+            SessionEvent::CharacterSelection(reply) => {
+                if reply.operation == 4 { loading.cancel(); }
+                selection.receive(reply, net.wanted_character);
             }
             SessionEvent::CharacterEditor => {
-                let (name, class, gender) = net.new_character.clone();
-                info!("no character yet: creating {name} (class {class}, gender {gender})");
-                net.session.create_character(&name, class, gender, now);
+                selection.editor(&net.new_character);
             }
             SessionEvent::CreationRefused(reason) => {
-                error!("the server refused the new character {:?} (deny reason {reason}: 1 name taken, 2 empty, 3 invalid, 7 already made)", net.new_character.0);
-                commands.insert_resource(ConnectionFailure("The character name was refused. Choose another name in Settings and sign in again.".into()));
+                selection.creation_refused(reason);
             }
             SessionEvent::MapAssigned { name, rule_set } => {
+                selection.active = name == crate::selection::MAP;
+                if !selection.active { selection.entering = false; selection.dialog = crate::selection::Dialog::None; }
                 net.corrections = default();
                 loading.map(name.clone());
                 info!("map {name} (rule set {rule_set})");
@@ -1052,6 +1109,7 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
                 // the server sends (dsor/newplayer.py DEFAULT_ARMAMENT).
                 armament: p.rank.max(0),
                 look: None,
+                cosmetics: Vec::new(),
             };
             info!("I am {} ({}), actor {:?}, at {:?}", p.name, desc.animation_set(), actor, p.position);
             net.local_actor = actor;
@@ -1101,6 +1159,7 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
                 equipment,
                 armament,
                 look: None,
+                cosmetics: Vec::new(),
             };
             // A spawn is a newer complete snapshot than any pending update.
             net.remote_redress.remove(&actor);
@@ -1626,25 +1685,23 @@ fn send_moves(mut net: NonSendMut<Net>, time: Res<Time<Real>>, mut players: Quer
 /// Dress the player from the inventory, and other players from RemotePlayerInfo.
 #[allow(clippy::type_complexity)]
 fn dress(
-    mut commands: Commands,
     mut net: NonSendMut<Net>,
     library: Option<Res<CharacterLibrary>>,
     skins: Res<Assets<ItemSkins>>,
-    visual_roots: Query<(), With<CharacterVisual>>,
-    mut locals: Query<(&mut Character, &mut CharacterAnim, Option<&Children>), (With<LocalPlayer>, Without<RemotePlayer>)>,
-    mut remotes: Query<(&RemotePlayer, &mut Character, &mut CharacterAnim, Option<&Children>), Without<LocalPlayer>>,
+    mut locals: Query<&mut Character, (With<LocalPlayer>, Without<RemotePlayer>)>,
+    mut remotes: Query<(&RemotePlayer, &mut Character), Without<LocalPlayer>>,
 ) {
-    for (r, mut c, mut a, kids) in &mut remotes {
+    for (r, mut c) in &mut remotes {
         if let Some((equipment, armament)) = net.remote_redress.remove(&r.actor) {
-            redress(&mut commands, &mut c, &mut a, kids, &visual_roots, equipment, armament);
+            redress(&mut c, equipment, armament);
         }
     }
     if !net.local_appearance_dirty { return; }
     let Some(table) = library.as_ref().and_then(|l| skins.get(&l.item_skins)) else { return };
-    let Ok((mut c, mut a, kids)) = locals.single_mut() else { return };
+    let Ok(mut c) = locals.single_mut() else { return };
     let Some((equipment, armament)) = appearance::local(&net.inventory, table) else { return };
     net.local_appearance_dirty = false;
-    redress(&mut commands, &mut c, &mut a, kids, &visual_roots, equipment, armament);
+    redress(&mut c, equipment, armament);
 }
 
 /// DSOR_DEBUG_HIER=1: once, four seconds in, where the player's body really is.
@@ -1693,6 +1750,7 @@ pub fn debug_hierarchy(
 #[cfg(test)]
 mod appearance_tests {
     use super::*;
+    use crate::character::CharacterVisual;
     use bevy::ecs::system::RunSystemOnce;
     use dsor_proto::commands::{inventory::{InventoryInfo, ItemInfo}, actors::ItemUpdate, player::{NewRemotePlayer, RemotePlayerInfo}};
 
@@ -1738,7 +1796,7 @@ mod appearance_tests {
         let desc = &app.world().get::<Character>(root).unwrap().desc;
         assert_eq!(desc.equipment[0].skin_parts, ["mage_torso_02"]);
         assert_eq!(desc.equipment[0].colour, Some([1.0, 0.0, 0.0, 1.0]));
-        assert!(app.world().get_entity(visual).is_err());
+        assert!(app.world().get_entity(visual).is_ok(), "keep old visuals until their replacement is loaded");
         assert!(app.world().get_entity(attachment).is_ok(), "non-outfit attachments survive");
         assert_eq!(app.world().get::<CharacterAnim>(root).unwrap().state, AnimState::Run);
         receive(&mut app, ServerCommand::InventoryInfo(InventoryInfo::default()), OFFLINE_ACTOR);
@@ -1765,7 +1823,7 @@ mod appearance_tests {
         }
         app.update();
         assert_eq!(app.world().get::<Character>(entity).unwrap().desc.armament, 4);
-        assert!(app.world().get_entity(visual).is_err());
+        assert!(app.world().get_entity(visual).is_ok(), "the outfit loader publishes the replacement later");
         assert!(app.world().non_send::<Net>().remote_redress.is_empty());
     }
 

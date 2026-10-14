@@ -26,7 +26,7 @@ def quad(rect, texture, color=(1, 1, 1, 1)):
 
 
 def localized(loca, key, fallback):
-    return loca.get("fr", {}).get(key) or loca.get("en", {}).get(key) or fallback
+    return loca.get("en", {}).get(key) or fallback
 
 
 def spell_grid(widgets, db, textures, loca):
@@ -118,11 +118,15 @@ def ranking_categories(widgets, db, loca):
     for w in widgets:
         if '/TabButton0' in w['id'] and w.get('text'):
             number = int(w['id'].split('/TabButton0')[1][0])
-            caption = ['Tous', 'Guerrier', 'Mage', 'Rôdeur', 'Nain'][number-1]
-            w['text'].update(text=caption, key='gui.client.rank.class', size=8)
+            caption = ['All', 'Dragonknight', 'Spellweaver', 'Ranger', 'Steam Mechanicus'][number-1]
+            class_key = [None, 'Warrior', 'Mage', 'Ranger', 'Dwarf'][number-1]
+            key = f'gui.window.leaderboards_filterClass{class_key}' if class_key else 'gui.client.rank.class'
+            # Keep the full English class name within the fixed-width tab.
+            w['text'].update(text=localized(loca, key, caption), key=key, size=7 if number == 5 else 8)
         if w['id'].endswith('/TextLabel') and '/DropDownMenuButton/' in w['id']:
-            w['text'].update(text='Classement', key='gui.client.rank.selection')
+            w['text'].update(text='Rankings', key='gui.client.rank.selection')
+    empty_key = 'gui.window.leaderboards_noDataMessage'
     added.append(dict(id='Canvas/WindowBackground/ContentFrame/EmptyMessage', type='TextLabel', k=0.5,
         rect=[270,365,930,420], hidden=False,
-        text=dict(text='Aucun classement disponible.', key='gui.client.rank.empty', size=12, color=[.9,.78,.54,1], align=[1,1])))
+        text=dict(text=localized(loca, empty_key, 'No rankings available.'), key=empty_key, size=12, color=[.9,.78,.54,1], align=[1,1])))
     return widgets + added

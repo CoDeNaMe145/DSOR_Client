@@ -45,7 +45,7 @@ if "--database" in only:
     database = only[at + 1]
     del only[at:at + 2]
 only = only or sorted(f[:-5] for f in os.listdir(os.path.join(root, "ui")) if f.endswith(".bxml"))
-from ui_catalog import spell_grid, ranking_categories
+from ui_catalog import localized, spell_grid, ranking_categories
 catalog = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
 if only == ["--hud"]:
     only = ["bottombar", "currencybar", "inventory", "gamebar"]
@@ -267,7 +267,7 @@ def export(name):
                 text = raw
                 if raw.startswith("gui."):
                     used_keys.add(raw)
-                    text = loca.get("fr", {}).get(raw) or loca.get("en", {}).get(raw) or raw
+                    text = localized(loca, raw, raw)
                 entry["text"] = {
                     "text": text, "key": raw,
                     "size": float(a.get("fontSize", "10") or 10),
@@ -289,7 +289,8 @@ def export(name):
     if name == "inventory":
         for w in widgets:
             if w["id"].endswith("/unten/Label_bg/Label_empty/TextLabel_message"):
-                w["text"].update(text="Libérez des cases pour récupérer automatiquement ces objets.", key="")
+                key = "gui.window.inventory_overflowSlotsDescribtion"
+                w["text"].update(text=localized(loca, key, "Free up slots to collect these items automatically."), key=key)
             if "/IngredientBag/" in w["id"] and any(part in w["id"].split('/') for part in ("icon_area_cores", "RecipesInfotextArea")):
                 # Alternative runtime templates must not cover the tier buttons.
                 w["hidden"] = True
@@ -310,8 +311,9 @@ def export(name):
         for w in list(widgets):
             if w["id"].endswith("/Headline/WindowTitle"):
                 # The source keeps the skills-window placeholder title.
-                w["text"].update(text="Boutique", key="gui.client.shop.title")
-            caption = {"ShopTab1": "Offres", "ShopTab2": "Objets", "ShopTab3": "Code bonus"}.get(w["id"].rsplit("/", 1)[-1])
+                key = "gui.window.shop_windowTitle"
+                w["text"].update(text=localized(loca, key, "Shop"), key=key)
+            caption = {"ShopTab1": "Offers", "ShopTab2": "Items", "ShopTab3": "Bonus Code"}.get(w["id"].rsplit("/", 1)[-1])
             if caption and w["type"] == "Button":
                 widgets.append(dict(id=w["id"]+"/Caption", type="TextLabel", k=w["k"], rect=w["rect"], hidden=w["hidden"],
                                     text=dict(text=caption, key="gui.client.shop.tab", size=10, color=[.90,.78,.54,1], align=[1,1])))
@@ -329,7 +331,7 @@ def export(name):
         empty = next(w for w in widgets if w["id"].endswith("/BottomNoEvent"))
         widgets.append(dict(id=empty["id"]+"/EmptyMessage", type="TextLabel", k=empty["k"],
                             rect=[90,270,920,320], hidden=False,
-                            text=dict(text="Aucun événement disponible.",key="gui.client.events.empty",size=12,color=[.90,.78,.54,1],align=[1,1])))
+                            text=dict(text="No events available.",key="gui.client.events.empty",size=12,color=[.90,.78,.54,1],align=[1,1])))
     for (win, template, area) in GRIDS:
         if win == name:
             widgets = grid(widgets, template, area)
@@ -341,6 +343,7 @@ def export(name):
         if (not w["hidden"] and w.get("art") and parent and not parent["hidden"]
                 and parent.get("art") == w["art"] and parent.get("state") == w.get("state")):
             parent.pop("art")
+    used_keys.update(w["text"]["key"] for w in widgets if w.get("text") and w["text"]["key"].startswith(("gui.", "db.")))
     with open(os.path.join(out_dir, name + ".ui.json"), "w", encoding="utf-8") as f:
         json.dump({"window": name, "base": [BASE_W, BASE_H], "widgets": widgets}, f, ensure_ascii=False, separators=(",", ":"))
     return stats

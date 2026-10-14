@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Floating combat texts (damage numbers, "Parade !"...), from the 2018 client's data.
+"""Floating combat texts (damage numbers, "Block!"...), from the 2018 client's data.
 
 Usage: export_combat_text.py <export_win32> <assets> [<DSO_Godot>]
 
@@ -13,7 +13,7 @@ Writes interface/combat_text.json:
           dt seconds -- translation y (UI units, y down), scale, alpha (the scale
           curve's w); its outline (TextEffectSize) and fontSize. Needs DSO_Godot.
   texts: block, critical ("{0:i} !"), immunity, low_health
-         (language/fr/gui.window.xml floatingBlock, floatingCritical,
+         (language/en/gui.window.xml floatingBlock, floatingCritical,
          floatingDamageImmunity, lowhealthhit)
 EVIDENCE: TemplateManager's combat text getters read these columns by type
   (GetCombatTextColor 0x51212B: +0x10 colour; 0x5121E1 +0x30 x offset; 0x51226A
@@ -46,7 +46,7 @@ for row in db.execute(
         "size": size, "label": label or "",
     }
 
-xml = open(os.path.join(export, "language", "fr", "gui.window.xml"), encoding="utf-8-sig").read()
+xml = open(os.path.join(export, "language", "en", "gui.window.xml"), encoding="utf-8-sig").read()
 loca = dict(re.findall(r'<item name="([^"]+)"><!\[CDATA\[(.*?)\]\]></item>', xml, re.S))
 texts = {
     "block": loca.get("floatingBlock", "Block!"),

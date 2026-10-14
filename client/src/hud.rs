@@ -87,13 +87,14 @@ fn update_hud(
     diagnostics: Res<DiagnosticsStore>,
     current: Option<Res<CurrentMap>>,
     asset_server: Res<AssetServer>,
-    mut text: Query<&mut Text, With<HudText>>,
+    mut text: Query<(&mut Text, &mut Visibility), With<HudText>>,
     mut last_log: Local<f64>,
     time: Res<Time>,
     meshes: Query<&ViewVisibility, With<Mesh3d>>,
     mut counted: Local<(f64, usize, usize)>,
     net: Option<NonSend<crate::net::Net>>,
     anims: Query<&crate::character::CharacterAnim>,
+    selection: Res<crate::selection::Selection>,
 ) {
     let animating = anims.iter().filter(|a| a.is_animating()).count();
     let characters = anims.iter().count();
@@ -134,8 +135,9 @@ fn update_hud(
     let line = format!(
         "{fps:.0} FPS ({ms:.2} ms), cpu {cpu_total:.1} ms (logic {cpu_main:.1})\nentities {entities:.0}, surfaces drawn {drawn}/{total}{vitals}\nmap {name}: {placed} placements, models {loaded}/{models}"
     );
-    if let Ok(mut t) = text.single_mut() {
+    if let Ok((mut t, mut visibility)) = text.single_mut() {
         t.0 = line;
+        *visibility = if selection.active { Visibility::Hidden } else { Visibility::Inherited };
     }
     // Also log it every 5 s, so native runs leave numbers in the terminal.
     let now = time.elapsed_secs_f64();

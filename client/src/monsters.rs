@@ -969,7 +969,7 @@ fn apply_shader_colors(
     }
 }
 
-/// The hovered monster's title (_Template_Monster title, language/fr), level and
+/// The hovered monster's title (_Template_Monster title, language/en), level and
 /// health, for its info window.
 fn hover_info(
     hovered: Res<Hovered>,

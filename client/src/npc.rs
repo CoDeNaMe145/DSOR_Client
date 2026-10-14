@@ -4,7 +4,7 @@
 //! bit (dsor_proto NewNpc). The rest comes from the client's data
 //! (tools/export_npcs.py):
 //! - `characters/npc_templates.json`: `_Template_NPC` Graphics, CharacterSet,
-//!   AnimSet, StartAnimationState, and the French name (db.npc.xml `<Id>Title`);
+//!   AnimSet, StartAnimationState, and the English name (db.npc.xml `<Id>Title`);
 //! - `maps/<map>.npcs.json`: `_Instance_NPC` by Guid, with the placement matrix
 //!   (its rotation is the facing, which the command does not carry);
 //! - `characters/<skeleton>/outfits.json` (DSO_Godot): a CharacterSet's parts.
