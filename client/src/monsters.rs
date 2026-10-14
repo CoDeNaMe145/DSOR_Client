@@ -65,6 +65,15 @@ pub struct MonsterTemplate {
     pub heavy: String,
     #[serde(default)]
     pub death: String,
+    /// SummonSequence: played on it as it appears, when summoned.
+    #[serde(default)]
+    pub summon: String,
+    /// A player's minion (MinionType): always summoned.
+    #[serde(default)]
+    pub minion: bool,
+    /// Seconds of its anim set's "Spawn" clip (the guardian rising), 0 if none.
+    #[serde(default)]
+    pub spawn_s: f32,
     /// PrimaryColor, SecondaryColor (rgba): the dyes MatDiffuse and MatSpecular.
     #[serde(default)]
     pub dye: [[f32; 4]; 2],
@@ -304,6 +313,7 @@ fn spawn_monsters(
     existing: Query<(Entity, &RemotePlayer)>,
     mut debug: ResMut<DebugMonsters>,
     time: Res<Time>,
+    (skill_data, seqs): (Option<Res<SkillData>>, Res<Assets<SequenceTable>>),
 ) {
     if net.is_none() && !test.placed {
         if let Ok(spec) = std::env::var("DSOR_TEST_MONSTER") {
@@ -327,7 +337,7 @@ fn spawn_monsters(
             debug.delayed.push((after - dt, template, at));
         } else {
             debug.summoned += 1;
-            queue.push(MonsterSpawn { actor: 0x6200_0000 + debug.summoned, blueprint: template, position: at, health: 100, level: 1 });
+            queue.push(MonsterSpawn { actor: OFFLINE_SUMMONS + debug.summoned, blueprint: template, position: at, health: 100, level: 1 });
         }
     }
     if queue.is_empty() {
@@ -412,8 +422,29 @@ fn spawn_monsters(
             },
             RemotePlayer { actor: spawn.actor, target: spawn.position, facing: 0.0, still_for: 1.0, held: 0.0, held_until_tick: None },
         ));
+        // A summon appears through its SummonSequence (arcanemanifestation's
+        // guardian rising, summontree's tree growing): without it they stood
+        // there at once ("pas d'animation d'apparition").
+        // UNVERIFIED: online, which spawns are summons -- the minions only here.
+        let summoned = t.minion || (OFFLINE_SUMMONS..OFFLINE_SUMMONS + 0x0100_0000).contains(&spawn.actor);
+        if summoned && !t.summon.is_empty() {
+            if let Some(seq) = skill_data.as_ref().and_then(|d| seqs.get(d.sequences())).and_then(|s| s.0.get(&t.summon)) {
+                let mut seq = seq.clone();
+                // Its rise, the anim set's Spawn row: the SummonSequence holds
+                // only the effects around it.
+                if t.spawn_s > 0.0 {
+                    let end = (t.spawn_s * 25.0).ceil() as i32;
+                    seq.tracks.push(crate::skills::Track::Anim { name: "Spawn".into(), speed: 1.0, start: 0, end });
+                    seq.length = seq.length.max(end as u32);
+                }
+                play(&mut commands, seq, Some(entity), entity, false);
+            }
+        }
     }
 }
+
+/// Actor ids of the monsters offline play summons.
+const OFFLINE_SUMMONS: u32 = 0x6200_0000;
 
 /// A whole model whose scene is in: show the set's skins only, give it the set's
 /// body, and drive its own animation player through the AnimSet's rows.

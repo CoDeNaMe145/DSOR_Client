@@ -57,9 +57,14 @@ for r in rows("select * from _Template_Player"):
                                        "AbsoluteSkillResourceRegeneration", "AnimRunSpeed")}
     player[cls]["resist"] = resist
 out["player"] = player
-out["curves"] = {str(r["Level"]): {k: r[k] for k in ("ArmorDamageReductionValue", "BlockChanceFactor", "CriticalChanceFactor",
-                                                        "ResistanceDamageReductionValue", "BasePowerFactor", "BasePowerFactorRelative")}
-                 for r in rows("select * from _Template_DmgLvlCurves")}
+# The 2018 client keeps these per-level factors in _Template_DmgLvlCurves; release 261
+# moved them to _Template_Progressions (and dropped BasePowerFactor).
+CURVE = ("ArmorDamageReductionValue", "BlockChanceFactor", "CriticalChanceFactor",
+         "ResistanceDamageReductionValue", "BasePowerFactor", "BasePowerFactorRelative")
+curves = rows("select * from _Template_DmgLvlCurves")
+if curves and "ArmorDamageReductionValue" not in curves[0]:
+    curves = rows("select * from _Template_Progressions")
+out["curves"] = {str(r["Level"]): {k: r[k] for k in CURVE if k in r} for r in curves}
 out["chance"] = next((r["ChanceMultiplier"] for r in rows("select * from _Template_DifficultyFactors") if str(r["Id"]) == "0"), 1.0)
 g = rows("select * from _Globals")[0]
 out["globals"] = {k: g[k] for k in ("MaxArmorDamageReduction", "MaxBlockChance", "MaxBlockDamageReduction", "MaxCriticalChance",
@@ -84,7 +89,7 @@ out["items"] = {r["Id"]: {k: r[k] for k in ("ItemCategory", "SlotType", "CharCla
                                              "BlockDamageReduction", "CriticalRating", "HealthPoints", "Resistance",
                                              "BaseEnchantments", "BaseModifier", "UniqueModifier")}
                 for r in rows("select * from _Template_Item")}
-out["enchantments"] = {r["Id"]: {k: r[k] for k in ("BaseEnchantment", "UseRarityFactor", "ScalingMode", "ScaleReferenceLevel",
+out["enchantments"] = {r["Id"]: {k: r.get(k) for k in ("BaseEnchantment", "UseRarityFactor", "ScalingMode", "ScaleReferenceLevel",
                                                     "MaxOriginItemLevel", "Modifiers")}
                        for r in rows("select * from _Template_Enchantment")}
 out["tiers"] = {str(r["Tier"]): r for r in rows("select * from _Template_EnchantmentTiers")}
