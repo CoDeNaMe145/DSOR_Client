@@ -57,6 +57,30 @@ pub struct Curve {
     pub resistance_damage_reduction_value: f32,
 }
 
+/// One `skills` row of stats.json: [UseWeaponDPS, DamageModifier, title] and, since
+/// release261 (whose class skills have bare ids: "angrystrike"), its CharClass.
+#[derive(Deserialize, Debug, Clone, Default)]
+#[serde(from = "Vec<serde_json::Value>")]
+pub struct SkillRow {
+    pub weapon_dps: bool,
+    pub factor: f32,
+    pub title: String,
+    /// "" in the 2018 export.
+    pub class: String,
+}
+
+impl From<Vec<serde_json::Value>> for SkillRow {
+    fn from(v: Vec<serde_json::Value>) -> Self {
+        let text = |i: usize| v.get(i).and_then(|x| x.as_str()).unwrap_or_default().to_owned();
+        Self {
+            weapon_dps: v.first().and_then(|x| x.as_bool()).unwrap_or(false),
+            factor: v.get(1).and_then(|x| x.as_f64()).unwrap_or(1.0) as f32,
+            title: text(2),
+            class: text(3),
+        }
+    }
+}
+
 #[derive(Asset, TypePath, Deserialize, Debug)]
 pub struct StatsData {
     pub attrs: HashMap<String, [f32; 3]>,
@@ -66,8 +90,8 @@ pub struct StatsData {
     pub curves: HashMap<String, Curve>,
     pub chance: f32,
     pub globals: HashMap<String, f32>,
-    /// id -> [UseWeaponDPS, DamageModifier, title]
-    pub skills: HashMap<String, (bool, f32, String)>,
+    /// id -> [UseWeaponDPS, DamageModifier, title, CharClass]
+    pub skills: HashMap<String, SkillRow>,
     pub texts: HashMap<String, String>,
 }
 
@@ -227,7 +251,7 @@ fn compute(
     let bar = net.as_ref().map(|n| n.bar.clone()).unwrap_or_default();
     for (slot, name_w, dmg_w) in [(0usize, "LMKSkill", "DamageLMK"), (1, "RMKSkill", "DamageRMK")] {
         match bar.get(slot).cloned().flatten().and_then(|id| d.skills.get(&id).cloned()) {
-            Some((weapon_dps, factor, title)) => {
+            Some(SkillRow { weapon_dps, factor, title, .. }) => {
                 let k = if weapon_dps { speed.value() } else { 1.0 } * factor;
                 s.insert(name_w, title);
                 s.insert(dmg_w, damage_text(lo * k, hi * k));
