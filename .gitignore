@@ -24,3 +24,5 @@ dsor-dump*.json
 /client-auth.json.tmp
 /map-settings.json
 /.level-editor/
+/.vfx-editor/
+*.glb.orig

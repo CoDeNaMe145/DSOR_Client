@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DSOR VFX Editor</title>
+<link rel="stylesheet" href="editor.css">
+</head>
+<body>
+<header>
+  <strong>DSOR VFX Editor</strong>
+  <span class="sep"></span>
+  <label>Preview class
+    <select id="class"></select>
+  </label>
+  <button id="launch" title="Open the preview client (debug map, offline)">Open preview</button>
+  <label>Replay every <input id="every" type="number" min="0.5" step="0.5" value="3"> s</label>
+  <button id="play" class="primary" title="Play the selection in the preview">▶ Play</button>
+  <span class="sep"></span>
+  <button id="undo" title="Ctrl+Z">Undo</button>
+  <button id="redo" title="Ctrl+Y">Redo</button>
+  <button id="revert" title="Back to the converted game data">Revert to game</button>
+  <span id="status" class="status"></span>
+</header>
+<main>
+  <aside id="browser">
+    <div class="tabs">
+      <button data-tab="skills" class="active">Skills</button>
+      <button data-tab="effects">Effects</button>
+      <button data-tab="sequences">Sequences</button>
+    </div>
+    <div class="filters">
+      <input id="search" type="search" placeholder="Search…">
+      <select id="filter-class"><option value="">All classes</option></select>
+      <label class="check"><input id="only-edited" type="checkbox"> Edited only</label>
+    </div>
+    <ul id="list"></ul>
+  </aside>
+  <section id="work">
+    <div id="empty" class="empty">
+      <h2>Pick a skill, a sequence or an effect</h2>
+      <p>Open the preview first: it shows what you select on the debug map, and every edit
+         replays there within a second. Edits are saved as you go in <code>vfx-overrides/</code>
+         (never in the game data, so a reconversion keeps them); <b>Revert to game</b> drops them.</p>
+    </div>
+    <div id="skill-view" hidden>
+      <h2 id="skill-title"></h2>
+      <p class="hint">The sequences this skill plays. Pick one to edit its timeline.</p>
+      <ul id="skill-seqs" class="chips"></ul>
+    </div>
+    <div id="seq-view" hidden>
+      <div class="row">
+        <h2 id="seq-title"></h2>
+        <label>Length <input id="seq-length" type="number" min="1" step="1"> frames (25 / s)</label>
+        <label class="check"><input id="seq-repeat" type="checkbox"> Loops</label>
+        <span class="grow"></span>
+        <button id="add-fx">+ Effect</button>
+        <button id="add-light">+ Light</button>
+        <button id="add-shake">+ Shake</button>
+      </div>
+      <div id="timeline"></div>
+    </div>
+    <div id="fx-view" hidden>
+      <div class="row">
+        <h2 id="fx-title"></h2>
+        <span id="fx-anims" class="hint"></span>
+      </div>
+      <p class="hint">Emitters spawn particles; surfaces are the meshes (glows, rings, decals, distortion).
+        Pick one to edit it.</p>
+      <ul id="fx-nodes" class="nodes"></ul>
+    </div>
+  </section>
+  <aside id="inspector">
+    <h3 id="insp-title">Inspector</h3>
+    <div id="insp"></div>
+  </aside>
+</main>
+<script src="editor.js"></script>
+</body>
+</html>

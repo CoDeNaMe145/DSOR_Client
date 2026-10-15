@@ -282,7 +282,7 @@ fn percent_decode(v: &str) -> String {
 
 /// Where the asset folder is. Natively it is `<workspace>/assets` (overridable
 /// with `DSOR_ASSETS`); in the browser it is `assets/` next to the page.
-fn asset_root() -> String {
+pub(crate) fn asset_root() -> String {
     #[cfg(not(target_arch = "wasm32"))]
     {
         std::env::var("DSOR_ASSETS")

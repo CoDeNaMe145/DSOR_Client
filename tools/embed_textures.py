@@ -189,9 +189,34 @@ for dirpath, _dirs, files in os.walk(assets):
                 for nd in doc.get("nodes", []):
                     if nd.get("name") == node:
                         tiling = nd.get("extras", {}).get("dsor_shader", {}).get("Intensity1", 1.0)
-                ex["dsor_layer"] = {"color": color, "mask": mask, "normal": add_texture(doc, dirpath, tex.get("BumpMap1")), "tiling": tiling}
+                # No BumpMap1: the client does not draw it, and listed but used by no
+                # material, bevy loaded it as colour (sRGB) while the level's other
+                # tiles load the same file as a normal map -- one path, two settings,
+                # and its loads never finished (a0002_start_hub stuck at 88 %).
+                ex["dsor_layer"] = {"color": color, "mask": mask, "normal": None, "tiling": tiling}
                 stats["layer materials"] += 1
                 changed = True
+        # Repair: models converted before that keep the normal map listed. Its
+        # texture is pointed at the layer's colour image (no index moves) and
+        # the image entry at the colour file, so nothing loads it any more.
+        for mat in doc.get("materials", []):
+            layer = mat.get("extras", {}).get("dsor_layer")
+            if not layer or layer.get("normal") is None:
+                continue
+            n, c = layer["normal"], layer["color"]
+            used = any(n in (m.get("normalTexture", {}).get("index"), m.get("emissiveTexture", {}).get("index"),
+                             m.get("pbrMetallicRoughness", {}).get("baseColorTexture", {}).get("index"))
+                       for m in doc["materials"])
+            if not used:
+                textures = doc["textures"]
+                image = textures[n]["source"]
+                still = [t for i, t in enumerate(textures) if i != n and t.get("source") == image]
+                textures[n]["source"] = textures[c]["source"]
+                if not still:
+                    doc["images"][image]["uri"] = doc["images"][textures[c]["source"]]["uri"]
+            layer["normal"] = None
+            stats["layer normals dropped"] = stats.get("layer normals dropped", 0) + 1
+            changed = True
         if changed:
             stats["files"] += 1
             write_glb(path, doc, rest)
