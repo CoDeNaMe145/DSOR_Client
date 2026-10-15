@@ -123,11 +123,15 @@ const CHAT_DEPTH: f32 = 45.0;
 /// FONT_SCALE averages ~5.5. UNVERIFIED: measured by eye, not from the font.
 const CHAT_COLUMNS: usize = 60;
 
-/// How far the chat's ChatLabel ends above the bottom of the screen, reference
-/// pixels: as far as it ends above its Canvas's bottom in the window (Canvas rect
-/// bottom 0.819607 x 768, ChatLabel 0.772223 x 768; ChatLabel is aligned Left /
-/// Bottom in its Canvas, export_win32/ui/chatwindow2.bxml).
-const CHAT_BOTTOM_MARGIN: f32 = (0.819_607 - 0.772_223) * BASE_H;
+/// How far the chat's ChatLabel ends above the bottom of the screen at first,
+/// reference pixels (it can be dragged: controls::DragHandle).
+/// EVIDENCE: the 2018 client in the reference video (2026-10-11 23-03-55.mp4, 1280
+///   x 720): the compact toggle's frame ends 52 px above the bottom; at that UI's
+///   scale (the frame's 77 reference pixels drawn 60 px high) that is ~67 reference
+///   pixels, and ChatLabel ends 4 above the frame: ~60. ("un peu plus haut": the
+///   first placement, 36 from the window's own Canvas, was too low.)
+/// UNVERIFIED: measured on one recording, not from the client's code.
+const CHAT_BOTTOM_MARGIN: f32 = 60.0;
 
 /// The chat windows where the game shows them: in the bottom-left corner of the
 /// screen, whatever its width. Their file centres the Canvas (HCenter / VCenter in

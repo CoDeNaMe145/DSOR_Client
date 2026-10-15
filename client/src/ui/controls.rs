@@ -17,10 +17,19 @@ const CHAT_SCROLL: i32 = 3;
 struct DragHandle {
     k: f32,
     rect: [f32; 4],
+    /// When it can be grabbed (the chat: in its full mode).
+    section: Section,
 }
 
 impl DragHandle {
     fn from_layout(layout: &Layout) -> Option<Self> {
+        // The chat moves by its log's background, as a whole (its rows take no
+        // clicks), while the full window shows.
+        if layout.window == CHAT_WINDOW {
+            let frame = layout.widgets.iter().find(|w| !w.hidden && w.id.ends_with("/LabelFull/ChatBackgroundLabel"))?;
+            let rect = frame.art.as_ref().map(|a| bounds(&a.pos)).unwrap_or(frame.rect);
+            return Some(Self { k: frame.k, rect, section: Section::Page(CHAT_MODE, 1) });
+        }
         // Use the painted frame, not the source container bounds: inventory's
         // container includes offscreen templates thousands of pixels above it.
         let suffix = match layout.window.as_str() {
@@ -36,7 +45,7 @@ impl DragHandle {
             if title.rect[1] >= 0.0 { rect[1] = rect[1].min(title.rect[1]); }
         }
         rect[3] = rect[1] + DRAG_HANDLE_HEIGHT;
-        Some(Self { k: frame.k, rect })
+        Some(Self { k: frame.k, rect, section: Section::Always })
     }
 
     fn clamp_offset(self, offset: Vec2, width: f32) -> Vec2 {
@@ -479,7 +488,7 @@ impl WindowControls {
     }
 
     fn title_hit(&self, point: Vec2, width: f32) -> bool {
-        self.drag_handle.is_some_and(|h| contains(h.k, h.rect, point, width))
+        self.drag_handle.is_some_and(|h| self.section_visible(h.section) && contains(h.k, h.rect, point, width))
     }
 }
 
@@ -743,6 +752,16 @@ pub(super) fn interact(
             if offset != window_offset(&tf) {
                 tf.translation.x = offset.x;
                 tf.translation.y = -offset.y;
+            }
+        }
+    }
+    // The chat's channel menu opens by its ButtonChatMenu wherever the chat was moved.
+    let chat_at = windows.iter().find(|(_, w, _, _, _)| w.0 == CHAT_WINDOW).map(|(_, _, _, _, tf)| tf.translation.truncate());
+    if let Some(at) = chat_at {
+        for (_, w, _, _, mut tf) in &mut windows {
+            if w.0 == CHAT_MENU && tf.translation.truncate() != at {
+                tf.translation.x = at.x;
+                tf.translation.y = at.y;
             }
         }
     }
