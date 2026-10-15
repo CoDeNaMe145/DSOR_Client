@@ -451,6 +451,8 @@ impl Plugin for SkillsPlugin {
                     .chain()
                     .after(crate::net::NetSystems),
             );
+        #[cfg(not(target_arch = "wasm32"))]
+        app.add_systems(Update, vfx_preview.before(play_sequences).after(crate::net::NetSystems));
     }
 }
 
@@ -1872,4 +1874,151 @@ fn status_visuals(
             }
         }
     }
+}
+
+/// DSOR_VFX_PREVIEW=<dir>: the VFX editor's (tools/vfx_editor) live preview. The
+/// editor writes `<dir>/preview.json` -- {rev, kind: "skill" | "sequence" |
+/// "effect", name, every, reload: [asset paths]} -- after applying an edit to the
+/// assets (tools/vfx_apply.py); on a new rev the listed files are reloaded, what
+/// was playing stops, and the local player plays it again every `every` seconds:
+/// a skill as test_cast does (offline landing included), a sequence on the
+/// player, an effect model 3 m ahead. `<dir>/status.json` answers {rev, error}.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Resource, Default)]
+struct VfxPreview {
+    dir: Option<std::path::PathBuf>,
+    poll: f32,
+    rev: u64,
+    order: Option<VfxOrder>,
+    /// Seconds to the next play.
+    next: f32,
+    /// Waiting for the reloaded files before playing.
+    reloading: Vec<bevy::asset::UntypedHandle>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Deserialize, Clone)]
+struct VfxOrder {
+    rev: u64,
+    kind: String,
+    name: String,
+    #[serde(default = "vfx_every")]
+    every: f32,
+    #[serde(default)]
+    reload: Vec<String>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn vfx_every() -> f32 {
+    3.0
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(clippy::too_many_arguments)]
+fn vfx_preview(
+    mut commands: Commands,
+    mut state: Local<VfxPreview>,
+    time: Res<Time>,
+    assets: Res<AssetServer>,
+    data: Res<SkillData>,
+    tables: Res<Assets<SkillTable>>,
+    mut seqs: ResMut<Assets<SequenceTable>>,
+    mut players: Query<&mut SequencePlayer>,
+    mut caster: Query<(Entity, &mut Transform, &Character, &CharacterAnim), With<LocalPlayer>>,
+    loading: Res<crate::loading::LoadingScreen>,
+    (net, mut debug_monsters): (Option<NonSendMut<Net>>, ResMut<crate::monsters::DebugMonsters>),
+) {
+    if state.dir.is_none() {
+        let Ok(dir) = std::env::var("DSOR_VFX_PREVIEW") else { return };
+        state.dir = Some(dir.into());
+    }
+    let dir = state.dir.clone().unwrap();
+    state.poll -= time.delta_secs();
+    if state.poll <= 0.0 {
+        state.poll = 0.25;
+        let order = std::fs::read(dir.join("preview.json")).ok().and_then(|b| serde_json::from_slice::<VfxOrder>(&b).ok());
+        if let Some(order) = order.filter(|o| o.rev != state.rev) {
+            state.rev = order.rev;
+            state.reloading.clear();
+            for p in &order.reload {
+                if p == "skills/sequences.json" {
+                    // Read again here: an untyped reload cannot pick its loader
+                    // (every table is a .json; "Could not find an asset loader"),
+                    // and the edit never reached the preview.
+                    let file = std::path::Path::new(&crate::asset_root()).join(p);
+                    match std::fs::read(&file).ok().and_then(|b| serde_json::from_slice::<HashMap<String, Sequence>>(&b).ok()) {
+                        Some(table) => {
+                            if let Some(mut t) = seqs.get_mut(&data.sequences) {
+                                t.0 = table;
+                            }
+                        }
+                        None => warn!("vfx preview: cannot read {}", file.display()),
+                    }
+                } else {
+                    assets.reload(p.clone());
+                    state.reloading.push(assets.load::<Gltf>(p.clone()).untyped());
+                }
+            }
+            // What was playing goes: its effects come from the files just edited.
+            for mut p in &mut players {
+                p.stop = true;
+            }
+            // Played again once the stopped sequences are gone: started at once,
+            // the old cast's end set the caster back to Idle over the new cast's
+            // animation (it froze after the first edit).
+            state.next = 0.3;
+            state.order = Some(order);
+        }
+    }
+    if loading.active() {
+        return;
+    }
+    let Some(order) = state.order.clone() else { return };
+    if state.reloading.iter().any(|h| assets.load_state(h.id()).is_loading()) {
+        return;
+    }
+    state.reloading.clear();
+    state.next -= time.delta_secs();
+    if state.next > 0.0 {
+        return;
+    }
+    state.next = order.every.max(0.5);
+    let Ok((e, mut tfm, character, anim)) = caster.single_mut() else { return };
+    if !anim.is_ready() {
+        return;
+    }
+    tfm.rotation = Quat::from_rotation_y(0.0);
+    let (from, facing) = (tfm.translation, 0.0);
+    let point = from + Vec3::Z * 8.0;
+    let status = |error: &str| {
+        let _ = std::fs::write(dir.join("status.json"), serde_json::json!({"rev": order.rev, "error": error}).to_string());
+    };
+    let (Some(table), Some(sequences)) = (tables.get(&data.skills), seqs.get(&data.sequences)) else { return };
+    match order.kind.as_str() {
+        "skill" => {
+            let Some(skill) = data.by_id.get(&order.name).and_then(|w| table.0.get(w)) else {
+                return status("unknown skill");
+            };
+            if let Some(mut net) = net.filter(|n| n.offline) {
+                offline_landing(&mut net, &mut debug_monsters, skill, from, facing, point, None);
+            }
+            perform(&mut commands, skill, sequences, e, Some(character), from, facing, point);
+        }
+        "sequence" => {
+            let Some(seq) = sequences.0.get(&order.name) else { return status("unknown sequence") };
+            play(&mut commands, seq.clone(), Some(e), e, false);
+        }
+        _ => {
+            // One effect model, alone, ahead of the player: a sequence of its own.
+            let frames = (order.every.max(0.5) * FPS) as i32;
+            let seq = Sequence {
+                length: frames as u32,
+                repeat: false,
+                tracks: vec![Track::Fx { graphics: order.name.clone(), joint: String::new(), at: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0], start: 0, end: frames, curves: HashMap::new() }],
+            };
+            let anchor = commands.spawn((Transform::from_translation(from + Vec3::Z * 3.0), Visibility::default())).id();
+            play(&mut commands, seq, None, anchor, false);
+        }
+    }
+    status("");
 }

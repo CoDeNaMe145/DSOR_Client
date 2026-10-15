@@ -33,6 +33,17 @@ matching client map files and a derived database for server deployment.
 See [the level editor guide](docs/level-editor.md) for source selection, controls,
 offline editing, and navigation/collision limitations.
 
+## VFX editor
+
+Run `VfxEditor.cmd` (or `python3 tools/vfx_editor/server.py`) and open
+<http://localhost:8091> to edit spell effects: a skill's sequences on a
+timeline (effects, lights, shakes, timing), its effect models' particle
+emitters (curves for size, colour, opacity, speed...), shader values, animators
+and textures. **Open preview** starts the client on the debug map, which replays
+the selection within a second of each edit. Edits live in `vfx-overrides/`,
+outside the generated assets, and are reapplied by asset conversion
+(`tools/vfx_apply.py`). See [the VFX editor guide](docs/vfx-editor.md).
+
 ## Game data
 
 The client needs the 2018 game's own files, converted to glTF/PNG by
@@ -121,9 +132,12 @@ the commits touched, for instance:
 | `tools/export_monsters.py` (summons) | `export_monsters.py` |
 | `tools/embed_animators.py` (effect fades, decals) | `embed_animators.py <export_win32>/models <assets>` |
 | `tools/export_stats.py` | `export_stats.py` |
+| `vfx-overrides/` (someone's VFX edits) | `python3 tools/vfx_apply.py <assets>` |
 
 `export_deco.py` adds its animation sets to `characters/anims.json`, so it must
-run after `export_skills.py` and after any `character_tables.py` run.
+run after `export_skills.py` and after any `character_tables.py` run. Any tool
+that rewrites an effect model or `skills/sequences.json` drops the VFX edits
+from it: run `tools/vfx_apply.py <assets>` last.
 
 ### 3. Native client
 
