@@ -5,8 +5,9 @@
 //! account's login session, and stays open across map changes: the game session is
 //! handed off from server to server, the chat is not. Lost, it reconnects.
 //!
-//! The window's keys are crate::ui's (controls::keyboard / edit_text): V shows or
-//! hides it, Enter focuses its TextEntry, Enter again sends (`ChatLog::submit`),
+//! The window's keys are crate::ui's (controls::keyboard / edit_text): V switches
+//! it between its full and compact modes, Enter focuses its TextEntry (the full
+//! window's), Enter again sends (`ChatLog::submit`),
 //! Escape cancels; while typing, `UiInput.typing` holds the game's keys. Text
 //! starting with `!` is sent as ordinary chat: the server reads it as an admin
 //! command and answers with a whisper from "System" (production

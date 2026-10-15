@@ -668,10 +668,15 @@ pub(super) fn keyboard(keys: Res<ButtonInput<KeyCode>>, mut windows: Windows, mu
         if key != KeyCode::Escape && keys.just_pressed(key) { toggle(name, &mut windows); }
     }
     if keys.just_pressed(KeyCode::Tab) { toggle("locationmap", &mut windows); }
-    // V: the chat window, as the 2018 client; its channel menu goes with it.
+    // V: the chat between its full and compact modes (ButtonToggleMode's pair),
+    // never hidden; its channel menu closes.
     if keys.just_pressed(KeyCode::KeyV) {
-        toggle(CHAT_WINDOW, &mut windows);
-        for (_, w, _, mut v, _) in &mut windows {
+        for (_, w, mut c, mut v, _) in &mut windows {
+            if w.0 == CHAT_WINDOW {
+                let compact = c.pages.get(CHAT_MODE).copied().unwrap_or(0) != 0;
+                c.pages.insert(CHAT_MODE, if compact { 0 } else { 1 });
+                if *v == Visibility::Hidden { *v = Visibility::Inherited; }
+            }
             if w.0 == CHAT_MENU && *v != Visibility::Hidden { *v = Visibility::Hidden; }
         }
     }
@@ -1150,14 +1155,16 @@ mod tests {
         let shown = |app: &App, e: Entity| *app.world().get::<Visibility>(e).unwrap() != Visibility::Hidden;
         let typing = |app: &App| app.world().resource::<crate::ui_input::UiInput>().typing;
         let sent = |app: &App| app.world().resource::<crate::chat::ChatLog>().outbox().to_vec();
+        let compact = |app: &App| app.world().get::<WindowControls>(chat).unwrap().pages.get(CHAT_MODE).copied().unwrap_or(0) == 1;
+        // V reduces the chat, never hides it; Enter in the compact mode reopens the
+        // full window to type.
         key(&mut app, KeyCode::KeyV, Some("v"));
-        assert!(!shown(&app, chat));
-        key(&mut app, KeyCode::Enter, None);
-        assert!(!typing(&app), "Enter with the chat closed");
+        assert!(shown(&app, chat) && compact(&app));
         key(&mut app, KeyCode::KeyV, Some("v"));
-        assert!(shown(&app, chat));
+        assert!(shown(&app, chat) && !compact(&app));
+        key(&mut app, KeyCode::KeyV, Some("v"));
         key(&mut app, KeyCode::Enter, None);
-        assert!(typing(&app));
+        assert!(typing(&app) && !compact(&app));
         for (code, text) in [(KeyCode::KeyV, "v"), (KeyCode::Digit1, "!"), (KeyCode::KeyI, "i")] {
             key(&mut app, code, Some(text));
         }
