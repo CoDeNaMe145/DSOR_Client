@@ -8,6 +8,7 @@
 //! so the browser build fetches them over HTTP.
 
 mod character;
+mod chat;
 mod appearance;
 mod clamp;
 mod combat_text;
@@ -143,6 +144,7 @@ fn options() -> Options {
                     new_character: None,
                     relay: None,
                     character: None,
+                    chat: None,
                 });
             }
             "--account" => {
@@ -233,6 +235,7 @@ fn options() -> Options {
                     new_character: None,
                     relay: None,
                     character: None,
+                    chat: None,
                 });
                 let v = percent_decode(v);
                 match k {
@@ -412,7 +415,7 @@ fn main() {
         .add_plugins(loading::LoadingPlugin)
         .add_plugins(selection::SelectionPlugin)
         .add_plugins((anim_cull::AnimCullPlugin, refraction::RefractionPlugin, surfaces::SurfacesPlugin, exits::ExitsPlugin, monsters::MonstersPlugin, combat_text::CombatTextPlugin, debug::DebugPlugin, stats::StatsPlugin, clamp::ClampPlugin, nebula_bloom::NebulaBloomPlugin, occlusion::OcclusionPlugin))
-        .add_plugins((highlight::HighlightPlugin, picking::PickingPlugin, props::PropsPlugin))
+        .add_plugins((highlight::HighlightPlugin, picking::PickingPlugin, chat::ChatPlugin, props::PropsPlugin))
         .insert_resource(ClearColor(Color::srgb(0.05, 0.06, 0.08)))
         // The sun's one shadow cascade covers 60 units: 1 024 texels in the
         // browser (half bevy's default) is ~6 cm a texel.

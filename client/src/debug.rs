@@ -572,10 +572,12 @@ fn refresh(
             stats
                 .get(&debug.stats)
                 .map(|s| {
+                    // 2018 ids carry the class ("warrior_angrystrike_default"),
+                    // release261's are bare with the class beside them.
                     s.skills
                         .iter()
-                        .filter(|(id, _)| id.starts_with(&prefix) && keep(id))
-                        .map(|(id, (_, _, title))| (format!("{title} ({id})"), Act::Skill(id.clone())))
+                        .filter(|(id, row)| (id.starts_with(&prefix) || row.class == CLASSES[class]) && keep(id))
+                        .map(|(id, row)| (format!("{} ({id})", row.title), Act::Skill(id.clone())))
                         .collect()
                 })
                 .unwrap_or_default()

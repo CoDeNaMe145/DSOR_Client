@@ -420,7 +420,7 @@ fn spawn_monsters(
                 hits: Default::default(),
                 heavy: None,
             },
-            RemotePlayer { actor: spawn.actor, target: spawn.position, facing: 0.0, still_for: 1.0, held: 0.0, held_until_tick: None },
+            RemotePlayer { actor: spawn.actor, target: spawn.position, facing: 0.0, still_for: 1.0, held: 0.0, held_until_tick: None, ..default() },
         ));
         // A summon appears through its SummonSequence (arcanemanifestation's
         // guardian rising, summontree's tree growing): without it they stood
@@ -819,7 +819,15 @@ fn hits_and_kills(
         play_blow(&mut commands, sequences, e, hits, heavy, &blow, &t.hit, &t.critical, &t.heavy, &playing);
     }
     for victim in deaths {
-        let Some((e, m, mut anim)) = monsters.iter_mut().find(|(_, m, _)| m.actor == victim) else { continue };
+        let Some((e, m, mut anim)) = monsters.iter_mut().find(|(_, m, _)| m.actor == victim) else {
+            // A player's death is crate::net's; anything else is a monster the
+            // client does not have (yet, or any more): it would stand there alive.
+            let local = locals.iter().next().map(|(_, l)| l.actor);
+            if local != Some(victim) && !remotes.iter().any(|(_, r)| r.actor == victim) {
+                warn!("KillCommand for actor {victim}: no such monster here");
+            }
+            continue;
+        };
         if anim.dead {
             continue;
         }

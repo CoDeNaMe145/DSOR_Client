@@ -88,9 +88,43 @@ const MENU_WINDOWS: [(&str, KeyCode, f32); 5] = [
 /// Other top-navigation panels, loaded once and opened by their own shortcut.
 const NAV_WINDOWS: [&str; 8] = ["questlog", "travelmap", "locationmap", "shopwindow", "socialscreen", "leaderboards", "matchmakingwindow", "eventwindow"];
 
-fn is_menu(name: &str) -> bool {
-    MENU_WINDOWS.iter().any(|(n, _, _)| *n == name) || NAV_WINDOWS.contains(&name) || name == "unstackwindow"
+/// The death dialog's parts drawn: each price once (the plain label beside its
+/// Andermant icon; the centred and membership variants are alternatives the 2018
+/// client picks between), without the membership advert, the planar-fissure text
+/// or the bag strip at its bottom (other situations' parts).
+/// UNVERIFIED: which variant the 2018 dialog code shows (not traced).
+fn death_part(id: &str) -> bool {
+    !["/CenteredTextLabel", "/PrivilegeTextLabel", "/ReviveHintLabel", "/planarfissuredeathdesc", "/Label_texture/unten", "/TipIconDummy"]
+        .iter()
+        .any(|p| id.contains(p))
+        && !id.ends_with("/Label_texture")
 }
+
+/// The local player's death dialog: opened by the server's ShowDeathDialogCommand,
+/// its buttons send RespawnCommand (crate::net::player_deaths).
+const DEATH_WINDOW: &str = "deathdialog";
+/// _Globals RespawnCost (at the nearest exit) and InstantRespawnCost (on the spot).
+const RESPAWN_COST: u32 = 40;
+const INSTANT_RESPAWN_COST: u32 = 120;
+
+fn is_menu(name: &str) -> bool {
+    MENU_WINDOWS.iter().any(|(n, _, _)| *n == name) || NAV_WINDOWS.contains(&name) || name == "unstackwindow" || name == DEATH_WINDOW || name == CHAT_MENU
+}
+
+/// The chat window (crate::chat): its full mode (the compact one, with its speech
+/// bubble preview, is not wired), shown from the start and toggled with V; and its
+/// channel menu (ButtonChatMenu). Their depth: over the HUD, under the menus.
+/// SEE: controls::edit_text (Enter), controls::chat_rows (the log).
+const CHAT_WINDOW: &str = "chatwindow2";
+const CHAT_MENU: &str = "chatwindow2dropdown";
+const CHAT_DEPTH: f32 = 45.0;
+/// Characters per log row: the List is 343 reference pixels wide, Tahoma at 9 x
+/// FONT_SCALE averages ~5.5. UNVERIFIED: measured by eye, not from the font.
+const CHAT_COLUMNS: usize = 60;
+
+/// One row of the chat log, drawn over the List's TextLine template, top first.
+#[derive(Component)]
+struct ChatRow(usize);
 
 // -- data ------------------------------------------------------------------------
 
@@ -293,6 +327,10 @@ struct Value(ValueKind);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ValueKind {
+    /// A fixed figure: the death dialog's respawn prices ("{0:i}"), the
+    /// static database's _Globals RespawnCost / InstantRespawnCost.
+    /// UNVERIFIED: the server's own price (a membership makes them free).
+    Fixed(u32),
     Gold,
     Silver,
     Copper,
@@ -385,7 +423,7 @@ impl Plugin for UiPlugin {
                 .before(bevy::sprite_render::check_entities_needing_specialization::<UiMaterial>))
             .add_systems(
                 Update,
-                (spawn_windows, controls::spells::sync, controls::items::sync, controls::keyboard, controls::interact, controls::spells::apply_drop, read_figures, controls::edit_text, controls::items::input, controls::order_windows, (update_fills, update_values, update_slots, (local_map::update, local_map::update_markers, local_map::appearance).chain()), controls::paint, controls::items::render, (controls::spells::overlay, controls::items::overlay), show_hover_window).chain().run_if(crate::loading::gameplay_ready),
+                (spawn_windows, controls::spells::sync, controls::items::sync, controls::keyboard, controls::interact, controls::spells::apply_drop, read_figures, controls::edit_text, controls::items::input, controls::order_windows, (update_fills, update_values, update_slots, (local_map::update, local_map::update_markers, local_map::appearance).chain()), controls::paint, controls::chat_rows, controls::items::render, (controls::spells::overlay, controls::items::overlay), show_hover_window, death_dialog).chain().run_if(crate::loading::gameplay_ready),
             );
         #[cfg(not(target_arch = "wasm32"))]
         app.add_systems(PreUpdate, replay::run.after(bevy::input::InputSystems)
@@ -421,6 +459,8 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>) {
     ));
     let mut loaded = Loaded { icons: assets.load("interface/skills.icons.json"), map_names: assets.load("interface/maps.names.json"), ..default() };
     loaded.layouts.push((assets.load("interface/unstackwindow.ui.json"), 600.0, None));
+    loaded.layouts.push((assets.load(format!("interface/{CHAT_WINDOW}.ui.json")), CHAT_DEPTH, None));
+    loaded.layouts.push((assets.load(format!("interface/{CHAT_MENU}.ui.json")), CHAT_DEPTH + 3.0, None));
     for (name, z) in HUD_WINDOWS {
         loaded.layouts.push((assets.load(format!("interface/{name}.ui.json")), z, None));
     }
@@ -431,6 +471,7 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>) {
         let depth = if *name == "locationmap" { 80.0 } else { 180.0 + i as f32 * WINDOW_DEPTH_STEP };
         loaded.layouts.push((assets.load(format!("interface/{name}.ui.json")), depth, None));
     }
+    loaded.layouts.push((assets.load(format!("interface/{DEATH_WINDOW}.ui.json")), 700.0, None));
     loaded.spawned = vec![false; loaded.layouts.len()];
     commands.insert_resource(loaded);
 }
@@ -471,6 +512,14 @@ fn value_of(id: &str) -> Option<ValueKind> {
     if id.contains("/StatsCharacter/") {
         if let Some(w) = SHEET_WIDGETS.iter().find(|w| **w == leaf) {
             return Some(ValueKind::Sheet(w));
+        }
+    }
+    if matches!(leaf, "TextLabel" | "CenteredTextLabel" | "PrivilegeTextLabel") && !id.contains("DontBuy") {
+        if id.contains("/Label/Buy1/") {
+            return Some(ValueKind::Fixed(INSTANT_RESPAWN_COST));
+        }
+        if id.contains("/Label/Buy/") {
+            return Some(ValueKind::Fixed(RESPAWN_COST));
         }
     }
     Some(match leaf {
@@ -634,6 +683,9 @@ fn spawn_windows(
             if layout.window == HOVER_WINDOW && !hover_part(&w.id) {
                 continue;
             }
+            if layout.window == DEATH_WINDOW && !death_part(&w.id) {
+                continue;
+            }
             if let Some(slot) = quick_slot_of(&w.id) {
                 controls.region(w.k, w.rect, Gate::default());
                 let p = parent(&mut commands, w.k, true);
@@ -646,7 +698,12 @@ fn spawn_windows(
             }
             let gate = controls.gate(&layout.window, w);
             if let Some(art) = &w.art {
-                controls.region(w.k, bounds(&art.pos), gate.clone());
+                // The chat windows' invisible containers span far above the visible
+                // log: they must not take the world's clicks there.
+                let invisible = art.tex.is_none() && art.color.chunks(4).all(|c| c.get(3).is_some_and(|a| *a <= 0.0));
+                if !(invisible && matches!(layout.window.as_str(), CHAT_WINDOW | CHAT_MENU)) {
+                    controls.region(w.k, bounds(&art.pos), gate.clone());
+                }
                 depth += depth_step;
                 if let Some(which) = gauge {
                     // Its own mesh and material, cut to the fill.
@@ -677,6 +734,28 @@ fn spawn_windows(
                         run = Some(Run { k: w.k, tex: art.tex.clone(), gate: gate.clone(), ..default() });
                     }
                     run.as_mut().unwrap().push(art, depth);
+                }
+            }
+            if let (true, Some(label)) = (layout.window == CHAT_WINDOW && w.id.ends_with("/List/TextLine"), &w.text) {
+                // The log: the template row repeated down the List.
+                let list = w.id.trim_end_matches("/TextLine");
+                let bottom = layout.widgets.iter().find(|l| l.id == list).map_or(w.rect[3], |l| l.rect[3]);
+                let [l, t, _, b] = w.rect;
+                let height = (b - t).max(1.0);
+                let p = parent(&mut commands, w.k, false);
+                for row in 0..((bottom - t) / height).floor().max(1.0) as usize {
+                    commands.spawn((
+                        ChatRow(row),
+                        Text2d::new(""),
+                        TextFont { font: assets.load("fonts/tahoma.ttf").into(), font_size: bevy::text::FontSize::Px(label.size * FONT_SCALE * screen.scale), ..default() },
+                        TextColor(Color::WHITE),
+                        Anchor(Vec2::new(-0.5, 0.0)),
+                        Transform::from_xyz(l + 2.0, -(t + height * (row as f32 + 0.5)), depth + depth_step * 0.5).with_scale(Vec3::splat(1.0 / screen.scale)),
+                        RenderLayers::layer(LAYER),
+                        ChildOf(p),
+                        Element { root, gate: Gate::default() },
+                        Visibility::Hidden,
+                    ));
                 }
             }
             if let Some(label) = &w.text {
@@ -907,6 +986,7 @@ fn update_values(
         // UNVERIFIED: the split (the currency bar's own code is not traced).
         let copper = figures.gold.unwrap_or(0);
         let s = match v.0 {
+            ValueKind::Fixed(n) => n.to_string(),
             ValueKind::Gold => (copper / 10_000).to_string(),
             ValueKind::Silver => (copper / 100 % 100).to_string(),
             ValueKind::Copper => (copper % 100).to_string(),
@@ -983,6 +1063,23 @@ fn show_hover_window(hover: Res<crate::monsters::HoverInfo>, mut windows: Query<
             if *v != want {
                 *v = want;
             }
+        }
+    }
+}
+
+/// The death dialog follows the server: shown from ShowDeathDialogCommand until a
+/// respawn is chosen or the player is revived (crate::net::Net::death).
+fn death_dialog(net: Option<NonSend<crate::net::Net>>, mut windows: Query<(&Window2018, &mut Visibility)>) {
+    // DSOR_UI_OPEN=deathdialog: shown regardless (to look at it offline).
+    let wanted = net.as_ref().is_some_and(|n| n.death.dialog && !n.death.requested)
+        || std::env::var("DSOR_UI_OPEN").is_ok_and(|v| v.split(',').any(|w| w == DEATH_WINDOW));
+    for (w, mut v) in &mut windows {
+        if w.0 != DEATH_WINDOW {
+            continue;
+        }
+        let want = if wanted { Visibility::Inherited } else { Visibility::Hidden };
+        if *v != want {
+            *v = want;
         }
     }
 }

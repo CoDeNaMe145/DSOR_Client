@@ -18,7 +18,7 @@
 # this order: Nebula render states, emitters, animators / render states / cull
 # modes, cube maps and second layers, decal tiling, character colours, the
 # client's tables (skills, NPCs, exits, ambience) and the interface windows. The navigation meshes need the
-# server repository: EXPERIMENTAL=<experimental> enables them.
+# server repository: DSOR_SERVER=<DSOR_Server> (or EXPERIMENTAL) enables them.
 #
 # Needs python3 with Pillow and numpy, a C++ compiler and curl (the .crn
 # transcoder), git (only when cloning DSO_Godot). Logs go to <out_dir>/logs/.
@@ -95,7 +95,12 @@ echo "[convert] Nebula states and tables (log: $logs/post.log)"
     # Last: the VFX editor's edits (vfx-overrides/) over the fresh conversion.
     python3 "$tools/vfx_apply.py" "$out"
     python3 "$tools/export_ui.py" "$root" "$out" "$godot"
-    if [ -n "${EXPERIMENTAL:-}" ]; then python3 "$tools/export_navmesh.py" "$root" "$out"; fi
+    # The walkable ground (maps/<map>.nav.bin): player heights and collisions, and
+    # where skills may land. It needs the server's PathEngine reader:
+    # DSOR_SERVER=<DSOR_Server checkout> (or the legacy EXPERIMENTAL reader).
+    if [ -n "${DSOR_SERVER:-}" ]; then python3 "$tools/export_navmesh.py" "$root" "$out" --server "$DSOR_SERVER"
+    elif [ -n "${EXPERIMENTAL:-}" ]; then python3 "$tools/export_navmesh.py" "$root" "$out"
+    else echo "warning: no DSOR_SERVER: no navigation meshes (players walk through walls, skills land anywhere)" >&2; fi
 } > "$logs/post.log" 2>&1
 tail -n 14 "$logs/post.log"
 

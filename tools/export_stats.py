@@ -15,7 +15,7 @@ Writes characters/stats.json:
             BasePowerFactorRelative}
   chance    _Template_DifficultyFactors row 0 ChanceMultiplier
   globals   _Globals Max* reductions and chances, MaxItemLevel, ItemUpgradeProgressionVarA..D
-  skills    _Template_Skill: id -> [UseWeaponDPS, DamageModifier, English title]
+  skills    _Template_Skill: id -> [UseWeaponDPS, DamageModifier, English title, CharClass]
   texts     language/en/gui.window.xml, categories gui.window.charsheet and gui.window.general
   items, enchantments, tiers, item_attrs   for the worn items (SEE: stats.rs)
 SEE: the spec of the 2018 computation in client/src/stats.rs (addresses there).
@@ -79,8 +79,10 @@ for filename in ("db.skill.xml", "db.skill2.xml"):
     if os.path.isfile(skill_path):
         with open(skill_path, encoding="utf-8-sig") as skill_file:
             titles.update(re.findall(r'<item name="([^"]+)Title"><!\[CDATA\[(.*?)\]\]></item>', skill_file.read(), re.S))
-out["skills"] = {r["Id"]: [bool(r["UseWeaponDPS"]), r["DamageModifier"] if r["DamageModifier"] is not None else 1.0, titles.get(r["Id"], r["Id"])]
-                 for r in rows("select Id, UseWeaponDPS, DamageModifier from _Template_Skill")}
+# The class too: release261's class skills have bare ids ("angrystrike").
+out["skills"] = {r["Id"]: [bool(r["UseWeaponDPS"]), r["DamageModifier"] if r["DamageModifier"] is not None else 1.0,
+                           titles.get(r["Id"], r["Id"]), (r["CharClass"] or "").lower()]
+                 for r in rows("select Id, UseWeaponDPS, DamageModifier, CharClass from _Template_Skill")}
 
 texts = {}
 root = ET.parse(os.path.join(export, "language", "en", "gui.window.xml")).getroot()
