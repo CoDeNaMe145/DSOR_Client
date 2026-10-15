@@ -977,12 +977,12 @@ fn play_blow(
             continue;
         }
         let Some(free) = slots.iter().position(|(_, p)| p.is_none_or(|p| !playing.contains(p))) else { continue };
-        let player = play(commands, seq.clone(), Some(e), e, false);
+        let player = crate::skills::play_attached(commands, seq.clone(), e);
         slots[free] = (Some(blow.tick), Some(player));
     }
     if blow.heavy && !heavy.is_some_and(|p| playing.contains(p)) {
         if let Some(seq) = sequences.0.get(heavy_seq) {
-            *heavy = Some(play(commands, seq.clone(), Some(e), e, false));
+            *heavy = Some(crate::skills::play_attached(commands, seq.clone(), e));
         }
     }
 }

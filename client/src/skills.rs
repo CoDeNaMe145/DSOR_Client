@@ -680,6 +680,12 @@ pub(crate) fn play(commands: &mut Commands, seq: Sequence, actor: Option<Entity>
     play_with(commands, seq, actor, anchor, looping, follow)
 }
 
+/// A sequence on an actor that its movement does not interrupt and whose effects
+/// follow it (the blows it takes: crate::monsters::play_blow).
+pub(crate) fn play_attached(commands: &mut Commands, seq: Sequence, actor: Entity) -> Entity {
+    play_with(commands, seq, Some(actor), actor, false, true)
+}
+
 /// A death sequence on its actor: its animation tracks may pose the dead body.
 pub(crate) fn play_death(commands: &mut Commands, seq: Sequence, actor: Entity) -> Entity {
     let player = play(commands, seq, Some(actor), actor, false);
@@ -735,13 +741,14 @@ fn cast_input(
     if !ui.blocks(MouseButton::Left) && buttons.just_pressed(MouseButton::Left) && hovered.0.is_none() {
         *queued = None;
     }
-    // One press, one cast (holding a key re-fired the skill as soon as it
-    // unblocked: "certains sorts se lancent 2x"); only the basic attack on
-    // Shift + left button repeats while held.
-    // A left click held on a monster attacks it with the left button's skill.
+    // Keys: one press, one cast (holding a key re-fired the skill as soon as it
+    // unblocked: "certains sorts se lancent 2x"). Mouse buttons repeat while held,
+    // as in the game, paced by the cast, the cooldown and the resource: Shift or a
+    // monster under the cursor with the left button, the right button anywhere
+    // ("je peux pas rester appuye sur clique droit pour lancer un sort").
     let slot = if !ui.blocks(MouseButton::Left) && (shift || hovered.0.is_some()) && buttons.pressed(MouseButton::Left) {
         Some(0)
-    } else if !ui.blocks(MouseButton::Right) && buttons.just_pressed(MouseButton::Right) {
+    } else if !ui.blocks(MouseButton::Right) && buttons.pressed(MouseButton::Right) {
         Some(1)
     } else {
         [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5]
@@ -1247,7 +1254,10 @@ fn play_sequences(
     for (e, mut p) in &mut players {
         // Walking away interrupts the skill, as in the game: its effects go with it
         // (they stayed on the running player for seconds otherwise).
-        let interrupted = p.actor.is_some_and(|a| {
+        // Only a skill's own sequence on its caster: hits and deaths carried by the
+        // body (`follow`, play_death) play out on a creature that runs -- a chasing
+        // monster's blood splash was cut after 0.1 s ("pas de sang quand je tape").
+        let interrupted = !p.follow && !p.on_death && p.actor.is_some_and(|a| {
             locals.get(a).is_ok_and(|l| l.target.is_some() && l.casting <= 0.0)
                 || remotes.get(a).is_ok_and(|r| r.still_for <= 0.0)
         }) && p.t > 0.1;
