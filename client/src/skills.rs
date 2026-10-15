@@ -1497,7 +1497,7 @@ fn start_fx_animations(
         }
         if gltf.animations.is_empty() {
             m.started = true;
-            commands.entity(e).insert(Visibility::Inherited);
+            commands.entity(e).try_insert(Visibility::Inherited);
             continue;
         }
         let Some(player) = children.iter_descendants(e).find(|c| players.contains(*c)) else { continue };
@@ -1509,8 +1509,8 @@ fn start_fx_animations(
         } else {
             anim.play(node);
         }
-        commands.entity(player).insert((AnimationGraphHandle(graphs.add(graph)), anim));
-        commands.entity(e).insert(Visibility::Inherited);
+        commands.entity(player).try_insert((AnimationGraphHandle(graphs.add(graph)), anim));
+        commands.entity(e).try_insert(Visibility::Inherited);
         m.started = true;
     }
 }
@@ -1696,10 +1696,10 @@ fn retire_effects(
             r.started = true;
             for c in children.iter_descendants(e) {
                 if shown_parts.contains(c) {
-                    commands.entity(c).insert(Visibility::Hidden);
+                    commands.entity(c).try_insert(Visibility::Hidden);
                 }
                 if emitters.contains(c) {
-                    commands.entity(c).insert(crate::particles::StopEmitting);
+                    commands.entity(c).try_insert(crate::particles::StopEmitting);
                 }
             }
         }

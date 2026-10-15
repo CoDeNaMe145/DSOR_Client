@@ -341,7 +341,7 @@ fn start_emitters(
             }
         };
         *seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-        commands.entity(entity).insert(EmitterState {
+        commands.entity(entity).try_insert(EmitterState {
             points,
             group,
             particles: Vec::new(),

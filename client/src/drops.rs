@@ -221,7 +221,7 @@ fn animate_drops(
         let (graph, node) = AnimationGraph::from_clip(clip.clone());
         let mut anim = AnimationPlayer::default();
         anim.play(node).repeat();
-        commands.entity(player).insert((AnimationGraphHandle(graphs.add(graph)), anim));
+        commands.entity(player).try_insert((AnimationGraphHandle(graphs.add(graph)), anim));
     }
 }
 

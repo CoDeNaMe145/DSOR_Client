@@ -494,7 +494,7 @@ fn setup_models(
                     .and_then(|x| serde_json::from_str::<serde_json::Value>(&x.value).ok())
                     .and_then(|v| v.get("dsor_skin").and_then(|s| s.as_str()).map(str::to_owned));
                 if skin.is_some_and(|s| !set.skins.contains(&s)) {
-                    commands.entity(d).insert(Visibility::Hidden);
+                    commands.entity(d).try_insert(Visibility::Hidden);
                 }
             }
             if let Ok(n) = names.get(d) {
@@ -503,7 +503,7 @@ fn setup_models(
             // Hooked again: bones unhooked while the scene had no driver
             // (crate::anim_cull, crate::character's idle pruning).
             if targets.contains(d) {
-                commands.entity(d).insert(AnimatedBy(player));
+                commands.entity(d).try_insert(AnimatedBy(player));
             }
         }
         if let Some(root) = set.and_then(|s| s.variation.iter().find(|j| j.bone == "Skeleton_Root")) {
@@ -519,7 +519,7 @@ fn setup_models(
             for d in children.iter_descendants(e) {
                 if let Ok(skin) = skinned.get(d) {
                     let joints = skin.joints.iter().map(|j| by_joint.get(j).copied().unwrap_or(*j)).collect();
-                    commands.entity(d).insert(SkinnedMesh { inverse_bindposes: skin.inverse_bindposes.clone(), joints });
+                    commands.entity(d).try_insert(SkinnedMesh { inverse_bindposes: skin.inverse_bindposes.clone(), joints });
                 }
             }
         }
@@ -535,10 +535,10 @@ fn setup_models(
             m.extension.params.p1 = Vec4::from_array(setup.dye[0]);
             m.extension.params.p2 = Vec4::from_array(setup.dye[1]);
             let copy = surface_assets.add(m);
-            commands.entity(d).insert(MeshMaterial3d(copy.clone()));
+            commands.entity(d).try_insert(MeshMaterial3d(copy.clone()));
             own.push(copy);
         }
-        commands.entity(e).insert(ActorMaterials(own));
+        commands.entity(e).try_insert(ActorMaterials(own));
         let mut graph = AnimationGraph::new();
         let mut nodes = HashMap::new();
         if let Some(rows) = table.0.get(&setup.anim_set) {
@@ -560,7 +560,7 @@ fn setup_models(
         // the next monster of its kind loaded it again, the reload replaced its
         // scene (AssetEvent::Modified), and bevy spawned every instance of it
         // anew, without its hidden skins.
-        commands.entity(e).insert((ModelBones(bones), ModelFile(setup.gltf.clone()))).remove::<ModelSetup>();
+        commands.entity(e).try_insert((ModelBones(bones), ModelFile(setup.gltf.clone()))).remove::<ModelSetup>();
     }
 }
 
@@ -803,7 +803,7 @@ fn hits_and_kills(
                     };
                     play_blow(&mut commands, sequences, v, &mut slots.rows, &mut slots.heavy, &blow, &h.hit, &h.critical, &h.heavy, &playing);
                     if !has {
-                        commands.entity(v).insert(fresh);
+                        commands.entity(v).try_insert(fresh);
                     }
                 }
             }
@@ -1003,19 +1003,19 @@ fn own_player_materials(
     for (e, h) in &meshes {
         let Some(player) = parents.iter_ancestors(e).find(|a| players.contains(*a)) else { continue };
         let Some(m) = materials.get(&h.0).cloned() else { continue };
-        commands.entity(e).insert(OwnMaterial);
+        commands.entity(e).try_insert(OwnMaterial);
         if m.extension.params.p0.x as u32 != crate::surfaces::Kind::Character as u32 {
             continue;
         }
         let copy = materials.add(m);
-        commands.entity(e).insert(MeshMaterial3d(copy.clone()));
+        commands.entity(e).try_insert(MeshMaterial3d(copy.clone()));
         match owned.get_mut(player) {
             Ok(mut o) => o.0.push(copy),
             Err(_) => fresh.entry(player).or_default().push(copy),
         }
     }
     for (player, list) in fresh {
-        commands.entity(player).insert(ActorMaterials(list));
+        commands.entity(player).try_insert(ActorMaterials(list));
     }
 }
 
