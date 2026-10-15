@@ -653,7 +653,12 @@ fn follow_level(
         let inside = position.and_then(|p| ambience.bubble_at(p));
         if inside != level.inside {
             level.inside = inside;
-            let to = inside.map(|i| ambience.bubbles[i].look.clone()).unwrap_or(global);
+            // A local box never moves the sun: its Transform is its volume, not a
+            // light. FAILURE: its z axis (horizontal, ~173 deg from the level's sun
+            // on a0007_pastures_pve) was faded to at every border, swinging the sun
+            // over the zenith ("le soleil fait des allers-retours").
+            let mut to = inside.map(|i| ambience.bubbles[i].look.clone()).unwrap_or_else(|| global.clone());
+            to.dir = global.dir;
             let from = level.bubble.clone();
             level.fade = Some((from, to, 0.0));
         }

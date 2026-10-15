@@ -49,7 +49,10 @@ pub(super) fn update(editor: Res<Editor>, roots: Query<&Transform, With<ObjectRo
     let mut bubble = chosen.and_then(|p| p.object.ambience.as_ref()).map(|b| b.look.clone())
         .or_else(|| editor.ambience.clone()).unwrap_or_else(Bubble::default);
     if let Some(placed) = chosen {
-        if let Ok(at) = roots.get(placed.entity) { bubble.dir = Some((at.rotation * Vec3::Z).to_array()); }
+        // Only the level's own bubble aims the sun (a local one's rotation is its
+        // box's; lighting.rs follow_level).
+        let is_global = global.is_some_and(|g| g.object.key == placed.object.key);
+        if let (true, Ok(at)) = (is_global, roots.get(placed.entity)) { bubble.dir = Some((at.rotation * Vec3::Z).to_array()); }
         state.source = placed.object.label.clone();
     } else { state.source = "Map ambience".into(); }
     if look.bubble != bubble { look.bubble = bubble; }

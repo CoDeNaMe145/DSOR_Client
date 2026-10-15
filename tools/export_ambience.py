@@ -75,7 +75,10 @@ for name in sorted(os.listdir(os.path.join(root, "maps"))):
     for r in rows:
         b = {k: value(r[k]) for k in BUBBLE if k in r.keys()}
         m = matrix(r["Transform"])
-        b["dir"] = axis_z(m)
+        # Only the level's own (default) bubble aims the sun; a local bubble's
+        # Transform is its box (lighting.rs follow_level keeps the global dir).
+        if r["PEDefaultEntity"]:
+            b["dir"] = axis_z(m)
         if r["PEDefaultEntity"] and doc["global"] is None:
             doc["global"] = b
         else:
