@@ -70,7 +70,11 @@ ln -sfn ~/Documents/Drakensang/dsor_assets assets
 
 This runs DSO_Godot, then every tool of `tools/` in order (render states, cube
 maps, ambience, skills, NPCs, exits, interface windows, level decorations). With
-`EXPERIMENTAL=<path of the server repo>` it also exports the navigation meshes.
+`DSOR_SERVER=<DSOR_Server checkout>` it also exports the navigation meshes
+(`maps/<map>.nav.bin`, read with the server's PathEngine parser). Without them the
+player walks through walls and skills can be aimed anywhere; to add them to
+assets converted without: `python3 tools/export_navmesh.py <export_win32> <assets>
+--server <DSOR_Server>`.
 Details: `docs/assets.md`.
 
 A few tools are not part of `convert_assets.sh` yet; run them afterwards (same

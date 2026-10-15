@@ -159,6 +159,15 @@ pub struct Net {
     /// Blows (HitCommand 115) and deaths (KillCommand 116), for crate::monsters.
     pub hits: Vec<(u32, dsor_proto::commands::combat::Hit)>,
     pub kills: Vec<(u32, dsor_proto::commands::combat::Kill)>,
+    /// The local player's death: dead since KillCommand (116) until ReviveCommand
+    /// (118), the death dialog asked for (ShowDeathDialogCommand 138), and the
+    /// respawn choice to send (RespawnCommand 106, from crate::ui).
+    pub death: DeathState,
+    /// Other actors revived (ReviveCommand 118), for their death pose.
+    pub revives: Vec<u32>,
+    /// Every KillCommand's victim, for the players' death pose (monsters take
+    /// theirs from `kills`, crate::monsters).
+    player_deaths: Vec<u32>,
     /// Our character's name, to recognise our own stale session (below).
     pub local_name: Option<String>,
     /// Our current skill resource (rage, mana...), from ActorStatsUpdate (132).
@@ -241,6 +250,27 @@ pub struct NpcSpawn {
     pub visible: bool,
 }
 
+/// The death dialog's button (crate::ui): (at the nearest exit, on the spot).
+#[derive(Resource, Default)]
+pub struct RespawnChoice(pub Option<(bool, bool)>);
+
+/// The local player's death (Net::death).
+#[derive(Default, Debug, Clone)]
+pub struct DeathState {
+    pub dead: bool,
+    /// The death dialog is to be shown (until a respawn choice or a revive).
+    pub dialog: bool,
+    /// A respawn choice to send: (at the nearest exit, on the spot).
+    pub respawn: Option<(bool, bool)>,
+    /// A respawn was sent and not answered yet: the dialog stays closed.
+    pub requested: bool,
+    /// The last respawn sent, for its revival hold (player_deaths).
+    pub chosen: Option<(bool, bool)>,
+    /// Seconds (Time::elapsed) until which the revival holds the player: clicks
+    /// do not walk (click_to_move), as the server locks its movement.
+    pub held_until: f32,
+}
+
 /// A release261 u64 health, as the u32 the client keeps.
 fn sat(v: u64) -> u32 {
     v.min(u32::MAX as u64) as u32
@@ -256,7 +286,7 @@ pub struct MonsterSpawn {
 }
 
 /// Another player, drawn from NewRemotePlayer and moved by their MoveCommands.
-#[derive(Component)]
+#[derive(Component, Default)]
 pub struct RemotePlayer {
     pub actor: u32,
     /// Where their last record says they are heading.
@@ -285,6 +315,17 @@ pub struct RemotePlayer {
     /// FAILURE: held by time from the command's arrival, the hold ended before
     ///   those records did, and the creature looked away before striking again.
     pub held_until_tick: Option<u32>,
+    /// Its speed, from its last two records (distance over their ticks); 0 until
+    /// known. It runs at that speed between records, so it is still moving when
+    /// the next one arrives.
+    /// FAILURE: run at the player's speed (6.25), a creature whose records come
+    ///   every 4 ticks reached each one early and stood until the next: it moved
+    ///   in jerks ("les mobs se deplacent frame par frame").
+    pub speed: f32,
+    /// Its last record's position and tick, for `speed`.
+    pub last_record: Option<(Vec3, u32)>,
+    /// Seconds between its records (monsters: every 4 ticks), 0 until known.
+    pub interval: f32,
 }
 
 /// The player this client controls.
@@ -394,7 +435,7 @@ mod smoothing_tests {
         animation.state = AnimState::Run;
         let actor = app.world_mut().spawn((Transform::default(), local(Some(Vec3::splat(100.0))), animation)).id();
         let remote = app.world_mut().spawn((Transform::default(), CharacterAnim::default(), RemotePlayer {
-            actor: 2, target: Vec3::splat(200.0), facing: 0.0, still_for: 0.0, held: 3.0, held_until_tick: Some(100),
+            actor: 2, target: Vec3::splat(200.0), facing: 0.0, still_for: 0.0, held: 3.0, held_until_tick: Some(100), ..default()
         })).id();
         let at = Vec3::new(14.0, 0.0, 45.0);
         {
@@ -531,7 +572,7 @@ mod smoothing_tests {
         let mut app = App::new();
         app.insert_resource(Time::<()>::default()).add_systems(Update, move_remotes);
         let remote = app.world_mut().spawn((Transform::default(), CharacterAnim::default(), RemotePlayer {
-            actor: 2, target: Vec3::X, facing: -std::f32::consts::FRAC_PI_2, still_for: 0.0, held: 0.0, held_until_tick: None,
+            actor: 2, target: Vec3::X, facing: -std::f32::consts::FRAC_PI_2, still_for: 0.0, held: 0.0, held_until_tick: None, ..default()
         })).id();
         step(&mut app, 1.0 / 60.0);
         let tf = app.world().get::<Transform>(remote).unwrap();
@@ -566,6 +607,7 @@ pub struct NetReceive;
 
 impl Plugin for NetPlugin {
     fn build(&self, app: &mut App) {
+        app.init_resource::<RespawnChoice>();
         // DSOR_ZOOM=<height>: start at another zoom (debugging screenshots).
         let zoom = std::env::var("DSOR_ZOOM").ok().and_then(|z| z.parse().ok()).unwrap_or(CAM_HEIGHT_DEFAULT);
         app.insert_resource(CameraZoom::new(zoom))
@@ -577,7 +619,7 @@ impl Plugin for NetPlugin {
             )
             .add_systems(
                 Update,
-                (debug_hierarchy, spawn_local, apply_remotes, dress, move_remotes,
+                (debug_hierarchy, spawn_local, apply_remotes, dress, move_remotes, player_deaths,
                     click_to_move.run_if(crate::loading::gameplay_ready), walk_local.run_if(crate::loading::gameplay_ready),
                     apply_corrections, zoom_camera.run_if(crate::loading::gameplay_ready), follow_camera, send_moves.run_if(crate::loading::gameplay_ready))
                     .chain()
@@ -643,6 +685,9 @@ pub fn start_offline(world: &mut World, class: u8, gender: u8) {
         monster_health: Vec::new(),
         hits: Vec::new(),
         kills: Vec::new(),
+        death: default(),
+        revives: Vec::new(),
+        player_deaths: Vec::new(),
         bar: default_bar(class),
         quickbars: default(),
         inventory: default(),
@@ -854,6 +899,9 @@ pub(crate) fn start_session(world: &mut World, config: NetConfig) {
         monster_health: Vec::new(),
         hits: Vec::new(),
         kills: Vec::new(),
+        death: default(),
+        revives: Vec::new(),
+        player_deaths: Vec::new(),
         bar: Vec::new(),
         quickbars: default(),
         inventory: default(),
@@ -1040,6 +1088,9 @@ fn pump(
                 net.monster_health.clear();
                 net.hits.clear();
                 net.kills.clear();
+                net.revives.clear();
+                net.player_deaths.clear();
+                net.death = default();
                 // Nothing may stand on the old map's ground (the new player snaps to
                 // the first mesh it sees); crate::nav loads the new one.
                 commands.remove_resource::<CurrentNav>();
@@ -1183,6 +1234,9 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
         // Skills the server relays from other actors (our own are played as cast).
         ServerCommand::StatusEffect(c) => {
             for e in &c.elements {
+                if actor.is_some() && actor == net.local_actor {
+                    info!("status effect {} on us for {:.2} s (instance {})", e.index, e.duration as f32 / 25.0, e.instance);
+                }
                 net.status_events.push(StatusEvent {
                     // release261: the holder is the command's actor (e.source is
                     // who caused it).
@@ -1264,7 +1318,25 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
         }
         ServerCommand::Kill(k) => {
             if let Some(a) = actor {
+                if Some(a) == net.local_actor {
+                    net.death = DeathState { dead: true, ..default() };
+                }
+                net.player_deaths.push(a);
                 net.kills.push((a, k));
+            }
+        }
+        ServerCommand::ShowDeathDialog(_) => {
+            if net.death.dead {
+                net.death.dialog = true;
+            }
+        }
+        ServerCommand::Revive(_) => {
+            if let Some(a) = actor {
+                if Some(a) == net.local_actor {
+                    let chosen = net.death.chosen;
+                    net.death = DeathState { chosen, ..default() };
+                }
+                net.revives.push(a);
             }
         }
         ServerCommand::ItemUpdate(update) => {
@@ -1322,6 +1394,10 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
                 if Some(a) != net.local_actor {
                     let at = net.wire_to_game(m.x, m.elevation, m.y);
                     let facing = m.facing as f32 / 256.0 * TAU;
+                    if std::env::var("DSOR_DEBUG_MOVES").is_ok() {
+                        info!("move record {a} tick {} at ({:.2}, {:.2}) heading {} facing {} speed {} duration {}",
+                            m.start_tick, at.x, at.z, m.heading, m.facing, m.speed, m.duration);
+                    }
                     net.remote_moves.push((a, at, facing, m.start_tick));
                 } else if net.corrections.corrected_echo(&m) {
                     let at = net.wire_to_game(m.x, m.elevation, m.y);
@@ -1343,9 +1419,13 @@ fn apply_corrections(
         let Some((position, heading)) = actor.and_then(|a| net.corrections.pending.remove(&a)) else { continue };
         transform.translation = position;
         transform.rotation = Quat::from_rotation_y(heading);
-        if let Some(mut p) = local { p.target = None; p.facing = heading; p.casting = 0.0; p.snapped = true; }
+        // A revival's ForceTransform lands while its Resurrect plays and holds
+        // the player (crate::skills::hold_for_status): kept, not cut to Idle
+        // ("mon perso retourne instant en idle").
+        let held = local.as_ref().is_some_and(|p| p.casting > 0.0) && matches!(animation.state, AnimState::Named(_));
+        if let Some(mut p) = local { p.target = None; p.facing = heading; if !held { p.casting = 0.0; } p.snapped = true; }
         if let Some(mut p) = remote { p.target = position; p.facing = heading; p.held = 0.0; p.held_until_tick = None; p.still_for = 1.0; }
-        if !animation.dead { animation.state = AnimState::Idle; }
+        if !animation.dead && !held { animation.state = AnimState::Idle; }
     }
 }
 
@@ -1374,7 +1454,7 @@ fn apply_remotes(
         let e = spawn_character(&mut commands, desc, Transform::from_translation(at).with_rotation(Quat::from_rotation_y(heading)));
         commands.entity(e).insert((
             Nameplate::player(name, admin),
-            RemotePlayer { actor, target: at, facing: heading, still_for: 1.0, held: 0.0, held_until_tick: None },
+            RemotePlayer { actor, target: at, facing: heading, still_for: 1.0, held: 0.0, held_until_tick: None, ..default() },
         ));
     }
     for (actor, at, facing, tick) in std::mem::take(&mut net.remote_moves) {
@@ -1384,6 +1464,20 @@ fn apply_remotes(
             let held = r.held_until_tick.is_some_and(|end| end.wrapping_sub(tick) as i32 >= 0);
             if r.actor == actor && !held {
                 let at = mesh.and_then(|m| m.ground(at.x, at.z, at.y, 3.0).map(|h| Vec3::new(at.x, h, at.z))).unwrap_or(at);
+                if let Some((before, then)) = r.last_record {
+                    let ticks = tick.wrapping_sub(then) as i32;
+                    if ticks > 0 {
+                        let moved = Vec2::new(at.x - before.x, at.z - before.z).length();
+                        let speed = moved / (ticks as f32 * TICK_SECONDS);
+                        // A record that moved: its speed (a stop keeps the last one,
+                        // for the next start); a teleport is no speed.
+                        if moved > 0.02 && speed < 25.0 {
+                            r.speed = if r.speed > 0.0 { r.speed * 0.5 + speed * 0.5 } else { speed };
+                            r.interval = (ticks as f32 * TICK_SECONDS).min(0.5);
+                        }
+                    }
+                }
+                r.last_record = Some((at, tick));
                 r.target = at;
                 r.facing = facing;
             }
@@ -1405,7 +1499,14 @@ fn move_remotes(time: Res<Time>, mut remotes: Query<(&mut Transform, &mut Remote
         }
         let to = r.target - tf.translation;
         let flat = Vec2::new(to.x, to.z).length();
-        let step = RUN_SPEED * 1.25 * time.delta_secs();
+        // The gap to its record covered in one record interval: as fast as it
+        // moves when a record has just arrived, a little slower as it closes in,
+        // so it is still walking when the next one lands; faster when late.
+        let step = if r.speed > 0.0 && r.interval > 0.0 {
+            (flat / r.interval).clamp(r.speed * 0.8, r.speed * 3.0) * time.delta_secs()
+        } else {
+            RUN_SPEED * 1.25 * time.delta_secs()
+        };
         let moving = flat > 0.05;
         if flat > 8.0 {
             tf.translation = r.target;
@@ -1418,10 +1519,13 @@ fn move_remotes(time: Res<Time>, mut remotes: Query<(&mut Transform, &mut Remote
         // way). FAILURE: turned toward each step while walking and to the facing
         // between steps, a chasing creature (walking to its ring slot, facing the
         // player) flickered between the two ("ils recalculent en boucle l'angle").
-        tf.rotation = if flat > 8.0 || monster {
+        // Turned toward the record's facing over a few frames, monsters too: set
+        // at once, the 1/256-turn facing bytes of 4-tick records turned them in
+        // visible notches ("le heading semble crante"). A teleport snaps.
+        tf.rotation = if flat > 8.0 {
             Quat::from_rotation_y(r.facing)
         } else {
-            turn_towards(tf.rotation, r.facing, time.delta_secs())
+            turn_towards(tf.rotation, r.facing, time.delta_secs() * if monster { 1.5 } else { 1.0 })
         };
         // CONTRACT: a short grace before standing: records arrive 25 a second and a
         //   remote player reaches each one a little early, so without it the run
@@ -1505,8 +1609,14 @@ fn click_to_move(
     meshes: Res<Assets<NavMesh>>,
     mut players: Query<(&Transform, &mut LocalPlayer)>,
     hovered: Option<Res<crate::monsters::Hovered>>,
+    net: Option<NonSend<Net>>,
+    time: Res<Time>,
 ) {
     if ui.blocks(MouseButton::Left) || !buttons.pressed(MouseButton::Left) || keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) {
+        return;
+    }
+    // Dead, or held by the revival: no walking (the server refuses it anyway).
+    if net.as_ref().is_some_and(|n| n.death.dead || time.elapsed_secs() < n.death.held_until) {
         return;
     }
     // A monster under the cursor: the click attacks it (crate::skills), it is no walk.
@@ -1861,5 +1971,81 @@ mod appearance_tests {
             assert_ne!(remote.armament, 5);
             if expected.is_some() { assert_eq!(remote.equipment[0].colour, Some([0.1, 0.9, 0.2, 1.0])); }
         }
+    }
+}
+
+
+/// Players' deaths and revivals: the death pose (the anim set's Death row, held),
+/// the local player stopped where it fell; the respawn choice from the death
+/// dialog sent as RespawnCommand (106).
+/// SEE: the server's docs/PLAYER_RESPAWN.md (Kill, then ShowDeathDialog 58 ticks
+///   later; Revive after a respawn; a town respawn is a map change).
+fn player_deaths(
+    mut net: NonSendMut<Net>,
+    mut choice: ResMut<RespawnChoice>,
+    mut locals: Query<(Entity, &mut CharacterAnim, &mut LocalPlayer)>,
+    mut remotes: Query<(&RemotePlayer, &mut CharacterAnim), (Without<LocalPlayer>, Without<crate::monsters::Monster>)>,
+    mut holds: ResMut<crate::skills::StatusHolds>,
+    time: Res<Time>,
+) {
+    let local = net.local_actor;
+    for actor in std::mem::take(&mut net.player_deaths) {
+        if Some(actor) == local {
+            for (_, mut anim, mut player) in &mut locals {
+                player.target = None;
+                player.casting = 0.0;
+                if !anim.dead {
+                    anim.dead = true;
+                    anim.state = AnimState::Named("Death".into());
+                    anim.replay();
+                }
+            }
+        } else if let Some((_, mut anim)) = remotes.iter_mut().find(|(r, _)| r.actor == actor) {
+            if !anim.dead {
+                anim.dead = true;
+                anim.state = AnimState::Named("Death".into());
+                anim.replay();
+            }
+        }
+    }
+    for actor in std::mem::take(&mut net.revives) {
+        if Some(actor) == local {
+            // The revival the server plays and holds the player for (its
+            // services/player_respawn.py: resurrect_self, StartAnimation
+            // Resurrect, 4.32 s, on the spot; map_respawn 2 s at an exit): held
+            // here too, whether or not its status effects reach crate::skills
+            // (the player walked off mid-revival).
+            let chosen = net.death.chosen.take();
+            for (e, mut anim, mut player) in &mut locals {
+                anim.dead = false;
+                anim.state = AnimState::Idle;
+                player.target = None;
+                // crate::skills::hold_for_status plays it, holds, then idles.
+                let hold = match chosen {
+                    Some((false, true)) => 4.32,
+                    Some((true, false)) => 2.0,
+                    _ => 0.0,
+                };
+                if hold > 0.0 {
+                    holds.0.push((e, if hold > 3.0 { "Resurrect".into() } else { String::new() }, hold));
+                }
+                net.death.held_until = time.elapsed_secs() + hold;
+            }
+        } else if let Some((_, mut anim)) = remotes.iter_mut().find(|(r, _)| r.actor == actor) {
+            anim.dead = false;
+            anim.state = AnimState::Idle;
+        }
+    }
+    if let Some(c) = choice.0.take() {
+        if net.death.dead {
+            net.death.respawn = Some(c);
+        }
+    }
+    if let Some((at_respawn_point, instant)) = net.death.respawn.take() {
+        info!("respawn requested: nearest exit {at_respawn_point}, on the spot {instant}");
+        net.send(&ClientCommand::Respawn(dsor_proto::commands::combat::Respawn { at_respawn_point, instant }));
+        net.death.requested = true;
+        net.death.dialog = false;
+        net.death.chosen = Some((at_respawn_point, instant));
     }
 }

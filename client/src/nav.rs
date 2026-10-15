@@ -18,6 +18,10 @@ const BUCKET: f32 = 4.0;
 pub struct NavMesh {
     pub triangles: Vec<[Vec3; 3]>,
     grid: HashMap<(i32, i32), Vec<u32>>,
+    /// Each triangle's connected walkable component (triangles sharing an edge),
+    /// as the server's PathEngine reader groups them: ground in another one (a
+    /// closed room, a decorative island) cannot be walked to.
+    component: Vec<u32>,
 }
 
 fn cell(v: f32) -> i32 {
@@ -36,7 +40,58 @@ impl NavMesh {
                 }
             }
         }
-        Self { triangles, grid }
+        let component = components(&triangles);
+        Self { triangles, grid, component }
+    }
+
+    /// The triangle under (x, z) whose height is nearest `p.y` (within `max_step`),
+    /// optionally only in `component`.
+    fn triangle_at(&self, p: Vec3, max_step: f32, component: Option<u32>) -> Option<(u32, f32)> {
+        self.grid
+            .get(&(cell(p.x), cell(p.z)))
+            .into_iter()
+            .flatten()
+            .filter(|&&i| component.is_none_or(|c| self.component[i as usize] == c))
+            .filter_map(|&i| height_in(&self.triangles[i as usize], p.x, p.z).map(|h| (i, h)))
+            .filter(|(_, h)| (h - p.y).abs() <= max_step)
+            .min_by(|a, b| (a.1 - p.y).abs().total_cmp(&(b.1 - p.y).abs()))
+    }
+
+    /// The component of the ground nearest `p` (within `radius`).
+    pub fn component_at(&self, p: Vec3, radius: f32) -> Option<u32> {
+        let q = self.nearest(p, radius)?;
+        self.triangle_at(q, f32::MAX, None).map(|(i, _)| self.component[i as usize])
+            .or_else(|| {
+                // q on an edge: any triangle touching it.
+                self.grid.get(&(cell(q.x), cell(q.z))).into_iter().flatten()
+                    .find(|&&i| self.triangles[i as usize].iter().any(|v| v.distance(q) < 1e-3)
+                        || on_edges(&self.triangles[i as usize], q))
+                    .map(|&i| self.component[i as usize])
+            })
+    }
+
+    /// Where a skill aimed from `from` at `to` may land: `to` if it is on ground
+    /// the caster can walk to, else the farthest such point back along the line,
+    /// or None when there is none (the server refuses the rest, services/
+    /// movement_validation.py). Without the caster's component, `to` as it is.
+    pub fn reachable_along(&self, from: Vec3, to: Vec3) -> Option<Vec3> {
+        let Some(home) = self.component_at(from, 3.0) else { return Some(to) };
+        let flat = Vec2::new(to.x - from.x, to.z - from.z);
+        let length = flat.length();
+        let steps = (length / 0.5).ceil().max(1.0) as i32;
+        for i in (0..=steps).rev() {
+            let f = i as f32 / steps as f32;
+            let p = from.lerp(to, f);
+            // Any height of the caster's own ground under this point (stairs,
+            // a ledge): the nearest to the line.
+            if let Some((_, h)) = self.triangle_at(p, f32::MAX, Some(home)) {
+                return Some(Vec3::new(p.x, h, p.z));
+            }
+            if i == 0 {
+                break;
+            }
+        }
+        None
     }
 
     /// Every ground height under (x, z), from every overlapping level.
@@ -90,6 +145,45 @@ impl NavMesh {
         }
         best.map(|d| ray.get_point(d))
     }
+}
+
+fn on_edges(t: &[Vec3; 3], q: Vec3) -> bool {
+    [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])].iter().any(|&(a, b)| {
+        let c = closest_on_segment(a, b, q);
+        Vec2::new(c.x - q.x, c.z - q.z).length() < 1e-3
+    })
+}
+
+/// Connected components over shared edges (vertices matched to 1/64 unit).
+fn components(triangles: &[[Vec3; 3]]) -> Vec<u32> {
+    let mut parent: Vec<u32> = (0..triangles.len() as u32).collect();
+    fn find(parent: &mut [u32], mut i: u32) -> u32 {
+        while parent[i as usize] != i {
+            parent[i as usize] = parent[parent[i as usize] as usize];
+            i = parent[i as usize];
+        }
+        i
+    }
+    let key = |v: Vec3| ((v.x * 64.0).round() as i64, (v.y * 64.0).round() as i64, (v.z * 64.0).round() as i64);
+    let mut edges: HashMap<((i64, i64, i64), (i64, i64, i64)), u32> = HashMap::new();
+    for (i, t) in triangles.iter().enumerate() {
+        for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            let (ka, kb) = (key(a), key(b));
+            let e = if ka < kb { (ka, kb) } else { (kb, ka) };
+            match edges.get(&e) {
+                Some(&j) => {
+                    let (ri, rj) = (find(&mut parent, i as u32), find(&mut parent, j));
+                    if ri != rj {
+                        parent[ri as usize] = rj;
+                    }
+                }
+                None => {
+                    edges.insert(e, i as u32);
+                }
+            }
+        }
+    }
+    (0..triangles.len() as u32).map(|i| find(&mut parent, i)).collect()
 }
 
 fn closest_on_segment(a: Vec3, b: Vec3, p: Vec3) -> Vec3 {
@@ -173,13 +267,69 @@ impl AssetLoader for NavMeshLoader {
 #[derive(Resource)]
 pub struct CurrentNav(pub Handle<NavMesh>);
 
+/// F6 or Ctrl+Shift+N (Cmd+Shift+N): the walkable ground drawn as wireframe around the player (or the camera's
+/// focus), one colour per connected component: where the player may walk and
+/// where skills may land (NavMesh::reachable_along).
+#[derive(Resource, Default)]
+pub struct NavDebug(pub bool);
+
+fn toggle_nav_debug(keys: Res<ButtonInput<KeyCode>>, mut debug: ResMut<NavDebug>) {
+    // Ctrl+Shift+N too: a Mac keyboard sends F keys only with fn (or not at all).
+    let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight)
+        || keys.pressed(KeyCode::SuperLeft) || keys.pressed(KeyCode::SuperRight);
+    let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+    if keys.just_pressed(KeyCode::F6) || (ctrl && shift && keys.just_pressed(KeyCode::KeyN)) {
+        debug.0 = !debug.0;
+        let on = debug.0;
+        info!("navigation mesh debug {}", if on { "on" } else { "off" });
+    }
+}
+
+fn draw_nav_debug(
+    debug: Res<NavDebug>,
+    nav: Option<Res<CurrentNav>>,
+    meshes: Res<Assets<NavMesh>>,
+    players: Query<&GlobalTransform, With<crate::net::LocalPlayer>>,
+    cameras: Query<&GlobalTransform, (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
+    mut gizmos: Gizmos,
+) {
+    if !debug.0 {
+        return;
+    }
+    let Some(mesh) = nav.as_ref().and_then(|n| meshes.get(&n.0)) else { return };
+    let centre = players.iter().next().map(|p| p.translation())
+        .or_else(|| cameras.iter().next().map(|c| c.translation()))
+        .unwrap_or(Vec3::ZERO);
+    const RADIUS: f32 = 35.0;
+    let lift = Vec3::Y * 0.06;
+    let here = mesh.component_at(centre, 3.0);
+    for (i, t) in mesh.triangles.iter().enumerate() {
+        let mid = (t[0] + t[1] + t[2]) / 3.0;
+        if Vec2::new(mid.x - centre.x, mid.z - centre.z).length() > RADIUS {
+            continue;
+        }
+        let c = mesh.component[i];
+        // The player's component green; the others in colours of their own.
+        let color = if Some(c) == here {
+            Color::srgba(0.2, 1.0, 0.3, 0.9)
+        } else {
+            Color::hsla((c.wrapping_mul(2_654_435_761) % 360) as f32, 0.9, 0.55, 0.9)
+        };
+        gizmos.line(t[0] + lift, t[1] + lift, color);
+        gizmos.line(t[1] + lift, t[2] + lift, color);
+        gizmos.line(t[2] + lift, t[0] + lift, color);
+    }
+}
+
 pub struct NavPlugin;
 
 impl Plugin for NavPlugin {
     fn build(&self, app: &mut App) {
         app.init_asset::<NavMesh>()
             .register_asset_loader(NavMeshLoader)
-            .add_systems(Update, follow_map.run_if(resource_exists::<crate::map::CurrentMap>));
+            .add_systems(Update, follow_map.run_if(resource_exists::<crate::map::CurrentMap>))
+            .init_resource::<NavDebug>()
+            .add_systems(Update, (toggle_nav_debug, draw_nav_debug).chain());
     }
 }
 
@@ -195,4 +345,30 @@ fn follow_map(
     }
     *loaded_for = current.name.clone();
     commands.insert_resource(CurrentNav(assets.load(format!("maps/{}.nav.bin", current.name))));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A 10 x 10 square of two triangles at (x0, 0).
+    fn square(x0: f32) -> [[Vec3; 3]; 2] {
+        let (a, b, c, d) = (Vec3::new(x0, 0.0, 0.0), Vec3::new(x0 + 10.0, 0.0, 0.0), Vec3::new(x0 + 10.0, 0.0, 10.0), Vec3::new(x0, 0.0, 10.0));
+        [[a, b, c], [a, c, d]]
+    }
+
+    #[test]
+    fn a_point_across_the_void_lands_on_the_casters_side() {
+        // Two islands, the gap between x = 10 and x = 20.
+        let mut tris: Vec<[Vec3; 3]> = square(0.0).to_vec();
+        tris.extend(square(20.0));
+        let mesh = NavMesh::new(tris);
+        assert_ne!(mesh.component_at(Vec3::new(5.0, 0.0, 5.0), 1.0), mesh.component_at(Vec3::new(25.0, 0.0, 5.0), 1.0));
+        // Aimed on the other island: back to the edge of the caster's.
+        let p = mesh.reachable_along(Vec3::new(5.0, 0.0, 5.0), Vec3::new(25.0, 0.0, 5.0)).unwrap();
+        assert!((p.x - 10.0).abs() <= 0.5 && p.x <= 10.0 + 1e-3, "{p:?}");
+        // Aimed on its own island: where it was aimed.
+        let q = mesh.reachable_along(Vec3::new(5.0, 0.0, 5.0), Vec3::new(8.0, 0.0, 9.0)).unwrap();
+        assert!(q.distance(Vec3::new(8.0, 0.0, 9.0)) < 1e-3);
+    }
 }

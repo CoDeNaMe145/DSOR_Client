@@ -87,8 +87,27 @@ const MENU_WINDOWS: [(&str, KeyCode, f32); 4] = [
 /// Other top-navigation panels, loaded once and opened by their own shortcut.
 const NAV_WINDOWS: [&str; 8] = ["questlog", "travelmap", "locationmap", "shopwindow", "socialscreen", "leaderboards", "matchmakingwindow", "eventwindow"];
 
+/// The death dialog's parts drawn: each price once (the plain label beside its
+/// Andermant icon; the centred and membership variants are alternatives the 2018
+/// client picks between), without the membership advert, the planar-fissure text
+/// or the bag strip at its bottom (other situations' parts).
+/// UNVERIFIED: which variant the 2018 dialog code shows (not traced).
+fn death_part(id: &str) -> bool {
+    !["/CenteredTextLabel", "/PrivilegeTextLabel", "/ReviveHintLabel", "/planarfissuredeathdesc", "/Label_texture/unten", "/TipIconDummy"]
+        .iter()
+        .any(|p| id.contains(p))
+        && !id.ends_with("/Label_texture")
+}
+
+/// The local player's death dialog: opened by the server's ShowDeathDialogCommand,
+/// its buttons send RespawnCommand (crate::net::player_deaths).
+const DEATH_WINDOW: &str = "deathdialog";
+/// _Globals RespawnCost (at the nearest exit) and InstantRespawnCost (on the spot).
+const RESPAWN_COST: u32 = 40;
+const INSTANT_RESPAWN_COST: u32 = 120;
+
 fn is_menu(name: &str) -> bool {
-    MENU_WINDOWS.iter().any(|(n, _, _)| *n == name) || NAV_WINDOWS.contains(&name) || name == "unstackwindow"
+    MENU_WINDOWS.iter().any(|(n, _, _)| *n == name) || NAV_WINDOWS.contains(&name) || name == "unstackwindow" || name == DEATH_WINDOW
 }
 
 // -- data ------------------------------------------------------------------------
@@ -292,6 +311,10 @@ struct Value(ValueKind);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ValueKind {
+    /// A fixed figure: the death dialog's respawn prices ("{0:i}"), the
+    /// static database's _Globals RespawnCost / InstantRespawnCost.
+    /// UNVERIFIED: the server's own price (a membership makes them free).
+    Fixed(u32),
     Gold,
     Silver,
     Copper,
@@ -384,7 +407,7 @@ impl Plugin for UiPlugin {
                 .before(bevy::sprite_render::check_entities_needing_specialization::<UiMaterial>))
             .add_systems(
                 Update,
-                (spawn_windows, controls::spells::sync, controls::items::sync, controls::keyboard, controls::interact, controls::spells::apply_drop, read_figures, controls::edit_text, controls::items::input, controls::order_windows, (update_fills, update_values, update_slots, (local_map::update, local_map::appearance).chain()), controls::paint, controls::items::render, (controls::spells::overlay, controls::items::overlay), show_hover_window).chain().run_if(crate::loading::gameplay_ready),
+                (spawn_windows, controls::spells::sync, controls::items::sync, controls::keyboard, controls::interact, controls::spells::apply_drop, read_figures, controls::edit_text, controls::items::input, controls::order_windows, (update_fills, update_values, update_slots, (local_map::update, local_map::appearance).chain()), controls::paint, controls::items::render, (controls::spells::overlay, controls::items::overlay), show_hover_window, death_dialog).chain().run_if(crate::loading::gameplay_ready),
             );
         #[cfg(not(target_arch = "wasm32"))]
         app.add_systems(PreUpdate, replay::run.after(bevy::input::InputSystems)
@@ -430,6 +453,7 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>) {
         let depth = if *name == "locationmap" { 80.0 } else { 160.0 + i as f32 * WINDOW_DEPTH_STEP };
         loaded.layouts.push((assets.load(format!("interface/{name}.ui.json")), depth, None));
     }
+    loaded.layouts.push((assets.load(format!("interface/{DEATH_WINDOW}.ui.json")), 700.0, None));
     loaded.spawned = vec![false; loaded.layouts.len()];
     commands.insert_resource(loaded);
 }
@@ -470,6 +494,14 @@ fn value_of(id: &str) -> Option<ValueKind> {
     if id.contains("/StatsCharacter/") {
         if let Some(w) = SHEET_WIDGETS.iter().find(|w| **w == leaf) {
             return Some(ValueKind::Sheet(w));
+        }
+    }
+    if matches!(leaf, "TextLabel" | "CenteredTextLabel" | "PrivilegeTextLabel") && !id.contains("DontBuy") {
+        if id.contains("/Label/Buy1/") {
+            return Some(ValueKind::Fixed(INSTANT_RESPAWN_COST));
+        }
+        if id.contains("/Label/Buy/") {
+            return Some(ValueKind::Fixed(RESPAWN_COST));
         }
     }
     Some(match leaf {
@@ -631,6 +663,9 @@ fn spawn_windows(
         }
         for w in layout.widgets.iter().filter(|w| !w.hidden) {
             if layout.window == HOVER_WINDOW && !hover_part(&w.id) {
+                continue;
+            }
+            if layout.window == DEATH_WINDOW && !death_part(&w.id) {
                 continue;
             }
             if let Some(slot) = quick_slot_of(&w.id) {
@@ -902,6 +937,7 @@ fn update_values(
         // UNVERIFIED: the split (the currency bar's own code is not traced).
         let copper = figures.gold.unwrap_or(0);
         let s = match v.0 {
+            ValueKind::Fixed(n) => n.to_string(),
             ValueKind::Gold => (copper / 10_000).to_string(),
             ValueKind::Silver => (copper / 100 % 100).to_string(),
             ValueKind::Copper => (copper % 100).to_string(),
@@ -978,6 +1014,23 @@ fn show_hover_window(hover: Res<crate::monsters::HoverInfo>, mut windows: Query<
             if *v != want {
                 *v = want;
             }
+        }
+    }
+}
+
+/// The death dialog follows the server: shown from ShowDeathDialogCommand until a
+/// respawn is chosen or the player is revived (crate::net::Net::death).
+fn death_dialog(net: Option<NonSend<crate::net::Net>>, mut windows: Query<(&Window2018, &mut Visibility)>) {
+    // DSOR_UI_OPEN=deathdialog: shown regardless (to look at it offline).
+    let wanted = net.as_ref().is_some_and(|n| n.death.dialog && !n.death.requested)
+        || std::env::var("DSOR_UI_OPEN").is_ok_and(|v| v.split(',').any(|w| w == DEATH_WINDOW));
+    for (w, mut v) in &mut windows {
+        if w.0 != DEATH_WINDOW {
+            continue;
+        }
+        let want = if wanted { Visibility::Inherited } else { Visibility::Hidden };
+        if *v != want {
+            *v = want;
         }
     }
 }

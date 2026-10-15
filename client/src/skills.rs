@@ -243,6 +243,9 @@ macro_rules! json_loader {
 pub struct StatusDef {
     pub id: String,
     pub duration: f32,
+    /// StartAnimation: the holder's animation state while it lasts ("Resurrect").
+    #[serde(default)]
+    pub animation: String,
     pub start: HashMap<String, String>,
     pub tick: HashMap<String, String>,
     pub done: HashMap<String, String>,
@@ -442,12 +445,13 @@ impl Plugin for SkillsPlugin {
             .register_asset_loader(SequenceTableLoader)
             .init_resource::<CameraShake>()
             .init_resource::<TestCastClock>()
+            .init_resource::<StatusHolds>()
             .init_resource::<FxPreload>()
             .add_systems(Update, preload_effects)
             .add_systems(Startup, load)
             .add_systems(
                 Update,
-                (index_skills, cast_input.run_if(crate::loading::gameplay_ready), remote_skills, status_visuals, test_cast, run_pending, carry_casters, fly_bullets, play_sequences, start_fx_animations, retire_effects, shake_camera, test_shot, test_view, debug_fx_positions)
+                (index_skills, cast_input.run_if(crate::loading::gameplay_ready), remote_skills, status_visuals, hold_for_status, test_cast, run_pending, carry_casters, fly_bullets, play_sequences, start_fx_animations, retire_effects, shake_camera, test_shot, test_view, debug_fx_positions)
                     .chain()
                     .after(crate::net::NetSystems),
             );
@@ -710,6 +714,8 @@ fn cast_input(
     let clicked_slot = ui_skills.0.take();
     if ui.typing { return; }
     let Some(mut net) = net else { return };
+    // Dead: no casting until revived (the server refuses it anyway).
+    if net.death.dead { return; }
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
     // A click on the ground (a walk) drops the pending attack.
     if !ui.blocks(MouseButton::Left) && buttons.just_pressed(MouseButton::Left) && hovered.0.is_none() {
@@ -791,6 +797,19 @@ fn cast_input(
         let p = to.normalize() * skill.range;
         point = Vec3::new(tf.translation.x + p.x, point.y, tf.translation.z + p.y);
     }
+    // A point on the ground (an area, a teleport, a jump, a charge) lands only on
+    // ground the player could walk to: clicked on a wall, a cliff or the void, the
+    // farthest reachable point of the line; none, no cast. The server checks the
+    // same (services/movement_validation.py) and would refuse it anyway.
+    if !targeted && matches!(skill.kind.as_str(), "Shifted" | "Teleport" | "Jump" | "Charge" | "ChargeThrough" | "RangedTargetPoint") {
+        if let Some(m) = mesh {
+            match m.reachable_along(tf.translation, point) {
+                Some(p) => point = p,
+                None => return,
+            }
+        }
+    }
+    let to = Vec2::new(point.x - tf.translation.x, point.z - tf.translation.z);
     let facing = if to.length() > 0.01 { to.x.atan2(to.y) } else { player.facing };
     player.facing = facing;
     // Turned now: the cast's effects take the caster's placement this frame.
@@ -1762,6 +1781,7 @@ fn status_visuals(
     mut tested: Local<bool>,
     mut pending_test: Local<Vec<crate::net::LocationEvent>>,
     locals: Query<&GlobalTransform, With<LocalPlayer>>,
+    mut holds: ResMut<StatusHolds>,
 ) {
     let (Some(table), Some(sequences)) = (statuses.get(&data.status), seqs.get(&data.sequences)) else { return };
     if by_name.is_empty() {
@@ -1810,6 +1830,9 @@ fn status_visuals(
         })
     };
     let mut start = |commands: &mut Commands, def: &StatusDef, key: (u32, u32), holder: Option<Entity>, anchor: Entity, seconds: Option<f32>| {
+        if let Some(h) = holder.filter(|_| !def.animation.is_empty() || HOLDING_STATUSES.contains(&def.id.as_str())) {
+            holds.0.push((h, def.animation.clone(), seconds.filter(|s| *s > 0.0).unwrap_or(def.duration)));
+        }
         // The same instance again: extended, not drawn twice.
         for (e, v) in visuals.iter() {
             if v.key == key {
@@ -2021,4 +2044,50 @@ fn vfx_preview(
         }
     }
     status("");
+}
+
+/// Revivals hold their holder still for their animation: the server locks the
+/// player's movement and skills for the effect's duration (its docs/
+/// PLAYER_RESPAWN.md: resurrect_self 4.32 s with StartAnimation Resurrect,
+/// map_respawn 2 s). Played without it, the player walked away mid-revival.
+const HOLDING_STATUSES: [&str; 2] = ["resurrect_self", "map_respawn"];
+
+/// Statuses just started on an actor with an animation or a hold: (holder,
+/// animation state or "", seconds), for hold_for_status.
+#[derive(Resource, Default)]
+pub struct StatusHolds(pub(crate) Vec<(Entity, String, f32)>);
+
+fn hold_for_status(
+    time: Res<Time>,
+    mut holds: ResMut<StatusHolds>,
+    mut playing: Local<Vec<(Entity, String, f32)>>,
+    mut actors: Query<(&mut CharacterAnim, Option<&mut LocalPlayer>)>,
+) {
+    // Its animation played once: back to Idle when the effect ends (nothing else
+    // ends a state set this way, and the actor stood frozen in its last pose).
+    let now = time.elapsed_secs();
+    playing.retain(|(holder, animation, until)| {
+        if now < *until {
+            return true;
+        }
+        if let Ok((mut anim, _)) = actors.get_mut(*holder) {
+            if !anim.dead && anim.state == AnimState::Named(animation.clone()) {
+                anim.state = AnimState::Idle;
+            }
+        }
+        false
+    });
+    for (holder, animation, seconds) in holds.0.drain(..) {
+        let Ok((mut anim, local)) = actors.get_mut(holder) else { continue };
+        if !animation.is_empty() {
+            anim.dead = false;
+            anim.state = AnimState::Named(animation.clone());
+            anim.replay();
+            playing.push((holder, animation, now + seconds));
+        }
+        if let Some(mut player) = local {
+            player.target = None;
+            player.casting = player.casting.max(seconds);
+        }
+    }
 }

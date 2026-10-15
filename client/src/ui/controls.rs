@@ -151,6 +151,8 @@ enum Action {
     Split(i32),
     SplitSlider,
     Unavailable,
+    /// The death dialog's choice: (at the nearest exit, on the spot).
+    Respawn(bool, bool),
 }
 
 fn action(window: &str, w: &Widget) -> Action {
@@ -158,6 +160,17 @@ fn action(window: &str, w: &Widget) -> Action {
     if w.spell.is_some() { return Action::Spell; }
     if w.kind == "TextEntry" { return Action::Edit(w.id.clone()); }
     if w.event == "Close" { return Action::Close; }
+    if window == "deathdialog" {
+        // DontBuy: back in the last town, free; Buy: on the same map, at the
+        // nearest exit (RespawnCost); Buy1: on the spot (InstantRespawnCost). The
+        // server charges both (docs/PLAYER_RESPAWN.md).
+        return match leaf {
+            "DontBuy" => Action::Respawn(false, false),
+            "Buy" => Action::Respawn(true, false),
+            "Buy1" => Action::Respawn(false, true),
+            _ => Action::Unavailable,
+        };
+    }
     if window == "unstackwindow" {
         return match w.event.as_str() { "split" => Action::Split(0), "increase" => Action::Split(1), "decrease" => Action::Split(-1),
             _ if w.kind == "Slider" => Action::SplitSlider, _ => Action::Unavailable };
@@ -574,6 +587,7 @@ pub(super) fn interact(
     mouse: Res<ButtonInput<MouseButton>>,
     mut pointer: ResMut<Pointer>,
     mut skill_clicks: ResMut<SkillClicks>,
+    mut respawn: ResMut<crate::net::RespawnChoice>,
     panels: Query<(&RelativeCursorPosition, &InheritedVisibility), With<crate::ui_input::BlocksWorldInput>>,
 ) {
     let Ok((primary, mut window, cursor)) = primary.single_mut() else { return };
@@ -677,6 +691,10 @@ pub(super) fn interact(
             if let Some(e) = windows.iter().find(|(_, w, _, _, _)| w.0 == "charactersheet").map(|(e, _, _, _, _)| e) { raise(e, &mut windows); }
         }
         Action::Spell | Action::Unavailable => {}
+        Action::Respawn(at_exit, on_spot) => {
+            respawn.0 = Some((at_exit, on_spot));
+            *visibility = Visibility::Hidden;
+        }
     }
 }
 

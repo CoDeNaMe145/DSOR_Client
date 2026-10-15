@@ -529,7 +529,7 @@ impl Plugin for LightingPlugin {
                 ),
             )
             .add_systems(PostUpdate,
-                (follow_level, apply_look, place_level_lights.run_if(resource_exists::<CurrentMap>), shift_fog)
+                (follow_level, apply_look, death_look, place_level_lights.run_if(resource_exists::<CurrentMap>), shift_fog)
                     .chain().after(bevy::transform::TransformSystems::Propagate));
     }
 }
@@ -876,5 +876,32 @@ fn shift_fog(
                 fog.falloff = FogFalloff::Linear { start, end };
             }
         }
+    }
+}
+
+/// Dead: the scene drains of colour and darkens over a second, and comes back on
+/// revival (the colour grading apply_look sets, scaled).
+/// UNVERIFIED: the 2018 client's own death look (its post-effect values are not
+///   traced): a near-greyscale, dimmer screen.
+fn death_look(
+    net: Option<NonSend<crate::net::Net>>,
+    time: Res<Time>,
+    lighting: Res<Lighting>,
+    level: Res<Level>,
+    mut fade: Local<f32>,
+    mut cameras: Query<&mut ColorGrading, (With<Camera3d>, Without<crate::highlight::HighlightCamera>, Without<NoLevelLook>)>,
+) {
+    let target = if net.as_ref().is_some_and(|n| n.death.dead) { 1.0 } else { 0.0 };
+    let reapplied = lighting.is_changed() || level.is_changed();
+    if *fade == target && !reapplied {
+        return;
+    }
+    let step = time.delta_secs() / 1.2;
+    *fade = if target > *fade { (*fade + step).min(target) } else { (*fade - step).max(target) };
+    let saturation = level.bubble.saturation * lighting.saturation * (1.0 - 0.9 * *fade);
+    let exposure = lighting.exposure - 0.7 * *fade;
+    for mut grading in &mut cameras {
+        grading.global.post_saturation = saturation;
+        grading.global.exposure = exposure;
     }
 }
