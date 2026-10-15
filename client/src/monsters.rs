@@ -187,6 +187,8 @@ pub struct Monster {
     /// Per row and instance: the hit tick it last played and its sequence player.
     hits: [[(Option<u32>, Option<Entity>); INSTANCES]; 7],
     heavy: Option<Entity>,
+    /// Dead: when its corpse goes (elapsed seconds; KillCommand's lifetime).
+    corpse_until: Option<f32>,
 }
 
 /// What the debug menu (crate::debug) asks for: monsters to place, and blows on
@@ -285,7 +287,7 @@ impl Plugin for MonstersPlugin {
             .add_systems(PostUpdate, (own_player_materials, apply_shader_colors).chain())
             .add_systems(PreUpdate, hover.after(crate::ui_input::CaptureUiInput))
             .add_systems(Startup, load)
-            .add_systems(Update, (spawn_monsters, setup_models, monster_health, hits_and_kills).chain());
+            .add_systems(Update, (spawn_monsters, setup_models, monster_health, hits_and_kills, remove_corpses).chain());
     }
 }
 
@@ -419,6 +421,7 @@ fn spawn_monsters(
                 height: t.height.max(1.0),
                 hits: Default::default(),
                 heavy: None,
+                corpse_until: None,
             },
             RemotePlayer { actor: spawn.actor, target: spawn.position, facing: 0.0, still_for: 1.0, held: 0.0, held_until_tick: None, ..default() },
         ));
@@ -640,7 +643,7 @@ fn hits_and_kills(
                     health: Some((h.victim_health.max(0) as u32, h.victim_max_health.max(0) as u32)),
                 });
             }
-            deaths.extend(std::mem::take(&mut net.kills).into_iter().map(|(victim, _)| victim));
+            deaths.extend(std::mem::take(&mut net.kills).into_iter().map(|(victim, k)| (victim, Some(k.unknown_u32_0))));
         }
         None => {
             // DSOR_TEST_HIT=<seconds>[,critical]: offline blows on the test monster.
@@ -653,7 +656,7 @@ fn hits_and_kills(
                     test.next = every;
                     test.blows += 1;
                     if test.blows > DAMAGE_TYPES.len() as u32 {
-                        deaths.push(0x6000_0000);
+                        deaths.push((0x6000_0000, None));
                     } else {
                         blows.push(Blow {
                             victim: 0x6000_0000,
@@ -720,7 +723,7 @@ fn hits_and_kills(
     // The debug menu's blows, as the local player's.
     for (victim, kind) in std::mem::take(&mut debug.blows) {
         if kind == 2 {
-            deaths.push(victim);
+            deaths.push((victim, None));
             continue;
         }
         debug.tick += 1;
@@ -731,7 +734,7 @@ fn hits_and_kills(
             if victim >= 0x6100_0000 {
                 m.health = m.health.saturating_sub(damage as u32);
                 if m.health == 0 {
-                    deaths.push(victim);
+                    deaths.push((victim, None));
                 }
             }
         }
@@ -818,8 +821,8 @@ fn hits_and_kills(
         let Monster { hits, heavy, .. } = &mut *m;
         play_blow(&mut commands, sequences, e, hits, heavy, &blow, &t.hit, &t.critical, &t.heavy, &playing);
     }
-    for victim in deaths {
-        let Some((e, m, mut anim)) = monsters.iter_mut().find(|(_, m, _)| m.actor == victim) else {
+    for (victim, lifetime) in deaths {
+        let Some((e, mut m, mut anim)) = monsters.iter_mut().find(|(_, m, _)| m.actor == victim) else {
             // A player's death is crate::net's; anything else is a monster the
             // client does not have (yet, or any more): it would stand there alive.
             let local = locals.iter().next().map(|(_, l)| l.actor);
@@ -834,8 +837,33 @@ fn hits_and_kills(
         anim.dead = true;
         anim.state = AnimState::Named("Death".into());
         anim.replay();
+        // The corpse goes by itself after the Kill's lifetime: the server never
+        // discards a dead monster (it sends only the Kill, lifetime 300 ticks; the
+        // client fades the corpse -- DSOR_Server services/combat_resolution.py
+        // 673-678). Death sequences without a hide track left their corpses
+        // standing for good ("certains mobs despawnent pas").
+        // UNVERIFIED: the client's own fade and whether the time counts from the
+        // Kill's arrival or its tick.
+        if let Some(ticks) = lifetime {
+            m.corpse_until = Some(time.elapsed_secs() + ticks as f32 / 25.0);
+        }
         if let Some(seq) = templates.0.get(&m.template).and_then(|t| sequences.0.get(&t.death)) {
-            play(&mut commands, seq.clone(), Some(e), e, false);
+            crate::skills::play_death(&mut commands, seq.clone(), e);
+        }
+    }
+}
+
+/// Dead monsters whose corpse time is over leave, as a DiscardMonster would
+/// remove them (crate::net).
+fn remove_corpses(time: Res<Time>, mut net: Option<NonSendMut<Net>>, mut monsters: Query<(Entity, &mut Monster)>, mut commands: Commands) {
+    let now = time.elapsed_secs();
+    for (e, mut m) in &mut monsters {
+        if m.corpse_until.is_some_and(|t| now >= t) {
+            m.corpse_until = None;
+            match net.as_mut() {
+                Some(net) => net.discard_actor(m.actor),
+                None => commands.entity(e).despawn(),
+            }
         }
     }
 }

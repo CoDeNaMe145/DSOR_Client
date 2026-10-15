@@ -287,6 +287,9 @@ impl SkillData {
 #[derive(Component)]
 pub struct SequencePlayer {
     seq: Sequence,
+    /// A death's own sequence (monsters::play_death): the only one that may still
+    /// change a dead actor's animation.
+    on_death: bool,
     /// Seconds since it started.
     t: f32,
     /// The character it animates and hides, if any.
@@ -677,10 +680,21 @@ pub(crate) fn play(commands: &mut Commands, seq: Sequence, actor: Option<Entity>
     play_with(commands, seq, actor, anchor, looping, follow)
 }
 
+/// A death sequence on its actor: its animation tracks may pose the dead body.
+pub(crate) fn play_death(commands: &mut Commands, seq: Sequence, actor: Entity) -> Entity {
+    let player = play(commands, seq, Some(actor), actor, false);
+    commands.queue(move |w: &mut World| {
+        if let Some(mut p) = w.get_mut::<SequencePlayer>(player) {
+            p.on_death = true;
+        }
+    });
+    player
+}
+
 fn play_with(commands: &mut Commands, seq: Sequence, actor: Option<Entity>, anchor: Entity, looping: bool, follow: bool) -> Entity {
     let n = seq.tracks.len();
     commands
-        .spawn(SequencePlayer { seq, t: 0.0, actor, anchor, looping, follow, stop: false, superseded: false, rate: 1.0, started: vec![false; n], spawned: vec![None; n], bases: vec![Mat4::IDENTITY; n] })
+        .spawn(SequencePlayer { seq, on_death: false, t: 0.0, actor, anchor, looping, follow, stop: false, superseded: false, rate: 1.0, started: vec![false; n], spawned: vec![None; n], bases: vec![Mat4::IDENTITY; n] })
         .id()
 }
 
@@ -1274,7 +1288,11 @@ fn play_sequences(
                 p.started[i] = true;
                 match &track {
                     Track::Anim { name, speed, .. } if !p.superseded => {
-                        if let Some(Ok(mut a)) = p.actor.map(|a| anims.get_mut(a)) {
+                        // A dead actor's pose belongs to its death: the killing blow's
+                        // "Hit" (started the frame before the Kill) stood a dead
+                        // gremlin back up ("les gremlin goon une fois morts restent
+                        // en idle").
+                        if let Some(Ok(mut a)) = p.actor.map(|a| anims.get_mut(a)).filter(|a| a.as_ref().is_ok_and(|a| !a.dead || p.on_death)) {
                             a.state = AnimState::Named(name.clone());
                             a.speed = *speed;
                             // The same skill again restarts its animation.

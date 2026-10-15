@@ -958,6 +958,14 @@ impl Drop for Net {
 }
 
 impl Net {
+    /// An actor leaves (a DiscardMonster, or a corpse whose time is over:
+    /// crate::monsters::remove_corpses).
+    pub(crate) fn discard_actor(&mut self, actor: u32) {
+        self.corrections.pending.remove(&actor);
+        self.requested.remove(&actor);
+        self.remote_gone.push(actor);
+    }
+
     /// The server's game tick now.
     pub fn server_tick(&self, now: u64) -> u32 {
         let local = self.session.local_tick(now) as i64;
@@ -1330,9 +1338,7 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
         }
         ServerCommand::DiscardMonster(_) => {
             if let Some(a) = actor {
-                net.corrections.pending.remove(&a);
-                net.requested.remove(&a);
-                net.remote_gone.push(a);
+                net.discard_actor(a);
             }
         }
         ServerCommand::MonsterUpdate(u) => {
