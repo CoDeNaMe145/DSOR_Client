@@ -32,6 +32,8 @@ pub struct NpcTemplate {
     pub outfit: String,
     pub anim_set: String,
     pub state: String,
+    #[serde(default)]
+    pub map_icon: String,
 }
 
 #[derive(Asset, TypePath, Deserialize, Debug)]
@@ -355,6 +357,7 @@ fn spawn_npcs(
         };
         commands.entity(entity).insert((
             Npc { actor: spawn.actor },
+            crate::ui::MapIcon(template.map_icon.clone()),
             crate::picking::PickModel(template.graphics.clone()),
             // No name over NPCs: the game draws names over players only.
             // NPCs idle at a third of the frame rate (crate::character::AnimLod).

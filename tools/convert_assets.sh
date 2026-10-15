@@ -72,7 +72,7 @@ done
 echo "[convert] maps (log: $logs/export_maps.log)"
 python3 export_maps.py --root "$root" --out "$out/maps" > "$logs/export_maps.log" 2>&1
 tail -n 6 "$logs/export_maps.log"
-python3 "$tools/level_map_events.py" "$root/maps" "$out/maps"
+sh "$tools/level-tool.sh" events "$root/maps" "$out/maps"
 
 # 5. What glTF cannot carry, and the client's own tables.
 echo "[convert] Nebula states and tables (log: $logs/post.log)"
@@ -85,6 +85,7 @@ echo "[convert] Nebula states and tables (log: $logs/post.log)"
     python3 "$tools/fix_materials.py" "$out" --character-colors
     python3 "$tools/close_loops.py" "$out"
     python3 "$tools/fx_clip_starts.py" "$root" "$out" "$godot"
+    python3 "$tools/restore_pivots.py" "$root/models" "$out" "$godot"
     python3 "$tools/character_tables.py" "$root" "$out"
     python3 "$tools/export_skills.py" "$root" "$out"
     python3 "$tools/export_npcs.py" "$root" "$out"
@@ -105,7 +106,8 @@ tail -n 14 "$logs/post.log"
 
 # Authored edits live outside the generated tree. Recompose client sidecars and
 # derived DB4 files from one effective map; conflicts must fail the conversion.
-python3 "$tools/apply_level_overrides.py" --assets "$out" --source-root "$root"
+sh "$tools/level-tool.sh" apply --assets "$out" --source-root "$root"
+sh "$tools/level-tool.sh" props --assets "$out" --source-root "$root"
 
 du -sh "$out"
 echo "[convert] done -> $out"

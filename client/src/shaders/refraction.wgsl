@@ -45,9 +45,18 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // visible rectangle). Back to the stored values first.
     let raw = to_stored(textureSample(dudv_texture, dudv_sampler, uv).xy);
     let d = raw * 2.0 - 1.0;
-    let pixel = 1.0 / view.viewport.zw;
-    let screen = (in.position.xy - view.viewport.xy) * pixel;
-    let moved = textureSample(view_transmission_texture, view_transmission_sampler, screen + d * pixel * refraction.params.x);
+    // Bevy copies the entire render target, including the area outside an
+    // offset viewport (editor panels). Fragment positions are already in that
+    // target's pixel coordinates; normalizing against the viewport instead
+    // stretches the scene and samples its unrendered margins as black circles.
+    let pixel = 1.0 / vec2<f32>(textureDimensions(view_transmission_texture));
+    let screen = in.position.xy * pixel;
+    // Keep the displaced bilinear footprint inside this view. Clamping only to
+    // the texture edge still lets heat haze pull in pixels behind editor panels.
+    let lower = (view.viewport.xy + vec2<f32>(0.5)) * pixel;
+    let upper = (view.viewport.xy + view.viewport.zw - vec2<f32>(0.5)) * pixel;
+    let displaced = clamp(screen + d * pixel * refraction.params.x, lower, upper);
+    let moved = textureSample(view_transmission_texture, view_transmission_sampler, displaced);
     let behind = textureSample(view_transmission_texture, view_transmission_sampler, screen);
     let a = clamp(refraction.params.y * tint.a, 0.0, 1.0);
     var out: FragmentOutput;

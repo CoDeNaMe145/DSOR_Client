@@ -157,7 +157,7 @@ fn settled(assets: &AssetServer, handle: &UntypedHandle) -> bool {
 fn update_progress(mut commands: Commands, mut loading: ResMut<LoadingScreen>, current: Option<Res<CurrentMap>>,
     assets: Res<AssetServer>, player: Query<&CharacterAnim, With<LocalPlayer>>,
     online: Option<Res<crate::net::NetActive>>, failure: Option<Res<crate::net::ConnectionFailure>>,
-    art: Res<Art>, busy: Res<RendererBusy>, time: Res<Time<Real>>,
+    art: Res<Art>, busy: Res<RendererBusy>, time: Res<Time<Real>>, props: Option<Res<crate::props::PropScene>>,
     selection: Option<Res<crate::selection::Selection>>, previews: Query<(&CharacterAnim, &crate::character::Character), With<crate::selection::Preview>>) {
     if !loading.active() { return; }
     let (fraction, ready) = match loading.work.as_ref().unwrap() {
@@ -174,7 +174,7 @@ fn update_progress(mut commands: Commands, mut loading: ResMut<LoadingScreen>, c
                 return;
             }
             let (done, total) = current.progress(&assets);
-            let map_ready = current.spawned && done == total;
+            let map_ready = current.spawned && done == total && props.as_ref().is_none_or(|p| p.ready(current, &assets));
             let player_ready = if name == crate::selection::MAP {
                 selection.as_ref().is_some_and(|s| s.active && (s.characters.is_empty() || previews.iter().any(|(a, c)| a.is_ready() && c.outfit_ready())))
             } else { online.is_none() || player.iter().any(CharacterAnim::is_ready) };

@@ -75,6 +75,7 @@ Drawn:
   (`gamebar`), and the central navigation (`ingamemenu`);
 - menus: inventory (I: equipment slots, eight 7 x 4 bags, premium and loose-item bags),
   character sheet (C), current skill/talent window (S: `skilltalentswindow`),
+  stickerbook (W: `collectorsalbum`, titled "Collector's Bag"),
   quest log, travel map, local map, shop, social window, PvP matchmaking,
   leaderboards, events and game menu (Escape). Natively `DSOR_UI_OPEN=inventory,...` opens
   them from the start (screenshots).
@@ -139,6 +140,12 @@ support Unicode text, caret navigation, deletion and Ctrl+A; focused fields
 consume game shortcuts. Backend actions such as buying, redeeming or joining a
 battle remain disabled until their services are connected.
 
+The navigation button with the legacy `travelmap` widget ID opens the stickerbook.
+Its favorites page is shown initially; data-dependent categories, offers and item
+effects remain hidden. In free flight (a free camera with no local player), WASD
+only moves the camera and cannot toggle UI windows. Pointer navigation and other
+window shortcuts remain available; W and S work normally with a spawned player.
+
 The top-right bar selects the standard background, fullscreen/menu controls,
 and the non-premium badge. Autoplay, membership alternatives and regional
 sign-in/season-pass controls are conditional variants, not extra bars to draw
@@ -150,8 +157,13 @@ gauges and quick slots cannot contribute artwork, fill bounds or hit regions.
 
 The original `locationmap` is a runtime drawing area with no map bitmap. Its
 client implementation (`local_map.rs`) projects the loaded navigation mesh into
-a Path of Exile-inspired transparent overlay: muted gold boundary lines, a faint
-walkable-area tint and a mint player arrow that follows position and facing.
+a transparent overlay: white boundary lines and captions, a faint neutral
+walkable-area tint and the original green player dot. Friendly players use blue
+dots; enemies use red dots, including hostile players after faction updates.
+NPCs and props use their authored `LocationMapIcon`, including the distinct
+normal, golden and cursed amphoras. Quest offers, active tasks and turn-ins
+override NPC icons, with turn-ins taking priority; clearing the quest restores
+the NPC's own icon. Marker positions and lifetimes follow their world entities.
 Terrain and player markers share the scene camera's ground-plane projection,
 so map directions match the world view without a mirrored vertical axis.
 Shared triangle edges are removed, so the overlay shows terrain boundaries.
@@ -164,9 +176,10 @@ come from the original English `maps.names` localization, matching the rest of
 the current interface. The exporter writes them to `interface/maps.names.json`.
 Until the settings window is implemented, the F3 debug menu's "Map transparency"
 row adjusts terrain transparency in 5% steps from 0-100% (default 45%), while
-the player arrow and map name stay visible.
+all markers and the map name stay visible.
 The setting survives restarts in `map-settings.json` natively or `dsor.map` in
-browser localStorage. Re-export the UI to generate the localized name table.
+browser localStorage. Re-export the UI, NPCs and props to generate the localized
+name table, `icon_map_*` textures and authored marker assignments.
 For native captures, use `DSOR_UI_OPEN=locationmap` and optionally
 `DSOR_MAP_VIEW=expanded`; the default capture shows the compact map.
 

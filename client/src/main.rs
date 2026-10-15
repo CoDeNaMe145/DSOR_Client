@@ -42,6 +42,7 @@ mod net;
 mod npc;
 mod particles;
 mod picking;
+mod props;
 mod skills;
 mod stats;
 mod surfaces;
@@ -333,6 +334,11 @@ fn main() {
             .build()
     });
     #[cfg(not(target_arch = "wasm32"))]
+    if std::env::args().any(|a| a == "--editor") {
+        level_editor::desktop();
+        return;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(directory) = std::env::args().skip_while(|a| a != "--level-editor").nth(1) {
         level_editor::run(directory.into());
         return;
@@ -409,7 +415,7 @@ fn main() {
         .add_plugins(loading::LoadingPlugin)
         .add_plugins(selection::SelectionPlugin)
         .add_plugins((anim_cull::AnimCullPlugin, refraction::RefractionPlugin, surfaces::SurfacesPlugin, exits::ExitsPlugin, monsters::MonstersPlugin, combat_text::CombatTextPlugin, debug::DebugPlugin, stats::StatsPlugin, clamp::ClampPlugin, nebula_bloom::NebulaBloomPlugin, occlusion::OcclusionPlugin))
-        .add_plugins((highlight::HighlightPlugin, picking::PickingPlugin, chat::ChatPlugin))
+        .add_plugins((highlight::HighlightPlugin, picking::PickingPlugin, chat::ChatPlugin, props::PropsPlugin))
         .insert_resource(ClearColor(Color::srgb(0.05, 0.06, 0.08)))
         // The sun's one shadow cascade covers 60 units: 1 024 texels in the
         // browser (half bevy's default) is ~6 cm a texel.

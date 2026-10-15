@@ -223,6 +223,69 @@ mod bubble_tests {
     }
 
     #[test]
+    fn player_position_wins_over_camera_position_rotation_and_availability() {
+        let outside = Vec3::new(20., 0., 0.);
+        let camera = Camera::default();
+        let at = GlobalTransform::from(Transform::IDENTITY);
+        let ambience = Ambience { bubbles: vec![volume(Mat4::IDENTITY, "Box", 1)], ..default() };
+        for cameras in [vec![(&camera, &at)], vec![]] {
+            assert_eq!(ambience.bubble_at(observer_position(Some(outside), cameras.into_iter()).unwrap()), None);
+        }
+        let far_camera = GlobalTransform::from(Transform::from_translation(outside).looking_at(Vec3::ZERO, Vec3::Y));
+        assert_eq!(ambience.bubble_at(observer_position(Some(Vec3::ZERO), [(&camera, &far_camera)].into_iter()).unwrap()), Some(0));
+    }
+
+    #[test]
+    fn free_camera_rotation_cannot_enter_a_bubble_but_movement_fades_in_and_out() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default()))
+            .init_asset::<Ambience>()
+            .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(std::time::Duration::from_millis(100)))
+            .add_systems(Update, follow_level);
+        let mut local = volume(Mat4::from_scale(Vec3::splat(10.)), "Box", 1);
+        local.look.light_intensity = 4.;
+        local.look.fade_time = 1.;
+        local.look.dir = Some(Vec3::Y.to_array());
+        let global = Bubble { light_intensity: 1., fade_time: 1., dir: Some(Vec3::Y.to_array()), ..default() };
+        let handle = app.world_mut().resource_mut::<Assets<Ambience>>().add(Ambience {
+            global: Some(global.clone()), bubbles: vec![local], ..default()
+        });
+        app.insert_resource(CurrentMap::new("test".into(), Handle::default()))
+            .insert_resource(Level { map: "test".into(), ambience: handle, ..default() });
+        let outside = Vec3::new(0., 10., 20.);
+        let camera = app.world_mut().spawn((Camera3d::default(),
+            GlobalTransform::from(Transform::from_translation(outside).looking_at(Vec3::ZERO, Vec3::Y)))).id();
+        // Thumbnail and inactive cameras must not prevent the main camera from
+        // being evaluated, or accidentally activate a volume of their own.
+        app.world_mut().spawn((Camera3d::default(), NoLevelLook, GlobalTransform::IDENTITY));
+        app.world_mut().spawn((Camera3d::default(), Camera { is_active: false, ..default() }, GlobalTransform::IDENTITY));
+        app.update();
+        for target in [Vec3::ZERO, Vec3::new(0., 0., 40.), Vec3::ZERO] {
+            app.world_mut().entity_mut(camera).insert(GlobalTransform::from(Transform::from_translation(outside).looking_at(target, Vec3::Y)));
+            app.update();
+            let level = app.world().resource::<Level>();
+            assert_eq!(level.inside, None);
+            assert_eq!(level.bubble, global);
+            assert!(level.fade.is_none());
+        }
+        app.world_mut().entity_mut(camera).insert(GlobalTransform::from_translation(Vec3::ZERO));
+        app.update();
+        let level = app.world().resource::<Level>();
+        assert_eq!(level.inside, Some(0));
+        assert!(level.bubble.light_intensity > 1. && level.bubble.light_intensity < 4.);
+        assert!(level.fade.is_some());
+        for _ in 0..12 { app.update(); }
+        assert_eq!(app.world().resource::<Level>().bubble.light_intensity, 4.);
+        app.world_mut().entity_mut(camera).insert(GlobalTransform::from_translation(outside));
+        app.update();
+        let level = app.world().resource::<Level>();
+        assert_eq!(level.inside, None);
+        assert!(level.bubble.light_intensity > 1. && level.bubble.light_intensity < 4.);
+        for _ in 0..12 { app.update(); }
+        assert_eq!(app.world().resource::<Level>().bubble, global);
+    }
+
+    #[test]
     #[ignore = "requires the converted Kingscity assets with authored overrides applied"]
     fn kingscity_entrances_stay_outdoors_until_the_doorway() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/maps/a0200_kingscity.ambience.json");
@@ -545,8 +608,16 @@ fn spawn_back_light(mut commands: Commands) {
     commands.spawn((BackLight, DirectionalLight { shadow_maps_enabled: false, ..default() }, Transform::default()));
 }
 
+fn observer_position<'a>(player: Option<Vec3>, cameras: impl Iterator<Item = (&'a Camera, &'a GlobalTransform)>) -> Option<Vec3> {
+    player.or_else(|| {
+        let mut active = cameras.filter(|(camera, _)| camera.is_active);
+        let (_, at) = active.next()?;
+        active.next().is_none().then(|| at.translation())
+    })
+}
+
 /// A new level: load its ambience. Then follow the bubble the player (or the
-/// map viewer's focus) stands in, after this frame's movement has propagated.
+/// map viewer's camera) stands in, after this frame's movement has propagated.
 #[allow(clippy::too_many_arguments)]
 fn follow_level(
     current: Option<Res<CurrentMap>>,
@@ -554,8 +625,7 @@ fn follow_level(
     assets: Res<AssetServer>,
     ambiences: Res<Assets<Ambience>>,
     time: Res<Time>,
-    manifests: Res<Assets<crate::map::MapManifest>>,
-    cameras: Query<&GlobalTransform, (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
+    cameras: Query<(&Camera, &GlobalTransform), (With<Camera3d>, Without<crate::highlight::HighlightCamera>, Without<NoLevelLook>)>,
     players: Query<&GlobalTransform, With<crate::net::LocalPlayer>>,
 ) {
     let Some(current) = current else { return };
@@ -575,12 +645,12 @@ fn follow_level(
         level.bubble_loaded = true;
     }
     if !ambience.bubbles.is_empty() {
-        let ground = manifests.get(&current.manifest).map(|m| m.center[1]).unwrap_or(0.0);
         // A spawned player's feet are authoritative, independent of camera
         // offsets, zoom, and whether a camera is available during map handoff.
-        let focus = players.single().ok().map(|p| p.translation()).or_else(||
-            cameras.single().ok().map(|cam| crate::map::camera_focus(cam, None, ground)));
-        let inside = focus.and_then(|p| ambience.bubble_at(p));
+        // A free camera must enter the volume too: its ground focus moves when
+        // looking around and can cross a doorway while the camera is outside.
+        let position = observer_position(players.single().ok().map(|p| p.translation()), cameras.iter());
+        let inside = position.and_then(|p| ambience.bubble_at(p));
         if inside != level.inside {
             level.inside = inside;
             let to = inside.map(|i| ambience.bubbles[i].look.clone()).unwrap_or(global);

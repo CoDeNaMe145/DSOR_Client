@@ -14,6 +14,7 @@ __pycache__/
 /client/dist-profile
 /client/index.fast.html
 /dsor-undecodable-*.bin
+dsor-dump*.json
 /launcher-client.json
 /launcher-client.json.tmp
 /launcher-logs/

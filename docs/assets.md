@@ -25,6 +25,16 @@ Natively the client reads `<workspace>/assets` (override with the `DSOR_ASSETS`
 environment variable). In the browser it fetches `assets/...` relative to the
 page, so the web server must serve the same tree next to `index.html`.
 
+`tools/restore_pivots.py <export_win32>/models <assets> <DSO_Godot>` restores
+the source models' rotation and scale centers after the other model
+postprocessors. The full conversion runs it automatically; run it once for
+existing assets too. Omitting these centers made the travel stone's pulsing
+glow slide away from the stone as it grew. Static corrections are baked into
+translations; animated corrections use glTF transform helpers, retaining the
+authored animation and exact interpolation. This applies to native, browser
+and editor rendering without a client rebuild. The tool is idempotent and
+accepts optional model paths (without extensions) for a targeted repair.
+
 For a production `dso_server` checkout that contains
 `gameplay/pathengine_navigation.py`, export navigation with its reader:
 
@@ -66,6 +76,29 @@ still load, but need regeneration to enable coverage. Meshes without metadata
 remain visible. This workspace's catalogs have been regenerated.
 
 ## What is in it
+
+DB4 travel points, workbenches, chests and other state objects need prop sidecars
+in addition to the geometry manifests. Regenerate them for an existing asset pack:
+
+```sh
+cargo run --release -p dsor-level-data --bin dsor-levels -- props --assets assets --db-root <dso_server>/data/maps --static-db <dso_server>/data/db/static.db4
+```
+
+The full converter runs this export too. `maps/<map>.props.json` retains GUIDs,
+authored transforms, quest visibility and event-set declarations;
+`props/catalog.props.json` supplies models for server-created props. Editor
+builds regenerate the edited map's prop sidecar from its effective DB4 records.
+Source databases are read-only inputs. Both native and browser clients load
+these files through the asset server.
+
+The client previews the authored default state offline, including quest scenery
+and negative-only event sets (Kingshill's decorative workbenches). Online `EventUpdate` switches
+event variants, while `PropInfo`/`NewProp`, `PropUpdate`, and `DiscardProp` bind,
+update and remove props. Only the selected model state group is drawn. Quest
+props with `QuestControlled` and no `ShowAlways` wait for a server announcement
+when connected to a server.
+This supplies visuals and state synchronization; crafting and travel service
+interactions still require their gameplay UI/controller implementations.
 
 | Path | What |
 |---|---|

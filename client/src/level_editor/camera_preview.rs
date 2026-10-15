@@ -10,7 +10,7 @@ pub(super) const EDITOR_LAYER: usize = 30;
 #[derive(Component)] pub(super) struct Caption;
 #[derive(Resource, Default)]
 pub(super) struct Monitor {
-    image: Handle<Image>, size: UVec2,
+    pub image: Handle<Image>, size: UVec2,
     pub state: Option<serde_json::Value>,
 }
 
@@ -19,6 +19,7 @@ fn dimensions(window: &Window, aspect: f32) -> Vec2 {
     Vec2::new(width, width / aspect.clamp(0.25, 4.) + 30.)
 }
 pub(super) fn contains(editor: &Editor, window: &Window, cursor: Vec2) -> bool {
+    if editor.desktop { return false; } // The Rust UI owns the monitor hit region.
     let Some(lens) = editor.selected().and_then(|p| p.object.camera.as_ref()) else { return false };
     let size = dimensions(window, lens.aspect);
     cursor.x >= window.width() - size.x - 12. && cursor.x <= window.width() - 12.
@@ -55,7 +56,7 @@ pub(super) fn update(editor: Res<Editor>, windows: Query<&Window>, mut monitor: 
     let Ok(mut panel) = panels.single_mut() else { return };
     let selected = editor.selected().filter(|p| p.object.camera.is_some());
     camera.is_active = selected.is_some();
-    panel.display = if selected.is_some() { Display::Flex } else { Display::None };
+    panel.display = if selected.is_some() && !editor.desktop { Display::Flex } else { Display::None };
     monitor.state = None;
     let Some(placed) = selected else { return };
     let lens = placed.object.camera.as_ref().unwrap();

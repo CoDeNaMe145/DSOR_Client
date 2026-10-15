@@ -165,6 +165,8 @@ pub struct Net {
     /// NPCs to place (NewNPCCommand) and actors gone, applied by crate::npc.
     pub npc_spawns: Vec<NpcSpawn>,
     pub npc_gone: Vec<u32>,
+    pub props: crate::props::NetworkProps,
+    pub map_markers: crate::ui::MapMarkers,
     /// Monsters to place (NewMonsterCommand 48), for crate::monsters; they leave
     /// with DiscardMonster (49) through `remote_gone`, as they move as remote actors.
     pub monster_spawns: Vec<MonsterSpawn>,
@@ -692,6 +694,8 @@ pub fn start_offline(world: &mut World, class: u8, gender: u8) {
         remote_redress: HashMap::new(),
         npc_spawns: Vec::new(),
         npc_gone: Vec::new(),
+        props: default(),
+        map_markers: default(),
         monster_spawns: Vec::new(),
         max_health: None,
         level: Some(1),
@@ -907,6 +911,8 @@ pub(crate) fn start_session(world: &mut World, config: NetConfig) {
         remote_redress: HashMap::new(),
         npc_spawns: Vec::new(),
         npc_gone: Vec::new(),
+        props: crate::props::NetworkProps::online(),
+        map_markers: default(),
         monster_spawns: Vec::new(),
         max_health: None,
         level: None,
@@ -1092,6 +1098,8 @@ fn pump(
                 selection.creation_refused(reason);
             }
             SessionEvent::MapAssigned { name, rule_set } => {
+                net.props.reset_map();
+                net.map_markers.reset_map();
                 selection.active = name == crate::selection::MAP;
                 if !selection.active { selection.entering = false; selection.dialog = crate::selection::Dialog::None; }
                 net.corrections = default();
@@ -1178,6 +1186,8 @@ fn pump(
 }
 
 fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
+    net.props.receive(&command);
+    net.map_markers.receive(&command, actor);
     match command {
         ServerCommand::NewPlayer(p) => {
             net.inventory = default();

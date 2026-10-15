@@ -13,13 +13,14 @@ The goal is a 1:1 reconstruction of the rel 261 client.
 | `crates/raknet` | RakNet 4.035 client protocol in pure Rust, transport-agnostic (no sockets): the same code runs natively over UDP and in the browser over the relay. |
 | `crates/proto` | Game protocol: RakNet BitStream codec and the game commands. |
 | `crates/relay` | WebSocket <-> UDP relay placed next to the server. Browsers cannot send UDP; the relay carries RakNet datagrams unchanged. |
+| `crates/level-data` | Rust level overrides, DB4 composition, event layers, and the headless `dsor-levels` tool. |
 | `client` | The game, on Bevy. Builds natively and for `wasm32-unknown-unknown`. |
 | `tools` | Asset conversion (wraps DSO_Godot) and helpers. |
 
 ## Level editor
 
-Run `LevelEditor.cmd` (or `python tools/level_editor.py`) for the separate local
-3D level editor and DB4 inspector. Build its native renderer with
+Run `LevelEditor.cmd` (or `cargo run --release -p dsor-client -- --editor`) for the native Rust
+3D level editor and DB4 inspector. The UI, rendering, and persistence run in one process with no Python dependency. Build it with
 `powershell -ExecutionPolicy Bypass -File tools/Build-LevelEditor.ps1`.
 Select models in the live viewport; Q selects, W moves, E rotates, and R scales.
 Fixed cameras, including `a0000_char`'s character-selection camera, have a
@@ -134,7 +135,9 @@ the commits touched, for instance:
 | `tools/export_skills.py` (sequences, statuses) | `export_skills.py`, then `export_deco.py` |
 | `tools/export_deco.py` (town guards, townsfolk, animals) | `export_skills.py`, then `export_deco.py` |
 | `tools/export_monsters.py` (summons) | `export_monsters.py` |
+| DB4 props/travel points | `dsor-levels props --assets assets --db-root <server>/data/maps --static-db <server>/data/db/static.db4` |
 | `tools/embed_animators.py` (effect fades, decals) | `embed_animators.py <export_win32>/models <assets>` |
+| `tools/restore_pivots.py` (effect positioning) | `restore_pivots.py <export_win32>/models <assets> <DSO_Godot>` after the other model postprocessors |
 | `tools/export_stats.py` | `export_stats.py` |
 | `vfx-overrides/` (someone's VFX edits) | `python3 tools/vfx_apply.py <assets>` |
 
@@ -232,7 +235,8 @@ http://localhost:8080/?server=127.0.0.1:2190&relay=ws://127.0.0.1:2290&account=<
 
 Flags (`?flag=...` in the browser, `DSOR_FLAGS=...` natively): `nobloom`, `nolights`
 (no placed level lights), `noshadows`, `lowshadows` (512 shadow map),
-`noparticles`, `nodecals`, `noanim`, `nonames`, `nonpcs-shadow`, `depth` (depth
+`noparticles`, `nodecals`, `noanim`, `noanimviewcull` (disable NPC visibility-based
+animation culling), `nonames`, `nonpcs-shadow`, `depth` (depth
 pre-pass on WebGL2: soft particle and water edges), `nodepth` (natively / WebGPU:
 without it).
 
@@ -268,8 +272,12 @@ Useful environment variables natively: `DSOR_ASSETS=<dir>` (asset folder),
 `DSOR_SHOT_AFTER_CAST=<seconds>,<png>` screenshots it),
 `DSOR_NO_DECALS=1`.
 
-The HUD (top left) shows FPS, CPU milliseconds per frame (main + render), entities
-and surfaces drawn; the browser console logs the same every five seconds.
+The HUD (top left) shows FPS, CPU milliseconds per frame (main + render), total
+entities and mesh candidates across all views, including shadows. Candidates
+are counted before GPU culling; they are not on-screen meshes or GPU draw calls.
+The browser console logs the same every five seconds. `DSOR_FLAGS=renderaudit`
+(`?flag=renderaudit` in the browser) enables a detailed scene census; see
+[rendering diagnostics](docs/fx.md#rendering-census).
 
 ## Browser build
 

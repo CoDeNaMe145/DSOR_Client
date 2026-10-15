@@ -32,6 +32,10 @@ serde_json = "1"
 # The glTF document types bevy_gltf hands to extension handlers (same version).
 gltf = { version = "1.4.1", default-features = false, features = ["extras"] }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+dsor-level-data = { path = "../crates/level-data" }
+bevy_egui = { version = "=0.42.0", default-features = false, features = ["render", "default_fonts", "manage_clipboard"] }
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # Reads ?map=... from the page URL.
 web-sys = { version = "0.3", features = [

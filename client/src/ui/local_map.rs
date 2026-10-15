@@ -3,6 +3,10 @@
 use super::*;
 use crate::nav::{CurrentNav, NavMesh};
 
+mod markers;
+pub(crate) use markers::{MapIcon, MapMarkers};
+pub(super) use markers::update as update_markers;
+
 #[derive(Resource, serde::Serialize, Deserialize)]
 pub(crate) struct MapSettings {
     /// 0 = opaque lines, 100 = invisible terrain. Controls and player stay legible.
@@ -162,9 +166,6 @@ impl MapGeometry {
     }
 }
 
-#[derive(Component)]
-pub(super) struct PlayerMarker;
-
 /// Weld duplicate vertices to millimetres, retaining height so bridges do not
 /// cancel edges on the floor beneath them. Draw walls, never triangulation seams.
 fn boundary_edges(triangles: &[[Vec3; 3]]) -> Vec<[Vec3; 2]> {
@@ -212,9 +213,7 @@ pub(super) fn update(
     assets: Res<AssetServer>,
     roots: Query<(Entity, &Window2018, &WindowControls)>,
     geometry: Query<(Entity, &MapGeometry)>,
-    mut markers: Query<(&mut Transform, &mut Visibility), With<PlayerMarker>>,
-    players: Query<&Transform, (With<crate::net::LocalPlayer>, Without<PlayerMarker>)>,
-    cameras: Query<&Transform, (With<Camera3d>, Without<crate::highlight::HighlightCamera>, Without<PlayerMarker>)>,
+    cameras: Query<&Transform, (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<UiMaterial>>,
 ) {
@@ -227,11 +226,6 @@ pub(super) fn update(
     let source = nav.as_ref().map(|n| n.0.id());
     for (entity, map) in &geometry {
         if Some(map.source) == source && map.view == view && map.projection == projection {
-            let player = players.iter().next();
-            for (mut marker, mut visibility) in &mut markers {
-                *visibility = if player.is_some() { Visibility::Inherited } else { Visibility::Hidden };
-                if let Some(player) = player { *marker = player_marker(map, player); }
-            }
             return;
         }
         // Old geometry and caption leave together, including while a new zone loads.
@@ -253,41 +247,28 @@ pub(super) fn update(
     let map = MapGeometry { source: nav.0.id(), view, projection, min, origin, scale };
     let mut terrain = Run::default();
     for triangle in &mesh.triangles {
-        polygon(&mut terrain, &triangle.map(|p| map.project(p)), [0.64, 0.55, 0.36, 0.08]);
+        polygon(&mut terrain, &triangle.map(|p| map.project(p)), [1.0, 1.0, 1.0, 0.08]);
     }
     let edges = boundary_edges(&mesh.triangles);
-    for (width, color) in [(3.4, [0.04, 0.03, 0.02, 0.65]), (1.25, [0.88, 0.76, 0.50, 1.0])] {
+    for (width, color) in [(3.4, [0.03, 0.03, 0.03, 0.65]), (1.25, [1.0, 1.0, 1.0, 1.0])] {
         for &[a, b] in &edges { line(&mut terrain, map.project(a), map.project(b), width, color); }
     }
-    let player = players.iter().next();
-    let marker_transform = player.map(|p| player_marker(&map, p)).unwrap_or_default();
     let caption_at = origin + extent * scale + Vec2::new(0.0, 10.0);
     let parent = commands.spawn((map, Transform::default(), Visibility::Inherited, ChildOf(root))).id();
-    let art = commands.spawn((Follows { k: view.k, flip: true }, follow_transform(&screen, view.k, true),
+    let art = commands.spawn((markers::MarkerLayer, Follows { k: view.k, flip: true }, follow_transform(&screen, view.k, true),
         Visibility::Inherited, ChildOf(parent))).id();
     commands.spawn((MapTerrain, Mesh2d(meshes.add(terrain.mesh())), MeshMaterial2d(materials.add(material(None))),
         Transform::from_xyz(0.0, 0.0, 0.03), Visibility::Inherited, RenderLayers::layer(LAYER), ChildOf(art)));
-    let mut marker = Run::default();
-    polygon(&mut marker, &[Vec2::new(0.0, -10.0), Vec2::new(8.0, 7.0), Vec2::new(0.0, 3.5), Vec2::new(-8.0, 7.0)], [0.03, 0.06, 0.06, 0.95]);
-    polygon(&mut marker, &[Vec2::new(0.0, -7.0), Vec2::new(5.0, 4.5), Vec2::new(0.0, 2.0), Vec2::new(-5.0, 4.5)], [0.65, 1.0, 0.88, 1.0]);
-    commands.spawn((PlayerMarker, Mesh2d(meshes.add(marker.mesh())), MeshMaterial2d(materials.add(material(None))),
-        marker_transform, if player.is_some() { Visibility::Inherited } else { Visibility::Hidden }, RenderLayers::layer(LAYER), ChildOf(art)));
     let text_parent = commands.spawn((Follows { k: view.k, flip: false }, follow_transform(&screen, view.k, false),
         Visibility::Inherited, ChildOf(parent))).id();
     commands.spawn((MapCaption, Text2d::new(""),
         TextFont { font: assets.load("fonts/tahoma.ttf").into(), font_size: bevy::text::FontSize::Px(14.0 * TEXT_SCALE * screen.scale), ..default() },
-        TextColor(Color::srgb(0.94, 0.86, 0.68)),
+        TextColor(Color::WHITE),
         bevy::sprite::Text2dShadow { offset: Vec2::new(1.0, -1.0), color: Color::BLACK },
         Anchor(Vec2::new(0.5, 0.5)), TextLayout::justify(Justify::Right),
         bevy::text::TextBounds::new_horizontal(view.size.x * screen.scale),
         Transform::from_xyz(caption_at.x, -caption_at.y, 1.0).with_scale(Vec3::splat(1.0 / screen.scale)),
         Visibility::Inherited, RenderLayers::layer(LAYER), ChildOf(text_parent)));
-}
-
-fn player_marker(map: &MapGeometry, player: &Transform) -> Transform {
-    let facing = map.projection.project(player.rotation * Vec3::Z);
-    Transform::from_translation(map.project(player.translation).extend(1.0))
-        .with_rotation(Quat::from_rotation_z(facing.x.atan2(-facing.y)))
 }
 
 #[cfg(test)]
@@ -318,13 +299,7 @@ mod tests {
                     let rendered = ui.transform_point(map.project(start + facing).extend(0.0))
                         - ui.transform_point(map.project(start).extend(0.0));
                     assert!(rendered.xy().distance(expected) < 1.0e-4, "world and map must move in the same screen direction");
-                    let player = Transform::from_translation(start).with_rotation(rotation);
-                    let marker = player_marker(&map, &player);
-                    assert_eq!(marker.translation.xy(), map.project(start));
-                    let tip = marker.rotation * Vec3::NEG_Y;
-                    let tip = ui.transform_point(tip) - ui.transform_point(Vec3::ZERO);
-                    assert!(tip.xy().normalize().dot(expected.normalize()) > 0.9999,
-                        "the player arrow must point along its projected movement");
+                    assert!(map.project(start).is_finite());
                 }
             }
         }

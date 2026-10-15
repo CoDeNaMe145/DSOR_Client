@@ -15,12 +15,12 @@ use super::DecodeError;
 // ── shared pieces ───────────────────────────────────────────────────────────
 
 /// A u16 size then that many bytes (sub_C4A6DB, the Guid/blob reader).
-fn read_blob(r: &mut BitReader<'_>) -> Result<Vec<u8>, DecodeError> {
+pub(super) fn read_blob(r: &mut BitReader<'_>) -> Result<Vec<u8>, DecodeError> {
     let n = r.u16()? as usize;
     Ok(r.read_bytes(n)?)
 }
 
-fn write_blob(w: &mut BitWriter, b: &[u8]) {
+pub(super) fn write_blob(w: &mut BitWriter, b: &[u8]) {
     w.u16(b.len() as u16);
     w.write_bytes(b);
 }
@@ -33,7 +33,7 @@ fn write_counted<T>(w: &mut BitWriter, items: &[T], mut f: impl FnMut(&mut BitWr
 }
 
 /// An int8 the client range-checks (refused outside lo..=hi).
-fn read_ranged_i8(r: &mut BitReader<'_>, lo: i8, hi: i8, what: &'static str) -> Result<i8, DecodeError> {
+pub(super) fn read_ranged_i8(r: &mut BitReader<'_>, lo: i8, hi: i8, what: &'static str) -> Result<i8, DecodeError> {
     let v = r.i8()?;
     if v < lo || v > hi {
         return Err(DecodeError::Invalid { what, value: v as i64 });
@@ -311,8 +311,8 @@ pub struct NpcInteraction {
 /// SOURCE: dsor/describe.py encode_npc_info_2018; decoder 0x9A80F5 (vtable 0xFEE4A8):
 ///   string +16, four u32-counted lists +80 (sub_9980C6), +88 (sub_997DA6), +96
 ///   (sub_997C07), +104 (sub_9981D6), bit +112, byte -1..24 +116 (sub_9E12D8).
-/// UNKNOWN: the entry layouts of the third and fourth lists (the server always sends
-///   them empty); a non-empty one is refused rather than guessed.
+/// release261 string sets and links: production protocol/gameplay_protocol.py
+/// _write_npc_info_body. These may be populated for quest deliveries.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct NpcInfo {
     pub name: String,
@@ -320,10 +320,28 @@ pub struct NpcInfo {
     pub interactions: Vec<NpcInteraction>,
     /// (dialog id, seen) pairs (sub_A5AEB8: string and one bit).
     pub dialogs: Vec<(String, bool)>,
+    pub string_sets: Vec<NpcStringSet>,
+    pub links: Vec<NpcLink>,
     /// The enabled state (feeds SetGameEntityVisible).
     pub enabled: bool,
     /// -1..24.
     pub kind: i8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct NpcStringSet {
+    pub name: String,
+    pub values: Vec<String>,
+    pub amount: u16,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct NpcLink {
+    pub source: String,
+    pub target: String,
+    pub value: u32,
+    pub enabled: bool,
 }
 
 impl Body for NpcInfo {
@@ -333,15 +351,18 @@ impl Body for NpcInfo {
             Ok(NpcInteraction { name: r.string()?, kind: r.u8()?, quest: r.string()?, state: r.u8()? })
         })?;
         let dialogs = counted(r, MOST, "npc dialog count", |r| Ok((r.string()?, r.bit()?)))?;
-        for what in ["npc info third list (layout unknown)", "npc info fourth list (layout unknown)"] {
-            let n = r.u32()?;
-            if n != 0 {
-                return Err(DecodeError::Invalid { what, value: n as i64 });
-            }
-        }
+        let string_sets = counted(r, MOST, "npc string sets", |r| {
+            let name = r.string()?;
+            let count = r.u16()?;
+            let values = (0..count).map(|_| r.string()).collect::<Result<_, _>>()?;
+            Ok(NpcStringSet { name, values, amount: r.u16()?, enabled: r.bit()? })
+        })?;
+        let links = counted(r, MOST, "npc links", |r| {
+            Ok(NpcLink { source: r.string()?, target: r.string()?, value: r.u32()?, enabled: r.bit()? })
+        })?;
         let enabled = r.bit()?;
         let kind = read_ranged_i8(r, -1, 24, "npc info kind")?;
-        Ok(Self { name, interactions, dialogs, enabled, kind })
+        Ok(Self { name, interactions, dialogs, string_sets, links, enabled, kind })
     }
     fn encode(&self, w: &mut BitWriter) {
         w.string(&self.name);
@@ -355,8 +376,19 @@ impl Body for NpcInfo {
             w.string(d);
             w.bit(*seen);
         });
-        w.u32(0);
-        w.u32(0);
+        write_counted(w, &self.string_sets, |w, s| {
+            w.string(&s.name);
+            w.u16(s.values.len().try_into().expect("too many NPC string values"));
+            for value in &s.values { w.string(value); }
+            w.u16(s.amount);
+            w.bit(s.enabled);
+        });
+        write_counted(w, &self.links, |w, link| {
+            w.string(&link.source);
+            w.string(&link.target);
+            w.u32(link.value);
+            w.bit(link.enabled);
+        });
         w.bit(self.enabled);
         w.i8(self.kind);
     }
@@ -477,7 +509,7 @@ pub struct PropEntry {
     pub template: String,
     /// The level entity's Guid; a valid one links the entry to that entity.
     pub guid: Vec<u8>,
-    /// int32 (sub_9993B3).
+    /// Visual variant: -1 uses the state; 0..3 select blue/red/yellow/green.
     pub team: i32,
     /// -1..3: 0 inactive, 1 active, 2 cooldown (sub_A590ED).
     pub state: i8,
@@ -488,13 +520,15 @@ pub struct PropEntry {
     pub interaction: String,
     pub unknown_string_0: String,
     pub unknown_u8_0: u8,
-    /// -1..9 (sub_A59CA3), the quest marker's type.
+    /// release261 quest indication, -1..13.
     pub quest_type: i8,
+    /// release261 field_60, after the indication byte. -1 means no quest task.
+    pub task_index: i32,
 }
 
-/// PropInfoCommand (59): announce or update map props.
-/// SOURCE: dsor/mapinstance.py encode_prop_info_2018; decoder 0x9A94B2 -> sub_9983BC
-///   (u32 count, entries sub_A5A17A); handler HandlePropInfoCommand 0x547FE8.
+/// PropInfoCommand (54): announce or update map props (release261).
+/// SOURCE: dso_server/protocol/gameplay_protocol.py::encode_prop_info.
+/// Each release261 entry ends with field_60 (i32 task index).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct PropInfo {
     pub entries: Vec<PropEntry>,
@@ -515,7 +549,8 @@ impl Body for PropInfo {
                 interaction: r.string()?,
                 unknown_string_0: r.string()?,
                 unknown_u8_0: r.u8()?,
-                quest_type: read_ranged_i8(r, -1, 9, "prop quest type")?,
+                quest_type: read_ranged_i8(r, -1, 13, "prop quest type")?,
+                task_index: r.i32()?,
             })
         })?;
         Ok(Self { entries })
@@ -534,6 +569,7 @@ impl Body for PropInfo {
             w.string(&e.unknown_string_0);
             w.u8(e.unknown_u8_0);
             w.i8(e.quest_type);
+            w.i32(e.task_index);
         });
     }
 }
@@ -550,6 +586,8 @@ pub struct QuestRecord {
     /// Per-task progress (a u32 count, 16 from this server, then that many u32).
     pub progress: Vec<u32>,
     pub last: u32,
+    /// release261 trailing tracking id (production player_init_protocol.py).
+    pub tracking_id: String,
 }
 
 /// QuestLogInfoCommand (149): the whole quest log.
@@ -570,6 +608,7 @@ impl Body for QuestLogInfo {
                 finished: r.u16()?,
                 progress: counted(r, MOST, "quest task count", |r| r.u32())?,
                 last: r.u32()?,
+                tracking_id: r.string()?,
             })
         })?;
         Ok(Self { records })
@@ -582,6 +621,7 @@ impl Body for QuestLogInfo {
             w.u16(q.finished);
             write_counted(w, &q.progress, |w, v| w.u32(*v));
             w.u32(q.last);
+            w.string(&q.tracking_id);
         });
     }
 }
@@ -603,10 +643,10 @@ impl Body for QuestUpdate {
         Ok(Self {
             kind: read_ranged_i8(r, -1, 4, "quest update kind")?,
             ints: counted(r, MOST, "quest int params", |r| {
-                Ok((read_ranged_i8(r, -1, 5, "quest param key")?, r.u32()?))
+                Ok((read_ranged_i8(r, -1, 6, "quest param key")?, r.u32()?))
             })?,
             strings: counted(r, MOST, "quest string params", |r| {
-                Ok((read_ranged_i8(r, -1, 5, "quest param key")?, r.string()?))
+                Ok((read_ranged_i8(r, -1, 6, "quest param key")?, r.string()?))
             })?,
         })
     }

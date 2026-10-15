@@ -8,11 +8,11 @@ const ORIGIN: Vec3 = Vec3::new(0., -10000., 0.);
 #[derive(Component)] pub(super) struct PreviewCamera;
 #[derive(Component)] pub(super) struct PreviewRoot;
 #[derive(Clone, Deserialize)]
-struct Request { model: String, key: Option<String>, path: PathBuf }
+pub(super) struct Request { pub model: String, pub key: Option<String>, pub path: PathBuf }
 struct Job { request: Request, root: Entity, started: f32, ready_since: Option<f32>, captured: bool }
 #[derive(Resource, Default)]
 pub(super) struct Previews {
-    stamp: Option<SystemTime>, poll_at: f32, queue: Vec<Request>, job: Option<Job>, image: Handle<Image>,
+    stamp: Option<SystemTime>, poll_at: f32, pub queue: Vec<Request>, job: Option<Job>, image: Handle<Image>,
 }
 
 pub(super) fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>, mut previews: ResMut<Previews>) {
