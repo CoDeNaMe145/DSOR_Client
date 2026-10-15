@@ -69,6 +69,8 @@ enum Section {
     Character(u8),
     /// Allowed pages as a bitmask; some shared headers serve several tabs.
     Page(&'static str, u32),
+    /// Two such conditions at once (the chat's typing hint, only in full mode).
+    Pages(&'static str, u32, &'static str, u32),
     SkillClass(u8),
     Ranking(u8, bool),
     Hidden,
@@ -105,6 +107,16 @@ pub(super) struct Gate {
     button: Option<(usize, State)>,
 }
 
+/// The chat window's mode page: 0 full, 1 compact (see `section`).
+pub(super) const CHAT_MODE: &str = "chat_mode";
+
+impl Gate {
+    /// Shown in the chat window's full mode only (the log rows, chat_rows).
+    pub(super) fn chat_full() -> Self {
+        Self { section: Section::Page(CHAT_MODE, 1), button: None }
+    }
+}
+
 fn section(window: &str, id: &str) -> Section {
     let parts: Vec<_> = id.split('/').collect();
     if let Some(section) = panels::section(window, &parts) { return section; }
@@ -125,13 +137,23 @@ fn section(window: &str, id: &str) -> Section {
         }
     }
     if window == CHAT_WINDOW {
-        // Only the full mode; the List's row templates are drawn by chat_rows.
-        if parts.iter().any(|p| matches!(*p, "LabelCompact" | "TextEntryChannelLabel" | "ScrollHandle" | "ButtonTextLine"))
+        // The List's row templates are drawn by chat_rows.
+        if parts.iter().any(|p| matches!(*p, "TextEntryChannelLabel" | "ScrollHandle" | "ButtonTextLine"))
             || parts.last() == Some(&"TextLine") { return Section::Hidden; }
+        // Two modes, chat_mode 0 full and 1 compact (ButtonToggleMode's SwitchToCompact
+        // / SwitchToFull; Chat::ChatWidget::Load 0x4986D3 binds "LabelFull",
+        // "LabelCompact", "switchChatToCompact", "switchChatToFull"). The compact one
+        // is its toggle alone, as the 2018 client shows it (reference video): its
+        // entry and its speech bubble preview are not wired -- Enter goes back to
+        // the full window (edit_text).
+        if parts.contains(&"LabelCompact") {
+            return if parts.contains(&"ChatMenuBackgroundLabel") { Section::Page(CHAT_MODE, 2) } else { Section::Hidden };
+        }
         // "Press enter to open the chat" while not typing; ScrollEnd's glow while
         // scrolled back (both set by edit_text / chat_rows).
-        if parts.contains(&"TextLabelHowTo") { return Section::Page("chat_typing", 1); }
-        if parts.contains(&"HighlightLabel") { return Section::Page("chat_scrolled", 2); }
+        if parts.contains(&"TextLabelHowTo") { return Section::Pages(CHAT_MODE, 1, "chat_typing", 1); }
+        if parts.contains(&"HighlightLabel") { return Section::Pages(CHAT_MODE, 1, "chat_scrolled", 2); }
+        if parts.contains(&"LabelFull") { return Section::Page(CHAT_MODE, 1); }
     }
     if window == "gamebar" && parts.iter().any(|p| matches!(*p, "Premium" | "Deluxe" | "bgAutoplay" | "autoplay" | "SigninBtn" | "CameBackSignInBtn" | "SeasonPassBtn")) {
         return Section::Hidden;
@@ -190,13 +212,15 @@ fn action(window: &str, w: &Widget) -> Action {
         return match (w.event.as_str(), leaf) {
             ("ToggleChatMenu", _) => Action::Window(CHAT_MENU),
             ("ScrollEnd", _) => Action::ChatScroll(0),
+            ("SwitchToCompact", _) => Action::Tab(CHAT_MODE, 1),
+            ("SwitchToFull", _) => Action::Tab(CHAT_MODE, 0),
             (_, "ScrollUp") => Action::ChatScroll(CHAT_SCROLL),
             (_, "ScrollDown") => Action::ChatScroll(-CHAT_SCROLL),
             (_, "ChannelTabMap") => Action::Tab("chat_channel", 0),
             (_, "ChannelTabRegion") => Action::Tab("chat_channel", 1),
             (_, "ChannelTabParty") => Action::Tab("chat_channel", 2),
             (_, "ChannelTabGuild") => Action::Tab("chat_channel", 3),
-            // SwitchToCompact, ToggleLanguageFilter.
+            // ToggleLanguageFilter.
             _ => Action::Unavailable,
         };
     }
@@ -336,8 +360,10 @@ impl WindowControls {
         let mut controls = Self { map_mode: local_map::MapMode::Compact, buttons, regions: Vec::new(), drag_handle: DragHandle::from_layout(layout), inventory: 0, character: 0, bag: 0, bag_pages: 8, premium_bag: false, overflow_page: 0, overflow_pages: 1, ingredient: 0, rarity: 1, locked: false, hovered: None, pressed: None,
             pages: HashMap::new(), toggles: default(), open_windows: Vec::new(), entries: HashMap::new(), choices: HashMap::new(), spells: default() };
         // The chat's entry starts empty, not with its "Enter text" sample.
+        // DSOR_CHAT_MODE=compact: the chat starts reduced (screenshots).
         if layout.window == CHAT_WINDOW {
             for w in layout.widgets.iter().filter(|w| w.kind == "TextEntry") { controls.entries.insert(w.id.clone(), TextEntry::default()); }
+            if std::env::var("DSOR_CHAT_MODE").is_ok_and(|m| m == "compact") { controls.pages.insert(CHAT_MODE, 1); }
         }
         // Together with DSOR_UI_OPEN=locationmap, capture either overlay size.
         if layout.window == "locationmap" && std::env::var("DSOR_MAP_VIEW").is_ok_and(|v| v == "expanded") {
@@ -381,6 +407,9 @@ impl WindowControls {
             Section::BagFourthRow => self.bag != items::OVERFLOW,
             Section::Character(page) => self.character == page,
             Section::Page(group, mask) => mask & (1 << self.pages.get(group).copied().unwrap_or(0)) != 0,
+            Section::Pages(a, mask_a, b, mask_b) => {
+                self.section_visible(Section::Page(a, mask_a)) && self.section_visible(Section::Page(b, mask_b))
+            }
             Section::SkillClass(class) => self.spells.class == class && self.pages.get("talents").copied().unwrap_or(0) == 0,
             Section::Ranking(group, overall) => self.pages.get("rank_group").copied().unwrap_or(0) == group
                 && (self.pages.get("rank_category").copied().unwrap_or(0) == 0) == overall,
@@ -809,8 +838,15 @@ pub(super) fn edit_text(
         if !event.state.is_pressed() { continue; }
         let enter = matches!(event.key_code, KeyCode::Enter | KeyCode::NumpadEnter);
         let Some((root, id)) = pointer.focus.clone() else {
-            // Enter with the chat window open: type a line.
-            if enter && !event.repeat { pointer.focus = chat_entry(&windows); }
+            // Enter with the chat window open: type a line, in the full window.
+            if enter && !event.repeat {
+                for (_, w, mut c, v, _) in &mut windows {
+                    if w.0 == CHAT_WINDOW && *v != Visibility::Hidden && c.pages.get(CHAT_MODE).copied().unwrap_or(0) != 0 {
+                        c.pages.insert(CHAT_MODE, 0);
+                    }
+                }
+                pointer.focus = chat_entry(&windows);
+            }
             continue;
         };
         if enter || event.key_code == KeyCode::Escape {
@@ -1565,3 +1601,4 @@ mod tests {
         release(&mut app);
     }
 }
+

@@ -111,8 +111,9 @@ fn is_menu(name: &str) -> bool {
     MENU_WINDOWS.iter().any(|(n, _, _)| *n == name) || NAV_WINDOWS.contains(&name) || name == "unstackwindow" || name == DEATH_WINDOW || name == CHAT_MENU
 }
 
-/// The chat window (crate::chat): its full mode (the compact one, with its speech
-/// bubble preview, is not wired), shown from the start and toggled with V; and its
+/// The chat window (crate::chat): its full mode and its compact one (the toggle
+/// alone; its speech bubble preview is not wired), shown from the start and toggled
+/// with V; and its
 /// channel menu (ButtonChatMenu). Their depth: over the HUD, under the menus.
 /// SEE: controls::edit_text (Enter), controls::chat_rows (the log).
 const CHAT_WINDOW: &str = "chatwindow2";
@@ -121,6 +122,37 @@ const CHAT_DEPTH: f32 = 45.0;
 /// Characters per log row: the List is 343 reference pixels wide, Tahoma at 9 x
 /// FONT_SCALE averages ~5.5. UNVERIFIED: measured by eye, not from the font.
 const CHAT_COLUMNS: usize = 60;
+
+/// How far the chat's ChatLabel ends above the bottom of the screen, reference
+/// pixels: as far as it ends above its Canvas's bottom in the window (Canvas rect
+/// bottom 0.819607 x 768, ChatLabel 0.772223 x 768; ChatLabel is aligned Left /
+/// Bottom in its Canvas, export_win32/ui/chatwindow2.bxml).
+const CHAT_BOTTOM_MARGIN: f32 = (0.819_607 - 0.772_223) * BASE_H;
+
+/// The chat windows where the game shows them: in the bottom-left corner of the
+/// screen, whatever its width. Their file centres the Canvas (HCenter / VCenter in
+/// a CenterX / CenterY window), which put the chat in the middle of a wide screen
+/// and 139 reference pixels above the bottom; the 2018 client draws its ChatLabel
+/// against the screen's left and bottom edges (reference video: the compact toggle
+/// against the left edge, near the bottom). So every widget gets k = 0 (the left
+/// edge) and moves down until ChatLabel ends CHAT_BOTTOM_MARGIN above the bottom.
+/// UNVERIFIED: the runtime placement code itself was not traced, only its result.
+fn anchor_chat(layout: &Layout) -> Layout {
+    let mut out = layout.clone();
+    let label_bottom = layout.widgets.iter().find(|w| w.id == "Canvas/ChatLabel").map_or(BASE_H - CHAT_BOTTOM_MARGIN, |w| w.rect[3]);
+    let dy = BASE_H - CHAT_BOTTOM_MARGIN - label_bottom;
+    for w in &mut out.widgets {
+        w.k = 0.0;
+        w.rect[1] += dy;
+        w.rect[3] += dy;
+        if let Some(art) = &mut w.art {
+            for y in art.pos.iter_mut().skip(1).step_by(2) {
+                *y += dy;
+            }
+        }
+    }
+    out
+}
 
 /// One row of the chat log, drawn over the List's TextLine template, top first.
 #[derive(Component)]
@@ -176,7 +208,7 @@ struct Widget {
 
 fn enabled_default() -> bool { true }
 
-#[derive(Asset, TypePath, Deserialize)]
+#[derive(Asset, TypePath, Deserialize, Clone)]
 pub struct Layout {
     window: String,
     widgets: Vec<Widget>,
@@ -625,6 +657,13 @@ fn spawn_windows(
         let (handle, z, _key) = loaded.layouts[i].clone();
         let Some(layout) = layouts.get(&handle) else { continue };
         loaded.spawned[i] = true;
+        let anchored;
+        let layout = if matches!(layout.window.as_str(), CHAT_WINDOW | CHAT_MENU) {
+            anchored = anchor_chat(layout);
+            &anchored
+        } else {
+            layout
+        };
         // DSOR_UI_OPEN=inventory,...: menus open from the start (screenshots).
         let open = std::env::var("DSOR_UI_OPEN").is_ok_and(|v| v.split(',').any(|w| w == layout.window));
         let root = commands
@@ -753,7 +792,7 @@ fn spawn_windows(
                         Transform::from_xyz(l + 2.0, -(t + height * (row as f32 + 0.5)), depth + depth_step * 0.5).with_scale(Vec3::splat(1.0 / screen.scale)),
                         RenderLayers::layer(LAYER),
                         ChildOf(p),
-                        Element { root, gate: Gate::default() },
+                        Element { root, gate: Gate::chat_full() },
                         Visibility::Hidden,
                     ));
                 }
