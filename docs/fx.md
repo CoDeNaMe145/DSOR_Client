@@ -75,15 +75,19 @@ these overrides after conversion with `tools/apply_level_overrides.py`.
 ## Keeping the player visible indoors
 
 `client/src/occlusion.rs` casts five rays from the active game camera to the local
-player's torso, head, lower body and sides. Opaque and alpha-tested map geometry
-between camera and player receives a local, soft-edged dithered opening. All
-blocking layers are considered, including walls behind other walls. This also
-works for outdoor map geometry when it obscures the character; it does not infer
-indoors from brightness or ambience priority.
+player's torso, head, lower body and sides. A reveal starts only when all five
+body samples are blocked by opaque or alpha-tested map geometry. Low furniture
+and narrow obstacles stay intact when any sample remains visible. Once fully
+blocked, the geometry receives a local, soft-edged dithered opening. All
+blocking layers are considered, including walls behind other walls and separate
+meshes that jointly obscure the body. This also works for outdoor map geometry
+when it obscures the character; it does not infer indoors from brightness or
+ambience priority.
 
 The opening follows the player, fades in over 0.16 seconds, holds for 0.12 seconds
-across brief gaps, then closes over 0.25 seconds. Geometry at ground level and
-behind the character stays intact. Characters, particles and transparent effects
+across brief gaps, then closes over 0.25 seconds when any body sample clears.
+Geometry at ground level and behind the character stays intact. Characters,
+particles and transparent effects
 are excluded. Original mesh geometry remains available to raycasts, so opening
 the hole does not make the blocker oscillate between visible and hidden.
 
@@ -183,6 +187,108 @@ Quality switches: `?flag=depth` (browser: depth pre-pass for the soft edges),
 `?flag=nobloom`, `?flag=nolights` (no placed lights), `?flag=noshadows`,
 `?flag=lowshadows` (512 shadow map), `?flag=noparticles`, `?flag=nodecals`;
 natively `DSOR_FLAGS=nodepth,...`.
+
+## Rendering census
+
+`DSOR_FLAGS=renderaudit` (browser: `?flag=renderaudit`) logs a scene census every
+five seconds after loading. Natively, set `DSOR_RENDER_AUDIT=<path.json>` to save
+the latest complete report, including component counts, scene hierarchies and
+meshes bypassing frustum culling. The census is opt-in because walking the whole
+world adds diagnostic overhead; disable it for performance measurements.
+
+The HUD's **mesh candidates (all views)** counts `Mesh3d` entities whose
+`ViewVisibility` is true. This includes shadow views and is evaluated before GPU
+culling. It is not a draw-call count or a count of visible pixels. The census
+separately reports the game camera's bounding-volume/frustum candidates, light
+view candidates, hidden map cells, skinned meshes and animation targets.
+Main-camera candidates can still be behind other geometry or partly off screen;
+triangle totals omit meshes whose CPU geometry has been discarded. Total
+entities also include bones, scene nodes, UI and other objects with no 3D mesh.
+
+### Kingshill investigation (2026-10-15)
+
+Native RTX 4070/Vulkan, 1280 x 720, offline camera at
+`143.109375,18.67601,-38.910706` looking at
+`155.609375,0.9983387,-51.410706`. The offline `--npcs` mode includes all placed
+NPCs as well as map decorations, so its population differs from a server session.
+Captured after all 603 map models loaded and 650 settling frames:
+
+| Configuration | Total entities | Loaded 3D meshes | All-view candidates | Main-camera candidates | Unique shadow candidates |
+|---|---:|---:|---:|---:|---:|
+| NPCs, decorations, shadows | 67,012 | 6,152 | 989 | 403 | 916 |
+| Same camera, shadows disabled | 67,012 | 6,152 | 391 | 391 | 0 |
+| Map only, shadows enabled | 14,128 | 3,145 | 558 | 187 | 498 |
+
+Separate runs sample different animation/particle states; these are scene counts,
+not performance benchmarks. Shadow candidates overlap main-camera candidates and
+must not be added to them. The baseline's 586 candidates outside the main view
+are accounted for by light views. Off-screen objects can cast on-screen shadows.
+
+- 65 of 82 map cells were hidden. Of 6,152 loaded meshes, 5,019 were hidden by
+  hierarchy visibility; all ordinary map and NPC meshes had bounds and enabled
+  frustum culling. The 30 explicit culling bypasses were particle batches.
+- NPC/decorative-character hierarchies accounted for 52,529 entities, map
+  hierarchies for 6,907. The world contained 20,350 animation targets and 14,059
+  extra scale nodes used by body variations. These nodes are not mesh draws.
+  Only 3,436 targets retained `AnimatedBy` in the sampled frame.
+- All 324 placed NPC/decorative actors were resident, including 204 dressed
+  characters. Distance culling hides far actors and parks animations, but keeps
+  their entities. The UI additionally retained 5,687 `Mesh2d` entities.
+- Static map geometry was merged into 2,037 meshes across 24-metre cells.
+  A partly visible merged mesh submits its whole geometry. Main-view map
+  candidates contained about 519k CPU-readable triangles; this does not measure
+  rasterized pixels or surviving triangles after GPU clipping.
+
+Follow-up targets: actor residency/streaming and animation work for actors outside
+all useful views; tighter shadow-caster/batch bounds; particle batch visibility;
+and measured GPU occlusion culling for geometry behind opaque objects. Preserve
+off-screen casters that affect the visible scene. No culling policy was changed
+as part of this census. Local evidence: `.local/logs/render-audit/` (JSON reports,
+logs and screenshots for `baseline`, `no-shadows`, and `map-only`).
+
+### NPC animation visibility
+
+NPCs and decorative characters using `AnimLod` now park their bone targets after
+their meshes have been absent from **all camera and shadow views** for 250 ms.
+Their animation clocks, state changes and cross-fades continue. The next Update
+after a visible result restores their targets, without restarting the clip or
+waiting for the next animation-LOD frame. Distance-hidden actors still stop as
+before, but distance checks now happen before the LOD early return.
+
+This uses the completed CPU visibility pass, not GPU occlusion results. Actors
+behind walls can therefore still animate if they intersect a view's frustum.
+Local players, portraits, characters still loading their meshes, and actors with
+particle emitters retain their previous behavior. The particle exception keeps
+animated attachments correct when their particles reach beyond the body's bounds.
+Scene/outfit hierarchy changes invalidate cached mesh ownership; unrelated UI
+hierarchy changes do not. Entity-keyed lookup tables keep the per-frame scan cheap.
+
+The same code runs natively, on WebGPU, and on WebGL2; it has no vendor-specific
+dependency. For an A/B comparison, disable only this new gate with
+`DSOR_FLAGS=noanimviewcull` or `?flag=noanimviewcull`. Keep `renderaudit` disabled
+when timing. This optimization reduces animation work, not retained entity counts
+or mesh draw candidates.
+
+Same-executable native Kingshill A/B captures at the investigation camera:
+
+| Configuration | Animating characters, disabled → enabled | Attached bone targets, disabled → enabled |
+|---|---:|---:|
+| Shadows enabled | 41 → 38 | 3,436 → 3,230 |
+| Shadows disabled | 41 → 22 | 3,436 → 1,813 |
+
+Both versions retained 67,278 entities in this asset snapshot. Clip/particle
+sampling can vary between runs; these are workload counts, not FPS gains. A
+concurrent compiler affected the census runs, so their timing is not a benchmark.
+Evidence: `.local/logs/anim-visibility/final-{shadow,no-shadows}-{before,after}.{json,png,stderr.log}`. The native
+test suite passed 85 tests (12 existing asset-dependent tests remained ignored),
+including visibility grace/reentry, shadow-only visibility, outfit reparenting,
+particle attachments and preserved clip phase.
+
+Short native A/B timing runs with the census disabled did not establish a
+reproducible overall FPS gain. One shadow-enabled repeat also had a different
+all-view candidate count, so it is not an equivalent rendering workload. Do not
+translate the target-count reduction into an FPS percentage. Browser performance
+has not been measured for this change.
 
 ## Bug dumps
 

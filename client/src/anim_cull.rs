@@ -14,6 +14,9 @@ use std::collections::HashMap;
 use bevy::animation::AnimatedBy;
 use bevy::prelude::*;
 
+mod visibility;
+pub use visibility::AnimationVisibility;
+
 /// Players crate::character drives itself.
 #[derive(Component)]
 pub struct ManagedAnimation;
@@ -30,7 +33,10 @@ pub struct AnimCullPlugin;
 
 impl Plugin for AnimCullPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(PostUpdate, cull_animations.before(bevy::app::AnimationSystems));
+        app.init_resource::<AnimationVisibility>()
+            .add_systems(PostUpdate, cull_animations.before(bevy::app::AnimationSystems))
+            .add_systems(PostUpdate, visibility::track_visibility
+                .after(bevy::camera::visibility::VisibilitySystems::MarkNewlyHiddenEntitiesInvisible));
     }
 }
 

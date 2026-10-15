@@ -25,6 +25,90 @@ fn raycasts_find_multiple_walls_but_reject_floor_and_background() {
     assert!(!blocked.contains(&behind_player));
     assert!(!blocks_player(5.0, 10.0, Vec3::new(0.0, 0.05, 5.0), Vec3::ZERO));
     assert!(!blocks_player(9.95, 10.0, Vec3::Y, Vec3::ZERO));
+    assert_eq!(full_occlusion(&mut raycast,
+        &MeshRayCastSettings::default().with_visibility(RayCastVisibility::Visible).never_early_exit(),
+        Vec3::ZERO, Vec3::new(0.0, 1.0, 10.0), Vec3::X), HashSet::from([front, back]));
+}
+
+const TEST_CAMERA: Vec3 = Vec3::new(0.0, 3.0, 10.0);
+
+fn sight_world() -> World {
+    bevy::tasks::ComputeTaskPool::get_or_init(bevy::tasks::TaskPool::new);
+    let mut world = World::new();
+    world.init_resource::<Assets<Mesh>>();
+    world
+}
+
+fn obstacle(world: &mut World, size: Vec3, center: Vec3) -> Entity {
+    let mesh = Mesh::from(Cuboid::from_size(size));
+    let bounds = mesh.compute_aabb().unwrap();
+    let mesh = world.resource_mut::<Assets<Mesh>>().add(mesh);
+    world.spawn((Mesh3d(mesh), bounds, GlobalTransform::from_translation(center),
+        InheritedVisibility::VISIBLE, ViewVisibility::default(), RayCastBackfaces)).id()
+}
+
+fn reveal_set(world: &mut World) -> HashSet<Entity> {
+    let mut state = SystemState::<MeshRayCast>::new(world);
+    let mut raycast = state.get_mut(world).unwrap();
+    full_occlusion(&mut raycast,
+        &MeshRayCastSettings::default().with_visibility(RayCastVisibility::Visible).never_early_exit(),
+        Vec3::ZERO, TEST_CAMERA, Vec3::X)
+}
+
+fn sample_blocked(world: &mut World, sample: usize) -> bool {
+    let mut state = SystemState::<MeshRayCast>::new(world);
+    let mut raycast = state.get_mut(world).unwrap();
+    let delta = sight_targets(Vec3::ZERO, Vec3::X)[sample] - TEST_CAMERA;
+    raycast.cast_ray(Ray3d::new(TEST_CAMERA, Dir3::new(delta).unwrap()),
+        &MeshRayCastSettings::default().with_visibility(RayCastVisibility::Visible).never_early_exit())
+        .iter().any(|(_, hit)| blocks_player(hit.distance, delta.length(), hit.point, Vec3::ZERO))
+}
+
+#[test]
+fn low_furniture_does_not_reveal_when_the_head_is_visible() {
+    for height in [0.9, 1.5] {
+        let mut world = sight_world();
+        obstacle(&mut world, Vec3::new(4.0, height, 0.4), Vec3::new(0.0, height * 0.5, 1.5));
+        assert!(sample_blocked(&mut world, 2), "the prop must actually obscure the lower body");
+        assert!(!sample_blocked(&mut world, 1), "the head must remain visible");
+        assert!(reveal_set(&mut world).is_empty());
+    }
+}
+
+#[test]
+fn narrow_pillar_does_not_reveal_when_the_sides_are_visible() {
+    let mut world = sight_world();
+    obstacle(&mut world, Vec3::new(0.25, 4.0, 0.4), Vec3::new(0.0, 2.0, 1.5));
+    for sample in 0..3 { assert!(sample_blocked(&mut world, sample)); }
+    for sample in 3..5 { assert!(!sample_blocked(&mut world, sample)); }
+    assert!(reveal_set(&mut world).is_empty());
+}
+
+#[test]
+fn separate_meshes_can_jointly_occlude_the_whole_character() {
+    let mut world = sight_world();
+    let upper = obstacle(&mut world, Vec3::new(4.0, 2.0, 0.2), Vec3::new(0.0, 2.1, 1.5));
+    assert!(sample_blocked(&mut world, 0));
+    assert!(!sample_blocked(&mut world, 2));
+    assert!(reveal_set(&mut world).is_empty());
+    let lower = obstacle(&mut world, Vec3::new(4.0, 1.1, 0.2), Vec3::new(0.0, 0.55, 1.5));
+    assert_eq!(reveal_set(&mut world), HashSet::from([upper, lower]));
+}
+
+#[test]
+fn exposing_one_side_closes_an_existing_reveal() {
+    let mut world = sight_world();
+    let wall = obstacle(&mut world, Vec3::new(1.0, 4.0, 0.2), Vec3::new(0.0, 2.0, 1.5));
+    let mut hold = 0.0;
+    let amount = advance_fade(0.0, &mut hold, reveal_set(&mut world).contains(&wall), FADE_IN);
+    assert_eq!(amount, 1.0);
+
+    world.entity_mut(wall).insert(GlobalTransform::from_xyz(0.2, 2.0, 1.5));
+    for sample in 0..4 { assert!(sample_blocked(&mut world, sample)); }
+    assert!(!sample_blocked(&mut world, 4));
+    let hits = reveal_set(&mut world);
+    assert!(hits.is_empty());
+    assert_eq!(advance_fade(amount, &mut hold, hits.contains(&wall), HOLD_SECONDS + FADE_OUT), 0.0);
 }
 
 #[test]

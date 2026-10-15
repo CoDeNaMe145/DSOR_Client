@@ -1,0 +1,124 @@
+{
+  "build": {
+    "commit": "7d69ec3-dirty",
+    "graphics": "native",
+    "target": "native",
+    "version": "0.1.0"
+  },
+  "dump": 1,
+  "launch": "D:\\dso\\target\\release\\dsor-client.exe",
+  "logs": [
+    "1792007548993 INFO log: SystemInfo { os: \"Windows 11 Enterprise\", kernel: \"26200\", cpu: \"Intel(R) Core(TM) i7-14700KF\", core_count: \"20\", memory: \"63.8 GiB\" } log.target=\"bevy_diagnostic::system_information_diagnostics_plugin::internal\" log.module_path=\"bevy_diagnostic::system_information_diagnostics_plugin::internal\" log.file=\"D:\\\\dso\\\\.local\\\\cargo\\\\registry\\\\src\\\\index.crates.io-1949cf8c6b5b557f\\\\bevy_diagnostic-0.19.1\\\\src\\\\system_information_diagnostics_plugin.rs\" log.line=273",
+    "1792007549233 INFO bevy_render::renderer: AdapterInfo { name: \"NVIDIA GeForce RTX 4070\", vendor: 4318, device: 10118, device_type: DiscreteGpu, device_pci_bus_id: \"0000:01:00.0\", driver: \"NVIDIA\", driver_info: \"591.59\", backend: Vulkan, subgroup_min_size: 32, subgroup_max_size: 32, transient_saves_memory: false }",
+    "1792007549400 INFO bevy_pbr::cluster: GPU clustering is supported on this device.",
+    "1792007549400 INFO bevy_render::batching::gpu_preprocessing: GPU preprocessing is fully supported on this device.",
+    "1792007549401 INFO bevy_winit::system: Creating new window DSOR Kitty - Login (66v0)",
+    "1792007549438 ERROR bevy_asset::server: Path not found: D:\\dso\\assets\\characters/stats.json",
+    "1792007549447 INFO dsor_client::lighting: point lights: Nebula's linear falloff",
+    "1792007549460 ERROR bevy_asset::server: Failed to load asset 'characters/uniskel_dwarf/parts.json' with asset loader 'dsor_client::character::PartListLoader': invalid type: map, expected a sequence at line 1 column 0",
+    "1792007549461 ERROR bevy_asset::server: Failed to load asset 'characters/uniskel/parts.json' with asset loader 'dsor_client::character::PartListLoader': invalid type: map, expected a sequence at line 1 column 0",
+    "1792007554441 INFO dsor_client::hud: 418 FPS (2.40 ms), cpu 1.9 ms (logic 1.1), 695 entities, 0/0 surfaces drawn, 0/0 animated, -: 0 placements, models 0/0",
+    "1792007557772 INFO log: transport: udp 127.0.0.1:49547 -> 127.0.0.1:2190 log.target=\"dsor_transport::imp\" log.module_path=\"dsor_transport::imp\" log.file=\"crates\\\\transport\\\\src\\\\lib.rs\" log.line=105",
+    "1792007557772 INFO dsor_client::net: connecting to 127.0.0.1:2190",
+    "1792007557783 INFO dsor_client::net: service: DrasaOnlineLoginServer",
+    "1792007557791 INFO log: transport: udp 127.0.0.1:49548 -> 127.0.0.1:2192 log.target=\"dsor_transport::imp\" log.module_path=\"dsor_transport::imp\" log.file=\"crates\\\\transport\\\\src\\\\lib.rs\" log.line=105",
+    "1792007557792 INFO dsor_client::net: connecting to 127.0.0.1:2192",
+    "1792007557802 INFO dsor_client::net: service: DrasaCharacterService",
+    "1792007557802 INFO dsor_client::net: map a0000_char (rule set 4294967295)",
+    "1792007557802 INFO dsor_client::loading: loading screen: map a0000_char",
+    "1792007557803 ERROR bevy_asset::server: Path not found: D:\\dso\\assets\\maps/a0000_char.exits.json",
+    "1792007557803 ERROR bevy_asset::server: Path not found: D:\\dso\\assets\\maps/a0000_char.npcs.json",
+    "1792007557806 INFO dsor_client::map: map a0000_char: 73 placements of 19 distinct models",
+    "1792007557806 INFO dsor_client::lighting: level a0000_char: 7 lights",
+    "1792007557823 INFO dsor_client::map: map a0000_char: static surfaces merged into 25 meshes",
+    "1792007557823 INFO dsor_client::map: map a0000_char: all 19 models placed",
+    "1792007557869 INFO dsor_client::net: characters: [(\"test\", 200000002, 1)]",
+    "1792007557909 INFO log: transport: udp 127.0.0.1:49549 -> 127.0.0.1:2190 log.target=\"dsor_transport::imp\" log.module_path=\"dsor_transport::imp\" log.file=\"crates\\\\transport\\\\src\\\\lib.rs\" log.line=105",
+    "1792007557916 INFO dsor_client::net: connecting to 127.0.0.1:2190",
+    "1792007557930 INFO dsor_client::net: service: DrasaOnlineLoginServer",
+    "1792007557939 INFO log: transport: udp 127.0.0.1:49550 -> 127.0.0.1:2192 log.target=\"dsor_transport::imp\" log.module_path=\"dsor_transport::imp\" log.file=\"crates\\\\transport\\\\src\\\\lib.rs\" log.line=105",
+    "1792007557939 INFO dsor_client::net: connecting to 127.0.0.1:2192",
+    "1792007557953 INFO dsor_client::net: service: DrasaOnlineMapServer",
+    "1792007557957 INFO dsor_client::decals: decals: 10 boxes projected, 5540 triangles",
+    "1792007557960 INFO dsor_client::net: map a0200_kingscity (rule set 5)",
+    "1792007557961 INFO dsor_client::loading: loading screen: map a0200_kingscity",
+    "1792007557985 INFO dsor_client::map: map a0200_kingscity: 8319 placements of 603 distinct models",
+    "1792007557989 INFO dsor_client::exits: 20 exits on a0200_kingscity (5 drawn)",
+    "1792007557989 INFO dsor_client::lighting: level a0200_kingscity: 95 lights",
+    "1792007558403 INFO dsor_client::map: map a0200_kingscity: static surfaces merged into 2038 meshes",
+    "1792007558403 INFO dsor_client::map: map a0200_kingscity: all 603 models placed",
+    "1792007558866 INFO dsor_client::decals: decals: 633 boxes projected, 324068 triangles",
+    "1792007559220 INFO dsor_client::net: I am test (mage_1h_weapon_shield), actor Some(1), at [155.60938, 0.9983387, -51.910706]",
+    "1792007559221 INFO dsor_client::net: quick slots: [\"magicmissile\", \"magicmissile\"]",
+    "1792007559224 WARN bevy_text::pipeline: Text span 7764v0 has a font size <= 0.0. Nothing will be displayed.",
+    "1792007559243 INFO dsor_client::npc: npc model Some(characters/tamer.glb): playing Some(characters/tamer.glb#Animation0)",
+    "1792007559244 INFO dsor_client::npc: npc model Some(characters/npc_freya.glb): playing Some(characters/npc_freya.glb#Animation0)",
+    "1792007559244 INFO dsor_client::npc: npc model Some(characters/gambler_trader.glb): playing Some(characters/gambler_trader.glb#Animation0)",
+    "1792007559255 INFO dsor_client::npc: npc model Some(characters/npc_stellan.glb): playing Some(characters/npc_stellan.glb#Animation0)",
+    "1792007559264 INFO dsor_client::npc: npc model Some(characters/npc_dante.glb): playing Some(characters/npc_dante.glb#Animation0)",
+    "1792007559265 INFO dsor_client::npc: npc model Some(characters/npc_brack.glb): playing Some(characters/npc_brack.glb#Animation0)",
+    "1792007559310 INFO dsor_client::npc: npc model Some(characters/troll.glb): playing Some(characters/troll.glb#Animation0)",
+    "1792007559446 INFO dsor_client::hud: 218 FPS (4.60 ms), cpu 4.3 ms (logic 2.7), 8164 entities, 570/3135 surfaces drawn, 0/45 animated, a0200_kingscity: 8319 placements, models 603/603",
+    "1792007561128 PANIC panicked at D:\\dso\\.local\\cargo\\registry\\src\\index.crates.io-1949cf8c6b5b557f\\bevy_ecs-0.19.1\\src\\error\\handler.rs:130:1:\nEncountered an error in system `<Enable the debug feature to see the name>`: Parameter `<Enable the debug feature to see the name>` failed validation: Non-send data not found\nIf this is an expected state, wrap the parameter in `Option<T>` and handle `None` when it happens, or wrap the parameter in `If<T>` to skip the system when it happens.\n",
+    "1792007561128 PANIC panicked at D:\\dso\\.local\\cargo\\registry\\src\\index.crates.io-1949cf8c6b5b557f\\bevy_ecs-0.19.1\\src\\error\\handler.rs:130:1:\nEncountered an error in system `<Enable the debug feature to see the name>`: Parameter `<Enable the debug feature to see the name>` failed validation: Resource does not exist\nIf this is an expected state, wrap the parameter in `Option<T>` and handle `None` when it happens, or wrap the parameter in `If<T>` to skip the system when it happens.\n"
+  ],
+  "platform": {
+    "arch": "x86_64",
+    "os": "windows"
+  },
+  "reason": "panic: panicked at D:\\dso\\.local\\cargo\\registry\\src\\index.crates.io-1949cf8c6b5b557f\\bevy_ecs-0.19.1\\src\\error\\handler.rs:130:1:\nEncountered an error in system `<Enable the debug feature to see the name>`: Parameter `<Enable the debug feature to see the name>` failed validation: Non-send data not found\nIf this is an expected state, wrap the parameter in `Option<T>` and handle `None` when it happens, or wrap the parameter in `If<T>` to skip the system when it happens.\n",
+  "state": {
+    "camera": {
+      "forward": [
+        0.5,
+        -0.7071068286895752,
+        -0.4999999403953552
+      ],
+      "position": [
+        143.109375,
+        18.676010131835938,
+        -38.91070556640625
+      ]
+    },
+    "entities": 8164.0,
+    "flags": [],
+    "fps": 232.44132901934094,
+    "frame_ms": 4.305027359079313,
+    "look": {
+      "ambient": 0.6499998569488525,
+      "back": 0.8999999761581421,
+      "bloom": 0.800000011920929,
+      "exposure": 3.725290298461914e-8,
+      "fog": 0.550000011920929,
+      "fog_range": 0.5,
+      "lights": 1.500000238418579,
+      "saturation": 1.499999761581421,
+      "shadows": true,
+      "sun": 1.0,
+      "tonemapping": false,
+      "vignette": 0.0
+    },
+    "map": {
+      "instances": 8319,
+      "models": 603,
+      "models_loaded": 603,
+      "name": "a0200_kingscity",
+      "spawned": true
+    },
+    "net": {
+      "health": 78.0,
+      "local_actor": 1,
+      "local_name": "test",
+      "relay": null,
+      "resource": 100.0,
+      "server": "127.0.0.1:2190"
+    },
+    "player": [
+      155.609375,
+      0.9983386993408203,
+      -51.91070556640625
+    ],
+    "uptime_s": 11.1986503
+  },
+  "time_ms": 1792007561128.3652
+}

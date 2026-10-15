@@ -1,5 +1,5 @@
-//! Native editor viewport. The Python editor owns persistence and validation;
-//! this process renders individually editable roots and emits completed gestures.
+//! Native Rust level editor. DB4 persistence, UI and rendering share one process.
+mod desktop;
 mod previews;
 mod fly_camera;
 mod camera_preview;
@@ -78,6 +78,8 @@ struct Controls {
     #[serde(default)] show_helpers: bool,
     #[serde(default)] show_grid: bool,
     #[serde(default)] show_lights: bool,
+    #[serde(default)] show_bubbles: bool,
+    #[serde(default)] preview_ambience: Option<String>,
     #[serde(default = "default_speed")] camera_speed: f32,
 }
 fn default_speed() -> f32 { 15. }
@@ -90,7 +92,8 @@ impl Default for Controls {
     fn default() -> Self {
         Self { revision: 0, selected: None, mode: "translate".into(), snap: 1., focus_serial: 0,
             focus_target: "map".into(), pickable: default(), active_events: default(), hidden_geometry: default(),
-            show_helpers: false, show_grid: false, show_lights: false, camera_speed: default_speed() }
+            show_helpers: false, show_grid: false, show_lights: false, show_bubbles: false,
+            preview_ambience: None, camera_speed: default_speed() }
     }
 }
 #[derive(Component)] struct ObjectRoot(String);
@@ -102,6 +105,12 @@ enum Visual { Flat(Vec<crate::map::FlatSurface>), Scene(Handle<bevy::world_seria
 struct Model { handle: Option<Handle<Gltf>>, visual: Option<Visual>, bounds: (Vec3, Vec3) }
 #[derive(Resource)]
 struct Editor {
+    desktop: bool,
+    pending_scene: Option<Scene>,
+    inbox: Vec<serde_json::Value>,
+    pointer_blocked: bool,
+    keyboard_blocked: bool,
+    viewport: Option<Rect>,
     directory: PathBuf,
     revision: u64,
     map: String,
@@ -125,6 +134,7 @@ impl Editor {
     fn send(&mut self, mut event: serde_json::Value) {
         self.events += 1;
         event["revision"] = self.revision.into();
+        if self.desktop { self.inbox.push(event); return; }
         let path = self.directory.join("events").join(format!("{:016}.json", self.events));
         if let Err(error) = atomic_write(&path, &event) { self.error = error.to_string(); }
     }
@@ -156,14 +166,28 @@ fn atomic_write(path: &std::path::Path, value: &impl Serialize) -> std::io::Resu
 }
 
 pub fn run(directory: PathBuf) {
+    run_app(directory, None);
+}
+
+pub fn desktop() {
+    match desktop::State::from_args() {
+        Ok(state) => { std::env::set_var("DSOR_ASSETS", &state.project.assets); let directory = state.project.cache.join("live").join(format!("rust-{}", std::process::id())); run_app(directory, Some(state)); }
+        Err(error) => { eprintln!("Level editor: {error}"); std::process::exit(1); }
+    }
+}
+
+fn run_app(directory: PathBuf, desktop: Option<desktop::State>) {
+    let _ = std::fs::create_dir_all(directory.join("events"));
+    let is_desktop = desktop.is_some();
     let title = format!("DSOR Level Viewport {}", directory.file_name().unwrap_or_default().to_string_lossy());
-    let editor = Editor { directory, revision: 0, map: String::new(), center: Vec3::ZERO, extents: Vec3::splat(30.),
+    let editor = Editor { directory, desktop: is_desktop, pending_scene: None, inbox: vec![], pointer_blocked: false, keyboard_blocked: false, viewport: None, revision: 0, map: String::new(), center: Vec3::ZERO, extents: Vec3::splat(30.),
         scene_stamp: None, controls_stamp: None, poll_at: -1., status_at: -1., controls: default(),
         placed: default(), models: default(), events: 0, drag: None, focus_serial: 0, needs_frame: true, error: String::new(), ambience: None };
-    App::new()
+    let mut app = App::new();
+    app
         .add_plugins(DefaultPlugins.set(AssetPlugin { file_path: crate::asset_root(), meta_check: bevy::asset::AssetMetaCheck::Never, ..default() })
-            .set(WindowPlugin { primary_window: Some(Window { title, resolution: (1000, 760).into(),
-                present_mode: bevy::window::PresentMode::AutoVsync, ..default() }), ..default() }))
+            .set(WindowPlugin { primary_window: Some({ let mut window = Window { title: if is_desktop { "DSOR • Level Editor".into() } else { title }, resolution: (1600, 960).into(),
+                present_mode: bevy::window::PresentMode::AutoVsync, ..default() }; window.set_maximized(is_desktop); window }), close_when_requested: !is_desktop, ..default() }))
         .insert_resource(bevy::winit::WinitSettings { focused_mode: bevy::winit::UpdateMode::Continuous,
             unfocused_mode: bevy::winit::UpdateMode::Continuous })
         .add_plugins((crate::surfaces::SurfacesPlugin, crate::refraction::RefractionPlugin,
@@ -186,8 +210,9 @@ pub fn run(directory: PathBuf) {
             camera_preview::update, lighting_preview::update, draw_handles, camera_preview::draw, lighting_preview::draw, status).chain())
         .configure_sets(Update, crate::lighting::ApplyEditorLighting.after(lighting_preview::update))
         .add_systems(PostUpdate, previews::isolate.before(bevy::camera::visibility::VisibilitySystems::CheckVisibility))
-        .add_systems(Update, capture_when_ready)
-        .run();
+        .add_systems(Update, capture_when_ready);
+    if let Some(state) = desktop { desktop::install(&mut app, state); }
+    app.run();
 }
 
 fn setup(mut commands: Commands, mut config: ResMut<GizmoConfigStore>) {
@@ -212,12 +237,14 @@ fn sync(mut commands: Commands, mut editor: ResMut<Editor>, time: Res<Time>, mut
     if editor.directory.join("stop.json").exists() { exit.write(AppExit::Success); return; }
     let path = editor.directory.join("scene.json");
     let stamp = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-    if stamp.is_some() && stamp != editor.scene_stamp {
-        match std::fs::read(&path).ok().and_then(|raw| serde_json::from_slice::<Scene>(&raw).ok()) {
+    if editor.pending_scene.is_some() || (stamp.is_some() && stamp != editor.scene_stamp) {
+        let scene = editor.pending_scene.take().or_else(|| std::fs::read(&path).ok().and_then(|raw| serde_json::from_slice::<Scene>(&raw).ok()));
+        match scene {
             Some(scene) if scene.protocol == 1 => {
                 editor.scene_stamp = stamp;
                 editor.drag = None;
                 editor.needs_frame |= scene.map != editor.map;
+                if scene.map != editor.map { editor.controls.preview_ambience = None; }
                 editor.map = scene.map;
                 editor.center = Vec3::from(scene.center);
                 editor.extents = Vec3::from(scene.extents);
@@ -398,7 +425,7 @@ fn interact(mut editor: ResMut<Editor>, windows: Query<&Window>, cameras: Query<
             return;
         }
     }
-    if !window.focused { return; }
+    if !window.focused || (editor.keyboard_blocked && editor.drag.is_none()) { return; }
     let control = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
     if control {
         for (key, action) in [(KeyCode::KeyS, "save"), (KeyCode::KeyZ, "undo"), (KeyCode::KeyY, "redo"), (KeyCode::KeyD, "duplicate")] {
@@ -417,6 +444,7 @@ fn interact(mut editor: ResMut<Editor>, windows: Query<&Window>, cameras: Query<
         if keys.just_pressed(KeyCode::Delete) && editor.drag.is_none() { editor.send(json!({"action": "delete"})); }
     }
     let Some(cursor) = window.cursor_position() else { return };
+    if editor.pointer_blocked && editor.drag.is_none() { return; }
     let Ok(ray) = camera.viewport_to_world(camera_at, cursor) else { return };
     if let Some(mut drag) = editor.drag.take() {
         let Some(placed) = editor.placed.get(&drag.key) else { return };
@@ -584,7 +612,8 @@ fn status(mut editor: ResMut<Editor>, time: Res<Time>,
         "camera_forward": cameras.single().ok().map(|(_, t)| t.forward().to_array()),
         "focused": window.is_some_and(|w| w.focused), "cursor": window.and_then(|w| w.cursor_position()).map(|p| p.to_array()),
         "camera_preview": monitor.state,
-        "lighting": {"source": lighting.source, "points": lighting.points, "spots": lighting.spots,
+        "lighting": {"source": lighting.source, "source_key": lighting.source_key, "previewing": lighting.previewing,
+            "observer": lighting.observer.map(|p| p.to_array()), "points": lighting.points, "spots": lighting.spots,
             "sun_intensity": look.bubble.light_intensity, "ambient": look.bubble.light_ambient},
         "mode": editor.controls.mode, "dragging": editor.drag.is_some(), "left_pressed": buttons.pressed(MouseButton::Left), "handles": handles}));
 }

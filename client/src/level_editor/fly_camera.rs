@@ -25,11 +25,11 @@ pub(super) fn navigate(mut editor: ResMut<Editor>, mut fly: ResMut<FlyCamera>,
     motion: Res<AccumulatedMouseMotion>, scroll: Res<AccumulatedMouseScroll>, time: Res<Time>) {
     let Ok(mut camera) = cameras.single_mut() else { return };
     let Ok((window, mut cursor)) = windows.single_mut() else { return };
-    let over_preview = window.cursor_position().is_some_and(|p| camera_preview::contains(&editor, window, p));
+    let over_preview = editor.pointer_blocked || editor.keyboard_blocked || window.cursor_position().is_some_and(|p| camera_preview::contains(&editor, window, p));
     let flying = window.focused && !over_preview && buttons.pressed(MouseButton::Right) && editor.drag.is_none() && !keys.pressed(KeyCode::Escape);
     cursor.grab_mode = if flying { CursorGrabMode::Confined } else { CursorGrabMode::None };
     cursor.visible = !flying;
-    let focus_key = window.focused && !flying && keys.just_pressed(KeyCode::KeyF);
+    let focus_key = window.focused && !flying && !editor.keyboard_blocked && keys.just_pressed(KeyCode::KeyF);
     if editor.needs_frame || editor.controls.focus_serial != editor.focus_serial || focus_key {
         let selection = !editor.needs_frame && (editor.controls.focus_target != "map" || focus_key);
         let target = selection.then(|| editor.selected()).flatten().filter(|p| editor.controls.visible(&p.object));

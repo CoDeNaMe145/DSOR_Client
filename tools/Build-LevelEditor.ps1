@@ -17,7 +17,18 @@ Push-Location $workspace
 try {
     $ErrorActionPreference = 'Continue'
     cargo rustc --locked --release -p dsor-client --bin dsor-client -- -C opt-level=1 -C lto=thin -C codegen-units=256
-    if ($LASTEXITCODE -ne 0) { throw "Editor renderer build failed with code $LASTEXITCODE." }
+    if ($LASTEXITCODE -ne 0) { throw "Rust level editor build failed with code $LASTEXITCODE." }
+    # Keep the editor executable independent of ordinary client rebuilds.
+    $editorBinary = Join-Path $workspace 'target/release/dsor-level-editor.exe'
+    try {
+        Copy-Item -LiteralPath (Join-Path $workspace 'target/release/dsor-client.exe') -Destination $editorBinary -Force -ErrorAction Stop
+    } catch {
+        if (-not (Test-Path -LiteralPath $editorBinary)) { throw }
+        Move-Item -LiteralPath $editorBinary -Destination ($editorBinary + '.running-' + [guid]::NewGuid().ToString('N')) -ErrorAction Stop
+        Copy-Item -LiteralPath (Join-Path $workspace 'target/release/dsor-client.exe') -Destination $editorBinary -ErrorAction Stop
+    }
+    cargo build --locked --release -p dsor-level-data --bin dsor-levels
+    if ($LASTEXITCODE -ne 0) { throw "Level composition tool build failed with code $LASTEXITCODE." }
 } finally {
     Pop-Location
 }

@@ -32,12 +32,12 @@ World drops, ground-item rendering and pickup are explicitly deferred.
 | Death and revival | Monster deaths handled | Player death state, death dialog, respawn choices and revive updates |
 | Position corrections | Local Move ignored; ForceTransform not decoded | Current work above |
 | NPC interaction | NPCs render | Dialogue, service selection and encounter requests |
-| Quests and props | Quest window navigation only | Log, objectives, accept/turn-in, markers, prop interactions and triggers |
+| Quests and props | Quest window navigation; DB4 prop rendering and server visibility/state updates | Log, objectives, accept/turn-in, markers, prop interactions and triggers |
 | Vendors and crafting | Panels only | Offers, buy/sell/buyback, repair, salvage, crafting, sockets and customization |
 | Talents | Skill book and hotbar assignment work | Allocation, resets, presets, wisdom/group/honor progression |
 | Character statistics | Legacy base-stat calculator; stats asset absent locally | Release261 data, equipment and talent contributions, reliable maxima |
 | Chat and social | Social tabs only | Chat connection, player search, group/guild rosters, invitations and group finder |
-| Travel | Ordinary map exits work | Travel-map requests, unlocked destinations, travel items and home teleport |
+| Travel | Ordinary map exits work; travel stones render | Travel-map requests, unlocked destinations, travel items and home teleport |
 | Events and rewards | Panels only | Event data, participation, notifications, daily rewards/challenges, achievements and wanted missions |
 | PvP and rankings | Panels only | Flag, queues, acceptance, battleground state/results, player targeting and ranking rows |
 | Mounts and cosmetics | No collection controller | Ownership, activation, favorites and pet upgrades |
@@ -466,3 +466,20 @@ Executable: `target/release/dsor-client.exe`. Validation:
 `.local/logs/indoor-tests-final.log`, `indoor-build-final.log`,
 `indoor-runtime-verified.err`; captures in `.local/logs/indoor-captures/`.
 See `docs/fx.md` for the cutout behavior and offline replay format.
+
+### Follow-up: reveal only a fully occluded character
+
+Cutouts now require blocked rays to all five body samples: head, torso, lower
+body and both sides. Tables, chests and narrow pillars keep their materials when
+any sample remains visible. Separate meshes can still jointly hide the whole
+character; exposing one sample closes an existing opening with the usual fade.
+
+All **83 client tests passed**, including real-mesh regressions for low furniture,
+narrow pillars, combined blockers and restoring the scene when one side clears.
+The optimized native executable was rebuilt. Eight Kingscity replay captures
+confirm full wall coverage still reveals the character and both porches/exits
+have no active cutouts; the palace porch keeps its partially blocking wall intact.
+The replay reported no runtime errors.
+
+Validation: `.local/logs/full-occlusion-tests.log`, `full-occlusion-build.log`,
+`full-occlusion-runtime.log`; captures in `.local/logs/full-occlusion-captures/`.

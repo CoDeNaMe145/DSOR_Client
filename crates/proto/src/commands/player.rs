@@ -1146,13 +1146,14 @@ pub struct ScheduleEntry {
     pub flag: bool,
     pub map_local: bool,
     pub unknown_bit_2: bool,
+    pub unknown_bit_3: bool,
     pub blanks: [u32; 6],
     pub date: [u32; 6],
     pub parameters: Vec<String>,
 }
 
-/// EventUpdateCommand (233), not actor-scoped: the event schedule, a u32 count of
-/// records. SOURCE: dsor/events.py encode_schedule_2018; vtable 0xFFDEAC.
+/// EventUpdateCommand (221), not actor-scoped: a counted schedule with four flag
+/// bits per entry (release261 player_init_protocol.py::_write_event_update_body).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct EventUpdate {
     pub entries: Vec<ScheduleEntry>,
@@ -1167,6 +1168,7 @@ impl Body for EventUpdate {
                 flag: r.bit()?,
                 map_local: r.bit()?,
                 unknown_bit_2: r.bit()?,
+                unknown_bit_3: r.bit()?,
                 ..Default::default()
             };
             if !e.map_local {
@@ -1186,6 +1188,7 @@ impl Body for EventUpdate {
             w.bit(e.flag);
             w.bit(e.map_local);
             w.bit(e.unknown_bit_2);
+            w.bit(e.unknown_bit_3);
             if !e.map_local {
                 for v in e.blanks.iter().chain(&e.date) {
                     w.u32(*v);

@@ -378,6 +378,14 @@ for sid, brush, char_class in con.execute("select Id, IconBrush, CharClass from 
 with open(os.path.join(out_dir, "skills.icons.json"), "w") as f:
     json.dump(icons, f, separators=(",", ":"))
 print(f"skill icons: {len(icons)}")
+# Runtime map markers are not referenced by the static window meshes.
+from pathlib import Path
+for source in sorted((Path(root) / "textures" / "ui").glob("icon_map_*.*")):
+    tex.get("ui/" + source.stem)
+for table in ("_Template_NPC", "_Template_StateObject"):
+    for (brush,) in con.execute(f"SELECT DISTINCT LocationMapIcon FROM {table}"):
+        if brush:
+            tex.get(brush.replace("\\", "/"))
 export_map_names(loca, out_dir)
 for lang in ("fr", "en"):
     table = loca.get(lang, {})

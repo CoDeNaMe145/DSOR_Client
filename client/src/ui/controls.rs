@@ -172,7 +172,8 @@ fn action(window: &str, w: &Widget) -> Action {
             "inventory" => Action::Window("inventory"),
             "skills" => Action::Window("skilltalentswindow"),
             "quest" => Action::Window("questlog"),
-            "travelmap" => Action::Window("travelmap"),
+            // The authored button keeps its old map ID, but is the stickerbook.
+            "travelmap" => Action::Window("collectorsalbum"),
             "minimap" => Action::Window("locationmap"),
             "dealer" => Action::Window("shopwindow"),
             "socialscreen" => Action::Window("socialscreen"),
@@ -543,7 +544,8 @@ fn toggle(name: &str, windows: &mut Windows) {
     }
 }
 
-pub(super) fn keyboard(keys: Res<ButtonInput<KeyCode>>, mut windows: Windows, mut pointer: ResMut<Pointer>, mut items: ResMut<items::Interaction>) {
+pub(super) fn keyboard(keys: Res<ButtonInput<KeyCode>>, mut windows: Windows, mut pointer: ResMut<Pointer>, mut items: ResMut<items::Interaction>,
+    cameras: Query<(), With<crate::FreeCamera>>, players: Query<(), With<crate::net::LocalPlayer>>) {
     if keys.just_pressed(KeyCode::Escape) && items.cancel_drag() { pointer.down = None; return; }
     if keys.just_pressed(KeyCode::Escape) && pointer.spell_drag.take().is_some() {
         pointer.down = None;
@@ -561,7 +563,11 @@ pub(super) fn keyboard(keys: Res<ButtonInput<KeyCode>>, mut windows: Windows, mu
         } else { toggle("gamemenu", &mut windows); }
         return;
     }
+    // The map viewer owns WASD until a playable character has spawned. Keep
+    // the raw keys available to the camera and other UI shortcuts working.
+    let free_fly = !cameras.is_empty() && players.is_empty();
     for (name, key, _) in MENU_WINDOWS {
+        if free_fly && matches!(key, KeyCode::KeyW | KeyCode::KeyA | KeyCode::KeyS | KeyCode::KeyD) { continue; }
         if key != KeyCode::Escape && keys.just_pressed(key) { toggle(name, &mut windows); }
     }
     if keys.just_pressed(KeyCode::Tab) { toggle("locationmap", &mut windows); }
@@ -805,6 +811,60 @@ mod tests {
     }
 
     #[test]
+    fn free_flight_reserves_wasd_and_keeps_other_shortcuts() {
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<Pointer>()
+            .init_resource::<items::Interaction>()
+            .add_systems(Update, keyboard);
+        let camera = app.world_mut().spawn(crate::FreeCamera::default()).id();
+        let mut roots = HashMap::new();
+        for (name, z) in MENU_WINDOWS.map(|(name, _, z)| (name, z)).into_iter().chain([("locationmap", 80.0)]) {
+            let controls = WindowControls::new(&fixture(name, serde_json::json!([])));
+            roots.insert(name, app.world_mut().spawn((Window2018(name.into()), controls,
+                Visibility::Hidden, Transform::from_xyz(0.0, 0.0, z))).id());
+        }
+        let press = |app: &mut App, key| {
+            app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(key);
+            app.update();
+            assert!(app.world().resource::<ButtonInput<KeyCode>>().pressed(key), "camera input must remain available");
+            app.world_mut().resource_mut::<ButtonInput<KeyCode>>().reset(key);
+        };
+        // Movement must neither open a closed window nor close one opened by mouse.
+        for visible in [Visibility::Hidden, Visibility::Inherited] {
+            for name in ["collectorsalbum", "skilltalentswindow"] {
+                *app.world_mut().get_mut::<Visibility>(roots[name]).unwrap() = visible;
+            }
+            for key in [KeyCode::KeyW, KeyCode::KeyA, KeyCode::KeyS, KeyCode::KeyD] {
+                press(&mut app, key);
+                for (name, root) in &roots {
+                    let expected = if matches!(*name, "collectorsalbum" | "skilltalentswindow") { visible } else { Visibility::Hidden };
+                    assert_eq!(*app.world().get::<Visibility>(*root).unwrap(), expected, "{key:?}: {name}");
+                }
+            }
+        }
+        for root in roots.values() { *app.world_mut().get_mut::<Visibility>(*root).unwrap() = Visibility::Hidden; }
+        for (key, name) in [(KeyCode::KeyI, "inventory"), (KeyCode::KeyC, "charactersheet"), (KeyCode::Tab, "locationmap")] {
+            press(&mut app, key);
+            assert_eq!(*app.world().get::<Visibility>(roots[name]).unwrap(), Visibility::Inherited);
+            press(&mut app, KeyCode::Escape);
+            assert_eq!(*app.world().get::<Visibility>(roots[name]).unwrap(), Visibility::Hidden);
+        }
+        app.world_mut().entity_mut(camera).remove::<crate::FreeCamera>();
+        for (key, name) in [(KeyCode::KeyW, "collectorsalbum"), (KeyCode::KeyS, "skilltalentswindow")] {
+            press(&mut app, key);
+            assert_eq!(*app.world().get::<Visibility>(roots[name]).unwrap(), Visibility::Inherited);
+            press(&mut app, key);
+            assert_eq!(*app.world().get::<Visibility>(roots[name]).unwrap(), Visibility::Hidden);
+        }
+        app.world_mut().entity_mut(camera).insert(crate::FreeCamera::default());
+        press(&mut app, KeyCode::KeyW);
+        press(&mut app, KeyCode::KeyS);
+        assert_eq!(*app.world().get::<Visibility>(roots["collectorsalbum"]).unwrap(), Visibility::Hidden);
+        assert_eq!(*app.world().get::<Visibility>(roots["skilltalentswindow"]).unwrap(), Visibility::Hidden);
+    }
+
+    #[test]
     fn hit_regions_follow_the_same_scale_and_anchor_as_artwork() {
         let rect = [600.0, 100.0, 650.0, 150.0];
         let width = 768.0 * 1920.0 / 1080.0;
@@ -848,7 +908,7 @@ mod tests {
         let mut roots = HashMap::new();
         let mut layouts = HashMap::new();
         let definitions = HUD_WINDOWS.into_iter().chain(MENU_WINDOWS.map(|(name, _, z)| (name, z)))
-            .chain(NAV_WINDOWS.into_iter().enumerate().map(|(i, name)| (name, if name == "locationmap" { 80.0 } else { 160.0 + i as f32 * WINDOW_DEPTH_STEP })))
+            .chain(NAV_WINDOWS.into_iter().enumerate().map(|(i, name)| (name, if name == "locationmap" { 80.0 } else { 180.0 + i as f32 * WINDOW_DEPTH_STEP })))
             .chain([("unstackwindow", 600.0)]);
         for (name, z) in definitions {
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../assets/interface/{name}.ui.json"));
@@ -1023,12 +1083,14 @@ mod tests {
     #[ignore = "requires locally converted game UI assets"]
     fn every_navigation_shortcut_opens_its_own_panel_and_tracks_close() {
         let (mut app, primary, roots, _) = exported_app();
+        app.world_mut().spawn(crate::FreeCamera::default());
         app.update();
         for (button, window) in [("char", "charactersheet"), ("quest", "questlog"), ("skills", "skilltalentswindow"),
-            ("inventory", "inventory"), ("dealer", "shopwindow"), ("travelmap", "travelmap"), ("minimap", "locationmap"),
+            ("inventory", "inventory"), ("dealer", "shopwindow"), ("travelmap", "collectorsalbum"), ("minimap", "locationmap"),
             ("socialscreen", "socialscreen"), ("pvp", "matchmakingwindow"), ("pvpleaderboards", "leaderboards"), ("events", "eventwindow")] {
             click_control(&mut app, primary, roots["ingamemenu"], &format!("/{button}"));
             assert_eq!(*app.world().get::<Visibility>(roots[window]).unwrap(), Visibility::Inherited, "{button}");
+            assert_eq!(*app.world().get::<Visibility>(roots["travelmap"]).unwrap(), Visibility::Hidden);
             let c = app.world().get::<WindowControls>(roots["ingamemenu"]).unwrap();
             assert!(c.selected(&Action::Window(window)), "shortcut must follow the opened panel");
             let panel = app.world().get::<WindowControls>(roots[window]).unwrap();
@@ -1081,6 +1143,16 @@ mod tests {
         }
         for w in &layouts["ingamemenu"].widgets {
             if w.id.contains("/icon/Label_highlight") { assert!(w.hidden, "a common highlight must not stay lit"); }
+        }
+        let album = app.world().get::<WindowControls>(roots["collectorsalbum"]).unwrap();
+        for w in &layouts["collectorsalbum"].widgets {
+            if w.id.contains("Template") || ["/Categorypage", "/AdvertisementArtwork", "/AnimUnlock", "/AnimUse"].iter().any(|p| w.id.contains(p)) {
+                assert!(!album.visible(&album.gate("collectorsalbum", w)), "stickerbook placeholder leaked: {}", w.id);
+            }
+        }
+        for suffix in ["/WindowTitle", "/Firstpage/background_info/TextLabel_fav", "/Firstpage/background_info/TextLabel_info"] {
+            let widget = layouts["collectorsalbum"].widgets.iter().find(|w| w.id.ends_with(suffix)).unwrap();
+            assert!(album.visible(&album.gate("collectorsalbum", widget)), "stickerbook content missing: {suffix}");
         }
     }
 

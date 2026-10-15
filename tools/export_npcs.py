@@ -24,11 +24,11 @@ xml = open(os.path.join(export, "language", "en", "db.npc.xml"), encoding="utf-8
 for name, text in re.findall(r'<item name="([^"]+)Title"><!\[CDATA\[(.*?)\]\]></item>', xml, re.S):
     titles[name] = text
 
-COLUMNS = ["Id", "Graphics", "CharacterSet", "AnimSet", "StartAnimationState", "LoopStartAnimation"]
+COLUMNS = ["Id", "Graphics", "CharacterSet", "AnimSet", "StartAnimationState", "LoopStartAnimation", "LocationMapIcon"]
 
 
 def look(row):
-    rid, graphics, outfit, anim_set, state, loop = row
+    rid, graphics, outfit, anim_set, state, loop, map_icon = row
     return {
         "graphics": graphics or "",
         "outfit": outfit or "",
@@ -36,6 +36,7 @@ def look(row):
         "state": state or "Idle",
         "loop": bool(loop),
         "title": titles.get(rid, ""),
+        "map_icon": (map_icon or "").replace("\\", "/"),
     }
 
 
@@ -64,7 +65,7 @@ for name in sorted(os.listdir(os.path.join(export, "maps"))):
         # Instance columns that differ from the template's.
         own = look(cols)
         base = templates.get(cols[0])
-        if base is None or any(own[k] != base[k] for k in ("graphics", "outfit", "anim_set", "state")):
+        if base is None or any(own[k] != base[k] for k in ("graphics", "outfit", "anim_set", "state", "map_icon")):
             entry["look"] = own
         out[guid.upper()] = entry
     with open(os.path.join(assets, "maps", name[:-4] + ".npcs.json"), "w") as f:

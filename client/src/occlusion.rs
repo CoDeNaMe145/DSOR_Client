@@ -1,4 +1,4 @@
-//! Keep the local character visible through map walls, pillars and ceilings.
+//! Reveal the local character only when map geometry fully obscures the body.
 //! Rays test the original meshes even while a hole is open. Only the obstructing
 //! material instance gets a soft, dithered cutout; shared materials and whole
 //! merged cells stay intact. The depth/normal prepass uses the same hole, while
@@ -145,6 +145,27 @@ fn blocks_player(distance: f32, length: f32, point: Vec3, feet: Vec3) -> bool {
     distance > 0.05 && distance < length - 0.15 && point.y > feet.y + 0.2
 }
 
+/// Every body sample must be blocked before opening any cutout. A low prop or
+/// narrow pillar must remain intact while part of the character is visible.
+/// Different meshes can jointly hide the body; retain all layers on each ray.
+fn full_occlusion(raycast: &mut MeshRayCast, settings: &MeshRayCastSettings,
+    feet: Vec3, origin: Vec3, right: Vec3) -> HashSet<Entity> {
+    let mut hits = HashSet::new();
+    for target in sight_targets(feet, right) {
+        let delta = target - origin;
+        let Ok(direction) = Dir3::new(delta) else { return HashSet::new() };
+        let mut blocked = false;
+        for (entity, hit) in raycast.cast_ray(Ray3d::new(origin, direction), settings) {
+            if blocks_player(hit.distance, delta.length(), hit.point, feet) {
+                blocked = true;
+                hits.insert(*entity);
+            }
+        }
+        if !blocked { return HashSet::new(); }
+    }
+    hits
+}
+
 fn advance_fade(amount: f32, hold: &mut f32, hit: bool, dt: f32) -> f32 {
     if hit { *hold = HOLD_SECONDS; } else { *hold = (*hold - dt).max(0.0); }
     if hit || *hold > 0.0 { (amount + dt / FADE_IN).min(1.0) }
@@ -170,13 +191,7 @@ fn reveal_player(mut commands: Commands, ready: Res<ShadersReady>, time: Res<Tim
             || neb.and_then(|m| surfaces.get(&m.0)).is_some_and(|m| opaque(&m.base)));
         let settings = MeshRayCastSettings::default().with_filter(&filter)
             .with_visibility(RayCastVisibility::Visible).never_early_exit();
-        for target in sight_targets(feet, right) {
-            let delta = target - origin;
-            let Ok(direction) = Dir3::new(delta) else { continue };
-            for (entity, hit) in raycast.cast_ray(Ray3d::new(origin, direction), &settings) {
-                if blocks_player(hit.distance, delta.length(), hit.point, feet) { hits.insert(*entity); }
-            }
-        }
+        hits = full_occlusion(&mut raycast, &settings, feet, origin, right);
         params = Some(CutoutParams { camera: origin.extend(RADIUS), target: (feet + Vec3::Y).extend(0.0),
             limits: Vec4::new(feet.y + 0.2, 0.15, 0.0, 0.0) });
     }

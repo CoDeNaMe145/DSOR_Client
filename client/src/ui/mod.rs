@@ -39,7 +39,7 @@ mod local_map;
 mod selection;
 #[cfg(not(target_arch = "wasm32"))]
 mod replay;
-pub(crate) use local_map::MapSettings;
+pub(crate) use local_map::{MapIcon, MapMarkers, MapSettings};
 use controls::{Element, Gate, WindowControls};
 pub(crate) use controls::SkillClicks;
 
@@ -77,10 +77,11 @@ fn hover_part(id: &str) -> bool {
         || id.starts_with("Canvas/Label_bg/ActorInfo/ActorInfo/gothic_panel")
 }
 /// Windows the player opens: (window, key, depth).
-const MENU_WINDOWS: [(&str, KeyCode, f32); 4] = [
+const MENU_WINDOWS: [(&str, KeyCode, f32); 5] = [
     ("inventory", KeyCode::KeyI, 100.0),
     ("charactersheet", KeyCode::KeyC, 120.0),
     ("skilltalentswindow", KeyCode::KeyS, 140.0),
+    ("collectorsalbum", KeyCode::KeyW, 160.0),
     ("gamemenu", KeyCode::Escape, 500.0),
 ];
 
@@ -384,7 +385,7 @@ impl Plugin for UiPlugin {
                 .before(bevy::sprite_render::check_entities_needing_specialization::<UiMaterial>))
             .add_systems(
                 Update,
-                (spawn_windows, controls::spells::sync, controls::items::sync, controls::keyboard, controls::interact, controls::spells::apply_drop, read_figures, controls::edit_text, controls::items::input, controls::order_windows, (update_fills, update_values, update_slots, (local_map::update, local_map::appearance).chain()), controls::paint, controls::items::render, (controls::spells::overlay, controls::items::overlay), show_hover_window).chain().run_if(crate::loading::gameplay_ready),
+                (spawn_windows, controls::spells::sync, controls::items::sync, controls::keyboard, controls::interact, controls::spells::apply_drop, read_figures, controls::edit_text, controls::items::input, controls::order_windows, (update_fills, update_values, update_slots, (local_map::update, local_map::update_markers, local_map::appearance).chain()), controls::paint, controls::items::render, (controls::spells::overlay, controls::items::overlay), show_hover_window).chain().run_if(crate::loading::gameplay_ready),
             );
         #[cfg(not(target_arch = "wasm32"))]
         app.add_systems(PreUpdate, replay::run.after(bevy::input::InputSystems)
@@ -427,7 +428,7 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>) {
         loaded.layouts.push((assets.load(format!("interface/{name}.ui.json")), z, Some(key)));
     }
     for (i, name) in NAV_WINDOWS.iter().enumerate() {
-        let depth = if *name == "locationmap" { 80.0 } else { 160.0 + i as f32 * WINDOW_DEPTH_STEP };
+        let depth = if *name == "locationmap" { 80.0 } else { 180.0 + i as f32 * WINDOW_DEPTH_STEP };
         loaded.layouts.push((assets.load(format!("interface/{name}.ui.json")), depth, None));
     }
     loaded.spawned = vec![false; loaded.layouts.len()];
@@ -680,7 +681,11 @@ fn spawn_windows(
             }
             if let Some(label) = &w.text {
                 let value = value_of(&w.id);
-                if !(static_text(label) || value.is_some() || w.kind == "TextEntry") || label.color[3] <= 0.0 {
+                // The stickerbook's authored empty-state labels are literal
+                // English text, unlike the usual gui.* localization keys.
+                let stickerbook_text = layout.window == "collectorsalbum"
+                    && matches!(w.id.rsplit('/').next(), Some("TextLabel_fav" | "TextLabel_info"));
+                if !(static_text(label) || stickerbook_text || value.is_some() || w.kind == "TextEntry") || label.color[3] <= 0.0 {
                     continue;
                 }
                 controls.region(w.k, w.rect, gate.clone());

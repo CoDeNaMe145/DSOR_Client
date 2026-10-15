@@ -1208,7 +1208,8 @@ struct VariedChild;
 fn drive_animations(
     time: Res<Time>,
     mut frame: Local<u32>,
-    mut characters: Query<(&mut CharacterAnim, &GlobalTransform, &InheritedVisibility, Option<&mut AnimLod>, Option<&crate::selection::Preview>)>,
+    mut characters: Query<(Entity, &mut CharacterAnim, &GlobalTransform, &InheritedVisibility, Option<&mut AnimLod>, Option<&crate::selection::Preview>)>,
+    visibility: Option<Res<crate::anim_cull::AnimationVisibility>>,
     targets: Query<(Entity, &AnimatedBy)>,
     mut commands: Commands,
     mut players: Query<&mut AnimationPlayer>,
@@ -1216,19 +1217,49 @@ fn drive_animations(
     cameras: Query<(&Camera, &GlobalTransform, &bevy::camera::RenderTarget), (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
     me: Query<&GlobalTransform, With<crate::net::LocalPlayer>>,
 ) {
-    // Animated within the zone around the player (crate::map::CULL_DISTANCE),
-    // whatever the camera looks at.
+    // Distance is a coarse gate; completed camera/shadow visibility additionally
+    // gates NPC pose sampling without stopping their animation clocks.
     let focus = cameras.iter().find(|(_, _, target)| matches!(target, bevy::camera::RenderTarget::Window(_)))
         .map(|(_, g, _)| crate::map::camera_focus(g, me.iter().next().map(|p| p.translation()), 0.0));
     let near = |p: Vec3| focus.is_none_or(|f| Vec2::new(p.x - f.x, p.z - f.z).length() <= crate::map::CULL_DISTANCE);
     *frame = frame.wrapping_add(1);
-    for (mut anim, at, shown, mut lod, preview) in &mut characters {
+    for (entity, mut anim, at, shown, mut lod, preview) in &mut characters {
         let Some(player) = anim.player else { continue };
         let Ok(mut p) = players.get_mut(player) else { continue };
+        // A pending portrait must pose before it is revealed. Check distance
+        // before the LOD early return so a hidden actor parks immediately.
+        let far = crate::flag("noanim") || (preview.is_none() && (!shown.get() || !near(at.translation())));
+        if far {
+            if anim.current.is_some() || anim.applied.is_some() {
+                p.stop_all();
+                anim.current = None;
+                anim.fading.clear();
+                anim.applied = None;
+                if let Some(lod) = lod.as_mut() { lod.held = None; }
+            }
+            if anim.parked.is_empty() && !anim.parking {
+                anim.parking = true;
+                to_park.push(player);
+            }
+            continue;
+        }
+        let unseen = visibility.as_ref().is_some_and(|v| !v.needs_animation(entity));
+        let waking = !unseen && !anim.parked.is_empty();
+        if unseen {
+            if anim.parked.is_empty() && !anim.parking {
+                anim.parking = true;
+                to_park.push(player);
+            }
+        } else {
+            anim.parking = false;
+            for (bone, by) in std::mem::take(&mut anim.parked) {
+                commands.entity(bone).try_insert(by);
+            }
+        }
         // A lower-rate character between its frames: held still, unevaluated.
         if let Some(lod) = lod.as_mut() {
             let mine = (*frame + lod.phase) % lod.stride == 0;
-            let steady = !anim.set_changed && anim.fading.is_empty() && anim.applied.as_ref() == Some(&(anim.state.clone(), anim.speed));
+            let steady = !unseen && !waking && !anim.set_changed && anim.fading.is_empty() && anim.applied.as_ref() == Some(&(anim.state.clone(), anim.speed));
             if let (true, Some(node)) = (steady, anim.current) {
                 if !mine {
                     match lod.held.as_mut() {
@@ -1256,36 +1287,8 @@ fn drive_animations(
                 }
             }
         }
-        // Hidden (culled) or far characters: stopped, so their joints are not
-        // evaluated at all -- a paused animation is still applied every frame
-        // (7 ms a frame for Kingshill's NPCs, bevy trace_chrome). Played again
-        // from their state once back in view.
-        // A pending portrait must have its pose evaluated before it is revealed.
-        let far = crate::flag("noanim") || (preview.is_none() && (!shown.get() || !near(at.translation())));
-        if far {
-            if anim.applied.is_some() {
-                p.stop_all();
-                anim.current = None;
-                anim.fading.clear();
-                anim.applied = None;
-            }
-            if anim.parked.is_empty() && !anim.parking {
-                // Detached after the loop, by player (targets of a re-instanced
-                // skeleton are not in `bones`).
-                anim.parking = true;
-                to_park.push(player);
-            }
-            continue;
-        }
-        // Back in view: its targets follow their player again (next frame).
-        anim.parking = false;
-        if !anim.parked.is_empty() {
-            for (b, by) in std::mem::take(&mut anim.parked) {
-                commands.entity(b).try_insert(by);
-            }
-            anim.applied = None;
-            continue;
-        }
+        // Offscreen NPCs still advance clips, state changes and fades. Only the
+        // expensive bone targets are detached; waking does not restart a clip.
         // Our own cross-fade. bevy's AnimationTransitions stopped an animation
         // started again while its previous fade-out was still running: after two
         // quick casts the character played nothing at all ("je le lance 2x l'anim
@@ -1310,7 +1313,7 @@ fn drive_animations(
                 commands.entity(e).remove::<AnimatedBy>();
             }
         }
-        for (mut anim, ..) in &mut characters {
+        for (_, mut anim, ..) in &mut characters {
             if let Some(p) = anim.player.filter(|p| wanted.contains(p)) {
                 anim.parked = found.remove(&p).unwrap_or_default();
             }
@@ -1622,6 +1625,35 @@ mod appearance_tests {
         assert!(!world.get::<CharacterAnim>(roots[0]).unwrap().is_animating());
         assert!(world.get::<CharacterAnim>(roots[1]).unwrap().is_animating(),
             "outfit readiness waits for a pose, so hidden previews must animate before publication");
+    }
+
+    #[test]
+    fn view_culling_parks_bones_without_restarting_clips_or_delaying_lod_reentry() {
+        let mut app = App::new();
+        app.init_resource::<Time>().add_plugins(crate::anim_cull::AnimCullPlugin)
+            .add_systems(Update, drive_animations);
+        let (_, nodes) = AnimationGraph::from_clips([Handle::default()]);
+        let player = app.world_mut().spawn(AnimationPlayer::default()).id();
+        let mut anim = CharacterAnim { player: Some(player),
+            nodes: [("Idle".into(), (nodes[0], true))].into_iter().collect(), ..default() };
+        anim.transition(&mut app.world_mut().get_mut::<AnimationPlayer>(player).unwrap(), nodes[0], true);
+        let root = app.world_mut().spawn((anim, AnimLod::new(3, 0), GlobalTransform::default(), InheritedVisibility::VISIBLE)).id();
+        let bone = app.world_mut().spawn(AnimatedBy(player)).id();
+        let mesh = app.world_mut().spawn((Mesh3d::default(), ViewVisibility::HIDDEN, ChildOf(root))).id();
+        for _ in 0..5 {
+            app.world_mut().resource_mut::<Time>().advance_by(Duration::from_millis(100));
+            app.update();
+        }
+        assert!(app.world().get::<AnimatedBy>(bone).is_none());
+        assert!(app.world().get::<AnimationPlayer>(player).unwrap().is_playing_animation(nodes[0]),
+            "offscreen clip time must keep advancing while bone sampling is parked");
+        app.world_mut().get_mut::<AnimationPlayer>(player).unwrap().animation_mut(nodes[0]).unwrap().set_seek_time(3.5);
+        app.world_mut().entity_mut(mesh).insert(ViewVisibility::VISIBLE);
+        app.update(); // Complete the next visibility pass.
+        app.update(); // Consume visibility, even between the NPC's LOD frames.
+        assert_eq!(app.world().get::<AnimatedBy>(bone).unwrap().0, player);
+        assert_eq!(app.world().get::<AnimationPlayer>(player).unwrap().animation(nodes[0]).unwrap().seek_time(), 3.5);
+        assert!(app.world().get::<CharacterAnim>(root).unwrap().is_animating());
     }
 
     #[test]

@@ -294,6 +294,12 @@ for root, _dirs, files in os.walk(models):
         for i, nd in enumerate(nodes):
             for c in nd.get("children", []):
                 parent[c] = i
+        # restore_pivots inserts transform helpers. Match the authored parent
+        # when this postprocessor is rerun on already repaired models.
+        for child, up in list(parent.items()):
+            while nodes[up].get("extras", {}).get("dsor_pivot_helper") and up in parent:
+                up = parent[up]
+            parent[child] = up
         for nd in nodes:
             nd.get("extras", {}).pop("dsor_anim", None)
             nd.get("extras", {}).pop("dsor_shader", None)

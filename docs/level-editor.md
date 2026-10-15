@@ -3,23 +3,23 @@
 Run `LevelEditor.cmd` on Windows, or:
 
 ```sh
-python tools/level_editor.py a0200_kingscity --assets assets --db-root <server>/data/maps
+cargo run --release -p dsor-client -- --editor a0200_kingscity --assets assets --db-root <server>/data/maps
 ```
 
-The editor needs Python 3.10+ with Tk (normally included with desktop Python;
-Linux distributions may package it as `python3-tk`). It has no pip dependencies.
-Build the native 3D renderer once, and again after renderer changes:
+The editor is a native Rust application: Bevy renders the scene, egui draws the
+editor panels, and `crates/level-data` owns SQLite DB4 access and persistent edits.
+It has no Python or Tk dependency. Build the editor and headless composition tool:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools/Build-LevelEditor.ps1
 ```
 
-On other platforms use `cargo build --release -p dsor-client`. The editor launches
-the client binary in its dedicated editing mode. Windows embeds the native GPU
-viewport beside the inspector; other platforms use a companion viewport window.
+On other platforms use `cargo build --release -p dsor-client -p dsor-level-data`.
+Run `target/release/dsor-client --editor`. The UI and GPU viewport share one native
+window and communicate in process on every platform.
 The editor opens maximized, with a normal resizable window when restored.
 
-**File → Sources…** selects the converted assets directory, original map DB4 directory,
+**Sources…** selects the converted assets directory, original map DB4 directory,
 and override directory. Use the server's `data/maps` directory to edit the same
 gameplay records it uses. This workspace defaults to `.local/dso_server/data/maps`
 when available. Settings are local, in `.level-editor/project.json`.
@@ -38,9 +38,9 @@ when available. Settings are local, in `.level-editor/project.json`.
 - The separate **Assets** tab browses all placeable `.glb` models under the
   configured assets folder, including models unused by the current level.
   Search by name or path, filter by folder, and inspect thumbnails and a larger
-  preview. **Add to level**, Enter, or double-click places the selected model
-  in the current camera view (on the ground when it is nearby), selects it,
-  and focuses it. Placement is one undoable addition in the override layer.
+  preview. **Add to level** or double-click places the selected model
+  in the current camera view (on the ground when it is nearby) and selects it.
+  Placement is one undoable addition in the override layer; **Focus** frames it.
   **Refresh** rescans after assets are added or rebuilt; changing Sources
   switches the library to that directory. Animation-only support files are
   excluded. Scene filters and event state do not restrict the asset library.
@@ -54,6 +54,11 @@ when available. Settings are local, in `.level-editor/project.json`.
   the map once, without anchoring subsequent camera movement to it.
 - **Grid** and **Helpers** toggle the grid and metadata markers independently.
   Both start off for a clean viewport. Selection handles remain visible.
+- **Markers** starts on: green flag icons locate player entries and NPC/object/item
+  spawns; blue portal icons locate teleport stones. Icons stay readable as you
+  zoom, follow the active map event state, and work without model assets. Hover
+  for the type and name, click to inspect the DB4 record, or double-click to focus.
+  They are editor overlays and do not appear in the game camera preview.
 - **Q** selects without transform handles, **W** moves along world axes,
   **E** rotates around world axes, and **R** scales
   along local axes. Drag a colored axis handle; scale's white center handle
@@ -66,16 +71,16 @@ when available. Settings are local, in `.level-editor/project.json`.
   rotation snaps to 15 degrees and scale to 0.1 increments. Hold Ctrl while
   dragging to bypass snapping. Ctrl+S/Z/Y/D save, undo, redo, and duplicate;
   Delete removes the selected object.
-- Set X/Y/Z and press **Apply position**. Y is elevation. The viewport gizmos
+- Set X/Y/Z and press **Apply**. Y is elevation. The viewport gizmos
   edit geometry or the DB4 transform. Ground coordinates use the same X/Z frame
   as the client and server, without axis conversion.
-- **Properties** exposes common object fields with a model preview. **Apply
-  properties**, saving, or selecting another object applies valid field edits.
-  The **DB4 / JSON** tab exposes every record field. Transforms and known color
+- **Details** exposes common object fields with a model preview. **Apply**,
+  saving, or selecting another object applies valid field edits.
+  The **DB4 / JSON** section exposes every record field. Transforms and known color
   blobs display as `{"$f32": [...]}`; other binary fields retain exact
   `{"$blob": "HEX"}` values. **Apply fields** validates the record. Selecting
   another object or saving also applies valid pending inspector edits.
-- **+ Add** opens a searchable object/prefab picker with thumbnails and a larger
+- **+ Add** opens the searchable asset library with thumbnails and a larger
   selected-model preview, or adds a record in the selected DB4 table. A model
   reference can still be typed when its source asset is unavailable. Fill in
   its template ID and required gameplay values in the inspector. **Duplicate**
@@ -89,17 +94,17 @@ The secondary **Map overview** tab shows placement markers, the cached navigatio
 outline, and original navigation blockers. Drag markers to move on X/Z;
 right-drag pans and the wheel zooms. The 3D viewport updates live from the same
 effective records. Models that are unavailable appear as editable wire boxes.
-**Play preview** builds the effective files and opens the normal game client;
+**Play** builds the effective files and opens the normal game client;
 close and reopen that gameplay preview after edits.
 
 ## Fixed camera preview
 
-Maps with authored cameras show **Fixed camera · Select** above the viewport.
+The character-selection level shows **Fixed camera** above the viewport.
 `a0000_char` has a fixed character-selection camera defined by the original
 `_Globals.CharGen*` values in `characters/selection.json`, rather than a camera
-row in its map DB4. The editor exposes it under **Fixed cameras**.
+row in its map DB4. The editor exposes it under the **camera** table.
 
-Click its camera outline in 3D or use **Fixed camera · Select**. A live monitor
+Click its camera outline in 3D or use **Fixed camera**. A live monitor
 appears in the viewport's top-right corner using the selected camera's position,
 rotation, vertical FOV and clipping planes. The outline shows its viewing direction
 and frustum. W moves the camera and E rotates it; the monitor updates during the
@@ -117,7 +122,7 @@ Camera changes use the same override history, Save, Undo, offline metadata cache
 and rebuild composition as other edits. **Build** applies the `a0000_char` camera
 to the client catalog while preserving item slots, hair and beard definitions.
 Other DB4 cameras keep their edits in the derived map DB4. Maps without a fixed
-camera show **Player-follow camera**.
+camera use the game's ordinary player-follow camera when played.
 
 ## Lighting
 
@@ -128,9 +133,9 @@ spotlight. Selected lights show their range sphere or spot cone. Unselected ligh
 markers appear while the Lighting tab is open or **Helpers** is enabled.
 
 The Details dock provides RGB color swatches (with numeric HDR values), intensity,
-range, spot cone angle, shadows, flicker, and event-set assignment. Press Enter or
-**Apply properties** to preview numeric edits; color pickers, checkboxes and type
-choices apply immediately. RGB changes preserve the DB4 color's original alpha.
+range, spot cone angle, shadows, flicker, and event-set assignment. Press **Apply**
+to preview the edited values together as one undoable change. Saving or selecting
+another object also applies valid pending edits. RGB changes preserve the DB4 color's original alpha.
 Intensity/range zero disables a light. Spot cone angles are full angles in degrees.
 Legacy projected lights with a zero cone remain unrendered; setting a positive
 cone produces a standard spotlight. Projected light textures are not supported.
@@ -138,10 +143,23 @@ cone produces a standard spotlight. Projected light textures are not supported.
 **Select environment** opens the default ambience: sun color/intensity, back-light
 color, ambient color, fog, bloom and saturation. E rotates its sun direction.
 Local ambience volumes also expose enabled state, priority, shape and game fade
-time; R scales their volume. Selecting a volume previews its look immediately.
-Otherwise the volume at the editor camera's ground focus is used; when a fixed
-camera is selected, its ground focus determines the shared scene lighting.
-The game retains its normal volume fade transitions.
+time; R scales their volume. Normal lighting follows the editor camera's actual
+position inside a volume. Looking toward a volume or selecting it does not activate
+it. The client uses the player's feet when a character is present and the camera's
+position in the free-camera viewer, retaining its normal volume fade transitions.
+
+Enable **Lighting zones**, open the **Lighting** tab, or enable **Helpers** to show
+colored box/sphere boundaries and matching zone labels. The labels identify the
+active zone; disabled zones are gray. Hover a label for priority, sun/ambient/fog
+swatches, intensity, fog range and fade time, or click it to inspect the zone.
+The Lighting tab also names the current lighting source.
+
+Select an ambience record and enable **Preview selected lighting** in Details to
+apply its full look to the scene and fixed-camera monitor from outside the zone.
+The source and zone label explicitly indicate this preview override. Turn the
+toggle off or select another object to return to camera-position lighting.
+The fixed-camera monitor shares the editor's current lighting; selecting a fixed
+camera does not change which zone is active.
 
 Both the scene and fixed-camera monitor use the game lighting code and current
 `look.json` factors. Browser thumbnails keep their independent studio lighting.
@@ -160,10 +178,10 @@ The viewport's **Map event state** selector starts at **None** each time a map
 is opened. Choices come from flags referenced by that map's effective DB4
 records, including edited event definitions; they also work from the metadata
 cache with the source files absent. Winter festival, Anniversary, Halloween,
-and other named events use their original flag IDs, shown alongside the labels.
+and other named events use their original flag IDs, shown in the choice tooltips.
 **Winter festival** previews `christmas_2012` together with
 `christmas_2012_silent`, its accompanying scenery. **Winter scenery only**
-previews the silent layer independently. The active flags appear below the selector.
+previews the silent layer independently.
 
 `EventSetRow` refers to `_Instance_EventSets.Id`, **not** SQLite rowid or table
 order. `-1` (and null) means unconditional. `EventFlags` contains semicolon
@@ -225,8 +243,8 @@ target; the editor does not guess which object should receive the edit.
 
 ## Rebuilds and synchronization
 
-**Build client + DB4** saves, checks the current sources, and generates the map
-manifest, NPC placements/looks, exits, ambience/lights, decorative sequences,
+**Build** saves, checks conflicts, and generates the map
+manifest, NPC placements/looks, exits, DB4 props/travel points, ambience/lights, decorative sequences,
 and derived DB4 from one composed set of records. Other DB4 tables are preserved
 in the database even when the current client has no renderer for them.
 
@@ -236,7 +254,7 @@ workspace. After running individual exporters or using another conversion
 pipeline, finish with:
 
 ```sh
-python tools/apply_level_overrides.py --assets assets --db-root <original-maps-directory>
+cargo run --release -p dsor-level-data --bin dsor-levels -- apply --assets assets --db-root <original-maps-directory>
 ```
 
 Without explicit arguments, the tool uses the editor's source settings.
@@ -249,7 +267,7 @@ it may refresh the metadata cache. Pass map names to process only those maps.
 To generate DB4 files in a separate staging directory:
 
 ```sh
-python tools/apply_level_overrides.py a0200_kingscity --db-out <staging-directory>
+cargo run --release -p dsor-level-data --bin dsor-levels -- apply a0200_kingscity --db-out <staging-directory>
 ```
 
 To use gameplay edits online, deploy those derived DB4 files into the server's
@@ -293,14 +311,16 @@ if another editor has saved the same map.
 ## Validation
 
 ```sh
-python -m unittest discover -s tools -p 'test_level*.py' -v
+cargo test -p dsor-level-data
 ```
 
-The tests cover rebuild/reordering stability, cached and patch-only editing,
-DB4/client transform parity, blob preservation, undo/redo and deletions,
-conflicts, stale saves, validation, and original-file protection. Viewport tests
-also cover scene identities, matrix conversion, stale gestures, and preserving
-DB4 transform bases through move, rotate, scale, and undo.
-Event-state tests cover negative gates, alternative activations, stable set IDs,
-offline DB4 rules, and sequence ownership. Property-form tests verify that edits
-use the same undoable override layer as JSON and reject conflicting form edits.
+The Rust tests cover rebuild/reordering stability, cached and patch-only editing,
+SQLite WAL backups, blob/index preservation, undo/redo, conflict detection, stale
+saves, original-file protection, gesture revisions and untouched float precision.
+They also cover fixed-camera lenses, light edits, event-set semantics, binary
+seasonal placements, base visibility masks, and missing/truncated event files.
+
+The original Python UI and data implementation have been removed. Two tiny Python
+entry points remain for older conversion scripts; they invoke `dsor-levels` and
+contain no editing or composition logic. The editor and current shell conversion
+integration invoke Rust directly.

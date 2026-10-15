@@ -26,6 +26,7 @@ pub mod inventory;
 pub mod movement;
 pub mod names;
 pub mod player;
+pub mod props;
 pub mod social;
 pub mod wire;
 
@@ -162,6 +163,9 @@ server_commands! {
     46 => DiscardItem(actors::DiscardItem),
     48 => ItemUpdate(actors::ItemUpdate),
     54 => PropInfo(actors::PropInfo),
+    52 => NewProp(props::NewProp),
+    53 => DiscardProp(props::DiscardProp),
+    55 => PropUpdate(props::PropUpdate),
     58 => NewDestroyable(actors::NewDestroyable),
     139 => QuestUpdate(actors::QuestUpdate),
     140 => QuestLogInfo(actors::QuestLogInfo),

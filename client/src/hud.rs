@@ -3,6 +3,8 @@
 use bevy::diagnostic::{DiagnosticsStore, EntityCountDiagnosticsPlugin, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
 
+mod render_audit;
+
 use crate::map::CurrentMap;
 
 #[derive(Component)]
@@ -14,6 +16,7 @@ impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_hud)
             .add_systems(Update, update_hud)
+            .add_systems(Last, render_audit::snapshot.run_if(|| crate::flag("renderaudit")))
             .add_systems(First, cpu_frame_start)
             .add_systems(Last, cpu_main_end);
         if let Some(render) = app.get_sub_app_mut(bevy::render::RenderApp) {
@@ -106,7 +109,8 @@ fn update_hud(
             _ => "\nhealth/resource: not received from the server yet".to_owned(),
         })
         .unwrap_or_default();
-    // Surfaces drawn: what the renderer prepares, one by one, on the CPU. Counted
+    // Candidates for ANY view, including shadow cameras, before GPU culling.
+    // This is neither the game camera's visible count nor the GPU draw count. Counted
     // once a second (a full pass over every mesh each frame is a cost of its own).
     if time.elapsed_secs_f64() - counted.0 > 1.0 {
         *counted = (time.elapsed_secs_f64(), meshes.iter().filter(|v| v.get()).count(), meshes.iter().count());
@@ -133,7 +137,7 @@ fn update_hud(
         None => ("-", 0, 0, 0),
     };
     let line = format!(
-        "{fps:.0} FPS ({ms:.2} ms), cpu {cpu_total:.1} ms (logic {cpu_main:.1})\nentities {entities:.0}, surfaces drawn {drawn}/{total}{vitals}\nmap {name}: {placed} placements, models {loaded}/{models}"
+        "{fps:.0} FPS ({ms:.2} ms), cpu {cpu_total:.1} ms (logic {cpu_main:.1})\nentities {entities:.0}, mesh candidates {drawn}/{total} (all views){vitals}\nmap {name}: {placed} placements, models {loaded}/{models}"
     );
     if let Ok((mut t, mut visibility)) = text.single_mut() {
         t.0 = line;
@@ -143,6 +147,6 @@ fn update_hud(
     let now = time.elapsed_secs_f64();
     if now - *last_log > 5.0 {
         *last_log = now;
-        info!("{fps:.0} FPS ({ms:.2} ms), cpu {cpu_total:.1} ms (logic {cpu_main:.1}), {entities:.0} entities, {drawn}/{total} surfaces drawn, {animating}/{characters} animated, {name}: {placed} placements, models {loaded}/{models}");
+        info!("{fps:.0} FPS ({ms:.2} ms), cpu {cpu_total:.1} ms (logic {cpu_main:.1}), {entities:.0} entities, {drawn}/{total} mesh candidates (all views), {animating}/{characters} animated, {name}: {placed} placements, models {loaded}/{models}");
     }
 }

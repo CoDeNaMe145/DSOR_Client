@@ -10,6 +10,7 @@ pub(super) fn frame_suffix(window: &str) -> Option<&'static str> {
     Some(match window {
         "questlog" => "/BackGroundLabel/Frame2",
         "travelmap" => "/Travelmap/Frame/Frame/Frame",
+        "collectorsalbum" => "/BackGroundLabel/Frame1",
         "socialscreen" => "/FrameLabel/BorderLabel",
         "leaderboards" => "/WindowBackground/Frame",
         "eventwindow" => "/BackGroundLabel/Frame",
@@ -22,13 +23,20 @@ pub(super) fn frame_suffix(window: &str) -> Option<&'static str> {
 fn page(group: &'static str, index: usize) -> Section { Section::Page(group, 1 << index) }
 
 pub(super) fn section(window: &str, parts: &[&str]) -> Option<Section> {
-    if !super::NAV_WINDOWS.contains(&window) && window != "skilltalentswindow" { return None; }
+    if !super::NAV_WINDOWS.contains(&window) && !matches!(window, "skilltalentswindow" | "collectorsalbum") { return None; }
     let has = |name: &str| parts.contains(&name);
     // These rows/cards are cloned when data arrives, not sample player data.
     if parts.iter().any(|p| p.contains("Template") || p.starts_with("RecentAchievement") || *p == "LoadingLabel") {
         return Some(Section::Hidden);
     }
     match window {
+        "collectorsalbum" => {
+            // Start on the favorites page. Categories, offers and item effects
+            // need stickerbook data before they can be shown.
+            if parts.iter().any(|p| matches!(*p, "Categorypage" | "AdvertisementArtwork" | "AnimUnlock" | "AnimUse")) {
+                return Some(Section::Hidden);
+            }
+        }
         "skilltalentswindow" => {
             if has("ExperienceLabel") && has("OptionsLabel") { return Some(Section::Hidden); }
             if let Some(class) = parts.iter().find_map(|p| p.strip_prefix("Class").and_then(|s| s.parse().ok())) {
