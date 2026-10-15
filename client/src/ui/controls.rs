@@ -10,6 +10,8 @@ pub(super) mod items;
 
 /// Reference pixels, scaled by the same factor as the rest of the interface.
 const DRAG_HANDLE_HEIGHT: f32 = 32.0;
+/// Chat log rows per click of its scroll buttons.
+const CHAT_SCROLL: i32 = 3;
 
 #[derive(Clone, Copy)]
 struct DragHandle {
@@ -122,6 +124,15 @@ fn section(window: &str, id: &str) -> Section {
             if parts.contains(&name) { return Section::Character(page); }
         }
     }
+    if window == CHAT_WINDOW {
+        // Only the full mode; the List's row templates are drawn by chat_rows.
+        if parts.iter().any(|p| matches!(*p, "LabelCompact" | "TextEntryChannelLabel" | "ScrollHandle" | "ButtonTextLine"))
+            || parts.last() == Some(&"TextLine") { return Section::Hidden; }
+        // "Press enter to open the chat" while not typing; ScrollEnd's glow while
+        // scrolled back (both set by edit_text / chat_rows).
+        if parts.contains(&"TextLabelHowTo") { return Section::Page("chat_typing", 1); }
+        if parts.contains(&"HighlightLabel") { return Section::Page("chat_scrolled", 2); }
+    }
     if window == "gamebar" && parts.iter().any(|p| matches!(*p, "Premium" | "Deluxe" | "bgAutoplay" | "autoplay" | "SigninBtn" | "CameBackSignInBtn" | "SeasonPassBtn")) {
         return Section::Hidden;
     }
@@ -150,6 +161,10 @@ enum Action {
     Item(items::Cell),
     Split(i32),
     SplitSlider,
+    /// Scroll the chat log back (rows; 0: to the newest).
+    ChatScroll(i32),
+    /// Write on this channel (crate::chat::Kind::channel), from the channel menu.
+    ChatChannel(u8),
     Unavailable,
 }
 
@@ -158,6 +173,25 @@ fn action(window: &str, w: &Widget) -> Action {
     if w.spell.is_some() { return Action::Spell; }
     if w.kind == "TextEntry" { return Action::Edit(w.id.clone()); }
     if w.event == "Close" { return Action::Close; }
+    if window == CHAT_WINDOW {
+        return match (w.event.as_str(), leaf) {
+            ("ToggleChatMenu", _) => Action::Window(CHAT_MENU),
+            ("ScrollEnd", _) => Action::ChatScroll(0),
+            (_, "ScrollUp") => Action::ChatScroll(CHAT_SCROLL),
+            (_, "ScrollDown") => Action::ChatScroll(-CHAT_SCROLL),
+            (_, "ChannelTabMap") => Action::Tab("chat_channel", 0),
+            (_, "ChannelTabRegion") => Action::Tab("chat_channel", 1),
+            (_, "ChannelTabParty") => Action::Tab("chat_channel", 2),
+            (_, "ChannelTabGuild") => Action::Tab("chat_channel", 3),
+            // SwitchToCompact, ToggleLanguageFilter.
+            _ => Action::Unavailable,
+        };
+    }
+    if window == CHAT_MENU {
+        return ["Map", "Region", "Party", "Guild", "Whisper"].iter()
+            .position(|c| w.event.strip_prefix("SelectChannel") == Some(c))
+            .map_or(Action::Unavailable, |i| Action::ChatChannel(i as u8));
+    }
     if window == "unstackwindow" {
         return match w.event.as_str() { "split" => Action::Split(0), "increase" => Action::Split(1), "decrease" => Action::Split(-1),
             _ if w.kind == "Slider" => Action::SplitSlider, _ => Action::Unavailable };
@@ -275,7 +309,9 @@ pub(super) struct WindowControls {
 impl WindowControls {
     pub(super) fn new(layout: &Layout) -> Self {
         let buttons = layout.widgets.iter()
-            .filter(|w| layout.window != "locationmap" && !w.hidden && !w.click_through && (matches!(w.kind.as_str(), "Button" | "TextButton" | "SlotButton" | "TextEntry" | "Slider") || (layout.window == "inventory" && items::cell(w).is_some())))
+            .filter(|w| layout.window != "locationmap" && !w.hidden
+                // The chat's entry is ClickThrough, yet Enter and clicks focus it.
+                && (!w.click_through || (layout.window == CHAT_WINDOW && w.kind == "TextEntry")) && (matches!(w.kind.as_str(), "Button" | "TextButton" | "SlotButton" | "TextEntry" | "Slider") || (layout.window == "inventory" && items::cell(w).is_some())))
             .map(|w| Button {
                 id: w.id.clone(), k: w.k, rect: w.rect,
                 section: section(&layout.window, &w.id), action: action(&layout.window, w), authored_enabled: w.enabled,
@@ -285,6 +321,10 @@ impl WindowControls {
             }).collect();
         let mut controls = Self { map_mode: local_map::MapMode::Compact, buttons, regions: Vec::new(), drag_handle: DragHandle::from_layout(layout), inventory: 0, character: 0, bag: 0, bag_pages: 8, premium_bag: false, overflow_page: 0, overflow_pages: 1, ingredient: 0, rarity: 1, locked: false, hovered: None, pressed: None,
             pages: HashMap::new(), toggles: default(), open_windows: Vec::new(), entries: HashMap::new(), choices: HashMap::new(), spells: default() };
+        // The chat's entry starts empty, not with its "Enter text" sample.
+        if layout.window == CHAT_WINDOW {
+            for w in layout.widgets.iter().filter(|w| w.kind == "TextEntry") { controls.entries.insert(w.id.clone(), TextEntry::default()); }
+        }
         // Together with DSOR_UI_OPEN=locationmap, capture either overlay size.
         if layout.window == "locationmap" && std::env::var("DSOR_MAP_VIEW").is_ok_and(|v| v == "expanded") {
             controls.map_mode = local_map::MapMode::Expanded;
@@ -549,8 +589,14 @@ pub(super) fn keyboard(keys: Res<ButtonInput<KeyCode>>, mut windows: Windows, mu
         pointer.down = None;
         return;
     }
-    if pointer.focus.is_some() {
-        if keys.just_pressed(KeyCode::Escape) { pointer.focus = None; }
+    if let Some((root, id)) = pointer.focus.clone() {
+        if keys.just_pressed(KeyCode::Escape) {
+            pointer.focus = None;
+            // Escape cancels the chat line.
+            if let Ok((_, w, mut c, _, _)) = windows.get_mut(root) {
+                if w.0 == CHAT_WINDOW { c.entries.insert(id, TextEntry::default()); }
+            }
+        }
         return;
     }
     if keys.just_pressed(KeyCode::Escape) {
@@ -565,6 +611,42 @@ pub(super) fn keyboard(keys: Res<ButtonInput<KeyCode>>, mut windows: Windows, mu
         if key != KeyCode::Escape && keys.just_pressed(key) { toggle(name, &mut windows); }
     }
     if keys.just_pressed(KeyCode::Tab) { toggle("locationmap", &mut windows); }
+    // V: the chat window, as the 2018 client; its channel menu goes with it.
+    if keys.just_pressed(KeyCode::KeyV) {
+        toggle(CHAT_WINDOW, &mut windows);
+        for (_, w, _, mut v, _) in &mut windows {
+            if w.0 == CHAT_MENU && *v != Visibility::Hidden { *v = Visibility::Hidden; }
+        }
+    }
+}
+
+/// The chat window's TextEntry, when the window is open.
+fn chat_entry(windows: &Windows) -> Option<(Entity, String)> {
+    windows.iter().filter(|(_, w, _, v, _)| w.0 == CHAT_WINDOW && *v != Visibility::Hidden).find_map(|(e, _, c, _, _)|
+        c.buttons.iter().find(|b| matches!(b.action, Action::Edit(_)) && c.section_visible(b.section)).map(|b| (e, b.id.clone())))
+}
+
+/// The chat log in the window's rows: the newest at the bottom, colour by channel.
+pub(super) fn chat_rows(
+    mut log: ResMut<crate::chat::ChatLog>,
+    mut rows: Query<(&ChatRow, &mut Text2d, &mut TextColor)>,
+    added: Query<(), Added<ChatRow>>,
+    mut windows: Query<(&Window2018, &mut WindowControls)>,
+) {
+    if !log.is_changed() && added.is_empty() { return; }
+    let count = rows.iter().count();
+    let log = log.bypass_change_detection();
+    let shown = log.rows(count, CHAT_COLUMNS);
+    let first = count - shown.len();
+    for (row, mut text, mut colour) in &mut rows {
+        let (kind, line) = row.0.checked_sub(first).and_then(|i| shown.get(i)).cloned().unwrap_or_default();
+        if text.0 != line { text.0 = line; }
+        if colour.0 != kind.colour() { colour.0 = kind.colour(); }
+    }
+    let scrolled = u8::from(log.scroll > 0);
+    for (w, mut c) in &mut windows {
+        if w.0 == CHAT_WINDOW && c.pages.get("chat_scrolled") != Some(&scrolled) { c.pages.insert("chat_scrolled", scrolled); }
+    }
 }
 
 pub(super) fn interact(
@@ -575,6 +657,7 @@ pub(super) fn interact(
     mut pointer: ResMut<Pointer>,
     mut skill_clicks: ResMut<SkillClicks>,
     panels: Query<(&RelativeCursorPosition, &InheritedVisibility), With<crate::ui_input::BlocksWorldInput>>,
+    mut chat: ResMut<crate::chat::ChatLog>,
 ) {
     let Ok((primary, mut window, cursor)) = primary.single_mut() else { return };
     let blocked = panels.iter().any(|(cursor, visible)| visible.get() && cursor.cursor_over());
@@ -676,6 +759,14 @@ pub(super) fn interact(
             }
             if let Some(e) = windows.iter().find(|(_, w, _, _, _)| w.0 == "charactersheet").map(|(e, _, _, _, _)| e) { raise(e, &mut windows); }
         }
+        Action::ChatScroll(0) => chat.scroll = 0,
+        Action::ChatScroll(rows) => chat.scroll = (chat.scroll as i32 + rows).max(0) as usize,
+        Action::ChatChannel(channel) => {
+            *visibility = Visibility::Hidden;
+            for (_, w, mut c, _, _) in &mut windows {
+                if w.0 == CHAT_WINDOW { c.pages.insert("chat_channel", channel); }
+            }
+        }
         Action::Spell | Action::Unavailable => {}
     }
 }
@@ -686,17 +777,38 @@ pub(super) fn edit_text(
     mut pointer: ResMut<Pointer>,
     mut windows: Windows,
     mut input: ResMut<crate::ui_input::UiInput>,
+    mut chat: ResMut<crate::chat::ChatLog>,
 ) {
     if pointer.focus.as_ref().is_some_and(|(e, id)| !windows.get(*e).is_ok_and(|(_, _, c, v, _)| *v != Visibility::Hidden
         && c.buttons.iter().any(|b| b.id == *id && c.section_visible(b.section)))) { pointer.focus = None; }
     for event in events.read() {
-        let Some((root, id)) = pointer.focus.as_ref() else { continue };
         if !event.state.is_pressed() { continue; }
-        if matches!(event.key_code, KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Escape) { pointer.focus = None; continue; }
-        if let Ok((_, _, mut c, _, _)) = windows.get_mut(*root) {
-            c.entries.entry(id.clone()).or_default().edit(event.key_code, event.text.as_deref(),
+        let enter = matches!(event.key_code, KeyCode::Enter | KeyCode::NumpadEnter);
+        let Some((root, id)) = pointer.focus.clone() else {
+            // Enter with the chat window open: type a line.
+            if enter && !event.repeat { pointer.focus = chat_entry(&windows); }
+            continue;
+        };
+        if enter || event.key_code == KeyCode::Escape {
+            pointer.focus = None;
+            // Enter sends the chat line, on the window's channel.
+            if let (true, Ok((_, w, mut c, _, _))) = (enter, windows.get_mut(root)) {
+                if w.0 == CHAT_WINDOW {
+                    let typed = c.entries.insert(id, TextEntry::default()).map(|e| e.text).unwrap_or_default();
+                    chat.submit(crate::chat::Kind::channel(c.pages.get("chat_channel").copied().unwrap_or(0)), &typed);
+                }
+            }
+            continue;
+        }
+        if let Ok((_, _, mut c, _, _)) = windows.get_mut(root) {
+            c.entries.entry(id).or_default().edit(event.key_code, event.text.as_deref(),
                 keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight));
         }
+    }
+    for (e, w, mut c, _, _) in &mut windows {
+        if w.0 != CHAT_WINDOW { continue; }
+        let typing = u8::from(pointer.focus.as_ref().is_some_and(|(root, _)| *root == e));
+        if c.pages.get("chat_typing") != Some(&typing) { c.pages.insert("chat_typing", typing); }
     }
     input.typing = pointer.focus.is_some();
 }
@@ -842,6 +954,7 @@ mod tests {
             .init_resource::<Pointer>()
             .init_resource::<items::Interaction>()
             .init_resource::<SkillClicks>()
+            .init_resource::<crate::chat::ChatLog>()
             .init_resource::<local_map::MapSettings>()
             .add_systems(Update, (keyboard, interact, edit_text, order_windows, paint).chain());
         let primary = app.world_mut().spawn((Window { focused: true, resolution: (1024, 768).into(), ..default() }, PrimaryWindow)).id();
@@ -866,6 +979,68 @@ mod tests {
             layouts.insert(name, layout);
         }
         (app, primary, roots, layouts)
+    }
+
+    #[test]
+    #[ignore = "requires locally converted game UI assets"]
+    fn chat_window_v_toggles_enter_types_and_sends_escape_cancels() {
+        let (mut app, primary, others, _) = exported_app();
+        let mut roots = HashMap::new();
+        for (name, z) in [(CHAT_WINDOW, CHAT_DEPTH), (CHAT_MENU, CHAT_DEPTH + 3.0)] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../assets/interface/{name}.ui.json"));
+            let layout: Layout = serde_json::from_slice(&std::fs::read(path).expect("export the original UI first")).unwrap();
+            let root = app.world_mut().spawn((Window2018(name.into()), WindowControls::new(&layout),
+                if name == CHAT_WINDOW { Visibility::Inherited } else { Visibility::Hidden },
+                Transform::from_xyz(0.0, 0.0, z), crate::ui_input::UiRegions::default())).id();
+            roots.insert(name, root);
+        }
+        let (chat, menu) = (roots[CHAT_WINDOW], roots[CHAT_MENU]);
+        let key = |app: &mut App, key_code: KeyCode, text: Option<&str>| {
+            let window = primary;
+            app.world_mut().write_message(KeyboardInput { key_code, logical_key: bevy::input::keyboard::Key::Unidentified(bevy::input::keyboard::NativeKey::Unidentified),
+                state: bevy::input::ButtonState::Pressed, text: text.map(Into::into), repeat: false, window });
+            app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(key_code);
+            app.update();
+            app.world_mut().resource_mut::<ButtonInput<KeyCode>>().reset(key_code);
+        };
+        let shown = |app: &App, e: Entity| *app.world().get::<Visibility>(e).unwrap() != Visibility::Hidden;
+        let typing = |app: &App| app.world().resource::<crate::ui_input::UiInput>().typing;
+        let sent = |app: &App| app.world().resource::<crate::chat::ChatLog>().outbox().to_vec();
+        key(&mut app, KeyCode::KeyV, Some("v"));
+        assert!(!shown(&app, chat));
+        key(&mut app, KeyCode::Enter, None);
+        assert!(!typing(&app), "Enter with the chat closed");
+        key(&mut app, KeyCode::KeyV, Some("v"));
+        assert!(shown(&app, chat));
+        key(&mut app, KeyCode::Enter, None);
+        assert!(typing(&app));
+        for (code, text) in [(KeyCode::KeyV, "v"), (KeyCode::Digit1, "!"), (KeyCode::KeyI, "i")] {
+            key(&mut app, code, Some(text));
+        }
+        assert!(shown(&app, chat) && !shown(&app, others["inventory"]), "keys typed, not acted on");
+        key(&mut app, KeyCode::Enter, None);
+        assert!(!typing(&app));
+        assert_eq!(sent(&app), vec!["sm#map#en#ha#v!i"]);
+        // The region tab, then the channel menu's whisper entry.
+        click_control(&mut app, primary, chat, "/ChannelTabRegion");
+        key(&mut app, KeyCode::Enter, None);
+        key(&mut app, KeyCode::KeyA, Some("a"));
+        key(&mut app, KeyCode::Enter, None);
+        assert_eq!(sent(&app)[1], "sm#region#en#ha#a");
+        click_control(&mut app, primary, chat, "/ButtonChatMenu");
+        assert!(shown(&app, menu));
+        click_control(&mut app, primary, menu, "/TextButtonWhisper");
+        assert!(!shown(&app, menu));
+        assert_eq!(app.world().get::<WindowControls>(chat).unwrap().pages.get("chat_channel"), Some(&4));
+        // Escape cancels the line, and does not open the game menu.
+        key(&mut app, KeyCode::Enter, None);
+        key(&mut app, KeyCode::KeyX, Some("x"));
+        key(&mut app, KeyCode::Escape, None);
+        assert!(!typing(&app) && sent(&app).len() == 2);
+        assert!(!shown(&app, others["gamemenu"]));
+        key(&mut app, KeyCode::Enter, None);
+        key(&mut app, KeyCode::Enter, None);
+        assert_eq!(sent(&app).len(), 2, "the cancelled text is gone");
     }
 
     fn click_control(app: &mut App, primary: Entity, root: Entity, suffix: &str) {

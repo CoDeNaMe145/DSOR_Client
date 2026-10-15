@@ -88,8 +88,23 @@ const MENU_WINDOWS: [(&str, KeyCode, f32); 4] = [
 const NAV_WINDOWS: [&str; 8] = ["questlog", "travelmap", "locationmap", "shopwindow", "socialscreen", "leaderboards", "matchmakingwindow", "eventwindow"];
 
 fn is_menu(name: &str) -> bool {
-    MENU_WINDOWS.iter().any(|(n, _, _)| *n == name) || NAV_WINDOWS.contains(&name) || name == "unstackwindow"
+    MENU_WINDOWS.iter().any(|(n, _, _)| *n == name) || NAV_WINDOWS.contains(&name) || name == "unstackwindow" || name == CHAT_MENU
 }
+
+/// The chat window (crate::chat): its full mode (the compact one, with its speech
+/// bubble preview, is not wired), shown from the start and toggled with V; and its
+/// channel menu (ButtonChatMenu). Their depth: over the HUD, under the menus.
+/// SEE: controls::edit_text (Enter), controls::chat_rows (the log).
+const CHAT_WINDOW: &str = "chatwindow2";
+const CHAT_MENU: &str = "chatwindow2dropdown";
+const CHAT_DEPTH: f32 = 45.0;
+/// Characters per log row: the List is 343 reference pixels wide, Tahoma at 9 x
+/// FONT_SCALE averages ~5.5. UNVERIFIED: measured by eye, not from the font.
+const CHAT_COLUMNS: usize = 60;
+
+/// One row of the chat log, drawn over the List's TextLine template, top first.
+#[derive(Component)]
+struct ChatRow(usize);
 
 // -- data ------------------------------------------------------------------------
 
@@ -384,7 +399,7 @@ impl Plugin for UiPlugin {
                 .before(bevy::sprite_render::check_entities_needing_specialization::<UiMaterial>))
             .add_systems(
                 Update,
-                (spawn_windows, controls::spells::sync, controls::items::sync, controls::keyboard, controls::interact, controls::spells::apply_drop, read_figures, controls::edit_text, controls::items::input, controls::order_windows, (update_fills, update_values, update_slots, (local_map::update, local_map::appearance).chain()), controls::paint, controls::items::render, (controls::spells::overlay, controls::items::overlay), show_hover_window).chain().run_if(crate::loading::gameplay_ready),
+                (spawn_windows, controls::spells::sync, controls::items::sync, controls::keyboard, controls::interact, controls::spells::apply_drop, read_figures, controls::edit_text, controls::items::input, controls::order_windows, (update_fills, update_values, update_slots, (local_map::update, local_map::appearance).chain()), controls::paint, controls::chat_rows, controls::items::render, (controls::spells::overlay, controls::items::overlay), show_hover_window).chain().run_if(crate::loading::gameplay_ready),
             );
         #[cfg(not(target_arch = "wasm32"))]
         app.add_systems(PreUpdate, replay::run.after(bevy::input::InputSystems)
@@ -420,6 +435,8 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>) {
     ));
     let mut loaded = Loaded { icons: assets.load("interface/skills.icons.json"), map_names: assets.load("interface/maps.names.json"), ..default() };
     loaded.layouts.push((assets.load("interface/unstackwindow.ui.json"), 600.0, None));
+    loaded.layouts.push((assets.load(format!("interface/{CHAT_WINDOW}.ui.json")), CHAT_DEPTH, None));
+    loaded.layouts.push((assets.load(format!("interface/{CHAT_MENU}.ui.json")), CHAT_DEPTH + 3.0, None));
     for (name, z) in HUD_WINDOWS {
         loaded.layouts.push((assets.load(format!("interface/{name}.ui.json")), z, None));
     }
@@ -645,7 +662,12 @@ fn spawn_windows(
             }
             let gate = controls.gate(&layout.window, w);
             if let Some(art) = &w.art {
-                controls.region(w.k, bounds(&art.pos), gate.clone());
+                // The chat windows' invisible containers span far above the visible
+                // log: they must not take the world's clicks there.
+                let invisible = art.tex.is_none() && art.color.chunks(4).all(|c| c.get(3).is_some_and(|a| *a <= 0.0));
+                if !(invisible && matches!(layout.window.as_str(), CHAT_WINDOW | CHAT_MENU)) {
+                    controls.region(w.k, bounds(&art.pos), gate.clone());
+                }
                 depth += depth_step;
                 if let Some(which) = gauge {
                     // Its own mesh and material, cut to the fill.
@@ -676,6 +698,28 @@ fn spawn_windows(
                         run = Some(Run { k: w.k, tex: art.tex.clone(), gate: gate.clone(), ..default() });
                     }
                     run.as_mut().unwrap().push(art, depth);
+                }
+            }
+            if let (true, Some(label)) = (layout.window == CHAT_WINDOW && w.id.ends_with("/List/TextLine"), &w.text) {
+                // The log: the template row repeated down the List.
+                let list = w.id.trim_end_matches("/TextLine");
+                let bottom = layout.widgets.iter().find(|l| l.id == list).map_or(w.rect[3], |l| l.rect[3]);
+                let [l, t, _, b] = w.rect;
+                let height = (b - t).max(1.0);
+                let p = parent(&mut commands, w.k, false);
+                for row in 0..((bottom - t) / height).floor().max(1.0) as usize {
+                    commands.spawn((
+                        ChatRow(row),
+                        Text2d::new(""),
+                        TextFont { font: assets.load("fonts/tahoma.ttf").into(), font_size: bevy::text::FontSize::Px(label.size * FONT_SCALE * screen.scale), ..default() },
+                        TextColor(Color::WHITE),
+                        Anchor(Vec2::new(-0.5, 0.0)),
+                        Transform::from_xyz(l + 2.0, -(t + height * (row as f32 + 0.5)), depth + depth_step * 0.5).with_scale(Vec3::splat(1.0 / screen.scale)),
+                        RenderLayers::layer(LAYER),
+                        ChildOf(p),
+                        Element { root, gate: Gate::default() },
+                        Visibility::Hidden,
+                    ));
                 }
             }
             if let Some(label) = &w.text {
