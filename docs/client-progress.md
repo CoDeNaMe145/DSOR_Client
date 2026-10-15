@@ -398,3 +398,26 @@ were observed.
 Validation logs are under `.local/logs/upstream-release261-merge-*` and
 `.local/logs/upstream-merge-*`; final native captures are in
 `.local/logs/upstream-merge-online/`. `git diff --check` passed.
+
+## Indoor ambience and player visibility (2026-10-15)
+
+- Adjusted the entrance faces of Kingscity's church and palace ambience boxes
+  through persistent level overrides, and applied those transforms to the local
+  ambience asset. The approach stays outdoors until the doorway/room entrance.
+- Evaluate bubble membership after player movement propagates. Normalize sun
+  directions before blending so a large volume does not accelerate the fade.
+  Preserve disabled bubble flags in the conversion exporter.
+- Cast five camera-to-player rays against map geometry. Obstructions receive a
+  local feathered opening with fade/hold timing; floors, geometry behind the
+  player, actors and shared materials are preserved. The depth/normal prepass
+  matches the cutout, and buildings keep their original shadows.
+- All **79 client tests** and **7 lighting/export Python tests** passed. The
+  optimized native build passed; eight captures verify approach, entry, interior
+  and exit at both locations. Both exits restore all affected material handles,
+  and the replay logged no renderer errors or panics. Browser rendering was not
+  exercised in this run.
+
+Executable: `target/release/dsor-client.exe`. Validation:
+`.local/logs/indoor-tests-final.log`, `indoor-build-final.log`,
+`indoor-runtime-verified.err`; captures in `.local/logs/indoor-captures/`.
+See `docs/fx.md` for the cutout behavior and offline replay format.

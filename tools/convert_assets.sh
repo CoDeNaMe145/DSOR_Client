@@ -95,5 +95,8 @@ echo "[convert] Nebula states and tables (log: $logs/post.log)"
 } > "$logs/post.log" 2>&1
 tail -n 14 "$logs/post.log"
 
+# Reapply authored overrides after conversion; conflicts fail the build.
+python3 "$tools/apply_level_overrides.py" --assets "$out" --source-root "$root"
+
 du -sh "$out"
 echo "[convert] done -> $out"

@@ -80,7 +80,8 @@ for name in sorted(os.listdir(os.path.join(root, "maps"))):
             doc["global"] = b
         else:
             b.update({"m": [round(x, 4) for x in m] if m else None, "priority": r["AmbienceBubblePriority"],
-                      "event": r["EventSetRow"], "shape": r["PEShapeType"]})
+                      "event": r["EventSetRow"], "shape": r["PEShapeType"],
+                      "enabled": bool(r["AmbienceBubbleEnabled"]) if "AmbienceBubbleEnabled" in r.keys() else True})
             doc["bubbles"].append(b)
     if shadow is not None:
         doc["shadow"] = axis_z(matrix(shadow["Transform"]))

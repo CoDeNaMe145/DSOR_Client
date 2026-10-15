@@ -91,7 +91,7 @@ fn nebula_falloff(mut shaders: ResMut<Assets<bevy::shader::Shader>>, mut done: L
 
 /// An ambience bubble's settings (the fields the client uses; names as in the
 /// level database).
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct Bubble {
     pub light_color: [f32; 4],
@@ -129,7 +129,10 @@ impl Bubble {
     fn mix(&self, to: &Bubble, t: f32) -> Bubble {
         let f = |a: f32, b: f32| a + (b - a) * t;
         let dir = match (self.dir, to.dir) {
-            (Some(a), Some(b)) => Some(Vec3::from_array(a).lerp(Vec3::from_array(b), t).normalize_or(Vec3::Y).to_array()),
+            // Local directions include the volume's scale. Normalize before
+            // mixing so large boxes do not swing the sun at the fade's start.
+            (Some(a), Some(b)) => Some(Vec3::from_array(a).normalize_or(Vec3::Y)
+                .lerp(Vec3::from_array(b).normalize_or(Vec3::Y), t).normalize_or(Vec3::Y).to_array()),
             (a, b) => b.or(a),
         };
         Bubble {
@@ -161,7 +164,7 @@ impl Bubble {
 /// of diameter 1 through its transform), the level takes its look, the highest
 /// priority winning, faded in over its PEFadeTime.
 /// UNVERIFIED: the sphere's unit radius (0.5, as the box's half side).
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Clone, Debug, PartialEq)]
 pub struct LocalBubble {
     #[serde(flatten)]
     pub look: Bubble,
@@ -173,12 +176,74 @@ pub struct LocalBubble {
     pub event: i32,
     #[serde(default)]
     pub shape: String,
+    #[serde(default = "enabled")]
+    pub enabled: bool,
+}
+fn enabled() -> bool { true }
+
+#[cfg(test)]
+mod bubble_tests {
+    use super::*;
+
+    fn volume(at: Mat4, shape: &str, priority: i32) -> LocalBubble {
+        LocalBubble { look: default(), m: Some(at.to_cols_array()), priority, event: -1, shape: shape.into(), enabled: true }
+    }
+
+    #[test]
+    fn boundaries_follow_rotated_scaled_volume_and_reject_invalid_transforms() {
+        let at = Mat4::from_scale_rotation_translation(Vec3::new(12.0, 6.0, 8.0), Quat::from_rotation_y(0.7), Vec3::new(100.0, 14.0, -162.0));
+        for shape in ["Box", "Sphere"] {
+            let bubble = volume(at, shape, 0);
+            assert!(bubble.contains(at.transform_point3(Vec3::new(0.499, 0.0, 0.0))));
+            assert!(!bubble.contains(at.transform_point3(Vec3::new(0.501, 0.0, 0.0))));
+            assert!(!bubble.contains(at.transform_point3(Vec3::new(0.0, 0.501, 0.0))));
+        }
+        assert!(!volume(Mat4::from_scale(Vec3::new(1.0, 0.0, 1.0)), "Box", 0).contains(Vec3::ZERO));
+        assert!(!volume(Mat4::IDENTITY, "Box", 0).contains(Vec3::splat(f32::NAN)));
+    }
+
+    #[test]
+    fn disabled_and_event_bubbles_do_not_override_player_volume() {
+        let mut ambience = Ambience { bubbles: vec![volume(Mat4::IDENTITY, "Box", 1), volume(Mat4::IDENTITY, "Box", 2)], ..default() };
+        assert_eq!(ambience.bubble_at(Vec3::ZERO), Some(1));
+        ambience.bubbles[1].enabled = false;
+        assert_eq!(ambience.bubble_at(Vec3::ZERO), Some(0));
+        ambience.bubbles[1].enabled = true;
+        ambience.bubbles[1].event = 83;
+        assert_eq!(ambience.bubble_at(Vec3::ZERO), Some(0));
+        assert_eq!(ambience.bubble_at(Vec3::X), None);
+    }
+
+    #[test]
+    fn light_direction_fade_is_independent_of_volume_scale() {
+        let from = Bubble { dir: Some(Vec3::X.to_array()), ..default() };
+        let to = Bubble { dir: Some((Vec3::Z * 42.603).to_array()), ..default() };
+        let direction = Vec3::from_array(from.mix(&to, 0.5).dir.unwrap());
+        assert!(direction.distance((Vec3::X + Vec3::Z).normalize()) < 1e-5);
+    }
+
+    #[test]
+    #[ignore = "requires the converted Kingscity assets with authored overrides applied"]
+    fn kingscity_entrances_stay_outdoors_until_the_doorway() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/maps/a0200_kingscity.ambience.json");
+        let ambience: Ambience = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        // Church: the porch begins at x=137, the open doors are at x=140.
+        assert_eq!(ambience.bubble_at(Vec3::new(139.9, 1.0, -53.0)), None);
+        assert!(ambience.bubble_at(Vec3::new(140.1, 1.0, -53.0)).is_some());
+        // Palace: entrance arch at z=-140, room-side entrance caps at z=-143.
+        assert_eq!(ambience.bubble_at(Vec3::new(100.0, 11.0, -142.9)), None);
+        assert!(ambience.bubble_at(Vec3::new(100.0, 11.0, -143.1)).is_some());
+    }
 }
 
 impl LocalBubble {
-    fn contains(&self, p: Vec3) -> bool {
+    pub fn contains(&self, p: Vec3) -> bool {
         let Some(m) = self.m else { return false };
-        let local = Mat4::from_cols_array(&m).inverse().transform_point3(p);
+        let transform = Mat4::from_cols_array(&m);
+        if !p.is_finite() || !transform.is_finite() || transform.determinant().abs() < 1e-8 {
+            return false;
+        }
+        let local = transform.inverse().transform_point3(p);
         if self.shape == "Sphere" {
             local.length() <= 0.5
         } else {
@@ -226,7 +291,9 @@ pub struct LevelLight {
     pub r: f32,
     /// [frequency, intensity] when it flickers.
     pub flicker: Option<[f32; 2]>,
+    #[serde(default = "no_event")] pub event: i32,
 }
+fn no_event() -> i32 { -1 }
 
 #[derive(Asset, TypePath, Deserialize, Debug, Default)]
 pub struct Ambience {
@@ -235,6 +302,15 @@ pub struct Ambience {
     pub bubbles: Vec<LocalBubble>,
     #[serde(default)]
     pub lights: Vec<LevelLight>,
+}
+
+impl Ambience {
+    fn bubble_at(&self, position: Vec3) -> Option<usize> {
+        self.bubbles.iter().enumerate()
+            .filter(|(_, b)| b.enabled && b.event == -1 && b.contains(position))
+            .max_by_key(|(_, b)| b.priority)
+            .map(|(i, _)| i)
+    }
 }
 
 #[derive(Default, TypePath)]
@@ -397,6 +473,9 @@ struct StepButton(usize, f32);
 
 pub struct LightingPlugin;
 
+/// Cameras that do not participate in the level look.
+#[derive(Component)] pub struct NoLevelLook;
+
 impl Plugin for LightingPlugin {
     fn build(&self, app: &mut App) {
         app.init_asset::<Ambience>()
@@ -409,12 +488,13 @@ impl Plugin for LightingPlugin {
                 Update,
                 (
                     (toggle_panel, press_buttons, refresh_values).chain(),
-                    (follow_level, apply_look, place_level_lights.run_if(resource_exists::<CurrentMap>)).chain(),
                     flicker,
                     player_light,
                 ),
             )
-            .add_systems(PostUpdate, shift_fog.after(bevy::transform::TransformSystems::Propagate));
+            .add_systems(PostUpdate,
+                (follow_level, apply_look, place_level_lights.run_if(resource_exists::<CurrentMap>), shift_fog)
+                    .chain().after(bevy::transform::TransformSystems::Propagate));
     }
 }
 
@@ -429,9 +509,8 @@ fn spawn_back_light(mut commands: Commands) {
     commands.spawn((BackLight, DirectionalLight { shadow_maps_enabled: false, ..default() }, Transform::default()));
 }
 
-/// A new level: load its ambience.
 /// A new level: load its ambience. Then follow the bubble the player (or the
-/// camera's focus) stands in.
+/// map viewer's focus) stands in, after this frame's movement has propagated.
 #[allow(clippy::too_many_arguments)]
 fn follow_level(
     current: Option<Res<CurrentMap>>,
@@ -461,16 +540,11 @@ fn follow_level(
     }
     if !ambience.bubbles.is_empty() {
         let ground = manifests.get(&current.manifest).map(|m| m.center[1]).unwrap_or(0.0);
-        let focus = cameras.iter().next().map(|cam| crate::map::camera_focus(cam, players.iter().next().map(|p| p.translation()), ground));
-        let inside = focus.and_then(|p| {
-            ambience
-                .bubbles
-                .iter()
-                .enumerate()
-                .filter(|(_, b)| b.event == -1 && b.contains(p))
-                .max_by_key(|(_, b)| b.priority)
-                .map(|(i, _)| i)
-        });
+        // A spawned player's feet are authoritative, independent of camera
+        // offsets, zoom, and whether a camera is available during map handoff.
+        let focus = players.single().ok().map(|p| p.translation()).or_else(||
+            cameras.single().ok().map(|cam| crate::map::camera_focus(cam, None, ground)));
+        let inside = focus.and_then(|p| ambience.bubble_at(p));
         if inside != level.inside {
             level.inside = inside;
             let to = inside.map(|i| ambience.bubbles[i].look.clone()).unwrap_or(global);
@@ -595,7 +669,7 @@ fn place_level_lights(
     let mut placed = 0;
     for (n, light) in ambience.lights.iter().enumerate() {
         // Projected spots (LightType 1) need their texture and shadow: left out.
-        if light.t != 0 || light.r <= 0.0 || light.i <= 0.0 {
+        if light.event != -1 || light.t != 0 || light.r <= 0.0 || light.i <= 0.0 {
             continue;
         }
         let at = crate::map::game_to_bevy(light.p);
