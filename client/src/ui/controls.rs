@@ -693,7 +693,7 @@ pub(super) fn chat_rows(
     if !log.is_changed() && added.is_empty() { return; }
     let count = rows.iter().count();
     let log = log.bypass_change_detection();
-    let shown = log.rows(count, CHAT_COLUMNS);
+    let shown = log.rows(count, CHAT_ROW_WIDTH, CHAT_FONT_SIZE);
     let first = count - shown.len();
     for (row, mut text, mut colour) in &mut rows {
         let (kind, line) = row.0.checked_sub(first).and_then(|i| shown.get(i)).cloned().unwrap_or_default();

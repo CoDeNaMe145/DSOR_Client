@@ -14,8 +14,8 @@
 //!
 //! The channel shortcuts are the 2018 client's own, from chatwindow2dropdown's
 //! labels: /s local (map), /a region, /p group, /g guild, /w <name> whisper.
-//! UNVERIFIED: the channel colours are ours: no colour table for them was found in
-//!   the exported data.
+//! The channel colours are the game's: _Globals ChatTextColor* (the same in the
+//!   2018 and release261 static.db4).
 
 use std::collections::VecDeque;
 
@@ -78,16 +78,20 @@ impl Kind {
         })
     }
 
-    /// UNVERIFIED: our colours (see the module notes).
+    /// The channel's text colour.
+    /// EVIDENCE: static.db4 _Globals (2018 and release261 alike): ChatTextColorStandard
+    ///   (1, 1, 1), Region (1, 0.75, 0.75), Group (0.67, 0.67, 1), Guild (0.25, 1,
+    ///   0.25), WhisperFrom / WhisperTo (1, 0.5, 1), System (1, 1, 0), Error (1, 0, 0).
+    /// The client's own notes (connection state) take ChatTextColorError.
     pub fn colour(self) -> Color {
         match self {
-            Kind::Map => Color::srgb(0.96, 0.93, 0.86),
-            Kind::Region => Color::srgb(1.0, 0.76, 0.42),
-            Kind::Group => Color::srgb(0.48, 0.76, 1.0),
-            Kind::Guild => Color::srgb(0.52, 0.94, 0.52),
-            Kind::Whisper => Color::srgb(0.96, 0.58, 0.96),
-            Kind::System => Color::srgb(1.0, 0.87, 0.3),
-            Kind::Local => Color::srgb(0.65, 0.65, 0.65),
+            Kind::Map => Color::srgb(1.0, 1.0, 1.0),
+            Kind::Region => Color::srgb(1.0, 0.75, 0.75),
+            Kind::Group => Color::srgb(0.67, 0.67, 1.0),
+            Kind::Guild => Color::srgb(0.25, 1.0, 0.25),
+            Kind::Whisper => Color::srgb(1.0, 0.5, 1.0),
+            Kind::System => Color::srgb(1.0, 1.0, 0.0),
+            Kind::Local => Color::srgb(1.0, 0.0, 0.0),
         }
     }
 }
@@ -178,10 +182,16 @@ impl ChatLog {
 
     /// The newest `rows` display rows, `columns` characters wide at most, oldest
     /// first, after scrolling back `self.scroll` rows (clamped).
-    pub fn rows(&mut self, rows: usize, columns: usize) -> Vec<(Kind, String)> {
+    /// The last `rows` display rows (scrolled back by `scroll`), each at most `width`
+    /// pixels of Tahoma at `size`.
+    pub fn rows(&mut self, rows: usize, width: f32, size: f32) -> Vec<(Kind, String)> {
+        self.rows_by(rows, &|row: &str| text_width(row, size) <= width)
+    }
+
+    fn rows_by(&mut self, rows: usize, fits: &dyn Fn(&str) -> bool) -> Vec<(Kind, String)> {
         let mut all: Vec<(Kind, String)> = Vec::new();
         for line in &self.lines {
-            all.extend(wrap(&line.text, columns).into_iter().map(|row| (line.kind, row)));
+            all.extend(wrap_with(&line.text, fits).into_iter().map(|row| (line.kind, row)));
         }
         self.scroll = self.scroll.min(all.len().saturating_sub(rows));
         let end = all.len() - self.scroll;
@@ -189,34 +199,63 @@ impl ChatLog {
     }
 }
 
-/// Word wrap by characters (the log rows are one Text2d each).
-fn wrap(text: &str, columns: usize) -> Vec<String> {
+/// Tahoma's advance widths for U+0020..U+00FF, per 1000 units of font size (the
+/// log's font, fonts/tahoma.ttf, measured with PIL's ImageFont.getlength at size 1000).
+const TAHOMA_ADVANCE: [u16; 224] = [312,332,401,728,546,977,674,211,383,383,546,728,303,363,303,382,546,546,546,546,546,546,546,546,546,546,354,354,728,728,728,474,909,600,589,601,678,561,521,667,675,373,417,588,498,771,667,708,551,708,621,557,584,656,597,902,581,576,559,383,382,383,728,546,546,525,553,461,553,526,318,553,558,229,282,498,229,840,558,543,553,553,360,446,334,558,498,742,495,498,444,480,382,480,728,488,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,1000,312,332,546,546,546,546,382,546,546,929,493,573,728,0,929,546,471,728,493,493,546,568,546,303,546,493,493,573,1000,1000,1000,474,600,600,600,600,600,600,913,601,561,561,561,561,373,373,373,373,698,667,708,708,708,708,708,728,708,656,656,656,656,576,565,548,525,525,525,525,525,525,880,461,526,526,526,526,229,229,229,229,546,558,543,543,543,543,543,728,543,558,558,558,558,498,553,498];
+
+/// The width of `text` in Tahoma at `size` pixels; characters past U+00FF count as
+/// a wide 0.6 em.
+pub fn text_width(text: &str, size: f32) -> f32 {
+    text.chars()
+        .map(|c| (c as u32).checked_sub(32).and_then(|i| TAHOMA_ADVANCE.get(i as usize)).map_or(600.0, |a| *a as f32))
+        .sum::<f32>()
+        * size
+        / 1000.0
+}
+
+/// Word wrap: each row as long as `fits` allows (the log rows are one Text2d each).
+fn wrap_with(text: &str, fits: &dyn Fn(&str) -> bool) -> Vec<String> {
     let mut rows = Vec::new();
     let mut row = String::new();
     for word in text.split(' ') {
         let mut word = word.to_string();
         loop {
-            let used = row.chars().count();
-            let len = word.chars().count();
-            if used + usize::from(used > 0) + len <= columns {
-                if used > 0 { row.push(' '); }
-                row.push_str(&word);
+            let joined = if row.is_empty() { word.clone() } else { format!("{row} {word}") };
+            if fits(&joined) {
+                row = joined;
                 break;
             }
-            if used > 0 {
+            if !row.is_empty() {
                 rows.push(std::mem::take(&mut row));
                 continue;
             }
-            // A word longer than a row: cut it.
-            let cut: String = word.chars().take(columns).collect();
-            word = word.chars().skip(columns).collect();
+            // A word longer than a row: cut it where it stops fitting (one
+            // character at least).
+            let mut cut = String::new();
+            for c in word.chars() {
+                let mut next = cut.clone();
+                next.push(c);
+                if !cut.is_empty() && !fits(&next) {
+                    break;
+                }
+                cut = next;
+            }
+            word = word.chars().skip(cut.chars().count()).collect();
             rows.push(cut);
+            if word.is_empty() {
+                break;
+            }
         }
     }
     if !row.is_empty() || rows.is_empty() {
         rows.push(row);
     }
     rows
+}
+
+#[cfg(test)]
+fn wrap(text: &str, columns: usize) -> Vec<String> {
+    wrap_with(text, &|row: &str| row.chars().count() <= columns)
 }
 
 fn label(kind: Kind) -> &'static str {
@@ -421,17 +460,19 @@ mod tests {
         assert_eq!(wrap("aa bb cc", 5), vec!["aa bb", "cc"]);
         assert_eq!(wrap("abcdefgh", 3), vec!["abc", "def", "gh"]);
         assert_eq!(wrap("", 3), vec![""]);
+        // In pixels: "WWW" is wider than "iii" in Tahoma.
+        assert!(text_width("WWW", 10.0) > 2.0 * text_width("iii", 10.0));
         let mut log = ChatLog::default();
         for i in 0..5 {
             log.push(Kind::Map, format!("line {i}"));
         }
         log.push(Kind::System, "long long".into());
         let texts = |rows: Vec<(Kind, String)>| rows.into_iter().map(|r| r.1).collect::<Vec<_>>();
-        assert_eq!(texts(log.rows(3, 6)), vec!["line 4", "long", "long"]);
+        assert_eq!(texts(log.rows_by(3, &|r: &str| r.chars().count() <= 6)), vec!["line 4", "long", "long"]);
         log.scroll = 2;
-        assert_eq!(texts(log.rows(3, 6)), vec!["line 2", "line 3", "line 4"]);
+        assert_eq!(texts(log.rows_by(3, &|r: &str| r.chars().count() <= 6)), vec!["line 2", "line 3", "line 4"]);
         log.scroll = 99;
-        assert_eq!(texts(log.rows(3, 6)), vec!["line 0", "line 1", "line 2"]);
+        assert_eq!(texts(log.rows_by(3, &|r: &str| r.chars().count() <= 6)), vec!["line 0", "line 1", "line 2"]);
         assert_eq!(log.scroll, 4, "clamped to the oldest row");
     }
 }

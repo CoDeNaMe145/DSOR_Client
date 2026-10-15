@@ -119,9 +119,11 @@ fn is_menu(name: &str) -> bool {
 const CHAT_WINDOW: &str = "chatwindow2";
 const CHAT_MENU: &str = "chatwindow2dropdown";
 const CHAT_DEPTH: f32 = 45.0;
-/// Characters per log row: the List is 343 reference pixels wide, Tahoma at 9 x
-/// FONT_SCALE averages ~5.5. UNVERIFIED: measured by eye, not from the font.
-const CHAT_COLUMNS: usize = 60;
+/// A log row's width, reference pixels: the List's (39.1 .. 382.0 in
+/// chatwindow2's layout) less the 2 the rows are inset by (spawn_windows).
+const CHAT_ROW_WIDTH: f32 = 340.9;
+/// Its text's size, reference pixels: the TextLine template's 9 x FONT_SCALE.
+const CHAT_FONT_SIZE: f32 = 9.0 * FONT_SCALE;
 
 /// How far the chat's ChatLabel ends above the bottom of the screen at first,
 /// reference pixels (it can be dragged: controls::DragHandle).
