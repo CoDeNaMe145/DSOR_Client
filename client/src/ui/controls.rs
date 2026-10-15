@@ -716,6 +716,7 @@ pub(super) fn interact(
     mut respawn: ResMut<crate::net::RespawnChoice>,
     panels: Query<(&RelativeCursorPosition, &InheritedVisibility), With<crate::ui_input::BlocksWorldInput>>,
     mut chat: ResMut<crate::chat::ChatLog>,
+    mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
 ) {
     let Ok((primary, mut window, cursor)) = primary.single_mut() else { return };
     let blocked = panels.iter().any(|(cursor, visible)| visible.get() && cursor.cursor_over());
@@ -754,6 +755,15 @@ pub(super) fn interact(
                 tf.translation.y = -offset.y;
             }
         }
+    }
+    // The wheel over the chat's log scrolls it (up: older lines), a row a notch.
+    let over_log = point.is_some_and(|p| windows.iter().any(|(_, w, c, v, tf)| w.0 == CHAT_WINDOW && *v != Visibility::Hidden
+        && !blocked && c.title_hit(p - window_offset(tf), width)));
+    for w in wheel.read() {
+        if !over_log { continue; }
+        let notches = if w.unit == bevy::input::mouse::MouseScrollUnit::Line { w.y } else { w.y / 40.0 };
+        let rows = notches.round() as i32;
+        if rows != 0 { chat.scroll = (chat.scroll as i32 + rows).max(0) as usize; }
     }
     // The chat's channel menu opens by its ButtonChatMenu wherever the chat was moved.
     let chat_at = windows.iter().find(|(_, w, _, _, _)| w.0 == CHAT_WINDOW).map(|(_, _, _, _, tf)| tf.translation.truncate());
@@ -1082,6 +1092,7 @@ mod tests {
         let mut app = App::new();
         app.add_plugins((TransformPlugin, crate::ui_input::UiInputPlugin))
             .add_message::<KeyboardInput>()
+            .add_message::<bevy::input::mouse::MouseWheel>()
             .init_resource::<ButtonInput<MouseButton>>()
             .init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<Pointer>()
