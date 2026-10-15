@@ -169,7 +169,24 @@ impl Selection {
 }
 
 #[derive(Deserialize, Clone)]
-pub struct SelectionCamera { pub pitch: f32, pub yaw: f32, pub offset: [f32; 3], pub fov: f32 }
+pub struct SelectionCamera {
+    pub pitch: f32, pub yaw: f32, pub offset: [f32; 3], pub fov: f32,
+    #[serde(default)] pub matrix: Option<[f32; 16]>,
+    #[serde(default = "camera_near")] pub near: f32,
+    #[serde(default = "camera_far")] pub far: f32,
+}
+fn camera_near() -> f32 { 0.1 }
+fn camera_far() -> f32 { 1000. }
+impl SelectionCamera {
+    pub fn transform(&self) -> Transform {
+        if let Some(matrix) = self.matrix { return Transform::from_matrix(Mat4::from_cols_array(&matrix)); }
+        let rotation = Quat::from_euler(EulerRot::YXZ, self.yaw.to_radians(), self.pitch.to_radians(), 0.);
+        Transform::from_translation(Vec3::new(self.offset[0], self.offset[1], -self.offset[2])).with_rotation(rotation)
+    }
+    pub fn lens(&self, aspect: f32) -> crate::camera_view::Lens {
+        crate::camera_view::Lens { fov: self.fov, aspect, near: self.near, far: self.far }
+    }
+}
 
 #[derive(Asset, TypePath, Deserialize)]
 pub struct SelectionData {
@@ -311,9 +328,9 @@ fn scene(mut commands: Commands, selection: Res<Selection>, mut scene: ResMut<Sc
     for (mut tf, mut projection) in &mut cameras {
         // Nebula stores the camera's offset along forward (-Z); Bevy stores
         // the camera position behind the portrait, looking down -Z.
-        let rotation = Quat::from_euler(EulerRot::YXZ, cam.yaw.to_radians(), cam.pitch.to_radians(), 0.0);
-        *tf = Transform::from_translation(Vec3::new(cam.offset[0], cam.offset[1], -cam.offset[2])).with_rotation(rotation);
-        if let Projection::Perspective(p) = &mut *projection { p.fov = cam.fov.to_radians(); }
+        *tf = cam.transform();
+        let aspect = if let Projection::Perspective(p) = &*projection { p.aspect_ratio } else { 16. / 9. };
+        *projection = cam.lens(aspect).projection();
     }
     if scene.revision != Some(selection.preview_revision) {
         if let (Some(c), Some(skins)) = (selection.current(), skins.get(&library.item_skins)) {

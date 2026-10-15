@@ -280,10 +280,10 @@ impl Default for Bubble {
     }
 }
 
-/// A light placed in the level (`_Instance_Light`, always-on rows).
-#[derive(Deserialize, Clone, Debug)]
+/// A light placed in the level (`_Instance_Light`).
+#[derive(Deserialize, Clone, Debug, PartialEq)]
 pub struct LevelLight {
-    /// 0 point, 1 projected spot (not drawn: see crate docs/fx.md).
+    /// 0 point, 1 spot. Legacy projected lights with a zero cone stay omitted.
     pub t: u8,
     pub p: [f32; 3],
     pub color: [f32; 3],
@@ -291,9 +291,29 @@ pub struct LevelLight {
     pub r: f32,
     /// [frequency, intensity] when it flickers.
     pub flicker: Option<[f32; 2]>,
+    #[serde(default)] pub dir: Option<[f32; 3]>,
+    #[serde(default)] pub cone: f32,
+    #[serde(default)] pub shadows: bool,
     #[serde(default = "no_event")] pub event: i32,
 }
 fn no_event() -> i32 { -1 }
+
+/// Shared by the game and editor: identical light units, cone and shadow rules.
+pub fn spawn_level_light(commands: &mut Commands, light: &LevelLight, parent: Entity, at: Transform, phase: f32, factor: f32) {
+    if light.r <= 0. || light.i <= 0. || light.t > 1 || (light.t == 1 && light.cone <= 0.) { return; }
+    let mut point = point_light(light.color, light.i, light.r);
+    point.shadow_maps_enabled = light.shadows;
+    let power = LevelLightPower { base: point.intensity,
+        flicker: light.flicker.map(|[frequency, amount]| (frequency, amount.clamp(0., 1.), phase)) };
+    point.intensity *= factor;
+    if light.t == 0 {
+        commands.spawn((point, power, at, ChildOf(parent)));
+    } else {
+        let outer = (light.cone.to_radians() * 0.5).clamp(0.001, std::f32::consts::FRAC_PI_2 - 0.001);
+        commands.spawn((SpotLight { color: point.color, intensity: point.intensity, range: point.range,
+            shadow_maps_enabled: light.shadows, inner_angle: outer * 0.8, outer_angle: outer, ..default() }, power, at, ChildOf(parent)));
+    }
+}
 
 #[derive(Asset, TypePath, Deserialize, Debug, Default)]
 pub struct Ambience {
@@ -473,8 +493,24 @@ struct StepButton(usize, f32);
 
 pub struct LightingPlugin;
 
-/// Cameras that do not participate in the level look.
+/// Thumbnail cameras retain their studio lighting and omit map post effects.
 #[derive(Component)] pub struct NoLevelLook;
+#[derive(Resource, Default)] pub struct EditorLook { pub bubble: Bubble }
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)] pub struct ApplyEditorLighting;
+pub struct EditorLightingPlugin;
+impl Plugin for EditorLightingPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<Level>().init_resource::<EditorLook>()
+            .insert_resource(load_saved().unwrap_or_default())
+            .add_systems(Startup, spawn_back_light)
+            .add_systems(Update, nebula_falloff)
+            .add_systems(Update, (copy_editor_look, apply_look, flicker).chain().in_set(ApplyEditorLighting))
+            .add_systems(PostUpdate, shift_fog.after(bevy::transform::TransformSystems::Propagate));
+    }
+}
+fn copy_editor_look(look: Res<EditorLook>, mut level: ResMut<Level>) {
+    if look.is_changed() { level.bubble = look.bubble.clone(); }
+}
 
 impl Plugin for LightingPlugin {
     fn build(&self, app: &mut App) {
@@ -571,7 +607,7 @@ fn apply_look(
     mut suns: Query<(&mut DirectionalLight, &mut Transform), (With<Sun>, Without<BackLight>)>,
     mut backs: Query<(&mut DirectionalLight, &mut Transform), (With<BackLight>, Without<Sun>)>,
     mut ambient: ResMut<GlobalAmbientLight>,
-    cameras: Query<(Entity, Has<Bloom>), (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
+    cameras: Query<(Entity, Has<Bloom>), (With<Camera3d>, Without<crate::highlight::HighlightCamera>, Without<NoLevelLook>)>,
     mut fresh: Local<Vec<Entity>>,
 ) {
     let new_camera = cameras.iter().any(|(e, _)| !fresh.contains(&e));
@@ -668,8 +704,7 @@ fn place_level_lights(
     let (Some(root), Some(ambience)) = (current.root, ambiences.get(&level.ambience)) else { return };
     let mut placed = 0;
     for (n, light) in ambience.lights.iter().enumerate() {
-        // Projected spots (LightType 1) need their texture and shadow: left out.
-        if light.event != -1 || light.t != 0 || light.r <= 0.0 || light.i <= 0.0 {
+        if light.event != -1 || light.t > 1 || (light.t == 1 && light.cone <= 0.) || light.r <= 0.0 || light.i <= 0.0 {
             continue;
         }
         let at = crate::map::game_to_bevy(light.p);
@@ -677,12 +712,9 @@ fn place_level_lights(
         let cell = *current.cells.entry(key).or_insert_with(|| {
             commands.spawn((Name::new(format!("cell {key:?}")), Transform::default(), Visibility::default(), ChildOf(root))).id()
         });
-        let pl = point_light(light.color, light.i, light.r);
-        let power = LevelLightPower {
-            base: pl.intensity,
-            flicker: light.flicker.map(|[frequency, amount]| (frequency, amount.clamp(0.0, 1.0), n as f32 * 1.618)),
-        };
-        commands.spawn((PointLight { intensity: pl.intensity * lighting.lights, ..pl }, power, Transform::from_translation(at), ChildOf(cell)));
+        let direction = -Vec3::from_array(light.dir.unwrap_or([0., 1., 0.])).normalize_or(Vec3::Y);
+        let transform = Transform::from_translation(at).looking_to(direction, Vec3::Y);
+        spawn_level_light(&mut commands, light, cell, transform, n as f32 * 1.618, lighting.lights);
         placed += 1;
     }
     info!("level {}: {placed} lights", level.map);
@@ -691,21 +723,23 @@ fn place_level_lights(
 
 /// Level lights at the panel's factor; flickering ones wander under their base,
 /// `depth` deep. UNVERIFIED: the 2018 client's flicker curve.
-fn flicker(time: Res<Time>, lighting: Res<Lighting>, mut lights: Query<(&mut PointLight, &LevelLightPower, &InheritedVisibility)>) {
+fn flicker(time: Res<Time>, lighting: Res<Lighting>, mut lights: Query<(&mut PointLight, &LevelLightPower, &InheritedVisibility)>,
+    mut spots: Query<(&mut SpotLight, &LevelLightPower, &InheritedVisibility)>) {
     let t = time.elapsed_secs();
-    for (mut l, power, shown) in &mut lights {
+    let intensity = |power: &LevelLightPower, shown: &InheritedVisibility| {
         let Some((frequency, depth, phase)) = power.flicker else {
-            if lighting.is_changed() {
-                l.intensity = power.base * lighting.lights;
-            }
-            continue;
+            return Some(power.base * lighting.lights);
         };
-        if !shown.get() {
-            continue;
-        }
+        if !shown.get() { return None; }
         let a = t * frequency + phase;
         let wander = 0.5 + 0.3 * a.sin() + 0.2 * (2.3 * a + 1.7).sin();
-        l.intensity = power.base * lighting.lights * (1.0 - depth * 0.5 * wander);
+        Some(power.base * lighting.lights * (1.0 - depth * 0.5 * wander))
+    };
+    for (mut l, power, shown) in &mut lights {
+        if let Some(value) = intensity(power, shown) { l.intensity = value; }
+    }
+    for (mut l, power, shown) in &mut spots {
+        if let Some(value) = intensity(power, shown) { l.intensity = value; }
     }
 }
 
@@ -827,7 +861,7 @@ fn shift_fog(
     current: Option<Res<CurrentMap>>,
     manifests: Res<Assets<crate::map::MapManifest>>,
     players: Query<&GlobalTransform, With<crate::net::LocalPlayer>>,
-    mut fogs: Query<(&GlobalTransform, &mut DistanceFog), (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
+    mut fogs: Query<(&GlobalTransform, &mut DistanceFog), (With<Camera3d>, Without<crate::highlight::HighlightCamera>, Without<NoLevelLook>)>,
 ) {
     let b = &level.bubble;
     let ground = current.as_ref().and_then(|m| manifests.get(&m.manifest)).map(|m| m.center[1]).unwrap_or(0.0);

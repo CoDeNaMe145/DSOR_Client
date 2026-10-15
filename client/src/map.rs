@@ -485,11 +485,12 @@ fn material_signature(m: &StandardMaterial) -> String {
 }
 
 /// One visible surface of a static model, in the model's space.
-struct FlatSurface {
-    mesh: Handle<Mesh>,
-    material: MapMaterial,
-    local: bevy::math::Affine3A,
-    no_shadow: bool,
+#[derive(Clone)]
+pub(crate) struct FlatSurface {
+    pub(crate) mesh: Handle<Mesh>,
+    pub(crate) material: MapMaterial,
+    pub(crate) local: bevy::math::Affine3A,
+    pub(crate) no_shadow: bool,
     /// Largest extent of the surface in the model's space (its mesh bounds
     /// through `local`).
     size: f32,
@@ -497,7 +498,7 @@ struct FlatSurface {
 
 /// The visible surfaces of a model that can be spawned flat, or None when it needs
 /// its scene (animations, skins, emitters, decal boxes).
-fn flat_surfaces(
+pub(crate) fn flat_surfaces(
     gltf: &Gltf,
     nodes: &Assets<GltfNode>,
     meshes: &Assets<GltfMesh>,

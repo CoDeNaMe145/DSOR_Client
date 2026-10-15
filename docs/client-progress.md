@@ -399,6 +399,51 @@ Validation logs are under `.local/logs/upstream-release261-merge-*` and
 `.local/logs/upstream-merge-*`; final native captures are in
 `.local/logs/upstream-merge-online/`. `git diff --check` passed.
 
+## UI shortcuts, defaults and window stacking (2026-10-15)
+
+- [x] Bind the skills/talents window to **S**; focused text fields still consume
+      shortcuts.
+- [x] Initialize wisdom level, progress and available points to **0** in both
+      the HUD and talents window. Replace the XML's sample available-points
+      text and initialize labels that load after character values settle.
+- [x] Reduce shared UI fonts by **20%**, including runtime item counts/tooltips,
+      map captions and character-selection dialogs.
+- [x] Keep each menu's artwork, text and runtime items in a separate depth band.
+      Newly opened windows and clicked windows come forward as a whole; map,
+      modal and tooltip layers retain their intended priority.
+- [x] All **68 client tests passed**, including real exported layouts, populated
+      inventory rendering, repeated reopening, focused text input, wisdom bars
+      and late-loading labels.
+- [x] Optimized native build passed. Inspected the skills window and travel map
+      over a populated inventory: background artwork, item icons and stack
+      labels stay below the front window, and reduced text renders correctly.
+
+Wisdom progression beyond its default still needs server packet decoding.
+Validation: `.local/logs/ui-order-tests.log`, `ui-order-build.log` and native
+captures under `.local/logs/ui-order/`. `git diff --check` passed.
+
+### Follow-up: contents disappearing after focus changes
+
+The initial overlap captures did not exercise focus changes. Bevy 0.19 retains
+the sort key of a transparent `Material2d` mesh when only its transform changes,
+while sprites and text sort from their current transforms each frame. Lowering
+a window could therefore leave its background drawing over its own contents.
+
+- [x] Mark moved UI meshes for render-order refresh after transform propagation
+      and before Bevy checks mesh changes. Stationary windows retain their cache.
+- [x] Extend the real-layout regression to check Bevy's pending mesh updates,
+      including both raised and lowered windows.
+- [x] All **68 client tests passed**, including the retained-order regression.
+- [x] Native replay: seven captures, six verified focus changes and a title
+      drag from side-by-side windows into overlap. Twenty image-region
+      comparisons confirm that exposed labels, icons, equipment slots and stack
+      counts remain unchanged (allowing one byte of blend rounding).
+
+Final executable: `target/release/dsor-client.exe`. Logs:
+`.local/logs/ui-focus-tests.log`, `ui-focus-build-final.log` and
+`ui-focus-pixels.log`; captures, entity snapshots and pointer fixture:
+`.local/logs/ui-focus-verified/`. `git diff --check` passed.
+
 ## Indoor ambience and player visibility (2026-10-15)
 
 - Adjusted the entrance faces of Kingscity's church and palace ambience boxes

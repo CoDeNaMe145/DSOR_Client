@@ -16,6 +16,23 @@ The goal is a 1:1 reconstruction of the rel 261 client.
 | `client` | The game, on Bevy. Builds natively and for `wasm32-unknown-unknown`. |
 | `tools` | Asset conversion (wraps DSO_Godot) and helpers. |
 
+## Level editor
+
+Run `LevelEditor.cmd` (or `python tools/level_editor.py`) for the separate local
+3D level editor and DB4 inspector. Build its native renderer with
+`powershell -ExecutionPolicy Bypass -File tools/Build-LevelEditor.ps1`.
+Select models in the live viewport; Q selects, W moves, E rotates, and R scales.
+Fixed cameras, including `a0000_char`'s character-selection camera, have a
+selectable 3D outline and a live preview in the viewport's top-right corner.
+The **Lighting** tab edits point/spot lights and the map's sun, ambient light,
+fog and bloom, with live scene and camera previews.
+Saved edits live in `level-overrides/`, outside
+generated assets, and are reapplied by asset conversion. Cached metadata allows
+editing when the original assets are unavailable. **Build client + DB4** produces
+matching client map files and a derived database for server deployment.
+See [the level editor guide](docs/level-editor.md) for source selection, controls,
+offline editing, and navigation/collision limitations.
+
 ## Game data
 
 The client needs the 2018 game's own files, converted to glTF/PNG by
@@ -210,7 +227,7 @@ HTTPS (and the relay over `wss://`) for others.
 | Key | What |
 |---|---|
 | left click | walk (online); Shift + left / right button, 1-5: quick slots |
-| I, C, K | inventory, character sheet, skills |
+| I, C, S | inventory, character sheet, skills |
 | drag an inventory item | move/swap slots; drop onto a compatible stack to merge |
 | Ctrl + left click a stack | choose an amount to split into a free inventory slot |
 | F2 | the look panel: scale the level's sun, ambient, fog, bloom, vignette...; tonemapping on / off |

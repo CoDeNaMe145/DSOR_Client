@@ -64,6 +64,8 @@ meshes (one per run of widgets sharing an atlas, anchor and visibility gate,
 the draw order kept by depth),
 drawn by `UiMaterial` (`ui.wgsl`: atlas x vertex colour in gamma space, cut to a
 clip rectangle). A resize only moves the per-k parents. Texts are Text2d.
+Authored labels and runtime UI text use a shared 80% text scale, including item
+counts, tooltips, map captions and character-selection dialogs.
 
 Drawn:
 
@@ -72,7 +74,7 @@ Drawn:
   left/right mouse slots, mount and home teleport; the money (`currencybar`), the menu buttons
   (`gamebar`), and the central navigation (`ingamemenu`);
 - menus: inventory (I: equipment slots, eight 7 x 4 bags, premium and loose-item bags),
-  character sheet (C), current skill/talent window (K: `skilltalentswindow`),
+  character sheet (C), current skill/talent window (S: `skilltalentswindow`),
   quest log, travel map, local map, shop, social window, PvP matchmaking,
   leaderboards, events and game menu (Escape). Natively `DSOR_UI_OPEN=inventory,...` opens
   them from the start (screenshots).
@@ -81,8 +83,10 @@ Live values: health and resource (`Net::health` / `resource`), level, XP, wallet
 the character sheet's available figures, the quick slot bar (`Net::bar`, wire slots: 0 left
 button, 1 right button, 2-6 keys 1-5), the character name. Offline (map viewer)
 the map viewer shows resting values (80 % health, 60 % resource, 35 % XP, the mage's
-skills). Wisdom's display is restored, but its server progression is not decoded
-yet: it shows an unknown level rather than a fabricated value when connected.
+skills). Wisdom starts at level 0, 0% progress and 0 available points, matching
+the server default. Both the HUD and wisdom tab use these defaults; server
+wisdom progression is not decoded yet. Late-loading layouts receive the current
+values without waiting for another stat update.
 
 ## Interaction (`client/src/ui/controls.rs`)
 
@@ -97,11 +101,27 @@ The game menu blocks pointer input to the windows and world below it.
 Top-navigation panels (except the location-map overlay) and the game menu can be dragged with the left
 mouse button from the top 32 reference pixels of their painted frame (scaled
 with the interface). The cursor changes to a hand there; close buttons retain
-priority over dragging. Clicking a window brings it forward below the modal
-game menu. Artwork, text, gauge clipping and hit regions share the root's
+priority over dragging. Opening or clicking a window brings it forward below
+the modal game menu. Every menu occupies a separate 20-unit depth band, with
+authored artwork/text bounded to its first 8 units and runtime inventory items
+at 12 units. Whole windows stay together when overlapped; repeated focus changes
+do not drift into modal or tooltip layers. The local map stays below menus.
+Bevy 0.19 caches transparent mesh sort keys independently of their transforms;
+after hierarchy propagation, moved UI meshes are marked dirty so their retained
+order follows the same depth as text and sprites. Stationary meshes stay cached.
+Artwork, text, gauge clipping and hit regions share the root's
 offset. Positions survive closing/reopening during the session. Dragging and
 resizing keep at least 64 reference pixels of the title reachable; losing focus
 or hiding a window cancels its drag. The HUD bars stay fixed.
+
+Native focus/overlap regression: `DSOR_UI_REPLAY=<steps.json>` accepts an array
+of steps with `frame`, optional `point: [x, y]`, `left: true/false`, `capture`
+(PNG path) and `quit: true`. Points use the centered 1024x768 reference layout.
+Frames advance during gameplay; pointer steps use the normal click/drag handler.
+Each capture also writes a `.ui.json` snapshot of window contents, transforms
+and visibility for rendering diagnostics. Input stays inside the replay and
+does not warp the desktop cursor.
+Combine with `DSOR_UI_OPEN` and `DSOR_INVENTORY_PREVIEW` for populated panels.
 
 Inventory equipment, ingredients, trinkets and mercenary pages are mutually
 exclusive. The character sheet likewise selects one of its five tabs. Switching

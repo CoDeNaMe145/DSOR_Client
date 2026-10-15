@@ -486,15 +486,31 @@ pub(crate) struct SkillClicks(pub Option<usize>);
 type Windows<'w, 's> = Query<'w, 's, (Entity, &'static Window2018, &'static mut WindowControls, &'static mut Visibility, &'static mut Transform)>;
 
 fn raise(entity: Entity, windows: &mut Windows) {
-    let mut order: Vec<_> = windows.iter().filter(|(_, name, controls, _, _)| controls.drag_handle.is_some() && name.0 != "gamemenu")
+    let mut order: Vec<_> = windows.iter().filter(|(_, name, _, _, _)| stacked_window(&name.0))
         .map(|(e, _, _, _, tf)| (e, tf.translation.z)).collect();
     if !order.iter().any(|(e, _)| *e == entity) { return; }
     order.sort_by(|a, b| (a.0 == entity).cmp(&(b.0 == entity)).then(a.1.total_cmp(&b.1)));
     // Bounded, separated depth bands keep entire windows together and below
     // the modal game menu, even after repeated changes of focus.
     for (i, (e, _)) in order.into_iter().enumerate() {
-        if let Ok((_, _, _, _, mut tf)) = windows.get_mut(e) { tf.translation.z = 100.0 + i as f32 * 20.0; }
+        if let Ok((_, _, _, _, mut tf)) = windows.get_mut(e) { tf.translation.z = 100.0 + i as f32 * WINDOW_DEPTH_STEP; }
     }
+}
+
+fn stacked_window(name: &str) -> bool {
+    is_menu(name) && !matches!(name, "gamemenu" | "unstackwindow" | "locationmap")
+}
+
+/// Also cover windows opened outside toggle(), including asynchronously loaded
+/// startup panels. Focus changes still go through raise() in pointer handling.
+pub(super) fn order_windows(mut windows: Windows, mut visible: Local<std::collections::HashSet<Entity>>) {
+    let mut opened: Vec<_> = windows.iter().filter(|(e, name, _, v, _)|
+        stacked_window(&name.0) && *v != Visibility::Hidden && !visible.contains(e))
+        .map(|(e, _, _, _, tf)| (e, tf.translation.z)).collect();
+    opened.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
+    for (entity, _) in opened { raise(entity, &mut windows); }
+    *visible = windows.iter().filter(|(_, name, _, v, _)| stacked_window(&name.0) && *v != Visibility::Hidden)
+        .map(|(e, _, _, _, _)| e).collect();
 }
 
 fn toggle(name: &str, windows: &mut Windows) {
@@ -827,12 +843,12 @@ mod tests {
             .init_resource::<items::Interaction>()
             .init_resource::<SkillClicks>()
             .init_resource::<local_map::MapSettings>()
-            .add_systems(Update, (keyboard, interact, edit_text, paint).chain());
+            .add_systems(Update, (keyboard, interact, edit_text, order_windows, paint).chain());
         let primary = app.world_mut().spawn((Window { focused: true, resolution: (1024, 768).into(), ..default() }, PrimaryWindow)).id();
         let mut roots = HashMap::new();
         let mut layouts = HashMap::new();
         let definitions = HUD_WINDOWS.into_iter().chain(MENU_WINDOWS.map(|(name, _, z)| (name, z)))
-            .chain(NAV_WINDOWS.into_iter().enumerate().map(|(i, name)| (name, 160.0 + i as f32 * 20.0)))
+            .chain(NAV_WINDOWS.into_iter().enumerate().map(|(i, name)| (name, if name == "locationmap" { 80.0 } else { 160.0 + i as f32 * WINDOW_DEPTH_STEP })))
             .chain([("unstackwindow", 600.0)]);
         for (name, z) in definitions {
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../assets/interface/{name}.ui.json"));

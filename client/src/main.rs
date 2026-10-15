@@ -25,9 +25,12 @@ mod lighting;
 mod occlusion;
 mod loading;
 mod selection;
+mod camera_view;
 #[cfg(not(target_arch = "wasm32"))]
 mod login;
 mod map;
+#[cfg(not(target_arch = "wasm32"))]
+mod level_editor;
 mod materials;
 mod merge;
 mod monsters;
@@ -326,6 +329,11 @@ fn main() {
             .stack_size(256 << 20)
             .build()
     });
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(directory) = std::env::args().skip_while(|a| a != "--level-editor").nth(1) {
+        level_editor::run(directory.into());
+        return;
+    }
     let opts = options();
     let mut app = App::new();
     if let Some(config) = opts.net.as_ref().filter(|_| !opts.login_screen) {

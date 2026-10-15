@@ -1,7 +1,7 @@
 //! The 2018 client's interface: the windows always on screen (the bottom bar with
 //! the health and resource globes, the XP bar and the quick slots; the money in the
 //! top left corner; navigation and menu buttons) and the inventory (I),
-//! character sheet (C), skills (K) and game menu (Escape).
+//! character sheet (C), skills (S) and game menu (Escape).
 //!
 //! tools/export_ui.py exports each window (`interface/<name>.ui.json`): its
 //! widgets in drawing order, each with its artwork as the triangles, atlas UVs and
@@ -37,6 +37,8 @@ use serde::Deserialize;
 mod controls;
 mod local_map;
 mod selection;
+#[cfg(not(target_arch = "wasm32"))]
+mod replay;
 pub(crate) use local_map::MapSettings;
 use controls::{Element, Gate, WindowControls};
 pub(crate) use controls::SkillClicks;
@@ -46,8 +48,14 @@ const BASE_W: f32 = 1024.0;
 const BASE_H: f32 = 768.0;
 /// The interface's render layer: only the UI camera sees it.
 const LAYER: usize = 7;
+/// Shared text reduction for authored labels and runtime UI text.
+const TEXT_SCALE: f32 = 0.8;
 /// The engine's fontSize to reference pixels (DSO_Godot's calibration).
-const FONT_SCALE: f32 = 1.5;
+const FONT_SCALE: f32 = 1.5 * TEXT_SCALE;
+/// Each complete window occupies one band, including runtime item contents.
+const WINDOW_DEPTH_STEP: f32 = 20.0;
+const WINDOW_ART_DEPTH: f32 = 8.0;
+const WINDOW_ITEMS_DEPTH: f32 = 12.0;
 
 /// Windows shown from the start, and their depth (later ones over earlier ones).
 const HUD_WINDOWS: [(&str, f32); 5] = [("bottombar", 10.0), ("currencybar", 20.0), ("gamebar", 30.0), ("ingamemenu", 35.0), ("interactinfo", 40.0)];
@@ -71,8 +79,8 @@ fn hover_part(id: &str) -> bool {
 /// Windows the player opens: (window, key, depth).
 const MENU_WINDOWS: [(&str, KeyCode, f32); 4] = [
     ("inventory", KeyCode::KeyI, 100.0),
-    ("charactersheet", KeyCode::KeyC, 110.0),
-    ("skilltalentswindow", KeyCode::KeyK, 120.0),
+    ("charactersheet", KeyCode::KeyC, 120.0),
+    ("skilltalentswindow", KeyCode::KeyS, 140.0),
     ("gamemenu", KeyCode::Escape, 500.0),
 ];
 
@@ -292,6 +300,7 @@ enum ValueKind {
     XpPercent,
     WisdomLevel,
     WisdomProgress,
+    WisdomPoints,
     LocationName,
     Name,
     Page,
@@ -327,8 +336,9 @@ struct Figures {
     health: (f32, f32),
     resource: (f32, f32),
     xp: f32,
-    /// The current protocol does not yet decode wisdom progression.
-    wisdom: Option<(u32, f32)>,
+    /// The server starts wisdom at zero; keep that default until progression is decoded.
+    wisdom: (u32, f32),
+    wisdom_points: u32,
     bar: Vec<Option<String>>,
     name: String,
     online: bool,
@@ -369,11 +379,25 @@ impl Plugin for UiPlugin {
             .insert_resource(local_map::MapSettings::load())
             .add_systems(Startup, (setup, controls::items::setup))
             .add_systems(Update, (match_scene_camera, follow_screen).chain())
+            .add_systems(PostUpdate, refresh_mesh_order
+                .after(TransformSystems::Propagate)
+                .before(bevy::sprite_render::check_entities_needing_specialization::<UiMaterial>))
             .add_systems(
                 Update,
-                (spawn_windows, controls::spells::sync, controls::items::sync, controls::keyboard, controls::interact, controls::spells::apply_drop, read_figures, controls::edit_text, controls::items::input, (update_fills, update_values, update_slots, (local_map::update, local_map::appearance).chain()), controls::paint, controls::items::render, (controls::spells::overlay, controls::items::overlay), show_hover_window).chain().run_if(crate::loading::gameplay_ready),
+                (spawn_windows, controls::spells::sync, controls::items::sync, controls::keyboard, controls::interact, controls::spells::apply_drop, read_figures, controls::edit_text, controls::items::input, controls::order_windows, (update_fills, update_values, update_slots, (local_map::update, local_map::appearance).chain()), controls::paint, controls::items::render, (controls::spells::overlay, controls::items::overlay), show_hover_window).chain().run_if(crate::loading::gameplay_ready),
             );
+        #[cfg(not(target_arch = "wasm32"))]
+        app.add_systems(PreUpdate, replay::run.after(bevy::input::InputSystems)
+            .before(bevy::ui::UiSystems::Focus).run_if(crate::loading::gameplay_ready));
     }
+}
+
+/// Bevy 0.19 retains Material2d sort keys until the mesh/material changes.
+/// Sprites and text use their current transforms every frame, so moving a
+/// window in Z otherwise lets its stale background draw over its own contents.
+/// Mark moved UI meshes dirty after hierarchy propagation and before extraction.
+fn refresh_mesh_order(mut meshes: Query<&mut Mesh2d, (With<MeshMaterial2d<UiMaterial>>, Changed<GlobalTransform>)>) {
+    for mut mesh in &mut meshes { mesh.set_changed(); }
 }
 
 fn setup(mut commands: Commands, assets: Res<AssetServer>) {
@@ -403,7 +427,8 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>) {
         loaded.layouts.push((assets.load(format!("interface/{name}.ui.json")), z, Some(key)));
     }
     for (i, name) in NAV_WINDOWS.iter().enumerate() {
-        loaded.layouts.push((assets.load(format!("interface/{name}.ui.json")), 160.0 + i as f32 * 20.0, None));
+        let depth = if *name == "locationmap" { 80.0 } else { 160.0 + i as f32 * WINDOW_DEPTH_STEP };
+        loaded.layouts.push((assets.load(format!("interface/{name}.ui.json")), depth, None));
     }
     loaded.spawned = vec![false; loaded.layouts.len()];
     commands.insert_resource(loaded);
@@ -411,6 +436,7 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>) {
 
 /// Which dynamic part a widget is, if any.
 fn gauge_of(id: &str) -> Option<Gauge> {
+    if id.contains("/WisdomLabel/") && id.ends_with("/LevelBar") { return Some(Gauge::Wisdom); }
     let parent = id.rsplit('/').nth(1).unwrap_or("");
     if parent == "Healthbar" && id.ends_with("/progress") {
         return Some(Gauge::TargetHealth);
@@ -455,6 +481,8 @@ fn value_of(id: &str) -> Option<ValueKind> {
         "XP" if id.contains("/bottombar_xp_bar/") => ValueKind::XpPercent,
         "Level" if id.contains("/bottombar_wisdom_bar/") => ValueKind::WisdomLevel,
         "Wisdom" if id.contains("/bottombar_wisdom_bar/") => ValueKind::WisdomProgress,
+        "LevelLabel" if id.contains("/WisdomLabel/") => ValueKind::WisdomLevel,
+        "AvailablePoints" if id.contains("/WisdomLabel/") => ValueKind::WisdomPoints,
         "ActorName" if id.contains("/Healthbar/") => ValueKind::TargetName,
         "Level" if id.contains("/Levelcircle4/") => ValueKind::TargetLevel,
         "CharacterName" => ValueKind::Name,
@@ -567,6 +595,9 @@ fn spawn_windows(
         let atlas = |tex: &Option<String>| tex.as_ref().map(|t| assets.load::<Image>(t.clone()));
         let mut run: Option<Run> = None;
         let mut depth = 0.0f32;
+        // Large XML trees must not let their last widget enter another window's
+        // band. Keep all authored art/text below the runtime inventory contents.
+        let depth_step = 0.01_f32.min(WINDOW_ART_DEPTH / (layout.widgets.len() + 1) as f32);
         let flush = |commands: &mut Commands, run: Option<Run>, parent: Entity, meshes: &mut Assets<Mesh>, materials: &mut Assets<UiMaterial>| {
             let Some(run) = run else { return };
             if run.idx.is_empty() {
@@ -605,7 +636,7 @@ fn spawn_windows(
             if let Some(slot) = quick_slot_of(&w.id) {
                 controls.region(w.k, w.rect, Gate::default());
                 let p = parent(&mut commands, w.k, true);
-                commands.spawn((QuickSlot { slot, k: w.k, rect: w.rect, shown: None }, Transform::from_xyz(0.0, 0.0, depth + 0.005), Visibility::Inherited, ChildOf(p)));
+                commands.spawn((QuickSlot { slot, k: w.k, rect: w.rect, shown: None }, Transform::from_xyz(0.0, 0.0, depth + depth_step * 0.5), Visibility::Inherited, ChildOf(p)));
             }
             let gauge = gauge_of(&w.id);
             let other_class = gauge == Some(Gauge::Resource) && !w.id.contains(&format!("/{wanted_resource}/"));
@@ -615,7 +646,7 @@ fn spawn_windows(
             let gate = controls.gate(&layout.window, w);
             if let Some(art) = &w.art {
                 controls.region(w.k, bounds(&art.pos), gate.clone());
-                depth += 0.01;
+                depth += depth_step;
                 if let Some(which) = gauge {
                     // Its own mesh and material, cut to the fill.
                     let k = w.k;
@@ -673,7 +704,7 @@ fn spawn_windows(
                     },
                     TextColor(Color::srgba(label.color[0], label.color[1], label.color[2], label.color[3])),
                     anchor,
-                    Transform::from_xyz(x, -y, depth + 0.005).with_scale(Vec3::splat(1.0 / screen.scale)),
+                    Transform::from_xyz(x, -y, depth + depth_step * 0.5).with_scale(Vec3::splat(1.0 / screen.scale)),
                     RenderLayers::layer(LAYER),
                     ChildOf(p),
                     Element { root, gate: gate.clone() },
@@ -760,7 +791,7 @@ fn read_figures(net: Option<NonSend<crate::net::Net>>, mut figures: ResMut<Figur
             figures.resource = (60.0, 100.0);
             figures.xp = 0.35;
             figures.level = Some(1);
-            figures.wisdom = Some((0, 0.0));
+            figures.wisdom = (0, 0.0);
             figures.bar = ["magicmissile", "fireball", "frostnova", "iceball", "meteor", "teleport", "lightningstrike"]
                 .iter()
                 .map(|s| Some((*s).to_owned()))
@@ -774,7 +805,8 @@ fn read_figures(net: Option<NonSend<crate::net::Net>>, mut figures: ResMut<Figur
         figures.health = (0.0, 0.0);
         figures.resource = (0.0, 0.0);
         figures.xp = 0.0;
-        figures.wisdom = None;
+        figures.wisdom = (0, 0.0);
+        figures.wisdom_points = 0;
         figures.bar.clear();
     }
     // The server gives the current values; the maxima are the largest seen
@@ -834,7 +866,7 @@ fn update_fills(
             Gauge::Health | Gauge::HealthBar => fraction(figures.health),
             Gauge::Resource | Gauge::ResourceBar => fraction(figures.resource),
             Gauge::Xp => figures.xp.clamp(0.0, 1.0),
-            Gauge::Wisdom => figures.wisdom.map(|(_, progress)| progress.clamp(0.0, 1.0)).unwrap_or(0.0),
+            Gauge::Wisdom => figures.wisdom.1.clamp(0.0, 1.0),
             Gauge::TargetHealth => hover.0.as_ref().map(|h| fraction((h.2 as f32, h.3 as f32))).unwrap_or(0.0),
         };
         if (v - f.shown).abs() < 1e-3 && !root.is_changed() {
@@ -862,10 +894,10 @@ fn update_values(
     current_map: Option<Res<crate::map::CurrentMap>>,
     mut texts: Query<(&Value, &mut Text2d)>,
 ) {
-    if !figures.is_changed() && !sheet.is_changed() && !hover.is_changed() && !current_map.as_ref().is_some_and(|m| m.is_changed()) {
-        return;
-    }
+    let changed = figures.is_changed() || sheet.is_changed() || hover.is_changed() || current_map.as_ref().is_some_and(|m| m.is_changed());
     for (v, mut t) in &mut texts {
+        // Layouts load asynchronously, even when the current figures are stable.
+        if !changed && !t.is_added() { continue; }
         // Gold is counted in copper: 100 copper a silver, 100 silver a gold.
         // UNVERIFIED: the split (the currency bar's own code is not traced).
         let copper = figures.gold.unwrap_or(0);
@@ -876,8 +908,9 @@ fn update_values(
             ValueKind::Andermant => figures.andermant.unwrap_or(0).to_string(),
             ValueKind::Level => figures.level.map(|l| l.to_string()).unwrap_or_else(|| "-".to_owned()),
             ValueKind::XpPercent => format!("{:.0}%", figures.xp * 100.0),
-            ValueKind::WisdomLevel => figures.wisdom.map(|(level, _)| level.to_string()).unwrap_or_else(|| "—".to_owned()),
-            ValueKind::WisdomProgress => figures.wisdom.map(|(_, progress)| format!("{:.0}%", progress * 100.0)).unwrap_or_else(|| "Wisdom".to_owned()),
+            ValueKind::WisdomLevel => figures.wisdom.0.to_string(),
+            ValueKind::WisdomProgress => format!("{:.0}%", figures.wisdom.1 * 100.0),
+            ValueKind::WisdomPoints => format!("Available Points: {}", figures.wisdom_points),
             ValueKind::LocationName => current_map.as_ref().map(|m| m.name.split_once('_').map_or(m.name.as_str(), |(_, name)| name).replace('_', " ")).unwrap_or_else(|| "Map".to_owned()),
             ValueKind::Name => figures.name.clone(),
             // Each window owns its current page (controls::paint).
