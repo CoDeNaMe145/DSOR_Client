@@ -400,7 +400,9 @@ impl Body for NpcInfo {
 /// same record InventoryInfo (87) and Offer (93) carry.
 pub use super::inventory::{ItemInfo as ItemRecord, ItemStatistic, MOST_RARITIES};
 
-/// NewItemCommand (51): an item lying on the ground. The body is one item record.
+/// NewItemCommand (release261: 45): an item lying on the ground. The body is one item
+/// record (its position: ItemInfo.position, map coordinates; its rarity: `kind`).
+/// SOURCE (release261): protocol/world_loot_protocol.py encode_new_item_batch.
 /// SOURCE: dsor/items.py encode_new_item_2018; slot 5 0x9A8292 hands reader 0x980AFC
 ///   the item at command+16.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -417,21 +419,22 @@ impl Body for NewItem {
     }
 }
 
-/// DiscardItemCommand (52): take an item off the ground. The body names the item; the
-/// server writes actor 0 in the trailer.
-/// SOURCE: dsor/inventory.py pickup_reply_2018 ([52][item u32][0 u32][0xFF]).
-/// UNKNOWN (2018): not traced to the client's DiscardItemCommand reader.
+/// DiscardItemCommand (release261: 46): take an item off the ground -- the item,
+/// then a bool (production's `notify`); the server writes actor 0 in the trailer.
+/// SOURCE: dso-server-production protocol/world_loot_protocol.py encode_discard_item_batch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DiscardItem {
     pub item: u32,
+    pub notify: bool,
 }
 
 impl Body for DiscardItem {
     fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
-        Ok(Self { item: r.u32()? })
+        Ok(Self { item: r.u32()?, notify: r.bit()? })
     }
     fn encode(&self, w: &mut BitWriter) {
-        w.u32(self.item)
+        w.u32(self.item);
+        w.bit(self.notify);
     }
 }
 

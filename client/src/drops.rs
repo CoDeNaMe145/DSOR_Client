@@ -1,0 +1,290 @@
+//! Items on the ground: what the server drops (NewItemCommand) until it takes it
+//! back (DiscardItemCommand).
+//!
+//! An item lies as its template's drop model (`_Template_Item.Graphics`, e.g.
+//! `dropitems/dwarf_drop_helmet_01`), playing that model's own looping clip (its
+//! slow turn), with its rarity's glow: the sequence `drop_<rarity>` (one looping
+//! `dropitems/glow_<rarity>` effect), or the template's DropSequenceOverride.
+//! Holding Ctrl names every item, its text in its rarity's colour (white for a
+//! common one), over a dark box (ui/cmdmodeitemlabel.bxml: a BGLabel frame round a
+//! TextDescription).
+//! EVIDENCE: the drop models' `<name>-loop` clips; skills/sequences.json
+//!   drop_common .. drop_mythic; the rarity is ItemInfo field_08 (`kind`), indexing
+//!   Common, Uncommon, Magic, Rare, Epic, Unique, Set, Mythic (DSOR_Server
+//!   protocol/world_loot_protocol.py EQUIPMENT_RARITIES).
+//! UNVERIFIED: the label's frame is drawn as a plain dark box, not the BGLabel art
+//!   (which the game does not tint by rarity).
+
+use std::collections::HashMap;
+
+use bevy::asset::{io::Reader, AssetLoader, LoadContext};
+use bevy::gltf::Gltf;
+use bevy::prelude::*;
+use serde::Deserialize;
+
+use crate::net::Net;
+use crate::nav::{CurrentNav, NavMesh};
+use crate::skills::{SequenceTable, SkillData};
+
+/// The rarities in ItemInfo's order.
+const RARITIES: [&str; 8] = ["common", "uncommon", "magic", "rare", "epic", "unique", "set", "mythic"];
+
+/// A rarity's text colour (index as RARITIES): the item name's, on the Ctrl label
+/// and in tooltips.
+/// EVIDENCE: 2018 client FUN_00782b2f(out, rarity), float constants: Common
+///   0xE6B450 (0.812, 0.812, 0.812), Uncommon 0xE6B430 (0.157, 0.929, 0), Magic
+///   0xE6B470 (0, 0.471, 1), Rare 0xE6B460 (1, 0.09, 1), Epic 0xE6B420 (1, 0.423,
+///   0), anything above 0xE6B440 (1, 0.859, 0.067): the 2018 client knows six
+///   rarities, so Set and Mythic take the last. UI::CommandModeWidget::UpdateLabel
+///   (0x64ADFB) colours TextDescription through FUN_007829E5, which keeps white
+///   for some item types (not resolved; the rarity colour is used for all here).
+const RARITY_TEXT: [Color; 8] = [
+    Color::srgb(0.812, 0.812, 0.812),
+    Color::srgb(0.157, 0.929, 0.0),
+    Color::srgb(0.0, 0.471, 1.0),
+    Color::srgb(1.0, 0.09, 1.0),
+    Color::srgb(1.0, 0.423, 0.0),
+    Color::srgb(1.0, 0.859, 0.067),
+    Color::srgb(1.0, 0.859, 0.067),
+    Color::srgb(1.0, 0.859, 0.067),
+];
+
+/// What a label floats over the item's origin, world units.
+const LABEL_HEIGHT: f32 = 0.9;
+
+/// One item template, as interface/inventory.items.json has it (the fields used).
+#[derive(Deserialize, Debug, Clone, Default)]
+struct ItemTemplate {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    graphics: String,
+    #[serde(default)]
+    drop_sequence: String,
+}
+
+#[derive(Asset, TypePath, Deserialize, Debug)]
+struct ItemCatalog {
+    items: HashMap<String, ItemTemplate>,
+}
+
+#[derive(Default, TypePath)]
+struct ItemCatalogLoader;
+
+impl AssetLoader for ItemCatalogLoader {
+    type Asset = ItemCatalog;
+    type Settings = ();
+    type Error = std::io::Error;
+    async fn load(&self, r: &mut dyn Reader, _: &(), _: &mut LoadContext<'_>) -> Result<ItemCatalog, Self::Error> {
+        let mut b = Vec::new();
+        r.read_to_end(&mut b).await?;
+        serde_json::from_slice(&b).map_err(std::io::Error::other)
+    }
+    fn extensions(&self) -> &[&str] {
+        &["items.json"]
+    }
+}
+
+#[derive(Resource)]
+struct Catalog(Handle<ItemCatalog>);
+
+/// An item on the ground: its server id, name and rarity.
+#[derive(Component)]
+pub struct GroundItem {
+    pub id: u32,
+    name: String,
+    rarity: usize,
+}
+
+/// Its model, until its clip is started.
+#[derive(Component)]
+struct ItemModel(Handle<Gltf>);
+
+/// The Ctrl label of an item.
+#[derive(Component)]
+struct ItemLabel(Entity);
+
+pub struct DropsPlugin;
+
+impl Plugin for DropsPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_asset::<ItemCatalog>()
+            .register_asset_loader(ItemCatalogLoader)
+            .add_systems(Startup, |mut commands: Commands, assets: Res<AssetServer>| {
+                commands.insert_resource(Catalog(assets.load("interface/inventory.items.json")));
+            })
+            .add_systems(Update, (spawn_drops, animate_drops, labels).chain());
+    }
+}
+
+fn rarity_name(rarity: usize) -> &'static str {
+    RARITIES.get(rarity).copied().unwrap_or("common")
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_drops(
+    mut commands: Commands,
+    net: Option<NonSendMut<Net>>,
+    assets: Res<AssetServer>,
+    catalog: Res<Catalog>,
+    catalogs: Res<Assets<ItemCatalog>>,
+    skills: Res<SkillData>,
+    seqs: Res<Assets<SequenceTable>>,
+    nav: Option<Res<CurrentNav>>,
+    navmeshes: Res<Assets<NavMesh>>,
+    items: Query<(Entity, &GroundItem)>,
+    current: Option<Res<crate::map::CurrentMap>>,
+) {
+    let Some(mut net) = net else { return };
+    for id in std::mem::take(&mut net.items_gone) {
+        for (e, item) in &items {
+            if item.id == id {
+                commands.entity(e).despawn();
+            }
+        }
+    }
+    if net.item_drops.is_empty() {
+        return;
+    }
+    // Both tables first: the drops wait in Net meanwhile.
+    let (Some(table), Some(sequences)) = (catalogs.get(&catalog.0), seqs.get(skills.sequences())) else { return };
+    let mesh = nav.as_ref().and_then(|n| navmeshes.get(&n.0));
+    let root = current.as_ref().and_then(|c| c.root);
+    for item in std::mem::take(&mut net.item_drops) {
+        // A drop again (the server re-announces on re-entering vicinity): replaced.
+        for (e, old) in &items {
+            if old.id == item.id {
+                commands.entity(e).despawn();
+            }
+        }
+        let template = table.items.get(&item.template).cloned().unwrap_or_default();
+        let rarity = (item.kind as usize).min(RARITIES.len() - 1);
+        let mut at = Vec3::from(item.position);
+        if let Some(h) = mesh.and_then(|m| m.ground(at.x, at.z, at.y, 3.0)) {
+            at.y = h;
+        }
+        // The model: Graphics (every template has one; a bag if unknown).
+        let graphics = if template.graphics.is_empty() { "dropitems/all_drop_bag_01".to_owned() } else { template.graphics.clone() };
+        let path = crate::map::model_path(&graphics);
+        let gltf: Handle<Gltf> = assets.load(path.clone());
+        let name = if template.name.is_empty() { item.template.clone() } else { template.name.clone() };
+        debug!("item {} {} ({}) at {at:?}", item.id, item.template, rarity_name(rarity));
+        let e = commands
+            .spawn((
+                Name::new(format!("item {}", item.template)),
+                GroundItem { id: item.id, name, rarity },
+                ItemModel(gltf),
+                Transform::from_translation(at),
+                Visibility::default(),
+            ))
+            .id();
+        if let Some(root) = root {
+            commands.entity(e).insert(ChildOf(root));
+        }
+        commands.spawn((
+            bevy::world_serialization::WorldAssetRoot(assets.load(bevy::gltf::GltfAssetLabel::Scene(0).from_asset(path))),
+            ChildOf(e),
+            Transform::default(),
+            Visibility::default(),
+        ));
+        // Its glow: the template's own sequence, else its rarity's.
+        let glow = template.drop_sequence.rsplit('/').next().filter(|s| !s.is_empty()).map(str::to_owned)
+            .unwrap_or_else(|| format!("drop_{}", rarity_name(rarity)));
+        if let Some(seq) = sequences.0.get(&glow) {
+            crate::skills::play(&mut commands, seq.clone(), None, e, true);
+        }
+    }
+}
+
+/// Each model plays its own looping clip once its scene is in (its turn).
+fn animate_drops(
+    mut commands: Commands,
+    drops: Query<(Entity, &ItemModel)>,
+    children: Query<&Children>,
+    players: Query<(), With<AnimationPlayer>>,
+    gltfs: Res<Assets<Gltf>>,
+    assets: Res<AssetServer>,
+    mut graphs: ResMut<Assets<AnimationGraph>>,
+) {
+    for (entity, model) in &drops {
+        if assets.load_state(&model.0).is_failed() {
+            commands.entity(entity).remove::<ItemModel>();
+            continue;
+        }
+        let Some(gltf) = gltfs.get(&model.0) else { continue };
+        let Some(clip) = gltf.animations.first() else {
+            commands.entity(entity).remove::<ItemModel>();
+            continue;
+        };
+        let Some(player) = children.iter_descendants(entity).find(|e| players.contains(*e)) else { continue };
+        commands.entity(entity).remove::<ItemModel>();
+        let (graph, node) = AnimationGraph::from_clip(clip.clone());
+        let mut anim = AnimationPlayer::default();
+        anim.play(node).repeat();
+        commands.entity(player).insert((AnimationGraphHandle(graphs.add(graph)), anim));
+    }
+}
+
+/// While Ctrl is held: each item's name over it, in its rarity's colour.
+#[allow(clippy::too_many_arguments)]
+fn labels(
+    mut commands: Commands,
+    keys: Res<ButtonInput<KeyCode>>,
+    ui: Res<crate::ui_input::UiInput>,
+    assets: Res<AssetServer>,
+    items: Query<(Entity, &GroundItem, &GlobalTransform, &InheritedVisibility)>,
+    mut labels: Query<(Entity, &ItemLabel, &mut Node, &mut Visibility, &ComputedNode)>,
+    cameras: Query<(&Camera, &GlobalTransform), (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
+) {
+    let held = !ui.typing && (keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight));
+    let mut labelled: HashMap<Entity, Entity> = HashMap::new();
+    for (label, of, _, _, _) in &labels {
+        if items.contains(of.0) {
+            labelled.insert(of.0, label);
+        } else {
+            commands.entity(label).despawn();
+        }
+    }
+    if held {
+        for (e, item, _, _) in &items {
+            if !labelled.contains_key(&e) {
+                commands.spawn((
+                    ItemLabel(e),
+                    Node {
+                        position_type: PositionType::Absolute,
+                        padding: UiRect::axes(Val::Px(6.0), Val::Px(2.0)),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.65)),
+                    Text::new(item.name.clone()),
+                    TextFont { font: assets.load("fonts/tahoma.ttf").into(), font_size: bevy::text::FontSize::Px(14.0), ..default() },
+                    TextColor(RARITY_TEXT[item.rarity.min(RARITY_TEXT.len() - 1)]),
+                    Pickable::IGNORE,
+                    Visibility::Hidden,
+                ));
+            }
+        }
+    }
+    let cam = cameras.single().ok();
+    for (_, of, mut node, mut visibility, size) in &mut labels {
+        let screen = items.get(of.0).ok().filter(|(_, _, _, shown)| held && shown.get()).and_then(|(_, _, at, _)| {
+            cam.and_then(|(c, ct)| c.world_to_viewport(ct, at.translation() + Vec3::Y * LABEL_HEIGHT).ok())
+        });
+        match screen {
+            Some(p) => {
+                // Centred over the item (its laid-out size, logical pixels).
+                let half = size.size() * size.inverse_scale_factor() * 0.5;
+                node.left = Val::Px(p.x - half.x);
+                node.top = Val::Px(p.y - half.y * 2.0);
+                if *visibility != Visibility::Inherited {
+                    *visibility = Visibility::Inherited;
+                }
+            }
+            None => {
+                if *visibility != Visibility::Hidden {
+                    *visibility = Visibility::Hidden;
+                }
+            }
+        }
+    }
+}

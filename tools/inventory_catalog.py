@@ -43,7 +43,10 @@ def export_inventory(db, textures, loca, assets):
             icon=icon, max_stack=max(1, int(r.get('MaxStackSize') or 1)),
             required_level=max(0, int(r.get('RequiredLevel') or 0)),
             slots=SLOTS.get(r.get('SlotType'), []), class_name=(r.get('CharClass') or '').lower(),
-            rarity=r.get('DefaultRarity') or 'Common')
+            rarity=r.get('DefaultRarity') or 'Common',
+            # The model it lies on the ground as (crate::drops), and the sequence
+            # that replaces its rarity glow, if any.
+            graphics=r.get('Graphics') or '', drop_sequence=r.get('DropSequenceOverride') or '')
     for row in db.execute('SELECT ItemTemplateId, IngredientBagTab, IngredientBagRarity, IngredientBagSlot, CharClass, UnlockLevel FROM _Template_IngredientBag WHERE IsLive=1 ORDER BY IngredientBagTab, IngredientBagRarity, IngredientBagSlot, Id'):
         item, tab, rarity, slot, cls, level = row
         if item not in result['items']:

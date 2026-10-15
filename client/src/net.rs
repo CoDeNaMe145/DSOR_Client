@@ -219,6 +219,10 @@ pub struct Net {
     pub named_status_events: Vec<(u32, String, f32)>,
     pub location_gone: Vec<u32>,
     remote_gone: Vec<u32>,
+    /// Items the server put on the ground (NewItem) and took away (DiscardItem),
+    /// for crate::drops.
+    pub item_drops: Vec<dsor_proto::commands::inventory::ItemInfo>,
+    pub items_gone: Vec<u32>,
     /// (actor, where, facing, the record's own start tick).
     remote_moves: Vec<(u32, Vec3, f32, u32)>,
     /// Re-resolve after full inventory or compact item updates; retained until
@@ -689,6 +693,8 @@ pub fn start_offline(world: &mut World, class: u8, gender: u8) {
         requested: Default::default(),
         remote_spawns: Vec::new(),
         remote_gone: Vec::new(),
+        item_drops: Vec::new(),
+        items_gone: Vec::new(),
         remote_moves: Vec::new(),
         local_appearance_dirty: false,
         remote_redress: HashMap::new(),
@@ -906,6 +912,8 @@ pub(crate) fn start_session(world: &mut World, config: NetConfig) {
         requested: Default::default(),
         remote_spawns: Vec::new(),
         remote_gone: Vec::new(),
+        item_drops: Vec::new(),
+        items_gone: Vec::new(),
         remote_moves: Vec::new(),
         local_appearance_dirty: false,
         remote_redress: HashMap::new(),
@@ -1336,6 +1344,8 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
                 level: m.level,
             });
         }
+        ServerCommand::NewItem(c) => net.item_drops.push(c.item),
+        ServerCommand::DiscardItem(c) => net.items_gone.push(c.item),
         ServerCommand::DiscardMonster(_) => {
             if let Some(a) = actor {
                 net.discard_actor(a);
