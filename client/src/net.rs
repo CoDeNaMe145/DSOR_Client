@@ -35,7 +35,7 @@ const MAX_STEP: f32 = 1.2;
 /// Seconds ANOTHER player keeps running after they last moved: just over the 40 ms
 /// between two of their records. SEE: move_remotes. The player's own run stops the
 /// moment they stop ("elle devrait s'arreter quand j'arrete de marcher").
-const RUN_GRACE: f32 = 0.12;
+pub(crate) const RUN_GRACE: f32 = 0.12;
 /// A click this close to the player is no destination: holding the button on
 /// yourself must not make the run flicker.
 const CLICK_DEAD_ZONE: f32 = 0.4;
@@ -1301,6 +1301,8 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
         ServerCommand::Skill(c) => net.skill_event(actor, &c.base, Vec::new()),
         ServerCommand::TargetSkill(c) => net.skill_event(actor, &c.base, Vec::new()),
         ServerCommand::BulletSkill(c) => net.skill_event(actor, &c.base, Vec::new()),
+        // Monsters' aimed projectiles (release261: the server sends them too).
+        ServerCommand::TargetBulletSkill(c) => net.skill_event(actor, &c.base, c.points.clone()),
         ServerCommand::TargetPointBulletSkill(c) => net.skill_event(actor, &c.base, c.points.clone()),
         ServerCommand::ShiftedSkill(c) => net.skill_event(actor, &c.base, c.points.clone()),
         ServerCommand::NewNpc(n) => {

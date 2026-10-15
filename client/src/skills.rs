@@ -925,8 +925,14 @@ fn remote_skills(
     }
     let (Some(table), Some(sequences)) = (tables.get(&data.skills), seqs.get(&data.sequences)) else { return };
     for ev in std::mem::take(&mut net.skill_events) {
-        let Some(skill) = table.0.get(&(ev.wire as u32)) else { continue };
-        let Some((e, mut tf, mut r, character)) = remotes.iter_mut().find(|(_, _, r, _)| r.actor == ev.actor) else { continue };
+        let Some(skill) = table.0.get(&(ev.wire as u32)) else {
+            warn!("actor {:#x} used skill {} that skills.json does not have: nothing played", ev.actor, ev.wire);
+            continue;
+        };
+        let Some((e, mut tf, mut r, character)) = remotes.iter_mut().find(|(_, _, r, _)| r.actor == ev.actor) else {
+            debug!("skill {} ({}) of actor {:#x}, which is not here", ev.wire, skill.id, ev.actor);
+            continue;
+        };
         let facing = aim_to_facing(ev.heading);
         r.facing = facing;
         // Movement off until its unblock frame, where it stands now: its records
@@ -936,6 +942,12 @@ fn remote_skills(
         r.held = unblock as f32 / FPS;
         r.held_until_tick = Some(ev.start_tick.wrapping_add(unblock));
         r.target = tf.translation;
+        // Standing from here: when the hold ends before the animation (a melee
+        // swing's unblock frame comes before its last frame), a body that walked up
+        // to strike must not read as just stopped -- the run took over and cut the
+        // swing ("les ennemis au cac ... jouent pas leur animation entierement").
+        // Only a record that moves it again ends the swing (move_remotes).
+        r.still_for = crate::net::RUN_GRACE;
         tf.rotation = Quat::from_rotation_y(facing);
         let point = ev
             .points
