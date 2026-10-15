@@ -275,7 +275,7 @@ pub(super) fn update(
     let text_parent = commands.spawn((Follows { k: view.k, flip: false }, follow_transform(&screen, view.k, false),
         Visibility::Inherited, ChildOf(parent))).id();
     commands.spawn((MapCaption, Text2d::new(""),
-        TextFont { font: assets.load("fonts/tahoma.ttf").into(), font_size: bevy::text::FontSize::Px(14.0 * screen.scale), ..default() },
+        TextFont { font: assets.load("fonts/tahoma.ttf").into(), font_size: bevy::text::FontSize::Px(14.0 * TEXT_SCALE * screen.scale), ..default() },
         TextColor(Color::srgb(0.94, 0.86, 0.68)),
         bevy::sprite::Text2dShadow { offset: Vec2::new(1.0, -1.0), color: Color::BLACK },
         Anchor(Vec2::new(0.5, 0.5)), TextLayout::justify(Justify::Right),

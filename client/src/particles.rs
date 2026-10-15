@@ -420,10 +420,10 @@ fn step(e: &Emitter, s: &mut EmitterState, at: &GlobalTransform, dt: f32, emitti
 
 fn simulate(
     time: Res<Time>,
-    cameras: Query<&GlobalTransform, (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
+    cameras: Query<(&GlobalTransform, &bevy::camera::RenderTarget), (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
     mut emitters: Query<(&Emitter, &mut EmitterState, &GlobalTransform, &InheritedVisibility, Has<StopEmitting>)>,
 ) {
-    let Ok(cam) = cameras.single() else { return };
+    let Some((cam, _)) = cameras.iter().find(|(_, target)| matches!(target, bevy::camera::RenderTarget::Window(_))) else { return };
     let eye = cam.translation();
     if crate::flag("noparticles") {
         return;
@@ -475,11 +475,11 @@ fn draw(
     time: Res<Time>,
     groups: Res<Groups>,
     mut meshes: ResMut<Assets<Mesh>>,
-    cameras: Query<&GlobalTransform, (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
+    cameras: Query<(&GlobalTransform, &bevy::camera::RenderTarget), (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
     emitters: Query<(&Emitter, &EmitterState, &GlobalTransform, &InheritedVisibility)>,
     mut drawn: Local<Vec<bool>>,
 ) {
-    let Ok(cam) = cameras.single() else { return };
+    let Some((cam, _)) = cameras.iter().find(|(_, target)| matches!(target, bevy::camera::RenderTarget::Window(_))) else { return };
     let (right, up) = (cam.right().as_vec3(), cam.up().as_vec3());
     let mut buffers: Vec<Buffers> = (0..groups.list.len()).map(|_| Buffers::default()).collect();
     for (e, s, at, vis) in &emitters {

@@ -314,12 +314,12 @@ fn modal(mut commands: Commands, selection: Res<Selection>, assets: Res<AssetSer
         root.spawn((Node { width: px(430), padding: UiRect::all(px(28)), row_gap: px(18), flex_direction: FlexDirection::Column,
             border: UiRect::all(px(2)), ..default() }, BackgroundColor(Color::srgb(0.055, 0.065, 0.065)), BorderColor::all(color))).with_children(|panel| {
             for (text, size) in [(title.to_owned(), 23.0), (body, 17.0)] {
-                panel.spawn((Text::new(text), TextFont { font: font.clone().into(), font_size: bevy::text::FontSize::Px(size), ..default() }, TextColor(color)));
+                panel.spawn((Text::new(text), TextFont { font: font.clone().into(), font_size: bevy::text::FontSize::Px(size * TEXT_SCALE), ..default() }, TextColor(color)));
             }
             let mut button = |label: String, action: ModalAction| {
                 panel.spawn((Button, action, Node { padding: UiRect::all(px(10)), justify_content: JustifyContent::Center, ..default() },
                     BackgroundColor(Color::srgb(0.20, 0.15, 0.08)))).with_children(|p| {
-                    p.spawn((Text::new(label), TextFont { font: font.clone().into(), font_size: bevy::text::FontSize::Px(17.0), ..default() }, TextColor(color)));
+                    p.spawn((Text::new(label), TextFont { font: font.clone().into(), font_size: bevy::text::FontSize::Px(17.0 * TEXT_SCALE), ..default() }, TextColor(color)));
                 });
             };
             if let Dialog::Create { class, gender, .. } = selection.dialog {
@@ -328,7 +328,7 @@ fn modal(mut commands: Commands, selection: Res<Selection>, assets: Res<AssetSer
             }
             button(if waiting { "Please wait..." } else { confirm }.into(), ModalAction::Confirm);
             button("Cancel".into(), ModalAction::Cancel);
-            if !selection.status.is_empty() { panel.spawn((Text::new(&selection.status), TextFont { font: font.into(), font_size: bevy::text::FontSize::Px(16.0), ..default() }, TextColor(color))); }
+            if !selection.status.is_empty() { panel.spawn((Text::new(&selection.status), TextFont { font: font.into(), font_size: bevy::text::FontSize::Px(16.0 * TEXT_SCALE), ..default() }, TextColor(color))); }
         });
     });
 }

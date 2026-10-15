@@ -422,6 +422,16 @@ pub struct CameraShake {
 
 pub struct SkillsPlugin;
 
+/// The level editor plays authored effects without gameplay, networking or casts.
+pub(crate) struct EditorSequencesPlugin;
+impl Plugin for EditorSequencesPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<CameraShake>()
+            .init_resource::<crate::monsters::ShaderColors>()
+            .add_systems(Update, (play_sequences, start_fx_animations, retire_effects).chain());
+    }
+}
+
 impl Plugin for SkillsPlugin {
     fn build(&self, app: &mut App) {
         app.init_asset::<SkillTable>()

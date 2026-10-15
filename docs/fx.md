@@ -60,6 +60,43 @@ Not yet: height fog (`HeightFogColor`, `FogNearHeight` / `FogFarHeight`), bloom 
 (`LightType` 1, 329 rows: they need `LightTexture` and shadows), event bubbles
 (`EventSetRow` other than -1).
 
+Bubble membership uses the local player's feet after movement transforms have
+propagated. Only the map viewer falls back to the camera's ground focus. Disabled
+volumes remain disabled through asset export. Sun directions are normalized
+before blending so the size of a volume does not accelerate its lighting fade.
+
+Kingscity's two permanent interior volumes have authored entrance corrections in
+`level-overrides/a0200_kingscity.json`: the church begins at its open doors
+(`x = 140`, beyond the porch at `x = 137`), and the palace begins at the room-side
+entrance caps (`z = -143`, beyond the arch at `z = -140`). Only the entrance face
+of each box moves; its other bounds and lighting settings are retained. Reapply
+these overrides after conversion with `tools/apply_level_overrides.py`.
+
+## Keeping the player visible indoors
+
+`client/src/occlusion.rs` casts five rays from the active game camera to the local
+player's torso, head, lower body and sides. Opaque and alpha-tested map geometry
+between camera and player receives a local, soft-edged dithered opening. All
+blocking layers are considered, including walls behind other walls. This also
+works for outdoor map geometry when it obscures the character; it does not infer
+indoors from brightness or ambience priority.
+
+The opening follows the player, fades in over 0.16 seconds, holds for 0.12 seconds
+across brief gaps, then closes over 0.25 seconds. Geometry at ground level and
+behind the character stays intact. Characters, particles and transparent effects
+are excluded. Original mesh geometry remains available to raycasts, so opening
+the hole does not make the blocker oscillate between visible and hidden.
+
+Cutout materials are temporary per-entity variants of the original standard or
+Nebula material. Shared materials, merged mesh batches and collision/navigation
+data are preserved, and the original material handle returns when the obstruction
+clears or the player disappears. The depth/normal prepass matches the opening;
+shadow cameras still draw the complete building.
+
+For native offline verification, `DSOR_OCCLUSION_REPLAY=<steps.json>` accepts steps
+with `frame`, optional `position: [x,y,z]`, `capture: "path.png"`, and `quit: true`.
+Frames start after the map has spawned. The route only runs in offline play.
+
 ## Surfaces, per 2018 shader
 
 Counts are models of the 2018 data using the shader.

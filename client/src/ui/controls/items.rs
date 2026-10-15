@@ -175,7 +175,7 @@ pub fn input(mut ui:ResMut<Interaction>,mut pointer:ResMut<Pointer>,mut windows:
 #[derive(Component)] pub struct Contents;
 #[derive(Component)] pub struct Overlay;
 fn text(commands:&mut Commands,assets:&AssetServer,screen:&Screen,parent:Entity,value:String,at:Vec3,size:f32,color:Color,width:f32) {
-    commands.spawn((Text2d::new(value),TextFont{font:assets.load("fonts/tahoma.ttf").into(),font_size:bevy::text::FontSize::Px(size*screen.scale),..default()},
+    commands.spawn((Text2d::new(value),TextFont{font:assets.load("fonts/tahoma.ttf").into(),font_size:bevy::text::FontSize::Px(size*TEXT_SCALE*screen.scale),..default()},
         TextColor(color),Anchor::TOP_LEFT,bevy::text::TextBounds::new_horizontal(width*screen.scale),
         Transform::from_translation(at).with_scale(Vec3::splat(1.0/screen.scale)),RenderLayers::layer(LAYER),ChildOf(parent)));
 }
@@ -193,7 +193,7 @@ pub fn render(mut commands:Commands,windows:Query<(Entity,&Window2018,&WindowCon
     let key=window.map(|(e,_,c,_)|(e,net.inventory.revision,c.bag,c.inventory,c.ingredient,c.rarity,screen.width.to_bits(),screen.scale.to_bits(),c.spells.class,c.overflow_page));
     if *last==key {return;} *last=key; for e in &old {commands.entity(e).despawn();}
     let Some((root,_,c,_))=window else{return};
-    let group=commands.spawn((Contents,Transform::from_xyz(0.0,0.0,15.0),Visibility::Inherited,ChildOf(root))).id();
+    let group=commands.spawn((Contents,Transform::from_xyz(0.0,0.0,WINDOW_ITEMS_DEPTH),Visibility::Inherited,ChildOf(root))).id();
     for b in &c.buttons {
         let Action::Item(cell)=b.action else{continue}; if !c.section_visible(b.section) {continue;}
         let [l,t,r,bt]=b.rect;let pos=screen.world(b.k,l,t);let size=Vec2::new(r-l,bt-t);
@@ -287,6 +287,113 @@ pub fn overlay(mut commands:Commands,ui:Res<Interaction>,windows:Query<(&Window2
 mod tests {
     use super::*;
     use dsor_proto::commands::inventory::InventoryInfo;
+
+    #[test]
+    #[ignore = "requires locally converted game UI assets"]
+    fn rendered_windows_keep_items_and_labels_in_order_and_start_with_zero_wisdom() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default(), TransformPlugin))
+            .init_asset::<Layout>().init_asset::<Mesh>().init_asset::<UiMaterial>()
+            .init_asset::<Image>().init_asset::<Font>().init_asset::<Catalog>()
+            .init_resource::<Loaded>().init_resource::<Screen>().init_resource::<Figures>()
+            .init_resource::<crate::stats::Sheet>().init_resource::<crate::monsters::HoverInfo>()
+            .init_resource::<Pointer>().init_resource::<Interaction>().init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<bevy::sprite_render::EntitiesNeedingSpecialization<UiMaterial>>()
+            .add_systems(PostUpdate, (refresh_mesh_order, bevy::sprite_render::check_entities_needing_specialization::<UiMaterial>)
+                .chain().after(TransformSystems::Propagate).after(bevy::asset::AssetEventSystems))
+            .add_systems(Update, (spawn_windows, sync, keyboard, order_windows, read_figures, update_fills, update_values, paint, render).chain());
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/interface");
+        for (name, z) in HUD_WINDOWS.into_iter().chain(MENU_WINDOWS.map(|(name, _, z)| (name, z))) {
+            let layout: Layout = serde_json::from_slice(&std::fs::read(dir.join(format!("{name}.ui.json"))).unwrap()).unwrap();
+            let handle = app.world_mut().resource_mut::<Assets<Layout>>().add(layout);
+            let mut loaded = app.world_mut().resource_mut::<Loaded>();
+            loaded.layouts.push((handle, z, None));
+            loaded.spawned.push(false);
+        }
+        let catalog: Catalog = serde_json::from_slice(&std::fs::read(dir.join("inventory.items.json")).unwrap()).unwrap();
+        let template = catalog.ingredients[0].template.clone();
+        let catalog = app.world_mut().resource_mut::<Assets<Catalog>>().add(catalog);
+        app.insert_resource(Data { catalog, tooltip: default() });
+        crate::net::start_offline(app.world_mut(), 1, 0);
+        app.world_mut().non_send_mut::<crate::net::Net>().inventory.apply(InventoryInfo {
+            items: vec![ItemInfo { id: 1, third: 23, template, ..default() }],
+            placements: vec![(1, 0)], storage_sizes: [0, 0, 224, 0, 0, 0], ..default()
+        });
+        app.update();
+        let roots: HashMap<_, _> = app.world_mut().query::<(Entity, &Window2018)>().iter(app.world())
+            .map(|(e, w)| (w.0.clone(), e)).collect();
+        let inventory = roots["inventory"];
+        let skills = roots["skilltalentswindow"];
+        let press = |app: &mut App, key| {
+            app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(key);
+            app.update();
+            app.world_mut().resource_mut::<ButtonInput<KeyCode>>().reset(key);
+        };
+        press(&mut app, KeyCode::KeyK);
+        assert_eq!(*app.world().get::<Visibility>(skills).unwrap(), Visibility::Hidden);
+        press(&mut app, KeyCode::KeyI);
+        press(&mut app, KeyCode::KeyS);
+        assert_eq!(*app.world().get::<Visibility>(skills).unwrap(), Visibility::Inherited);
+
+        // Measure the actual rendered descendants, including runtime item icons
+        // and stack labels, rather than just checking the two root transforms.
+        fn depths(world: &World, root: Entity) -> (f32, f32) {
+            let mut bounds = (f32::INFINITY, f32::NEG_INFINITY);
+            let mut queue = vec![root];
+            while let Some(e) = queue.pop() {
+                if let Some(children) = world.get::<Children>(e) { queue.extend(children.iter()); }
+                if world.get::<Mesh2d>(e).is_some() || world.get::<Sprite>(e).is_some() || world.get::<Text2d>(e).is_some() {
+                    let z = world.get::<GlobalTransform>(e).unwrap().translation().z;
+                    bounds = (bounds.0.min(z), bounds.1.max(z));
+                }
+            }
+            bounds
+        }
+        assert!(app.world_mut().query::<&Sprite>().iter(app.world()).count() > 0);
+        assert!(depths(app.world(), inventory).1 < depths(app.world(), skills).0);
+        for _ in 0..20 {
+            // External visibility changes must raise the whole window too.
+            *app.world_mut().get_mut::<Visibility>(inventory).unwrap() = Visibility::Hidden;
+            app.update();
+            *app.world_mut().get_mut::<Visibility>(inventory).unwrap() = Visibility::Inherited;
+            app.update();
+            assert!(depths(app.world(), skills).1 < depths(app.world(), inventory).0);
+            press(&mut app, KeyCode::KeyS);
+            press(&mut app, KeyCode::KeyS);
+            assert!(depths(app.world(), inventory).1 < depths(app.world(), skills).0);
+            assert!(depths(app.world(), skills).1 < 500.0, "focus changes must stay below modal windows");
+            let queued = &app.world().resource::<bevy::sprite_render::EntitiesNeedingSpecialization<UiMaterial>>().changed;
+            let meshes: Vec<_> = app.world().get::<Children>(inventory).unwrap().iter()
+                .chain(app.world().get::<Children>(skills).unwrap().iter())
+                .flat_map(|parent| app.world().get::<Children>(parent).into_iter().flat_map(|c| c.iter()))
+                .filter(|e| app.world().get::<Mesh2d>(*e).is_some()).collect();
+            assert!(!meshes.is_empty());
+            assert!(meshes.iter().all(|e| queued.contains(e)), "the renderer must refresh retained mesh sort keys after focus changes");
+        }
+        app.update();
+        assert!(app.world().resource::<bevy::sprite_render::EntitiesNeedingSpecialization<UiMaterial>>().changed.is_empty(),
+            "stationary UI must keep its cached render data");
+        app.world_mut().resource_mut::<Pointer>().focus = Some((skills, "search".into()));
+        press(&mut app, KeyCode::KeyS);
+        assert_eq!(*app.world().get::<Visibility>(skills).unwrap(), Visibility::Inherited, "typing must consume shortcuts");
+
+        let mut values = app.world_mut().query::<(&Value, &Text2d)>();
+        for (kind, expected, count) in [(ValueKind::WisdomLevel, "0", 2), (ValueKind::WisdomProgress, "0%", 1), (ValueKind::WisdomPoints, "Available Points: 0", 1)] {
+            let actual: Vec<_> = values.iter(app.world()).filter(|(v, _)| v.0 == kind).map(|(_, t)| t.0.as_str()).collect();
+            assert_eq!(actual, vec![expected; count]);
+        }
+        let mut gauges = app.world_mut().query::<(&Fill, &MeshMaterial2d<UiMaterial>)>();
+        let wisdom: Vec<_> = gauges.iter(app.world()).filter(|(f, _)| f.which == Gauge::Wisdom).collect();
+        assert!(wisdom.len() >= 2, "both the HUD and talents wisdom bars must be dynamic");
+        for (_, handle) in wisdom {
+            let clip = app.world().resource::<Assets<UiMaterial>>().get(&handle.0).unwrap().clip;
+            assert_eq!(clip.x, clip.z, "zero wisdom must have an empty progress bar");
+        }
+        // Late-arriving layouts must receive defaults without a stats update.
+        let late = app.world_mut().spawn((Value(ValueKind::WisdomPoints), Text2d::new("Available Points: 19"))).id();
+        app.update();
+        assert_eq!(app.world().get::<Text2d>(late).unwrap().0, "Available Points: 0");
+    }
 
     #[test]
     #[ignore = "requires locally converted game UI assets"]

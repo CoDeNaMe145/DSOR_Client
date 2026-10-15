@@ -72,6 +72,7 @@ done
 echo "[convert] maps (log: $logs/export_maps.log)"
 python3 export_maps.py --root "$root" --out "$out/maps" > "$logs/export_maps.log" 2>&1
 tail -n 6 "$logs/export_maps.log"
+python3 "$tools/level_map_events.py" "$root/maps" "$out/maps"
 
 # 5. What glTF cannot carry, and the client's own tables.
 echo "[convert] Nebula states and tables (log: $logs/post.log)"
@@ -94,6 +95,10 @@ echo "[convert] Nebula states and tables (log: $logs/post.log)"
     if [ -n "${EXPERIMENTAL:-}" ]; then python3 "$tools/export_navmesh.py" "$root" "$out"; fi
 } > "$logs/post.log" 2>&1
 tail -n 14 "$logs/post.log"
+
+# Authored edits live outside the generated tree. Recompose client sidecars and
+# derived DB4 files from one effective map; conflicts must fail the conversion.
+python3 "$tools/apply_level_overrides.py" --assets "$out" --source-root "$root"
 
 du -sh "$out"
 echo "[convert] done -> $out"

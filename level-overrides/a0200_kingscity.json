@@ -1,0 +1,168 @@
+{
+  "version": 1,
+  "map": "a0200_kingscity",
+  "operations": [
+    {
+      "kind": "_Instance_AmbienceBubble",
+      "id": "row:a3979a0983d63b311bd3c0b4e36fd0361f248cc4f0e6b2d8368b29ad79066360:0",
+      "action": "update",
+      "base": {
+        "Guid": {
+          "$blob": "1A9C474CB19B41F693F09C918ED6DBFE"
+        },
+        "_ID": "Box",
+        "_Level": "a0200_kingscity",
+        "_Layers": "",
+        "Transform": {
+          "$blob": "73681142000000000000000000000000000000007DBF23420000000000000000000000000000000079692A42000000000000C84200006041000022C30000803F"
+        },
+        "EventSetRow": -1,
+        "ParentNodeIndex": 0,
+        "Id": "Box",
+        "Graphics": "dummies/unitcube_direction",
+        "Physics": "",
+        "LightColor": {
+          "$blob": "8180003F9D9B1B3FC0BE3E3F0000803F"
+        },
+        "LightOppositeColor": {
+          "$blob": "FDFC7C3FBEBD3D3F9190103D0000803F"
+        },
+        "LightIntensity": 1.0,
+        "BackLightFactor": 0.25,
+        "LightAmbient": {
+          "$blob": "8180803DA2A0A03DC9C8C83D0000803F"
+        },
+        "LightShadowIntensity": 1.0,
+        "Placeholder": "dummies/unitcube_direction",
+        "Name": "AmbienceBubbleBox",
+        "LightSpecularIntensity": 1.0,
+        "AmbienceBubblePriority": 1000,
+        "AmbienceBubbleEnabled": 1,
+        "PEShapeType": "Box",
+        "PEFadeTime": 1.0,
+        "FogNearDist": 25.0,
+        "LocalLightColor": {
+          "$blob": "0000803FCDCC4C3F8482023F0000803F"
+        },
+        "BloomColor": {
+          "$blob": "0000803F0000803F0000803F0000803F"
+        },
+        "FogFarHeight": -10.0,
+        "FogFarDist": 50.0,
+        "FocusLength": 1000.0,
+        "FogIntensity": 1.0,
+        "LocalLightIntensity": 1.0,
+        "BloomScale": 0.0,
+        "PEDefaultEntity": 0,
+        "Saturation": 1.0,
+        "BrightPassThreshold": 0.0,
+        "FogColor": {
+          "$blob": "8180803B8180003CC5C0403C0000803F"
+        },
+        "HeightFogColor": {
+          "$blob": "0000000000000000000000000000803F"
+        },
+        "Balance": {
+          "$blob": "0000803F0000803F0000803F0000803F"
+        },
+        "FogNearHeight": 1.0,
+        "FocusDist": 0.0,
+        "RimLightColor": {
+          "$blob": "0000803FE9E7673FCDCC4C3F0000803F"
+        },
+        "VignetteIntensity": 1.0,
+        "RimLightIntensity": 0.5,
+        "VignetteSize": 1.0,
+        "VignetteColor": {
+          "$blob": "A2A0A03D8180003D8180003D0000803F"
+        }
+      },
+      "values": {
+        "Transform": {
+          "$blob": "73681142000000000000000000000000000000007DBF234200000000000000000000000000000000BC342142000000000000C84200006041982623C30000803F"
+        }
+      }
+    },
+    {
+      "kind": "_Instance_AmbienceBubble",
+      "id": "row:597a2669336eb640d51e5bfb02dad62c659ff87cf5d7f479f747ee4dbb0c0a95:0",
+      "action": "update",
+      "base": {
+        "Guid": {
+          "$blob": "0ABB6094F61A41E2B1FCC483DB0E51BB"
+        },
+        "_ID": "Box",
+        "_Level": "a0200_kingscity",
+        "_Layers": "",
+        "Transform": {
+          "$blob": "5E3A5D42000000000000000000000000000000004C37AE41000000000000000000000000000000006065064200000000588924430000104110A656C20000803F"
+        },
+        "EventSetRow": -1,
+        "ParentNodeIndex": 0,
+        "Id": "Box",
+        "Graphics": "dummies/unitcube_direction",
+        "Physics": "",
+        "LightColor": {
+          "$blob": "BCB8383EDFD8D83DDFD8D83D0000803F"
+        },
+        "LightOppositeColor": {
+          "$blob": "0000000000000000000000000000803F"
+        },
+        "LightIntensity": 1.0,
+        "BackLightFactor": 0.25,
+        "LightAmbient": {
+          "$blob": "B5B4343EFBFC7C3EB2B2B23E0000803F"
+        },
+        "LightShadowIntensity": 1.0,
+        "Placeholder": "dummies/unitcube_direction",
+        "Name": "AmbienceBubbleBox",
+        "LightSpecularIntensity": 1.0,
+        "AmbienceBubblePriority": 1000,
+        "AmbienceBubbleEnabled": 1,
+        "PEShapeType": "Box",
+        "PEFadeTime": 1.0,
+        "FogNearDist": 25.0,
+        "LocalLightColor": {
+          "$blob": "8F8F0F3FFEFEFE3EF6F4F43E0000803F"
+        },
+        "BloomColor": {
+          "$blob": "0000803F0000803F0000803F0000803F"
+        },
+        "FogFarHeight": -10.0,
+        "FogFarDist": 50.0,
+        "FocusLength": 1000.0,
+        "FogIntensity": 1.0,
+        "LocalLightIntensity": 1.0,
+        "BloomScale": 0.0,
+        "PEDefaultEntity": 0,
+        "Saturation": 1.0,
+        "BrightPassThreshold": 0.0,
+        "FogColor": {
+          "$blob": "8180803B8180003CC5C0403C0000803F"
+        },
+        "HeightFogColor": {
+          "$blob": "0000000000000000000000000000803F"
+        },
+        "Balance": {
+          "$blob": "0000803F0000803F0000803F0000803F"
+        },
+        "FogNearHeight": 1.0,
+        "FocusDist": 0.0,
+        "RimLightColor": {
+          "$blob": "CDCC4C3FEEEE6E3F0000803F0000803F"
+        },
+        "VignetteIntensity": 0.5,
+        "RimLightIntensity": 0.5,
+        "VignetteSize": 1.0,
+        "VignetteColor": {
+          "$blob": "A2A0A03D8180003D8180003D0000803F"
+        }
+      },
+      "values": {
+        "Transform": {
+          "$blob": "8FC25042000000000000000000000000000000004C37AE41000000000000000000000000000000006065064200000000521826430000104110A656C20000803F"
+        }
+      }
+    }
+  ]
+}

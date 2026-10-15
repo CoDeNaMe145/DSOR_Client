@@ -191,7 +191,7 @@ pub(in crate::ui) fn overlay(
                 commands.spawn((Sprite::from_color(Color::srgba(0.035, 0.025, 0.02, 0.96), Vec2::new(260.0, 66.0)),
                     Anchor::TOP_LEFT, RenderLayers::layer(LAYER), ChildOf(root)));
                 commands.spawn((Text2d::new(format!("{}\n{}", s.name, hint)), TextFont { font: assets.load("fonts/tahoma.ttf").into(),
-                    font_size: bevy::text::FontSize::Px(13.0 * screen.scale), ..default() }, TextColor(Color::srgb(1.0, 0.88, 0.62)),
+                    font_size: bevy::text::FontSize::Px(13.0 * TEXT_SCALE * screen.scale), ..default() }, TextColor(Color::srgb(1.0, 0.88, 0.62)),
                     bevy::text::TextBounds::new_horizontal(244.0 * screen.scale), Anchor::TOP_LEFT,
                     Transform::from_xyz(8.0, -7.0, 1.0).with_scale(Vec3::splat(1.0 / screen.scale)), RenderLayers::layer(LAYER), ChildOf(root)));
             }

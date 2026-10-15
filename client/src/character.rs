@@ -1213,12 +1213,13 @@ fn drive_animations(
     mut commands: Commands,
     mut players: Query<&mut AnimationPlayer>,
     mut to_park: Local<Vec<Entity>>,
-    cameras: Query<(&Camera, &GlobalTransform), (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
+    cameras: Query<(&Camera, &GlobalTransform, &bevy::camera::RenderTarget), (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
     me: Query<&GlobalTransform, With<crate::net::LocalPlayer>>,
 ) {
     // Animated within the zone around the player (crate::map::CULL_DISTANCE),
     // whatever the camera looks at.
-    let focus = cameras.iter().next().map(|(_, g)| crate::map::camera_focus(g, me.iter().next().map(|p| p.translation()), 0.0));
+    let focus = cameras.iter().find(|(_, _, target)| matches!(target, bevy::camera::RenderTarget::Window(_)))
+        .map(|(_, g, _)| crate::map::camera_focus(g, me.iter().next().map(|p| p.translation()), 0.0));
     let near = |p: Vec3| focus.is_none_or(|f| Vec2::new(p.x - f.x, p.z - f.z).length() <= crate::map::CULL_DISTANCE);
     *frame = frame.wrapping_add(1);
     for (mut anim, at, shown, mut lod, preview) in &mut characters {
