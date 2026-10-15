@@ -224,8 +224,9 @@ fn session_config(reply: &Value, prefs: &Preferences, login: Option<String>, cha
             .filter(|p| *p > 0 && *p <= 65535).ok_or("The server returned an invalid login port.")?;
         format!("{host}:{port}")
     };
+    let chat = net::chat_target(&reply["launch"], &login);
     Ok(net::NetConfig { login, account, session: session.into(), user: None, password: None,
-        account_api: Some(prefs.server.clone()), relay: None, character,
+        account_api: Some(prefs.server.clone()), relay: None, character, chat: Some(chat),
         new_character: Some((if prefs.character.is_empty() { prefs.username.clone() } else { prefs.character.clone() }, prefs.class, prefs.gender)) })
 }
 

@@ -162,6 +162,10 @@ impl Session {
         self.character
     }
 
+    pub fn credentials(&self) -> &Credentials {
+        &self.credentials
+    }
+
     pub fn connection(&self) -> &Connection {
         &self.conn
     }

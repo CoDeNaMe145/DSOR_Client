@@ -122,6 +122,20 @@ pub struct NetConfig {
     pub relay: Option<String>,
     /// Which character to highlight initially in the selection screen.
     pub character: Option<u32>,
+    /// The chat service, "host:port" (crate::chat; default: the login server's
+    /// host, 2191).
+    pub chat: Option<String>,
+}
+
+/// The chat service of an account service's launch document.
+/// EVIDENCE: dso-server-production services/accounts.py:464-470 (`launch`:
+///   {"host", "gateway_port", "chat_port", "instance_id"}); the chat shares the
+///   gateway's host (accounts.py:400).
+pub fn chat_target(launch: &serde_json::Value, login: &str) -> String {
+    let fallback = login.rsplit_once(':').map_or(login, |(h, _)| h);
+    let host = launch["host"].as_str().filter(|h| !h.is_empty()).unwrap_or(fallback);
+    let port = launch["chat_port"].as_u64().filter(|p| *p > 0 && *p <= 65535).unwrap_or(2191);
+    format!("{host}:{port}")
 }
 
 /// CONTRACT: a NON-SEND resource: in the browser the transport holds a WebSocket
@@ -357,6 +371,7 @@ mod pointer_tests {
             .init_resource::<ButtonInput<MouseButton>>()
             .init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<Assets<NavMesh>>()
+            .init_resource::<Time>()
             .add_systems(Update, click_to_move);
         let mut window = Window { resolution: (1024, 768).into(), ..default() };
         window.set_cursor_position(Some(Vec2::new(400.0, 400.0)));
@@ -834,16 +849,17 @@ fn finish_login(world: &mut World) {
         }
         let s = &v["session"];
         match (s["account_id"].as_u64(), s["session_id"].as_str()) {
-            (Some(a), Some(sid)) => Ok((a.to_string(), sid.to_string())),
+            (Some(a), Some(sid)) => Ok((a.to_string(), sid.to_string(), v["launch"].clone())),
             _ => Err(format!("no session in {body}")),
         }
     });
     match parsed {
-        Ok((account, session)) => {
+        Ok((account, session, launch)) => {
             info!("logged in: account {account}");
             let Some(mut config) = world.get_resource::<NetConfig>().cloned() else { return };
             config.account = account;
             config.session = session;
+            config.chat = Some(chat_target(&launch, &config.login));
             world.insert_resource(config.clone());
             start_session(world, config);
         }
@@ -968,6 +984,21 @@ impl Net {
     pub fn queue_local(&mut self, desc: CharacterDesc, at: Vec3, facing: f32) {
         let name = self.local_name.clone().unwrap_or_else(|| "Debug".into());
         self.pending_local = Some((desc, at, facing, name, false));
+    }
+
+    /// Who to log in to the chat as, once a character plays on a map: the account,
+    /// the character and the login session (crate::chat).
+    pub fn chat_identity(&self) -> Option<(u32, u32, [u8; 16])> {
+        if self.offline || self.session.stage() != dsor_proto::session::Stage::Map {
+            return None;
+        }
+        let credentials = self.session.credentials();
+        Some((credentials.account, self.session.character()?, credentials.session))
+    }
+
+    /// The browser's WebSocket relay, for the other connections (crate::chat).
+    pub fn relay(&self) -> Option<&str> {
+        self.relay.as_deref()
     }
 
     pub fn send(&mut self, command: &ClientCommand) {
