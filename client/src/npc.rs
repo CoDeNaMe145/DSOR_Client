@@ -134,8 +134,20 @@ struct DecoSeq {
 struct Deco {
     file: Option<(String, Handle<DecoFile>)>,
     done: bool,
+    /// The decorative sequences' anchors (always there).
     spawned: Vec<Entity>,
+    /// Per character of the file: its entity while it is near (stream_deco).
+    chars: Vec<Option<Entity>>,
 }
+
+/// Decorative characters exist only near the player: spawned within SPAWN, gone
+/// beyond DROP (more than the 50-unit display cull, so one is loaded before it
+/// shows; apart, so one at the edge does not come and go). Kingshill's 204 were
+/// all there, ~300 entities each: 67 000 entities, the frame rate halved.
+const DECO_SPAWN: f32 = 60.0;
+const DECO_DROP: f32 = 75.0;
+/// Characters spawned per frame at most (each loads its parts).
+const DECO_PER_FRAME: usize = 8;
 
 #[derive(Resource)]
 struct NpcData {
@@ -212,7 +224,7 @@ impl Plugin for NpcPlugin {
             .register_asset_loader(DecoLoader)
             .init_resource::<Deco>()
             .add_systems(Startup, load)
-            .add_systems(Update, (follow_map, offline_npcs, spawn_npcs, spawn_deco, animate_models, cull_actors, npc_no_shadow).chain());
+            .add_systems(Update, (follow_map, offline_npcs, spawn_npcs, spawn_deco, stream_deco, animate_models, cull_actors, npc_no_shadow).chain());
     }
 }
 
@@ -486,6 +498,9 @@ fn spawn_deco(
         for e in std::mem::take(&mut deco.spawned) {
             commands.entity(e).try_despawn();
         }
+        for e in std::mem::take(&mut deco.chars).into_iter().flatten() {
+            commands.entity(e).try_despawn();
+        }
         deco.file = Some((current.name.clone(), assets.load(format!("maps/{}.deco.json", current.name))));
         deco.done = false;
     }
@@ -504,65 +519,125 @@ fn spawn_deco(
         return;
     }
     deco.done = true;
+    deco.chars = vec![None; file.chars.len()];
     let mut spawned = Vec::new();
-    for (i, c) in file.chars.iter().enumerate() {
-        // As the NPCs: the level faces them down -Z, the models face +Z.
-        let m = Mat4::from_cols_array(&c.m);
-        let (scale, rotation, at) = m.to_scale_rotation_translation();
-        let transform = Transform { translation: at, rotation: rotation * Quat::from_rotation_y(std::f32::consts::PI), scale };
-        let skeleton = c.g.strip_prefix("characters/").unwrap_or(&c.g).to_owned();
-        let entity = if skeleton == "uniskel" || skeleton == "uniskel_dwarf" {
-            let outfit = data.outfits.get(skeleton.as_str()).and_then(|h| outfits.get(h)).and_then(|o| o.outfits.iter().find(|o| o.name == c.outfit));
-            let Some(outfit) = outfit else {
-                debug!("deco: no outfit {}", c.outfit);
-                continue;
-            };
-            let variation = outfit
-                .variation
-                .as_ref()
-                .and_then(|v| data.variations.get(skeleton.as_str()).and_then(|h| variations.get(h)).and_then(|all| all.variations.get(v)))
-                .map(|shape| shape.iter().map(|j| (j.bone.clone(), Vec3::from(j.t), Vec3::from(j.s))).collect())
-                .unwrap_or_default();
-            let desc = CharacterDesc { look: Some(NpcLook { skeleton, parts: outfit.parts.clone(), anim_set: c.set.clone(), variation }), ..default() };
-            let e = spawn_character(&mut commands, desc, transform);
-            if c.speed != 1.0 {
-                let mut anim = CharacterAnim::default();
-                anim.speed = c.speed;
-                commands.entity(e).insert(anim);
-            }
-            e
-        } else {
-            let path = format!("{}.glb", c.g);
-            let e = commands
-                .spawn((
-                    Name::new(format!("deco {}", c.outfit)),
-                    transform,
-                    Visibility::default(),
-                    ModelNpc {
-                        gltf: assets.load(path.clone()),
-                        anim_set: c.set.clone(),
-                        state: "Idle".into(),
-                        set: Some((assets.load(format!("{}.sets.json", c.g)), c.outfit.clone())),
-                        speed: c.speed,
-                    },
-                ))
-                .id();
-            commands.spawn((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(path))), ChildOf(e), Transform::default(), Visibility::default()));
-            e
-        };
-        // An actor id of its own, for the distance culling (cull_actors); no
-        // picking: nobody answers.
-        commands.entity(entity).insert((Npc { actor: DECO_ACTORS + i as u32 }, crate::character::AnimLod::new(3, i as u32 % 3)));
-        spawned.push(entity);
-    }
     for s in &file.seqs {
         let Some(seq) = table.0.get(&s.seq) else { continue };
         let anchor = commands.spawn((Transform::from_matrix(Mat4::from_cols_array(&s.m)), Visibility::default())).id();
         crate::skills::play(&mut commands, seq.clone(), None, anchor, true);
         spawned.push(anchor);
     }
-    info!("{}: {} decorative characters, {} decorative sequences", current.name, file.chars.len(), file.seqs.len());
+    info!("{}: {} decorative characters (spawned near the player), {} decorative sequences", current.name, file.chars.len(), file.seqs.len());
     deco.spawned = spawned;
+}
+
+/// Spawn the decorative characters near the player, drop the far ones.
+#[allow(clippy::too_many_arguments)]
+fn stream_deco(
+    mut commands: Commands,
+    mut deco: ResMut<Deco>,
+    files: Res<Assets<DecoFile>>,
+    data: Res<NpcData>,
+    outfits: Res<Assets<Outfits>>,
+    variations: Res<Assets<Variations>>,
+    assets: Res<AssetServer>,
+    current: Option<Res<CurrentMap>>,
+    manifests: Res<Assets<crate::map::MapManifest>>,
+    cameras: Query<&GlobalTransform, (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
+    players: Query<&GlobalTransform, With<crate::net::LocalPlayer>>,
+) {
+    if !deco.done || deco.chars.is_empty() {
+        return;
+    }
+    let (Some(current), Ok(cam)) = (current, cameras.single()) else { return };
+    let Some((_, handle)) = &deco.file else { return };
+    let Some(file) = files.get(handle) else { return };
+    let ground = manifests.get(&current.manifest).map(|m| m.center[1]).unwrap_or(0.0);
+    let focus = crate::map::camera_focus(cam, players.iter().next().map(|p| p.translation()), ground);
+    let focus = Vec2::new(focus.x, focus.z);
+    let mut budget = DECO_PER_FRAME;
+    let (mut added, mut dropped) = (0, 0);
+    for i in 0..file.chars.len() {
+        let c = &file.chars[i];
+        let d = Vec2::new(c.m[12], c.m[14]).distance(focus);
+        match deco.chars[i] {
+            Some(e) if d > DECO_DROP => {
+                commands.entity(e).try_despawn();
+                deco.chars[i] = None;
+                dropped += 1;
+            }
+            None if d <= DECO_SPAWN && budget > 0 => {
+                budget -= 1;
+                added += 1;
+                deco.chars[i] = spawn_deco_char(&mut commands, i, c, &data, &outfits, &variations, &assets);
+                trace!("deco char {i} -> {:?}", deco.chars[i]);
+            }
+            _ => {}
+        }
+    }
+    if added + dropped > 0 {
+        debug!("deco: +{added} -{dropped} at {focus:?}");
+    }
+}
+
+/// One decorative character, as the level places it.
+fn spawn_deco_char(
+    commands: &mut Commands,
+    i: usize,
+    c: &DecoChar,
+    data: &NpcData,
+    outfits: &Assets<Outfits>,
+    variations: &Assets<Variations>,
+    assets: &AssetServer,
+) -> Option<Entity> {
+    // As the NPCs: the level faces them down -Z, the models face +Z.
+    let m = Mat4::from_cols_array(&c.m);
+    let (scale, rotation, at) = m.to_scale_rotation_translation();
+    let transform = Transform { translation: at, rotation: rotation * Quat::from_rotation_y(std::f32::consts::PI), scale };
+    let skeleton = c.g.strip_prefix("characters/").unwrap_or(&c.g).to_owned();
+    let entity = if skeleton == "uniskel" || skeleton == "uniskel_dwarf" {
+        let outfit = data.outfits.get(skeleton.as_str()).and_then(|h| outfits.get(h)).and_then(|o| o.outfits.iter().find(|o| o.name == c.outfit));
+        let Some(outfit) = outfit else {
+            debug!("deco: no outfit {}", c.outfit);
+            return None;
+        };
+        let variation = outfit
+            .variation
+            .as_ref()
+            .and_then(|v| data.variations.get(skeleton.as_str()).and_then(|h| variations.get(h)).and_then(|all| all.variations.get(v)))
+            .map(|shape| shape.iter().map(|j| (j.bone.clone(), Vec3::from(j.t), Vec3::from(j.s))).collect())
+            .unwrap_or_default();
+        let desc = CharacterDesc { look: Some(NpcLook { skeleton, parts: outfit.parts.clone(), anim_set: c.set.clone(), variation }), ..default() };
+        let e = spawn_character(commands, desc, transform);
+        if c.speed != 1.0 {
+            let mut anim = CharacterAnim::default();
+            anim.speed = c.speed;
+            commands.entity(e).insert(anim);
+        }
+        e
+    } else {
+        let path = format!("{}.glb", c.g);
+        let e = commands
+            .spawn((
+                Name::new(format!("deco {}", c.outfit)),
+                transform,
+                Visibility::default(),
+                ModelNpc {
+                    gltf: assets.load(path.clone()),
+                    anim_set: c.set.clone(),
+                    state: "Idle".into(),
+                    set: Some((assets.load(format!("{}.sets.json", c.g)), c.outfit.clone())),
+                    speed: c.speed,
+                },
+            ))
+            .id();
+        commands.spawn((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(path))), ChildOf(e), Transform::default(), Visibility::default()));
+        e
+    };
+    // An actor id of its own, for the distance culling (cull_actors); no
+    // picking: nobody answers.
+    commands.entity(entity).insert((Npc { actor: DECO_ACTORS + i as u32 }, crate::character::AnimLod::new(3, i as u32 % 3)));
+    Some(entity)
 }
 
 /// Actor ids of the decorations' characters (no server actor has them).
