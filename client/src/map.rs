@@ -161,6 +161,16 @@ impl CurrentMap {
                 )
             })
             .count();
+        if std::env::var("DSOR_DEBUG_LOAD").is_ok() {
+            for h in &self.models {
+                let rec = asset_server.get_recursive_dependency_load_state(h);
+                if !matches!(rec, Some(RecursiveDependencyLoadState::Loaded | RecursiveDependencyLoadState::Failed(_)))
+                    && !matches!(asset_server.get_load_state(h), Some(LoadState::Failed(_)))
+                {
+                    warn!("map load: {:?} {:?} {:?}", h.path(), asset_server.get_load_state(h), rec);
+                }
+            }
+        }
         (done, self.by_model.len())
     }
 }
