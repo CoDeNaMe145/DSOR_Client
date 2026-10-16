@@ -146,3 +146,29 @@ fn the_fields_the_client_reads_land_where_the_server_put_them() {
     assert_eq!(sel.characters.len(), 2);
     assert_eq!((sel.characters[0].name.as_str(), sel.characters[0].unknown_u32_1, sel.characters[0].level), ("Alpha", 4886718345, 21));
 }
+
+/// A currency pickup's loot-received MessageCommand, as DSOR_Server's
+/// protocol/gameplay_protocol.py encode_message writes it: type 0x19, currency 0,
+/// 57 coins, item 0x1234, template "money_vc", actor 1.
+#[test]
+fn loot_received_message_decodes() {
+    use dsor_proto::commands::social::{Message, MessageParam};
+    let data = hex("84890019040000000100000000013900000004341200000208006d6f6e65795f766301000000");
+    let decoded = decode_message(&data, 304).unwrap();
+    assert_eq!(
+        decoded,
+        vec![(
+            ServerCommand::Message(Message {
+                message_type: 0x19,
+                params: vec![
+                    MessageParam::Int(0),
+                    MessageParam::Int(57),
+                    MessageParam::Item(0x1234),
+                    MessageParam::Str("money_vc".into()),
+                ],
+            }),
+            Some(1)
+        )]
+    );
+    assert_eq!(encode_single(&decoded[0].0, 1), (data, 304));
+}

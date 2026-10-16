@@ -1,0 +1,33 @@
+name: Rust
+
+on:
+  push:
+    branches: [ "release261" ]
+  pull_request:
+    branches: [ "release261" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    # Bevy's Linux backends: gamepads (libudev), Wayland and X11 windows,
+    # keyboard layouts, audio. Without them libudev-sys's build script fails.
+    - name: System libraries
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          pkg-config libudev-dev libwayland-dev libxkbcommon-dev libx11-dev libasound2-dev
+    # Restores ~/.cargo and target/ before building, saves them afterwards.
+    - uses: Swatinem/rust-cache@v2
+    - name: Build
+      run: cargo build --verbose
+    # Tests that need the converted game assets (never in the repository) are
+    # #[ignore]d.
+    - name: Run tests
+      run: cargo test --verbose

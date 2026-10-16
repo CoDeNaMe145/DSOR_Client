@@ -38,6 +38,8 @@ pub(crate) mod combat_text;
 pub(crate) mod input;
 mod controls;
 mod dialogue;
+/// The item catalog (names by template), for crate::ui::combat_text's loot texts.
+pub(crate) use controls::items::Catalog;
 mod local_map;
 mod selection;
 #[cfg(not(target_arch = "wasm32"))]

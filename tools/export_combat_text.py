@@ -12,9 +12,16 @@ Writes interface/combat_text.json:
           anims:ui/overheadtext.nax3, AnimGroup = clip, AnimDuration), one key per
           dt seconds -- translation y (UI units, y down), scale, alpha (the scale
           curve's w); its outline (TextEffectSize) and fontSize. Needs DSO_Godot.
-  texts: block, critical ("{0:i} !"), immunity, low_health
-         (language/en/gui.window.xml floatingBlock, floatingCritical,
-         floatingDamageImmunity, lowhealthhit)
+  texts: block, critical ("{0:i} !"), immunity, low_health, loot, loot_amount,
+         sudden_death (language/<DSOR_LANG, en>/gui.window.xml floatingBlock,
+         floatingCritical, floatingDamageImmunity, lowhealthhit, lootReceived,
+         lootReceivedAmount, suddenDeath)
+  currencies: a loot message's currency type -> its name (the no-auto-use
+         currency item's Title, db.noautousecurrency.xml): 0 coins, 1 Andermant,
+         3 ancestral knowledge, 5 glyphs of power. EVIDENCE (release261):
+         HandleMessageCommand's loot case 0x1401d09ac reads
+         currencyItemTemplateIdsNoAutoUse[type], filled at 0x1400b5916 in the
+         order vc, rc, hc, gc, -, uc.
 EVIDENCE: TemplateManager's combat text getters read these columns by type
   (GetCombatTextColor 0x51212B: +0x10 colour; 0x5121E1 +0x30 x offset; 0x51226A
   +0x40 its variation; 0x5122C9 +0x50 y offset; 0x5123FD +0x60 velocity; 0x512486
@@ -46,13 +53,26 @@ for row in db.execute(
         "size": size, "label": label or "",
     }
 
-xml = open(os.path.join(export, "language", "en", "gui.window.xml"), encoding="utf-8-sig").read()
-loca = dict(re.findall(r'<item name="([^"]+)"><!\[CDATA\[(.*?)\]\]></item>', xml, re.S))
+lang = os.environ.get("DSOR_LANG", "en")
+
+
+def loca_of(name):
+    xml = open(os.path.join(export, "language", lang, name), encoding="utf-8-sig").read()
+    return dict(re.findall(r'<item name="([^"]+)"><!\[CDATA\[(.*?)\]\]></item>', xml, re.S))
+
+
+loca = loca_of("gui.window.xml")
+money = loca_of("db.noautousecurrency.xml")
+currencies = {str(k): money.get(f"{t}_no_auto_useTitle", t) for k, t in
+              ((0, "money_vc"), (1, "money_rc"), (3, "money_gc"), (5, "money_uc"))}
 texts = {
     "block": loca.get("floatingBlock", "Block!"),
     "critical": loca.get("floatingCritical", "{0:i}!"),
     "immunity": loca.get("floatingDamageImmunity", "Immune"),
     "low_health": loca.get("lowhealthhit", ""),
+    "loot": loca.get("lootReceived", "{0:s}"),
+    "loot_amount": loca.get("lootReceivedAmount", "{0:i} {0:s}"),
+    "sudden_death": loca.get("suddenDeath", ""),
 }
 labels = {}
 if len(sys.argv) > 3:
@@ -84,5 +104,5 @@ if len(sys.argv) > 3:
     walk(doc if hasattr(doc, "children") else doc.root)
 out = os.path.join(assets, "interface", "combat_text.json")
 with open(out, "w") as f:
-    json.dump({"types": types, "texts": texts, "labels": labels}, f, ensure_ascii=False, separators=(",", ":"))
+    json.dump({"types": types, "texts": texts, "labels": labels, "currencies": currencies}, f, ensure_ascii=False, separators=(",", ":"))
 print({"types": len(types), "labels": sorted(labels), "texts": texts})
