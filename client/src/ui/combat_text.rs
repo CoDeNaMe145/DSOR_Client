@@ -404,7 +404,7 @@ fn spawn_texts(
             UiTransform::default(),
             Text::new(text),
             TextFont { font: font.clone().into(), font_size: bevy::text::FontSize::Vh(vh), ..default() },
-            TextColor(Color::srgba(t.color[0], t.color[1], t.color[2], t.color[3])),
+            TextColor(Color::srgb(t.color[0], t.color[1], t.color[2])),
             TextLayout::justify(Justify::Center),
             TextShadow { offset: Vec2::splat(1.0), color: Color::BLACK },
             Visibility::Hidden,
@@ -435,6 +435,12 @@ fn move_texts(
         };
         *vis = Visibility::Inherited;
         node.left = Val::Px(screen.x - BOX / 2.0);
+        // CONTRACT: the table colour's alpha is not the text's opacity.
+        // EVIDENCE: _Template_CombatText gives VirtualCurrency, RealCurrency,
+        //   GrindCurrency, HonorCurrency and Experience an alpha of 0, the
+        //   elemental DamageDone* types 2.0; the 2018 client shows the coins it
+        //   picks up (recorded). FAILURE (2026-10-16): multiplied in, picked-up
+        //   coins were drawn fully transparent ("rien ne s'affiche").
         let alpha = match &f.anim {
             // The clip: its translation y in screen heights, y UP (Nebula's
             // node translation): a small hop (+0.07) then a fall below its start
@@ -445,13 +451,13 @@ fn move_texts(
                 let (t, dt) = (f.age, a.dt);
                 node.top = Val::Px(screen.y - LabelAnim::at(&a.y, dt, t, 0.0) * height);
                 ui.scale = Vec2::splat(LabelAnim::at(&a.scale, dt, t, 1.0));
-                LabelAnim::at(&a.alpha, dt, t, 1.0).clamp(0.0, 1.0) * f.color[3]
+                LabelAnim::at(&a.alpha, dt, t, 1.0).clamp(0.0, 1.0)
             }
             // The last `fade` seconds fade it out.
             None => {
                 node.top = Val::Px(screen.y);
                 let left = f.duration - f.age;
-                (if f.fade > 0.0 && left < f.fade { left / f.fade } else { 1.0 }) * f.color[3]
+                if f.fade > 0.0 && left < f.fade { left / f.fade } else { 1.0 }
             }
         };
         color.0 = Color::srgba(f.color[0], f.color[1], f.color[2], alpha);
