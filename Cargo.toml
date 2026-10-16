@@ -55,3 +55,9 @@ opt-level = 3
 [profile.wasm-profile]
 inherits = "wasm-release"
 strip = "none"
+
+# bevy_mesh 0.19.1 with one change: vertex data is interleaved in ordinary
+# memory before it is written to the GPU staging buffer (see
+# vendor/bevy_mesh/src/mesh.rs write_packed_vertex_buffer_data).
+[patch.crates-io]
+bevy_mesh = { path = "vendor/bevy_mesh" }
