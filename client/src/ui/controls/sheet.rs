@@ -33,8 +33,7 @@ pub(in crate::ui) fn rows(
     mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
     primary: Query<&Window, With<PrimaryWindow>>,
     mut state: Local<(Option<Entity>, usize, Option<usize>)>,
-    mut kept: Local<Option<(Entity, Entity)>>,
-    alive: Query<(), With<SheetGroup>>,
+    (mut kept, alive, mouse, mut dragging): (Local<Option<(Entity, Entity)>>, Query<(), With<SheetGroup>>, Res<ButtonInput<MouseButton>>, Local<bool>),
 ) {
     let notches: f32 = wheel.read().map(|w| w.y.signum()).sum();
     let Some((root, _, controls, visibility, tf)) = windows.iter().find(|(_, w, _, _, _)| w.0 == WINDOW) else { return };
@@ -56,13 +55,32 @@ pub(in crate::ui) fn rows(
         n
     };
     let max_scroll = (0..rows.0.len()).find(|&f| f + fitting(f) >= rows.0.len()).unwrap_or(0);
-    let mut scroll = state.1.min(max_scroll);
+    // DSOR_SHEET_SCROLL=<rows>: the list starts scrolled (screenshots).
+    let start = if state.2.is_none() { std::env::var("DSOR_SHEET_SCROLL").ok().and_then(|v| v.parse().ok()).unwrap_or(0) } else { state.1 };
+    let mut scroll = start.min(max_scroll);
     // The wheel over the list scrolls it, a row a notch.
     if notches != 0.0 && *visibility != Visibility::Hidden {
         if let Some(cursor) = primary.single().ok().and_then(|w| w.cursor_position().map(|c| (c * (BASE_H / w.height().max(1.0)), BASE_H * w.width() / w.height().max(1.0)))) {
             let point = cursor.0 - window_offset(tf);
             if contains(list.k, list.rect, point, cursor.1) {
                 scroll = (scroll as i64 - notches as i64).clamp(0, max_scroll as i64) as usize;
+            }
+        }
+    }
+    // The handle dragged, or the track clicked: the list follows the cursor.
+    if let (Some(track), Some(bounds), Some(handle)) = (find("/OverviewList/ScrollBarBackground"), find("/OverviewList/ScrollBarBackground/ScrollBarBoundaries"), find("/OverviewList/ScrollBarBackground/ScrollBarBoundaries/ScrollHandle/normal")) {
+        let cursor = primary.single().ok().and_then(|w| w.cursor_position().map(|c| (c * (BASE_H / w.height().max(1.0)), BASE_H * w.width() / w.height().max(1.0))));
+        if !mouse.pressed(MouseButton::Left) || *visibility == Visibility::Hidden { *dragging = false; }
+        if let Some((c, width)) = cursor {
+            let point = c - window_offset(tf);
+            if mouse.just_pressed(MouseButton::Left) && *visibility != Visibility::Hidden && contains(track.k, track.rect, point, width) {
+                *dragging = true;
+            }
+            if *dragging && max_scroll > 0 {
+                let h = height(handle);
+                let range = (bounds.rect[3] - bounds.rect[1] - h).max(1.0);
+                let frac = ((point.y - bounds.rect[1] - h * 0.5) / range).clamp(0.0, 1.0);
+                scroll = (frac * max_scroll as f32).round() as usize;
             }
         }
     }
@@ -135,6 +153,12 @@ pub(in crate::ui) fn rows(
     if let (Some(bounds), Some(handle)) = (find("/OverviewList/ScrollBarBackground/ScrollBarBoundaries"), find("/OverviewList/ScrollBarBackground/ScrollBarBoundaries/ScrollHandle/normal")) {
         if let Some(art) = &handle.art {
             let h = height(handle);
+            // Its first quad only: the four around it sample outside the atlas
+            // (u -0.02) and drew a black frame the game does not show.
+            let mut art = art.clone();
+            art.pos.truncate(8); art.uv.truncate(8); art.color.truncate(16);
+            art.idx.retain(|i| *i < 4);
+            let art = &art;
             let frac = if max_scroll > 0 { scroll as f32 / max_scroll as f32 } else { 0.0 };
             let dy = bounds.rect[1] + frac * (bounds.rect[3] - bounds.rect[1] - h) - handle.rect[1];
             let mut a = art.clone();

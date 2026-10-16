@@ -130,6 +130,10 @@ fn section(window: &str, id: &str) -> Section {
     let parts: Vec<_> = id.split('/').collect();
     // The character list's scroll handle moves with the list: crate::ui::controls::sheet draws it.
     if window == "charactersheet" && id.contains("/OverviewList/ScrollBarBackground/ScrollBarBoundaries/ScrollHandle") { return Section::Hidden; }
+    // Its row templates too: drawn as they are, the first headline, its icon and
+    // a sub-headline bar stood still under the scrolling rows ("ca ecrit sur les
+    // sous menus", "les epees restent").
+    if window == "charactersheet" && id.contains("/CharacterStatsArea/Template") { return Section::Hidden; }
     if let Some(section) = panels::section(window, &parts) { return section; }
     if window == "inventory" {
         if id.contains("/unten/Label_bg/Label_empty") { return Section::OverflowFooter; }
