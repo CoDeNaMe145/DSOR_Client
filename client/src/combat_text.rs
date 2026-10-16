@@ -232,9 +232,13 @@ fn spawn_texts(
             Say::Immunity => table.texts.immunity.clone(),
             Say::LowHealth => table.texts.low_health.clone(),
         };
-        // The side: velocity and its variation each flip at random (0x58A8F8), and
-        // the dynamic x offset too (0x5880FC).
-        let mut vx = if heads(&mut seed) { -t.velocity[0] } else { t.velocity[0] };
+        // The velocity: the WHOLE vector is negated half the time (0x58AB4B:
+        // `xorps xmm1; subps xmm1, velocity` when the first random bit is 0), then
+        // the variation is added to or taken from its x (0x58AB62..0x58AB87, the
+        // second bit); the dynamic x offset flips on its own (0x5880FC).
+        let flip = if heads(&mut seed) { -1.0 } else { 1.0 };
+        let mut vx = t.velocity[0] * flip;
+        let vy = t.velocity[1] * flip;
         if t.velocity_var != 0.0 {
             vx += if heads(&mut seed) { -t.velocity_var } else { t.velocity_var };
         }
@@ -255,10 +259,12 @@ fn spawn_texts(
                 // 2.25 over the feet put them over the head.
                 from: at.translation(),
                 offset: Vec2::new(ox, t.offset_y[1]),
-                // UNVERIFIED: with a label animation the table's velocity is not
-                //   applied (read as world units it slid the damage sideways, which
-                //   the 2018 client does not).
-                velocity: if anim.is_some() { Vec2::ZERO } else { Vec2::new(vx, t.velocity[1]) },
+                // Moved by it whether or not its label has a clip: the element is
+                // given position, velocity and a start time (0x84FBC4: +0x1B0,
+                // +0x1C0, +0x1D0), the clip plays on top (its local hop, pop and
+                // fade). UNVERIFIED: the velocity's unit, world units per second
+                // as the offsets.
+                velocity: Vec2::new(vx, vy),
                 age: 0.0,
                 duration: anim.as_ref().map(|a| a.duration()).unwrap_or(t.duration.max(0.1)),
                 fade: t.fade,
@@ -301,11 +307,14 @@ fn move_texts(
         *vis = Visibility::Inherited;
         node.left = Val::Px(screen.x - BOX / 2.0);
         let alpha = match &f.anim {
-            // The clip: y in the UI's units (the screen's height, y down), its
-            // scale, its alpha. UNVERIFIED: the unit, from the bxml rects (0..1).
+            // The clip: its translation y in screen heights, y UP (Nebula's
+            // node translation): a small hop (+0.07) then a fall below its start
+            // (-0.117). Read y down, every number rose off the screen ("ca monte
+            // en l'air"). Its scale pops 0.8 -> 1.8 -> 1.06, its alpha fades.
+            // UNVERIFIED: the unit, from the bxml rects (0..1).
             Some(a) => {
                 let (t, dt) = (f.age, a.dt);
-                node.top = Val::Px(screen.y + LabelAnim::at(&a.y, dt, t, 0.0) * height);
+                node.top = Val::Px(screen.y - LabelAnim::at(&a.y, dt, t, 0.0) * height);
                 ui.scale = Vec2::splat(LabelAnim::at(&a.scale, dt, t, 1.0));
                 LabelAnim::at(&a.alpha, dt, t, 1.0).clamp(0.0, 1.0) * f.color[3]
             }
