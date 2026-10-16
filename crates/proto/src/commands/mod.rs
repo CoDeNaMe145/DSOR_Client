@@ -213,6 +213,7 @@ server_commands! {
     // social.rs: factions, groups, notifications, PvP.
     122 => FactionInfo(social::FactionInfo),
     136 => Notification(social::Notification),
+    137 => Message(social::Message),
     151 => GroupStatus(social::GroupStatus),
     156 => GroupInvitationResponse(social::GroupInvitationResponse),
     159 => GroupKick(social::GroupKick),

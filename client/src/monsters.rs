@@ -572,6 +572,9 @@ struct Blow {
     critical: bool,
     heavy: bool,
     health: Option<(u32, u32)>,
+    /// The server's combat text type, when it names one ("HealingSelf",
+    /// "DamageDonePoison", "DamageImmunityOther").
+    text: String,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -623,6 +626,7 @@ fn hits_and_kills(
                     critical: h.critical,
                     heavy: now < h.heavy_until_tick,
                     health: Some((h.victim_health.max(0) as u32, h.victim_max_health.max(0) as u32)),
+                    text: h.combat_text,
                 });
             }
             deaths.extend(std::mem::take(&mut net.kills).into_iter().map(|(victim, _)| victim));
@@ -654,6 +658,7 @@ fn hits_and_kills(
                             critical,
                             heavy: false,
                             health: None,
+                            text: String::new(),
                         });
                     }
                 }
@@ -735,6 +740,7 @@ fn hits_and_kills(
             critical: kind == 1,
             heavy: false,
             health: None,
+            text: String::new(),
         });
     }
     for blow in blows {
@@ -747,9 +753,25 @@ fn hits_and_kills(
             .or_else(|| locals.iter().find(|(_, l)| l.actor == blow.victim).map(|(e, _)| e))
             .or_else(|| remotes.iter().find(|(_, r)| r.actor == blow.victim).map(|(e, _)| e));
         let mine = blow.victim == local;
-        if let (Some(v), true) = (victim_entity, (mine || blow.attacker == local) && blow.victim != blow.attacker) {
+        // Release 261 shows every blow the local player takes, its own heals
+        // included (attacker = victim = the player: potions, regeneration); the
+        // others only when it gave them. EVIDENCE: HitCommand's handler
+        // 0x1401cbd13 (dro_client64): the victim's test 0x1401cc0d0 jumps
+        // straight to the texts.
+        if let (Some(v), true) = (victim_entity, mine || (blow.attacker == local && blow.victim != blow.attacker)) {
             use crate::combat_text::*;
-            let pick = |own: u8, other: u8| if mine { own } else { other };
+            // The server's type, when it names one, in place of each branch's own
+            // (0x1401cbdbe: the string at +0x88 read as a CombatTextType, -1 when
+            // empty; every branch tests it before picking its default).
+            // UNVERIFIED: "DamageImmunityOther" without the immune flag takes the
+            // damage branch, so it shows the (zero) damage in the immunity colour.
+            let pick = |own: u8, other: u8| {
+                if blow.text.is_empty() {
+                    type_name(if mine { own } else { other }).to_owned()
+                } else {
+                    blow.text.clone()
+                }
+            };
             if blow.blocked {
                 texts.0.push((v, pick(BLOCK_SELF, BLOCK_ENEMY), Say::Block));
             }
@@ -761,14 +783,14 @@ fn hits_and_kills(
                 texts.0.push((v, pick(DAMAGE_RECEIVED, DAMAGE_DONE), Say::Damage(blow.damage)));
             }
             if blow.kind == 10 {
-                texts.0.push((v, pick(LOW_HEALTH_HIT_RECEIVED, LOW_HEALTH_HIT), Say::LowHealth));
+                texts.0.push((v, type_name(if mine { LOW_HEALTH_HIT_RECEIVED } else { LOW_HEALTH_HIT }).to_owned(), Say::LowHealth));
             }
         }
         // The combat value (life drained...) over its owner, when it is the local
         // player and the value is positive.
         if blow.owner == local && blow.value > 0.0 {
             if let Some((e, _)) = locals.iter().next() {
-                texts.0.push((e, crate::combat_text::HEALING_SELF, crate::combat_text::Say::Healing((blow.damage as f32 * blow.value) as i32)));
+                texts.0.push((e, crate::combat_text::type_name(crate::combat_text::HEALING_SELF).to_owned(), crate::combat_text::Say::Healing((blow.damage as f32 * blow.value) as i32)));
             }
         }
         // A player struck: its class's own hit sequences (default_hit_player: the

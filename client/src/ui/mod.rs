@@ -35,6 +35,8 @@ use bevy::window::{PrimaryWindow, WindowResized};
 use serde::Deserialize;
 
 mod controls;
+/// The item catalog (names by template), for crate::combat_text's loot texts.
+pub(crate) use controls::items::Catalog;
 mod local_map;
 mod selection;
 #[cfg(not(target_arch = "wasm32"))]

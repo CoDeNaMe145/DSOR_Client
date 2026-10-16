@@ -160,6 +160,80 @@ impl Body for Notification {
     }
 }
 
+/// One Game::MessageParam of a MessageCommand: u8 kind, then its value.
+/// SOURCE: DSOR_Server protocol/gameplay_protocol.py _read_message_argument (kinds
+///   1 integer, 2 string, 4 item instance id, the only ones retail was seen sending).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MessageParam {
+    Int(u32),
+    Str(String),
+    Item(u32),
+}
+
+impl MessageParam {
+    pub fn int(&self) -> Option<u32> {
+        match self {
+            Self::Int(v) | Self::Item(v) => Some(*v),
+            Self::Str(_) => None,
+        }
+    }
+    pub fn str(&self) -> Option<&str> {
+        match self {
+            Self::Str(s) => Some(s),
+            _ => None,
+        }
+    }
+}
+
+/// MessageCommand (137): a typed event with parameters. Release 261's handler
+/// (ClientGameWorld::HandleMessageCommand, dro_client64 0x1401d0848) switches on the
+/// type: 0 maintenance countdown, 0x19 loot received (currency type, amount, item,
+/// template), 0x1d sudden death...
+/// SOURCE: DSOR_Server protocol/gameplay_protocol.py encode_message: u8 type, u32
+///   count, the params.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Message {
+    pub message_type: u8,
+    pub params: Vec<MessageParam>,
+}
+
+impl Body for Message {
+    fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
+        let message_type = r.u8()?;
+        let n = r.count(64, "message params")?;
+        let mut params = Vec::with_capacity(n);
+        for _ in 0..n {
+            params.push(match r.u8()? {
+                1 => MessageParam::Int(r.u32()?),
+                2 => MessageParam::Str(r.string()?),
+                4 => MessageParam::Item(r.u32()?),
+                k => return Err(DecodeError::Invalid { what: "message param kind", value: k as i64 }),
+            });
+        }
+        Ok(Self { message_type, params })
+    }
+    fn encode(&self, w: &mut BitWriter) {
+        w.u8(self.message_type);
+        w.u32(self.params.len() as u32);
+        for p in &self.params {
+            match p {
+                MessageParam::Int(v) => {
+                    w.u8(1);
+                    w.u32(*v);
+                }
+                MessageParam::Str(s) => {
+                    w.u8(2);
+                    w.string(s);
+                }
+                MessageParam::Item(v) => {
+                    w.u8(4);
+                    w.u32(*v);
+                }
+            }
+        }
+    }
+}
+
 /// One PlayerSocialInfo row of a GroupStatus.
 /// EVIDENCE: reader 0xA617CB: u32, u32, u32 playerId, u32 actorId, str name, str map
 ///   atom, u8 class, u16 level, u16, u32, u16, bool (row not greyed), bool online,

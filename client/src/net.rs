@@ -174,6 +174,9 @@ pub struct Net {
     pub monster_health: Vec<(u32, u32, u32)>,
     /// Blows (HitCommand 115) and deaths (KillCommand 116), for crate::monsters.
     pub hits: Vec<(u32, dsor_proto::commands::combat::Hit)>,
+    /// MessageCommands (loot received, sudden death...), by actor; drained by
+    /// crate::combat_text.
+    pub messages: Vec<(u32, dsor_proto::commands::social::Message)>,
     pub kills: Vec<(u32, dsor_proto::commands::combat::Kill)>,
     /// The local player's death: dead since KillCommand (116) until ReviveCommand
     /// (118), the death dialog asked for (ShowDeathDialogCommand 138), and the
@@ -703,6 +706,7 @@ pub fn start_offline(world: &mut World, class: u8, gender: u8) {
         wallet: None,
         monster_health: Vec::new(),
         hits: Vec::new(),
+        messages: Vec::new(),
         kills: Vec::new(),
         death: default(),
         revives: Vec::new(),
@@ -920,6 +924,7 @@ pub(crate) fn start_session(world: &mut World, config: NetConfig) {
         wallet: None,
         monster_health: Vec::new(),
         hits: Vec::new(),
+        messages: Vec::new(),
         kills: Vec::new(),
         death: default(),
         revives: Vec::new(),
@@ -1348,6 +1353,9 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
         }
         ServerCommand::CurrencyChanged(c) => {
             net.wallet = Some(c.wallet);
+        }
+        ServerCommand::Message(m) => {
+            net.messages.push((actor.unwrap_or(0), m));
         }
         ServerCommand::Hit(h) => {
             if actor.is_some() && actor == net.local_actor && h.victim_max_health > 0 {
