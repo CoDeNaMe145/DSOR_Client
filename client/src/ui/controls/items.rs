@@ -144,6 +144,10 @@ fn open_split(ui:&mut Interaction, windows:&mut Windows, state:&InventoryState, 
     }}
 }
 
+/// How far an equipment slot's icon_slot_bg frame reaches past the Slot itself,
+/// reference pixels (inventory.ui.json: Helmet 949.5..999.7 in 945.9..1003.4).
+const EQUIPMENT_FRAME_MARGIN: f32 = 3.6;
+
 /// Two clicks on the same item within this many seconds.
 const DOUBLE_CLICK: f64 = 0.4;
 
@@ -264,7 +268,13 @@ pub fn render(mut commands:Commands,windows:Query<(Entity,&Window2018,&WindowCon
     let group=commands.spawn((Contents,Transform::from_xyz(0.0,0.0,WINDOW_ITEMS_DEPTH),Visibility::Inherited,ChildOf(root))).id();
     for b in &c.buttons {
         let Action::Item(cell)=b.action else{continue}; if !c.section_visible(b.section) {continue;}
-        let [l,t,r,bt]=b.rect;let pos=screen.world(b.k,l,t);let size=Vec2::new(r-l,bt-t);
+        // An equipment Slot (50 px) sits inside its icon_slot_bg frame (57.5 px); a
+        // bag cell is its frame. Drawn over the frame, an equipped icon fills its
+        // slot as a bag one does.
+        // FAILURE (2026-10-16): drawn in the Slot, equipped icons stood 7 px inside
+        //   their frames ("ceux equipes prennent pas la taille entiere du slot").
+        let grow=if matches!(cell,Cell::Equipment(_)) {EQUIPMENT_FRAME_MARGIN} else {0.0};
+        let [l,t,r,bt]=[b.rect[0]-grow,b.rect[1]-grow,b.rect[2]+grow,b.rect[3]+grow];let pos=screen.world(b.k,l,t);let size=Vec2::new(r-l,bt-t);
         let locked=place(cell,c).is_some_and(|p|!matches!(p,Place::Equipment(_)) && p.cell()>=net.inventory.capacity(p));
         if locked {commands.spawn((Sprite::from_color(Color::srgba(0.01,0.01,0.01,0.8),size),Anchor::TOP_LEFT,Transform::from_translation(pos.extend(0.0)),RenderLayers::layer(LAYER),ChildOf(group)));continue;}
         let Some(d)=displayed(cell,c,&net.inventory,catalog) else{continue};
