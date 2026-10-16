@@ -13,8 +13,8 @@ EVIDENCE: shaders_sm30 "monster" SkinnedSolid ps_3_0 (tools/shader_dis.py), the
 DSO_Godot keeps only a roughness map made from the spec map, so the green and
 blue channels are gone. Each such material's SpecMap0 becomes
 textures/<path>_mask.png (the DDS as is) and a texture of the glb; the material
-gets extras.dsor_dye = {"mask": <texture index>} (client/src/materials.rs, kind
-Character in crate::surfaces).
+gets extras.dsor_dye = {"mask": <texture index>} (client/src/rendering/materials.rs, kind
+Character in crate::rendering::surfaces).
 Idempotent: a material already marked is left alone.
 """
 import os, sys

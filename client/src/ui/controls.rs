@@ -28,7 +28,7 @@ impl DragHandle {
         if layout.window == CHAT_WINDOW {
             let frame = layout.widgets.iter().find(|w| !w.hidden && w.id.ends_with("/LabelFull/ChatBackgroundLabel"))?;
             let rect = frame.art.as_ref().map(|a| bounds(&a.pos)).unwrap_or(frame.rect);
-            return Some(Self { k: frame.k, rect, section: Section::Page(CHAT_MODE, 1) });
+            return Some(Self { k: frame.k, rect, section: Section::ChatFull });
         }
         // Use the painted frame, not the source container bounds: inventory's
         // container includes offscreen templates thousands of pixels above it.
@@ -78,10 +78,13 @@ enum Section {
     Character(u8),
     /// Allowed pages as a bitmask; some shared headers serve several tabs.
     Page(&'static str, u32),
-    /// Two such conditions at once (the chat's typing hint, only in full mode).
-    Pages(&'static str, u32, &'static str, u32),
     SkillClass(u8),
     Ranking(u8, bool),
+    ChatFull,
+    ChatCompact,
+    ChatChannel(u8),
+    ChatTyping,
+    ChatScrolled,
     Hidden,
 }
 
@@ -116,13 +119,9 @@ pub(super) struct Gate {
     button: Option<(usize, State)>,
 }
 
-/// The chat window's mode page: 0 full, 1 compact (see `section`).
-pub(super) const CHAT_MODE: &str = "chat_mode";
-
 impl Gate {
-    /// Shown in the chat window's full mode only (the log rows, chat_rows).
-    pub(super) fn chat_full() -> Self {
-        Self { section: Section::Page(CHAT_MODE, 1), button: None }
+    pub(super) fn chat(compact: bool) -> Self {
+        Self { section: if compact { Section::ChatCompact } else { Section::ChatFull }, button: None }
     }
 }
 
@@ -146,23 +145,23 @@ fn section(window: &str, id: &str) -> Section {
         }
     }
     if window == CHAT_WINDOW {
+        // Compact mode keeps only the expand button; runtime rows are click-through.
+        if parts.contains(&"LabelCompact") {
+            return if parts.contains(&"ButtonToggleMode") { Section::ChatCompact } else { Section::Hidden };
+        }
         // The List's row templates are drawn by chat_rows.
         if parts.iter().any(|p| matches!(*p, "TextEntryChannelLabel" | "ScrollHandle" | "ButtonTextLine"))
             || parts.last() == Some(&"TextLine") { return Section::Hidden; }
-        // Two modes, chat_mode 0 full and 1 compact (ButtonToggleMode's SwitchToCompact
-        // / SwitchToFull; Chat::ChatWidget::Load 0x4986D3 binds "LabelFull",
-        // "LabelCompact", "switchChatToCompact", "switchChatToFull"). The compact one
-        // is its toggle alone, as the 2018 client shows it (reference video): its
-        // entry and its speech bubble preview are not wired -- Enter goes back to
-        // the full window (edit_text).
-        if parts.contains(&"LabelCompact") {
-            return if parts.contains(&"ChatMenuBackgroundLabel") { Section::Page(CHAT_MODE, 2) } else { Section::Hidden };
-        }
         // "Press enter to open the chat" while not typing; ScrollEnd's glow while
         // scrolled back (both set by edit_text / chat_rows).
-        if parts.contains(&"TextLabelHowTo") { return Section::Pages(CHAT_MODE, 1, "chat_typing", 1); }
-        if parts.contains(&"HighlightLabel") { return Section::Pages(CHAT_MODE, 1, "chat_scrolled", 2); }
-        if parts.contains(&"LabelFull") { return Section::Page(CHAT_MODE, 1); }
+        if parts.contains(&"TextLabelHowTo") { return Section::ChatTyping; }
+        if parts.contains(&"HighlightLabel") { return Section::ChatScrolled; }
+        if parts.contains(&"ButtonChatMenu") {
+            if let Some(channel) = ["IconLabelMap", "IconLabelRegion", "IconLabelParty", "IconLabelGuild", "IconLabelWhisper"].iter().position(|name| parts.contains(name)) {
+                return Section::ChatChannel(channel as u8);
+            }
+        }
+        return Section::ChatFull;
     }
     if window == "gamebar" && parts.iter().any(|p| matches!(*p, "Premium" | "Deluxe" | "bgAutoplay" | "autoplay" | "SigninBtn" | "CameBackSignInBtn" | "SeasonPassBtn")) {
         return Section::Hidden;
@@ -172,6 +171,7 @@ fn section(window: &str, id: &str) -> Section {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Action {
+    NpcChoice(usize),
     Close,
     Window(&'static str),
     Inventory(u8),
@@ -194,14 +194,18 @@ enum Action {
     SplitSlider,
     /// Scroll the chat log back (rows; 0: to the newest).
     ChatScroll(i32),
-    /// Write on this channel (crate::chat::Kind::channel), from the channel menu.
+    /// Write on this channel (crate::network::chat::Kind::channel), from the channel menu.
     ChatChannel(u8),
+    ChatCompact(bool),
     Unavailable,
     /// The death dialog's choice: (at the nearest exit, on the spot).
     Respawn(bool, bool),
 }
 
 fn action(window: &str, w: &Widget) -> Action {
+    if dialogue::WINDOWS.contains(&window) {
+        if let Some(index) = w.event.strip_prefix("NpcChoice:").and_then(|s| s.parse().ok()) { return Action::NpcChoice(index); }
+    }
     let leaf = w.id.rsplit('/').next().unwrap_or("");
     if w.spell.is_some() { return Action::Spell; }
     if w.kind == "TextEntry" { return Action::Edit(w.id.clone()); }
@@ -219,10 +223,10 @@ fn action(window: &str, w: &Widget) -> Action {
     }
     if window == CHAT_WINDOW {
         return match (w.event.as_str(), leaf) {
+            ("SwitchToCompact", _) => Action::ChatCompact(true),
+            ("SwitchToFull", _) => Action::ChatCompact(false),
             ("ToggleChatMenu", _) => Action::Window(CHAT_MENU),
             ("ScrollEnd", _) => Action::ChatScroll(0),
-            ("SwitchToCompact", _) => Action::Tab(CHAT_MODE, 1),
-            ("SwitchToFull", _) => Action::Tab(CHAT_MODE, 0),
             (_, "ScrollUp") => Action::ChatScroll(CHAT_SCROLL),
             (_, "ScrollDown") => Action::ChatScroll(-CHAT_SCROLL),
             (_, "ChannelTabMap") => Action::Tab("chat_channel", 0),
@@ -351,6 +355,8 @@ pub(super) struct WindowControls {
     entries: HashMap<String, TextEntry>,
     choices: HashMap<&'static str, String>,
     spells: spells::Model,
+    chat_compact: bool,
+    chat_channels: [bool; 5],
 }
 
 impl WindowControls {
@@ -367,12 +373,12 @@ impl WindowControls {
                     .filter_map(|s| s.state.as_deref().and_then(State::parse)).fold(0, |bits, state| bits | state.bit()),
             }).collect();
         let mut controls = Self { map_mode: local_map::MapMode::Compact, buttons, regions: Vec::new(), drag_handle: DragHandle::from_layout(layout), inventory: 0, character: 0, bag: 0, bag_pages: 8, premium_bag: false, overflow_page: 0, overflow_pages: 1, ingredient: 0, rarity: 1, locked: false, hovered: None, pressed: None,
-            pages: HashMap::new(), toggles: default(), open_windows: Vec::new(), entries: HashMap::new(), choices: HashMap::new(), spells: default() };
+            pages: HashMap::new(), toggles: default(), open_windows: Vec::new(), entries: HashMap::new(), choices: HashMap::new(), spells: default(), chat_compact: false, chat_channels: [false; 5] };
         // The chat's entry starts empty, not with its "Enter text" sample.
         // DSOR_CHAT_MODE=compact: the chat starts reduced (screenshots).
         if layout.window == CHAT_WINDOW {
             for w in layout.widgets.iter().filter(|w| w.kind == "TextEntry") { controls.entries.insert(w.id.clone(), TextEntry::default()); }
-            if std::env::var("DSOR_CHAT_MODE").is_ok_and(|m| m == "compact") { controls.pages.insert(CHAT_MODE, 1); }
+            if std::env::var("DSOR_CHAT_MODE").is_ok_and(|m| m == "compact") { controls.chat_compact = true; }
         }
         // Together with DSOR_UI_OPEN=locationmap, capture either overlay size.
         if layout.window == "locationmap" && std::env::var("DSOR_MAP_VIEW").is_ok_and(|v| v == "expanded") {
@@ -416,12 +422,14 @@ impl WindowControls {
             Section::BagFourthRow => self.bag != items::OVERFLOW,
             Section::Character(page) => self.character == page,
             Section::Page(group, mask) => mask & (1 << self.pages.get(group).copied().unwrap_or(0)) != 0,
-            Section::Pages(a, mask_a, b, mask_b) => {
-                self.section_visible(Section::Page(a, mask_a)) && self.section_visible(Section::Page(b, mask_b))
-            }
             Section::SkillClass(class) => self.spells.class == class && self.pages.get("talents").copied().unwrap_or(0) == 0,
             Section::Ranking(group, overall) => self.pages.get("rank_group").copied().unwrap_or(0) == group
                 && (self.pages.get("rank_category").copied().unwrap_or(0) == 0) == overall,
+            Section::ChatFull => !self.chat_compact,
+            Section::ChatCompact => self.chat_compact,
+            Section::ChatChannel(channel) => !self.chat_compact && self.pages.get("chat_channel").copied().unwrap_or(0) == channel,
+            Section::ChatTyping => !self.chat_compact && self.pages.get("chat_typing").copied().unwrap_or(0) == 0,
+            Section::ChatScrolled => !self.chat_compact && self.pages.get("chat_scrolled").copied().unwrap_or(0) != 0,
             Section::Hidden => false,
         }
     }
@@ -429,6 +437,7 @@ impl WindowControls {
     fn enabled(&self, button: &Button) -> bool {
         button.authored_enabled && match button.action {
             Action::Unavailable => false,
+            Action::Tab("chat_channel", channel) | Action::ChatChannel(channel) => self.chat_channels.get(channel as usize).copied().unwrap_or(false),
             Action::Spell => button.spell.as_ref().is_some_and(|s| self.spells.available(s)),
             Action::Bag(items::EXTRA) => self.premium_bag,
             Action::Bag(items::OVERFLOW) => true,
@@ -636,7 +645,7 @@ fn toggle(name: &str, windows: &mut Windows) {
 }
 
 pub(super) fn keyboard(keys: Res<ButtonInput<KeyCode>>, mut windows: Windows, mut pointer: ResMut<Pointer>, mut items: ResMut<items::Interaction>,
-    cameras: Query<(), With<crate::FreeCamera>>, players: Query<(), With<crate::net::LocalPlayer>>) {
+    cameras: Query<(), With<crate::FreeCamera>>, mut players: Query<&mut crate::network::net::LocalPlayer>, mut dialogue: ResMut<crate::gameplay::dialogue::Dialogue>) {
     if keys.just_pressed(KeyCode::Escape) && items.cancel_drag() { pointer.down = None; return; }
     if keys.just_pressed(KeyCode::Escape) && pointer.spell_drag.take().is_some() {
         pointer.down = None;
@@ -653,6 +662,14 @@ pub(super) fn keyboard(keys: Res<ButtonInput<KeyCode>>, mut windows: Windows, mu
         return;
     }
     if keys.just_pressed(KeyCode::Escape) {
+        if dialogue.target.is_some() {
+            dialogue.close();
+            for mut player in &mut players { player.target = None; }
+            for (_, name, _, mut visibility, _) in &mut windows {
+                if super::dialogue::WINDOWS.contains(&name.0.as_str()) { *visibility = Visibility::Hidden; }
+            }
+            return;
+        }
         let top = windows.iter().filter(|(_, w, _, v, _)| *v != Visibility::Hidden && is_menu(&w.0))
             .max_by(|a, b| a.4.translation.z.total_cmp(&b.4.translation.z)).map(|(e, _, _, _, _)| e);
         if let Some(top) = top {
@@ -668,17 +685,42 @@ pub(super) fn keyboard(keys: Res<ButtonInput<KeyCode>>, mut windows: Windows, mu
         if key != KeyCode::Escape && keys.just_pressed(key) { toggle(name, &mut windows); }
     }
     if keys.just_pressed(KeyCode::Tab) { toggle("locationmap", &mut windows); }
-    // V: the chat between its full and compact modes (ButtonToggleMode's pair),
-    // never hidden; its channel menu closes.
+    // V switches between the expanded controls and a click-through preview.
     if keys.just_pressed(KeyCode::KeyV) {
-        for (_, w, mut c, mut v, _) in &mut windows {
-            if w.0 == CHAT_WINDOW {
-                let compact = c.pages.get(CHAT_MODE).copied().unwrap_or(0) != 0;
-                c.pages.insert(CHAT_MODE, if compact { 0 } else { 1 });
-                if *v == Visibility::Hidden { *v = Visibility::Inherited; }
-            }
-            if w.0 == CHAT_MENU && *v != Visibility::Hidden { *v = Visibility::Hidden; }
+        let compact = windows.iter().any(|(_, w, c, _, _)| w.0 == CHAT_WINDOW && !c.chat_compact);
+        set_chat_compact(compact, &mut windows, &mut pointer);
+    }
+}
+
+fn set_chat_compact(compact: bool, windows: &mut Windows, pointer: &mut Pointer) {
+    for (root, w, mut c, mut v, _) in windows.iter_mut() {
+        if w.0 == CHAT_WINDOW {
+            c.chat_compact = compact;
+            c.hovered = None;
+            c.pressed = None;
+            *v = Visibility::Inherited;
+            if compact && pointer.focus.as_ref().is_some_and(|(e, _)| *e == root) { pointer.focus = None; }
         }
+        if w.0 == CHAT_MENU { *v = Visibility::Hidden; }
+    }
+    pointer.down = None;
+}
+
+/// Availability follows server joins/leaves, including disconnects and late UI loads.
+pub(super) fn sync_chat(log: Res<crate::network::chat::ChatLog>, mut windows: Query<(&Window2018, &mut WindowControls)>) {
+    let available = std::array::from_fn(|i| log.available(crate::network::chat::Kind::channel(i as u8)));
+    for (w, mut c) in &mut windows {
+        if !matches!(w.0.as_str(), CHAT_WINDOW | CHAT_MENU) { continue; }
+        if w.0 == CHAT_WINDOW {
+            let selected = c.pages.get("chat_channel").copied().unwrap_or(0);
+            // Keep the default map selection while its initial join is pending.
+            let was_available = c.chat_channels.get(selected as usize).copied().unwrap_or(false);
+            if !available.get(selected as usize).copied().unwrap_or(false) && (selected != 0 || was_available) {
+                let fallback = available.iter().position(|joined| *joined).unwrap_or(0) as u8;
+                if selected != fallback { c.pages.insert("chat_channel", fallback); }
+            }
+        }
+        if c.chat_channels != available { c.chat_channels = available; }
     }
 }
 
@@ -690,18 +732,21 @@ fn chat_entry(windows: &Windows) -> Option<(Entity, String)> {
 
 /// The chat log in the window's rows: the newest at the bottom, colour by channel.
 pub(super) fn chat_rows(
-    mut log: ResMut<crate::chat::ChatLog>,
+    mut log: ResMut<crate::network::chat::ChatLog>,
     mut rows: Query<(&ChatRow, &mut Text2d, &mut TextColor)>,
     added: Query<(), Added<ChatRow>>,
     mut windows: Query<(&Window2018, &mut WindowControls)>,
 ) {
     if !log.is_changed() && added.is_empty() { return; }
-    let count = rows.iter().count();
+    let count = rows.iter().filter(|(row, _, _)| !row.compact).count();
+    let compact_count = rows.iter().filter(|(row, _, _)| row.compact).count();
     let log = log.bypass_change_detection();
     let shown = log.rows(count, CHAT_ROW_WIDTH, CHAT_FONT_SIZE);
+    let recent = log.recent_rows(compact_count, CHAT_ROW_WIDTH, CHAT_FONT_SIZE);
     let first = count - shown.len();
     for (row, mut text, mut colour) in &mut rows {
-        let (kind, line) = row.0.checked_sub(first).and_then(|i| shown.get(i)).cloned().unwrap_or_default();
+        let (lines, first) = if row.compact { (&recent, compact_count - recent.len()) } else { (&shown, first) };
+        let (kind, line) = row.index.checked_sub(first).and_then(|i| lines.get(i)).cloned().unwrap_or_default();
         if text.0 != line { text.0 = line; }
         if colour.0 != kind.colour() { colour.0 = kind.colour(); }
     }
@@ -718,9 +763,10 @@ pub(super) fn interact(
     mouse: Res<ButtonInput<MouseButton>>,
     mut pointer: ResMut<Pointer>,
     mut skill_clicks: ResMut<SkillClicks>,
-    mut respawn: ResMut<crate::net::RespawnChoice>,
-    panels: Query<(&RelativeCursorPosition, &InheritedVisibility), With<crate::ui_input::BlocksWorldInput>>,
-    mut chat: ResMut<crate::chat::ChatLog>,
+    mut respawn: ResMut<crate::network::net::RespawnChoice>,
+    panels: Query<(&RelativeCursorPosition, &InheritedVisibility), With<crate::ui::input::BlocksWorldInput>>,
+    mut chat: ResMut<crate::network::chat::ChatLog>,
+    mut dialogue: ResMut<crate::gameplay::dialogue::Dialogue>,
     mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
 ) {
     let Ok((primary, mut window, cursor)) = primary.single_mut() else { return };
@@ -815,6 +861,7 @@ pub(super) fn interact(
     let action = controls.buttons[index].action.clone();
     info!("ui {}: {} ({action:?})", name.0, controls.buttons[index].id);
     match action {
+        Action::NpcChoice(index) => dialogue.choice = Some(index),
         Action::Item(_) | Action::SplitSlider => {},
         Action::Split(delta) => pointer.item_command = Some(delta),
         Action::Close => *visibility = Visibility::Hidden,
@@ -844,6 +891,7 @@ pub(super) fn interact(
         }
         Action::ChatScroll(0) => chat.scroll = 0,
         Action::ChatScroll(rows) => chat.scroll = (chat.scroll as i32 + rows).max(0) as usize,
+        Action::ChatCompact(compact) => set_chat_compact(compact, &mut windows, &mut pointer),
         Action::ChatChannel(channel) => {
             *visibility = Visibility::Hidden;
             for (_, w, mut c, _, _) in &mut windows {
@@ -863,8 +911,8 @@ pub(super) fn edit_text(
     keys: Res<ButtonInput<KeyCode>>,
     mut pointer: ResMut<Pointer>,
     mut windows: Windows,
-    mut input: ResMut<crate::ui_input::UiInput>,
-    mut chat: ResMut<crate::chat::ChatLog>,
+    mut input: ResMut<crate::ui::input::UiInput>,
+    mut chat: ResMut<crate::network::chat::ChatLog>,
 ) {
     if pointer.focus.as_ref().is_some_and(|(e, id)| !windows.get(*e).is_ok_and(|(_, _, c, v, _)| *v != Visibility::Hidden
         && c.buttons.iter().any(|b| b.id == *id && c.section_visible(b.section)))) { pointer.focus = None; }
@@ -872,13 +920,9 @@ pub(super) fn edit_text(
         if !event.state.is_pressed() { continue; }
         let enter = matches!(event.key_code, KeyCode::Enter | KeyCode::NumpadEnter);
         let Some((root, id)) = pointer.focus.clone() else {
-            // Enter with the chat window open: type a line, in the full window.
+            // Enter with the chat window open: type a line.
             if enter && !event.repeat {
-                for (_, w, mut c, v, _) in &mut windows {
-                    if w.0 == CHAT_WINDOW && *v != Visibility::Hidden && c.pages.get(CHAT_MODE).copied().unwrap_or(0) != 0 {
-                        c.pages.insert(CHAT_MODE, 0);
-                    }
-                }
+                set_chat_compact(false, &mut windows, &mut pointer);
                 pointer.focus = chat_entry(&windows);
             }
             continue;
@@ -889,7 +933,7 @@ pub(super) fn edit_text(
             if let (true, Ok((_, w, mut c, _, _))) = (enter, windows.get_mut(root)) {
                 if w.0 == CHAT_WINDOW {
                     let typed = c.entries.insert(id, TextEntry::default()).map(|e| e.text).unwrap_or_default();
-                    chat.submit(crate::chat::Kind::channel(c.pages.get("chat_channel").copied().unwrap_or(0)), &typed);
+                    chat.submit(crate::network::chat::Kind::channel(c.pages.get("chat_channel").copied().unwrap_or(0)), &typed);
                 }
             }
             continue;
@@ -908,7 +952,7 @@ pub(super) fn edit_text(
 }
 
 pub(super) fn paint(
-    mut windows: Query<(&mut WindowControls, &Window2018, &Visibility, &mut crate::ui_input::UiRegions, &Transform), Without<Element>>,
+    mut windows: Query<(&mut WindowControls, &Window2018, &Visibility, &mut crate::ui::input::UiRegions, &Transform), Without<Element>>,
     mut elements: Query<(&Element, &mut Visibility, Option<&Value>, Option<&EntryLabel>, Option<&mut Text2d>), Without<Window2018>>,
     pointer: Res<Pointer>,
 ) {
@@ -1016,6 +1060,7 @@ mod tests {
         app.init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<Pointer>()
             .init_resource::<items::Interaction>()
+            .init_resource::<crate::gameplay::dialogue::Dialogue>()
             .add_systems(Update, keyboard);
         let camera = app.world_mut().spawn(crate::FreeCamera::default()).id();
         let mut roots = HashMap::new();
@@ -1076,7 +1121,7 @@ mod tests {
     fn dragging_a_window_moves_its_gauge_clip_without_changing_the_fill() {
         let mut app = App::new();
         app.init_resource::<Figures>()
-            .init_resource::<crate::monsters::HoverInfo>()
+            .init_resource::<crate::actors::monsters::HoverInfo>()
             .init_resource::<Screen>()
             .init_resource::<Assets<UiMaterial>>()
             .add_systems(Update, update_fills);
@@ -1095,7 +1140,7 @@ mod tests {
 
     pub(super) fn exported_app() -> (App, Entity, HashMap<&'static str, Entity>, HashMap<&'static str, Layout>) {
         let mut app = App::new();
-        app.add_plugins((TransformPlugin, crate::ui_input::UiInputPlugin))
+        app.add_plugins((TransformPlugin, crate::ui::input::UiInputPlugin))
             .add_message::<KeyboardInput>()
             .add_message::<bevy::input::mouse::MouseWheel>()
             .init_resource::<ButtonInput<MouseButton>>()
@@ -1103,9 +1148,11 @@ mod tests {
             .init_resource::<Pointer>()
             .init_resource::<items::Interaction>()
             .init_resource::<SkillClicks>()
-            .init_resource::<crate::chat::ChatLog>()
+            .init_resource::<crate::network::chat::ChatLog>()
+            .init_resource::<crate::gameplay::dialogue::Dialogue>()
+            .init_resource::<crate::network::net::RespawnChoice>()
             .init_resource::<local_map::MapSettings>()
-            .add_systems(Update, (keyboard, interact, edit_text, order_windows, paint).chain());
+            .add_systems(Update, (sync_chat, keyboard, interact, edit_text, order_windows, paint).chain());
         let primary = app.world_mut().spawn((Window { focused: true, resolution: (1024, 768).into(), ..default() }, PrimaryWindow)).id();
         let mut roots = HashMap::new();
         let mut layouts = HashMap::new();
@@ -1123,7 +1170,7 @@ mod tests {
             }
             let root = app.world_mut().spawn((Window2018(name.into()), c,
                 if name == "ingamemenu" { Visibility::Inherited } else { Visibility::Hidden },
-                Transform::from_xyz(0.0, 0.0, z), crate::ui_input::UiRegions::default())).id();
+                Transform::from_xyz(0.0, 0.0, z), crate::ui::input::UiRegions::default())).id();
             roots.insert(name, root);
             layouts.insert(name, layout);
         }
@@ -1131,19 +1178,56 @@ mod tests {
     }
 
     #[test]
+    fn chat_compact_rows_stay_recent_while_full_chat_is_scrolled() {
+        use crate::network::chat::{ChatLog, Kind};
+        let mut app = App::new();
+        app.init_resource::<ChatLog>().add_systems(Update, chat_rows);
+        for i in 0..8 { app.world_mut().resource_mut::<ChatLog>().push(Kind::Map, format!("line {i}")); }
+        app.world_mut().resource_mut::<ChatLog>().scroll = 3;
+        let full: Vec<_> = (0..3).map(|index| app.world_mut().spawn((ChatRow { index, compact: false }, Text2d::new(""), TextColor::default())).id()).collect();
+        let compact: Vec<_> = (0..CHAT_PREVIEW_ROWS).map(|index| app.world_mut().spawn((ChatRow { index, compact: true }, Text2d::new(""), TextColor::default())).id()).collect();
+        app.update();
+        let shown = |app: &App, rows: &[Entity]| rows.iter().map(|e| app.world().get::<Text2d>(*e).unwrap().0.clone()).collect::<Vec<_>>();
+        assert_eq!(shown(&app, &full), ["line 2", "line 3", "line 4"]);
+        assert_eq!(shown(&app, &compact), ["line 4", "line 5", "line 6", "line 7"]);
+        assert_eq!(app.world().resource::<ChatLog>().scroll, 3);
+        app.world_mut().resource_mut::<ChatLog>().push(Kind::Guild, "new message".into());
+        app.update();
+        assert_eq!(shown(&app, &compact), ["line 5", "line 6", "line 7", "new message"]);
+        assert_eq!(app.world().get::<TextColor>(*compact.last().unwrap()).unwrap().0, Kind::Guild.colour());
+    }
+
+    #[test]
     #[ignore = "requires locally converted game UI assets"]
-    fn chat_window_v_toggles_enter_types_and_sends_escape_cancels() {
+    fn chat_window_compacts_anchors_and_tracks_available_channels() {
         let (mut app, primary, others, _) = exported_app();
         let mut roots = HashMap::new();
         for (name, z) in [(CHAT_WINDOW, CHAT_DEPTH), (CHAT_MENU, CHAT_DEPTH + 3.0)] {
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../assets/interface/{name}.ui.json"));
             let layout: Layout = serde_json::from_slice(&std::fs::read(path).expect("export the original UI first")).unwrap();
-            let root = app.world_mut().spawn((Window2018(name.into()), WindowControls::new(&layout),
+            let layout = prepare_chat(&layout);
+            assert!(layout.widgets.iter().all(|w| w.k == 0.0));
+            let mut controls = WindowControls::new(&layout);
+            for w in layout.widgets.iter().filter(|w| !w.hidden) {
+                if let Some(art) = &w.art {
+                    let invisible = art.tex.is_none() && art.color.chunks(4).all(|c| c.get(3).is_some_and(|a| *a <= 0.0));
+                    if !invisible { controls.region(w.k, bounds(&art.pos), controls.gate(name, w)); }
+                }
+            }
+            let root = app.world_mut().spawn((Window2018(name.into()), controls,
                 if name == CHAT_WINDOW { Visibility::Inherited } else { Visibility::Hidden },
-                Transform::from_xyz(0.0, 0.0, z), crate::ui_input::UiRegions::default())).id();
+                Transform::from_xyz(0.0, 0.0, z), crate::ui::input::UiRegions::default())).id();
             roots.insert(name, root);
         }
         let (chat, menu) = (roots[CHAT_WINDOW], roots[CHAT_MENU]);
+        app.world_mut().resource_mut::<crate::network::chat::ChatLog>().event(dsor_proto::chat::ChatEvent::LoggedIn);
+        app.update();
+        assert_eq!(app.world().get::<WindowControls>(chat).unwrap().pages.get("chat_channel").copied().unwrap_or(0), 0, "wait for the map join without switching to whisper");
+        {
+            let mut log = app.world_mut().resource_mut::<crate::network::chat::ChatLog>();
+            log.event(dsor_proto::chat::parse("e#Map__room"));
+            log.event(dsor_proto::chat::parse("e#Region__room"));
+        }
         let key = |app: &mut App, key_code: KeyCode, text: Option<&str>| {
             let window = primary;
             app.world_mut().write_message(KeyboardInput { key_code, logical_key: bevy::input::keyboard::Key::Unidentified(bevy::input::keyboard::NativeKey::Unidentified),
@@ -1153,18 +1237,28 @@ mod tests {
             app.world_mut().resource_mut::<ButtonInput<KeyCode>>().reset(key_code);
         };
         let shown = |app: &App, e: Entity| *app.world().get::<Visibility>(e).unwrap() != Visibility::Hidden;
-        let typing = |app: &App| app.world().resource::<crate::ui_input::UiInput>().typing;
-        let sent = |app: &App| app.world().resource::<crate::chat::ChatLog>().outbox().to_vec();
-        let compact = |app: &App| app.world().get::<WindowControls>(chat).unwrap().pages.get(CHAT_MODE).copied().unwrap_or(0) == 1;
-        // V reduces the chat, never hides it; Enter in the compact mode reopens the
-        // full window to type.
+        let typing = |app: &App| app.world().resource::<crate::ui::input::UiInput>().typing;
+        let sent = |app: &App| app.world().resource::<crate::network::chat::ChatLog>().outbox().to_vec();
         key(&mut app, KeyCode::KeyV, Some("v"));
-        assert!(shown(&app, chat) && compact(&app));
-        key(&mut app, KeyCode::KeyV, Some("v"));
-        assert!(shown(&app, chat) && !compact(&app));
-        key(&mut app, KeyCode::KeyV, Some("v"));
+        assert!(shown(&app, chat));
+        assert!(app.world().get::<WindowControls>(chat).unwrap().chat_compact);
+        let controls = app.world().get::<WindowControls>(chat).unwrap();
+        let buttons: Vec<_> = controls.buttons.iter().filter(|b| controls.section_visible(b.section)).collect();
+        assert_eq!(buttons.len(), 1);
+        assert_eq!(buttons[0].action, Action::ChatCompact(false));
+        for width in [800.0, 1024.0, 1920.0, 2560.0] {
+            assert!(controls.hit(Vec2::new(15.0, 555.0), width).is_some(), "expand stays at screen left");
+            assert!(!controls.covers(Vec2::new(100.0, 550.0), width), "recent text is click-through");
+            assert!(!controls.covers(Vec2::new(100.0, 610.0), width), "compact has no entry bar");
+        }
         key(&mut app, KeyCode::Enter, None);
-        assert!(typing(&app) && !compact(&app));
+        assert!(typing(&app), "Enter expands the compact preview and focuses the entry");
+        key(&mut app, KeyCode::Escape, None);
+        key(&mut app, KeyCode::KeyV, Some("v"));
+        click_control(&mut app, primary, chat, "/ButtonToggleMode");
+        assert!(!app.world().get::<WindowControls>(chat).unwrap().chat_compact);
+        key(&mut app, KeyCode::Enter, None);
+        assert!(typing(&app) && !app.world().get::<WindowControls>(chat).unwrap().chat_compact);
         for (code, text) in [(KeyCode::KeyV, "v"), (KeyCode::Digit1, "!"), (KeyCode::KeyI, "i")] {
             key(&mut app, code, Some(text));
         }
@@ -1192,6 +1286,47 @@ mod tests {
         key(&mut app, KeyCode::Enter, None);
         key(&mut app, KeyCode::Enter, None);
         assert_eq!(sent(&app).len(), 2, "the cancelled text is gone");
+
+        // Unjoined channels use disabled artwork and cannot change the selection.
+        for (suffix, channel) in [("/ChannelTabParty", 2), ("/ChannelTabGuild", 3)] {
+            let c = app.world().get::<WindowControls>(chat).unwrap();
+            let index = c.buttons.iter().position(|b| b.id.ends_with(suffix)).unwrap();
+            assert_eq!(c.state(index), State::Disabled);
+            click_control(&mut app, primary, chat, suffix);
+            assert_ne!(app.world().get::<WindowControls>(chat).unwrap().pages.get("chat_channel"), Some(&channel));
+        }
+        click_control(&mut app, primary, chat, "/ButtonChatMenu");
+        click_control(&mut app, primary, menu, "/TextButtonParty");
+        assert!(shown(&app, menu), "disabled menu choice does not activate");
+        key(&mut app, KeyCode::KeyV, Some("v"));
+        assert!(!shown(&app, menu), "compacting closes the channel menu");
+        click_control(&mut app, primary, chat, "/ButtonToggleMode");
+
+        app.world_mut().resource_mut::<crate::network::chat::ChatLog>().event(dsor_proto::chat::parse("e#Group__room"));
+        app.update();
+        click_control(&mut app, primary, chat, "/ChannelTabParty");
+        assert_eq!(app.world().get::<WindowControls>(chat).unwrap().pages.get("chat_channel"), Some(&2));
+        app.world_mut().resource_mut::<crate::network::chat::ChatLog>().event(dsor_proto::chat::parse("l#group"));
+        app.update();
+        assert_eq!(app.world().get::<WindowControls>(chat).unwrap().pages.get("chat_channel"), Some(&0));
+
+        // Each button visual state contains five alternatives: exactly one renders.
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/interface/chatwindow2.ui.json");
+        let layout: Layout = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let mut c = app.world_mut().get_mut::<WindowControls>(chat).unwrap();
+        let button = c.buttons.iter().position(|b| b.id.contains("LabelFull/") && b.id.ends_with("/ButtonChatMenu")).unwrap();
+        for channel in 0..5 {
+            c.pages.insert("chat_channel", channel);
+            for hovered in [None, Some(button)] {
+                for pressed in [None, Some(button)] {
+                    c.hovered = hovered;
+                    c.pressed = pressed;
+                    let icons: Vec<_> = layout.widgets.iter().filter(|w| w.id.contains("/ButtonChatMenu/") && w.id.contains("/IconLabel") && c.visible(&c.gate(CHAT_WINDOW, w))).collect();
+                    assert_eq!(icons.len(), 1, "one current channel icon in every visual state");
+                    assert!(icons[0].id.ends_with(["Map", "Region", "Party", "Guild", "Whisper"][channel as usize]));
+                }
+            }
+        }
     }
 
     fn click_control(app: &mut App, primary: Entity, root: Entity, suffix: &str) {
@@ -1234,8 +1369,8 @@ mod tests {
                     window.set_cursor_position(Some(Vec2::new(120.0, 180.0) * (size.y / BASE_H)));
                     app.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(MouseButton::Left);
                     app.update();
-                    assert!(!app.world().resource::<crate::ui_input::UiInput>().blocks(MouseButton::Left));
-                    assert!(app.world().get::<crate::ui_input::UiRegions>(root).unwrap().0.is_empty());
+                    assert!(!app.world().resource::<crate::ui::input::UiInput>().blocks(MouseButton::Left));
+                    assert!(app.world().get::<crate::ui::input::UiRegions>(root).unwrap().0.is_empty());
                     app.world_mut().resource_mut::<ButtonInput<MouseButton>>().reset(MouseButton::Left);
                 }
             }
@@ -1283,7 +1418,7 @@ mod tests {
         pointer_step(&mut app, start, true, false);
         pointer_step(&mut app, target, false, false);
         assert!(app.world().resource::<Pointer>().spell_drag.as_ref().is_some_and(|d| d.active));
-        assert!(app.world().resource::<crate::ui_input::UiInput>().blocks(MouseButton::Left));
+        assert!(app.world().resource::<crate::ui::input::UiInput>().blocks(MouseButton::Left));
         pointer_step(&mut app, target, false, true);
         assert!(app.world_mut().resource_mut::<Pointer>().spell_drop.take().is_some());
         assert!(app.world().resource::<SkillClicks>().0.is_none(), "dropping must not cast");
@@ -1477,7 +1612,7 @@ mod tests {
         assert_eq!(app.world().get::<WindowControls>(roots["inventory"]).unwrap().bag, 2);
         click(&mut app, "inventory", "/FrameLabel/Button");
         assert_eq!(*app.world().get::<Visibility>(roots["inventory"]).unwrap(), Visibility::Hidden);
-        assert!(app.world().get::<crate::ui_input::UiRegions>(roots["inventory"]).unwrap().0.is_empty());
+        assert!(app.world().get::<crate::ui::input::UiRegions>(roots["inventory"]).unwrap().0.is_empty());
         click(&mut app, "ingamemenu", "/char");
         click(&mut app, "charactersheet", "/TabButtonPVP");
         assert_eq!(app.world().get::<WindowControls>(roots["charactersheet"]).unwrap().character, 1);
@@ -1532,14 +1667,14 @@ mod tests {
                 let child_before = app.world().get::<GlobalTransform>(child).unwrap().translation();
                 press(&mut app);
                 assert_eq!(app.world().resource::<Pointer>().drag.as_ref().unwrap().root, root);
-                assert!(app.world().resource::<crate::ui_input::UiInput>().blocks(MouseButton::Left));
+                assert!(app.world().resource::<crate::ui::input::UiInput>().blocks(MouseButton::Left));
                 let delta = Vec2::new(if name == "inventory" { -160.0 } else if name == "skilltalentswindow" { -60.0 } else { 160.0 }, 45.0);
                 move_cursor(&mut app, start + delta);
                 app.update();
                 assert!(window_offset(app.world().get::<Transform>(root).unwrap()).distance(delta) < 0.001);
                 let moved = app.world().get::<GlobalTransform>(child).unwrap().translation() - child_before;
                 assert!(moved.truncate().distance(Vec2::new(delta.x, -delta.y)) < 0.001);
-                assert!(app.world().resource::<crate::ui_input::UiInput>().blocks(MouseButton::Left));
+                assert!(app.world().resource::<crate::ui::input::UiInput>().blocks(MouseButton::Left));
                 assert_eq!(app.world().get::<CursorIcon>(primary), Some(&CursorIcon::from(SystemCursorIcon::Grabbing)));
                 release(&mut app);
                 assert!(app.world().resource::<Pointer>().drag.is_none());
@@ -1556,10 +1691,10 @@ mod tests {
                 move_cursor(&mut app, close_point);
                 press(&mut app);
                 assert!(app.world().resource::<Pointer>().drag.is_none());
-                assert!(app.world().resource::<crate::ui_input::UiInput>().blocks(MouseButton::Left), "moved buttons must block world input");
+                assert!(app.world().resource::<crate::ui::input::UiInput>().blocks(MouseButton::Left), "moved buttons must block world input");
                 release(&mut app);
                 assert_eq!(*app.world().get::<Visibility>(root).unwrap(), Visibility::Hidden);
-                assert!(app.world().get::<crate::ui_input::UiRegions>(root).unwrap().0.is_empty());
+                assert!(app.world().get::<crate::ui::input::UiRegions>(root).unwrap().0.is_empty());
                 app.world_mut().despawn(child);
             }
         }
@@ -1575,7 +1710,7 @@ mod tests {
         press(&mut app);
         move_cursor(&mut app, title);
         app.update();
-        assert!(!app.world().resource::<crate::ui_input::UiInput>().blocks(MouseButton::Left));
+        assert!(!app.world().resource::<crate::ui::input::UiInput>().blocks(MouseButton::Left));
         assert!(app.world().resource::<Pointer>().drag.is_none());
         release(&mut app);
         let handle = app.world().get::<WindowControls>(root).unwrap().drag_handle.unwrap();
@@ -1590,7 +1725,7 @@ mod tests {
         let offset = window_offset(app.world().get::<Transform>(root).unwrap());
         assert!((handle.rect[0] + offset.x - (BASE_W - 64.0)).abs() < 0.001);
         assert!((handle.rect[1] + offset.y).abs() < 0.001, "title must remain vertically reachable");
-        assert!(app.world().resource::<crate::ui_input::UiInput>().blocks(MouseButton::Left));
+        assert!(app.world().resource::<crate::ui::input::UiInput>().blocks(MouseButton::Left));
         app.world_mut().get_mut::<Window>(primary).unwrap().focused = false;
         app.update();
         assert!(app.world().resource::<Pointer>().drag.is_none(), "focus loss must cancel dragging");
@@ -1634,7 +1769,7 @@ mod tests {
         release(&mut app);
         press(&mut app);
         assert!(app.world().resource::<Pointer>().drag.is_none(), "cannot grab a window beneath a modal");
-        assert!(app.world().resource::<crate::ui_input::UiInput>().blocks(MouseButton::Left));
+        assert!(app.world().resource::<crate::ui::input::UiInput>().blocks(MouseButton::Left));
         release(&mut app);
     }
 }

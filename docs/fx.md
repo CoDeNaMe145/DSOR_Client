@@ -20,19 +20,19 @@ client draws it. Every claim about the 2018 client comes from its files:
 |---|---|---|
 | NormalDepth | normal + depth of Solid / AlphaTest surfaces | bevy depth pre-pass (`DepthPrepass`): natively always, in the browser with `?flag=depth` (WebGL2 binds it only without MSAA) |
 | CollectShadows, BlurShadows | the global light's shadow, blurred | bevy cascaded shadow map, one cascade |
-| Prelight | light buffer: global light, point lights | bevy forward lighting: the level's global light, its back light, ambient and placed lights (crate::lighting) |
+| Prelight | light buffer: global light, point lights | bevy forward lighting: the level's global light, its back light, ambient and placed lights (crate::rendering::lighting) |
 | Color | Solid, AlphaTest, DecalReceive | opaque / alpha-mask surfaces; cull mode from the n3 |
-| ColorAlphaDecals | ground decals, SequenceAlpha | crate::decals (projected on the CPU once) |
+| ColorAlphaDecals | ground decals, SequenceAlpha | crate::rendering::decals (projected on the CPU once) |
 | ColorAlpha | AlphaLit, AlphaUnlit, PreAdditive, ParticleLit, PostAlphaUnlit, Alpha, Additive, in that batch order | bevy's transparent pass, sorted back to front whatever the batch (gap: no batch order) |
-| BrightPass, Bloom x4 | bright pass of the half-res scene, blurred at quarter res | bevy `Bloom` (gap: no BloomColor tint) |
+| BrightPass, Bloom x4 | bright pass of the half-res opaque scene, blurred at quarter res | `nebula_bloom`, including the bubble's `BloomColor`, threshold and scale |
 | HighlightSilhouette, GatherOutline | outline of the hovered / targeted actor | **missing** |
 | HiddenCharacterColor | characters behind walls as a silhouette | **missing** |
-| Refraction | refraction surfaces, over everything drawn | crate::refraction over bevy's copy of the opaque scene (gap: transparent surfaces drawn after it are not refracted) |
-| pe_compose | colour x 2 + bloom x BloomScale, saturation, balance, gamma, highlight, vignette x VignetteColor, fade | no tonemapping (the default; the F2 panel can turn TonyMcMapface on), bloom, `ColorGrading` saturation, bevy `Vignette` (exact for VignetteSize 2) |
+| Refraction | refraction surfaces, over everything drawn | crate::rendering::refraction over bevy's copy of the opaque scene (gap: transparent surfaces drawn after it are not refracted) |
+| pe_compose | colour x 2 + bloom x BloomScale, saturation, balance, gamma, highlight, vignette x VignetteColor, fade | bubble-driven bloom, saturation, RGB balance and vignette in one display-space pass before FXAA; neutral brightness/gamma and no tonemapping |
 
 ## The level's look (`_Instance_AmbienceBubble`, `_Instance_Light`)
 
-`tools/export_ambience.py` writes `maps/<map>.ambience.json`; crate::lighting
+`tools/export_ambience.py` writes `maps/<map>.ambience.json`; crate::rendering::lighting
 applies it, converting Nebula's gamma-space light units to bevy's (`UNIT`, the
 inverse of the camera's exposure: what Nebula shows as `v`, bevy shows as `v`):
 
@@ -43,8 +43,8 @@ inverse of the camera's exposure: what Nebula shows as `v`, bevy shows as `v`):
 - fog: linear between `FogNearDist` and `FogFarDist` (25 and 50 in Kingshill: the
   game camera sits 25 units from the player, so the fog starts at the player),
   `FogColor`, opacity `FogIntensity` (UNVERIFIED mapping);
-- bloom (threshold `BrightPassThreshold / 2` in gamma, intensity x `BloomScale`),
-  saturation, vignette;
+- bloom (threshold `BrightPassThreshold / 2` in gamma, intensity x `BloomScale`,
+  tint `BloomColor`), saturation, RGB `Balance`, and vignette colour/intensity/size;
 - the light that follows the player (`LocalLightColor x LocalLightIntensity` at
   `PlayerLightOffset`; UNVERIFIED range);
 - the other bubbles (714 permanent ones in 149 levels: caves, interiors): inside
@@ -54,16 +54,50 @@ inverse of the camera's exposure: what Nebula shows as `v`, bevy shows as `v`):
   matched at half range, flickering ones wandering (UNVERIFIED curve), each in its
   culling cell so they go out with it.
 
-Not yet: height fog (`HeightFogColor`, `FogNearHeight` / `FogFarHeight`), bloom tint,
-`Balance`, the characters' rim light (`RimLightColor`, `RimLightIntensity`),
-`LightShadowIntensity`, `LightSpecularIntensity`, projected spot lights
+Camera colour is controlled by the active ambience bubble in both the game and
+editor camera monitor. Saturation and balance are applied after bloom, followed
+by the authored vignette; zero bloom still applies the other effects. All these
+values fade with `PEFadeTime` when entering or leaving a local zone. The editor's
+explicit selected-bubble preview uses the same composition. Older assets without
+`Balance` use neutral `[1, 1, 1, 1]`.
+
+F2 and `look.json`/browser preferences now adjust scene lighting and fog only.
+Legacy saved `saturation`, `exposure`, `bloom`, `vignette` and `tonemapping` values
+are ignored, so they cannot override the authored camera colours. Death/revival
+temporarily desaturates and dims the view without changing the bubble settings.
+
+Not yet: height fog (`HeightFogColor`, `FogNearHeight` / `FogFarHeight`),
+the characters' rim light (`RimLightColor`, `RimLightIntensity`),
+`LightSpecularIntensity`, projected spot lights
 (`LightType` 1, 329 rows: they need `LightTexture` and shadows), event bubbles
 (`EventSetRow` other than -1).
 
 Bubble membership uses the local player's feet after movement transforms have
-propagated. Only the map viewer falls back to the camera's ground focus. Disabled
-volumes remain disabled through asset export. Sun directions are normalized
-before blending so the size of a volume does not accelerate its lighting fade.
+propagated. The map viewer uses the camera's physical position. Disabled volumes
+remain disabled through asset export.
+
+Ambience transitions cross-fade the linear lighting contributions of the source
+and target presets over `PEFadeTime`. Each direction stays fixed; changing a look
+never sweeps the sun across the scene. An interrupted transition starts from the
+visible mixture, including its outgoing directions. Repeated crossings merge
+matching directions, and a completed fade retains only the target preset.
+
+The sun entity supplies one shadow map, fixed to the exported `_Instance_GlobalShadow`
+direction (falling back to the default ambience direction in older assets).
+`LightShadowIntensity` controls the shadowed share of each preset's direct light.
+Local presets additionally scale that share by their linear direct-light luminance
+relative to the map default (capped at 1). This preserves outdoor shadows while
+weakening their contrast in dim interiors, even when ambient light also falls.
+Zero direct light leaves no directional shadow contribution.
+Back light remains unshadowed. Native and browser builds share the same blend;
+it fits WebGL's single-directional-light limit. Studio/thumbnail cameras retain
+their own lighting.
+
+The renderer adapter in `client/src/rendering/lighting/blend.rs` reuses Bevy's PBR
+BRDF for each contribution and binds a small view uniform in the unused probe
+bind group. The client uses material cube maps rather than view environment
+probes; adding view probes or clustered decals requires extending this binding
+integration. Shader adapters check their Bevy source anchors when loading.
 
 Kingscity's two permanent interior volumes have authored entrance corrections in
 `level-overrides/a0200_kingscity.json`: the church begins at its open doors
@@ -74,7 +108,7 @@ these overrides after conversion with `tools/apply_level_overrides.py`.
 
 ## Keeping the player visible indoors
 
-`client/src/occlusion.rs` casts five rays from the active game camera to the local
+`client/src/rendering/occlusion.rs` casts five rays from the active game camera to the local
 player's torso, head, lower body and sides. A reveal starts only when all five
 body samples are blocked by opaque or alpha-tested map geometry. Low furniture
 and narrow obstacles stay intact when any sample remains visible. Once fully
@@ -108,10 +142,10 @@ Counts are models of the 2018 data using the shader.
 | Shader | Models | 2018 (disassembly) | Here |
 |---|---|---|---|
 | standard | 10 723 | lit diffuse + EmsvMap0 x MatEmissiveIntensity + spec; Intensity0 (`mayaAnimableAlpha`) x alpha | StandardMaterial; emission at the node's intensity; render state (Solid / AlphaTest / Additive / unlit) and **cull mode** from the n3; static Intensity0 applied |
-| particle | 4 181 | Alpha: tex x vcol x (1 + MatEmissiveIntensity), alpha too; Additive: tex x vcol, no emission; both x sat(depth behind / (Intensity0 + 0.05)); sprite phases (AlphaRef, Intensity1 fps); stretch along the second position | crate::particles on the CPU, drawn by `NebulaMaterial` kind Particle: both formulas, **soft edges** (depth pre-pass), **stretch**, **sprite phases**, additive faded by the fog |
+| particle | 4 181 | Alpha: tex x vcol x (1 + MatEmissiveIntensity), alpha too; Additive: tex x vcol, no emission; both x sat(depth behind / (Intensity0 + 0.05)); sprite phases (AlphaRef, Intensity1 fps); stretch along the second position | crate::rendering::particles on the CPU, drawn by `NebulaMaterial` kind Particle: both formulas, **soft edges** (depth pre-pass), **stretch**, **sprite phases**, additive faded by the fog |
 | environment | 1 941 | lit + cube(reflect(eye, N)) x Amplitude x SpecMap0.r | `NebulaMaterial` Environment: **cube reflection** (cube maps from `tools/embed_textures.py`); the spec mask is 1 - roughness (the conversion kept only a roughness map) |
-| decal | 864 | projected decal, Intensity0 x alpha | crate::decals; static Intensity0 applied |
-| refraction | 757 | scene behind moved by DuDv x Intensity1 x **10** px; alpha = AlphaBlendFactor x vcol.a; DuDv scrolled by Velocity | crate::refraction, **x 10 fixed** (was 10 times too weak), alpha fixed (was Intensity0); **map refraction surfaces are drawn** (the flat map path skipped them) |
+| decal | 864 | projected decal, Intensity0 x alpha | crate::rendering::decals; static Intensity0 applied |
+| refraction | 757 | scene behind moved by DuDv x Intensity1 x **10** px; alpha = AlphaBlendFactor x vcol.a; DuDv scrolled by Velocity | crate::rendering::refraction, **x 10 fixed** (was 10 times too weak), alpha fixed (was Intensity0); **map refraction surfaces are drawn** (the flat map path skipped them) |
 | uvanimated | 737 | uv + Velocity x t; alpha x Intensity0 | UV keys (pos / scale / rot) on effect models; **Velocity scrolls in the shader** (`NebulaMaterial` Scroll) so merged map surfaces (waterfalls) move; static Intensity0 applied |
 | water | 578 | two scrolling normal maps (Intensity0 / Scale tiling, Intensity3 speed, Intensity2 second speed), cube reflection x Intensity1, lit colour x Amplitude, alpha max(reflection, Amplitude) x tex.a x vcol.a x soft border (BumpScale) | `NebulaMaterial` Water, all of it (soft border with the depth pre-pass) |
 | simplelayer | 427 | lerp(DiffMap0, DiffMap2 (uv1 x Intensity1), DiffMap3(uv1).r), same for spec / bump | `NebulaMaterial` Layer: **the second colour layer** (DSO_Godot dropped DiffMap2/3); not its normal (BumpMap1) and spec (SpecMap1) |
@@ -138,15 +172,20 @@ panes shd:environment (cube reflection), light shafts shd:volumefog.
 
 Drawn: the sequencer's effect models, attached graphics, point lights, camera
 shakes, bullets flying straight and their death sequence, skill impacts at the
-hit frame. Missing:
+hit frame, blows (HitCommand 115) and deaths (KillCommand 116) on monsters.
 
-- **HitCommand (115) is not handled** (crates/proto decodes it; client/src/net.rs
-  ignores it): no hit sequence on the victim (`_Template_Monster` / `_Template_NPC`
-  `PhysicalHitSequence`, `FireHitSequence`... `CriticalHitSequence`,
-  `HeavyHitSequence`), no HitColor flash (`customColor2` in every lit shader), no
-  bullet impact sequence (134 skills: `bullet.impact`), and bullets go through
-  their targets to the end of their lifetime;
-- KillCommand: death sequences (`DeathSequence`, `DespawnSequence`);
+A bullet (`client/src/gameplay/skills.rs` fly_bullets) meets the actors in its
+way: its BulletRadius against their CapsuleRadius, swept over each frame's
+flight, flat as the server tests it (any height within 4 units of the capsule,
+so a monster downhill is met too). It passes through ImpactCount of them, each
+with its BulletImpactSequence, and ends with the skill's impact on the last one,
+placed on that actor's ground. The server's blow (HitCommand / KillCommand naming
+the attacker) ends the attacker's bullet on its victim even when the client's own
+test would have missed it (a monster that died meanwhile, one standing a little
+off). Aimed at a monster, a bullet dips or climbs to that monster's chest. Shifted
+skills whose SkillBulletId is a bullet row (stunshot) are drawn on the aimed
+point, like the other Shifted skills. Missing:
+
 - bullet motions other than Straight (Homing, LockOnHoming, Orbiting...);
 - Pre / Post sequences (3 skills, dwarf turrets);
 - shader animators of Amplitude / Fresnel* (glows that pulse), animators on
@@ -297,4 +336,4 @@ working directory); it is also written by itself on a panic or when bevy quits o
 a rendering error. It holds the build commit, the URL (session id hidden), the
 browser and WebGL renderer, the game state of the last second (map, camera,
 player, network, FPS, look settings, flags) and the last 600 log lines
-(client/src/dump.rs).
+(client/src/diagnostics/dump.rs).

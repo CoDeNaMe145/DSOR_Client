@@ -857,7 +857,7 @@ actor_text_body! {
     PropInteraction { prop_id, interaction };
 }
 
-/// QuestCommand (147), client: accept (1) / cancel (2) a quest.
+/// QuestCommand (release261: 138), client: accept (0), turn in (1), cancel (2).
 /// SOURCE: mapinstance.decode_quest_command; serializer 0x9AD37E: string, two 8-bit
 ///   fields (sub_A5AA04, sub_999CD0).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

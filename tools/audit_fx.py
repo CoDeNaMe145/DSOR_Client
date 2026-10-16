@@ -12,7 +12,7 @@ reports, per skill:
   - track types of the 2018 sequences the export drops (export_skills.py keeps
     anim, fx, phase, light, shake, hide, sound, color);
   - effect surfaces whose Nebula shader or render state the client has no
-    treatment for (client/src/materials.rs, surfaces.rs, particles.rs).
+    treatment for (client/src/rendering/materials.rs, surfaces.rs, particles.rs).
 It reads data only; nothing is rendered. Run it after a change to see what is left.
 """
 import collections, json, os, struct, sys

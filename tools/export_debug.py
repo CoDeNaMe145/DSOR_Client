@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""What the debug menu (client/src/debug.rs, F3) lists, and the debug map.
+"""What the debug menu (client/src/diagnostics/debug.rs, F3) lists, and the debug map.
 
 Usage: export_debug.py <assets>
 

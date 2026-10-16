@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The character sheet's data (client/src/stats.rs), from the 2018 client's own files.
+"""The character sheet's data (client/src/gameplay/stats.rs), from the 2018 client's own files.
 
 Usage: export_stats.py <export_win32> <assets>
 
@@ -18,7 +18,7 @@ Writes characters/stats.json:
   skills    _Template_Skill: id -> [UseWeaponDPS, DamageModifier, English title, CharClass]
   texts     language/en/gui.window.xml, categories gui.window.charsheet and gui.window.general
   items, enchantments, tiers, item_attrs   for the worn items (SEE: stats.rs)
-SEE: the spec of the 2018 computation in client/src/stats.rs (addresses there).
+SEE: the spec of the 2018 computation in client/src/gameplay/stats.rs (addresses there).
 """
 import json, os, re, sqlite3, sys
 import xml.etree.ElementTree as ET

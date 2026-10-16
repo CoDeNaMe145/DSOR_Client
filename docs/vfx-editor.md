@@ -48,7 +48,7 @@ your edits; the others get them with `python3 tools/vfx_apply.py assets`.
 
 ## How the preview works
 
-`DSOR_VFX_PREVIEW=<dir>` (client/src/skills.rs, `vfx_preview`): the editor
+`DSOR_VFX_PREVIEW=<dir>` (client/src/gameplay/skills.rs, `vfx_preview`): the editor
 writes `<dir>/preview.json` (`.vfx-editor/` in the repository) with what to play
 and the files it changed; the client reloads those files, stops what was playing
 and plays it again, and answers in `<dir>/status.json`. A skill is cast as a

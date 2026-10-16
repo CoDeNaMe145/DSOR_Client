@@ -3,7 +3,7 @@
 
 Usage: export_ambience.py <export_win32> <assets>
 
-Writes <assets>/maps/<map>.ambience.json (client/src/lighting.rs reads it):
+Writes <assets>/maps/<map>.ambience.json (client/src/rendering/lighting.rs reads it):
 
   global   the level's default ambience bubble (_Instance_AmbienceBubble with
            PEDefaultEntity = 1): the global light (colour, opposite colour, back

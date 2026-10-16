@@ -53,7 +53,7 @@ loot unimplemented (`services/map_events.py`). These are not client-only gaps.
 ## Evidence and validation
 
 - Server command routing: `.local/dso_server/services/dispatch.py`.
-- Client packet application: `client/src/net.rs::on_command`.
+- Client packet application: `client/src/network/net.rs::on_command`.
 - Client panel actions: `client/src/ui/controls.rs` and `controls/panels.rs`.
 - Existing interface implementation: [UI documentation](ui.md).
 - Baseline: `cargo test --offline --locked --release -p dsor-proto` passed all
@@ -61,7 +61,7 @@ loot unimplemented (`services/map_events.py`). These are not client-only gaps.
 
 ## Implementation results
 
-`client/src/inventory.rs` retains item records across complete allocation updates,
+`client/src/gameplay/inventory.rs` retains item records across complete allocation updates,
 removals and NEW-to-OLD replacement maps. The client also decodes the server's
 compact item-update layout correctly. `controls/items.rs` supplies icons, counts,
 collection placeholders, tooltips and inventory interactions. The exported

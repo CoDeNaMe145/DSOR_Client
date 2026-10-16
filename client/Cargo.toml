@@ -40,7 +40,7 @@ bevy_egui = { version = "=0.42.0", default-features = false, features = ["render
 # Reads ?map=... from the page URL.
 web-sys = { version = "0.3", features = [
     "Window", "Location", "Storage", "Performance",
-    # crate::dump: the bug dump's download and the browser's WebGL renderer.
+    # crate::diagnostics::dump: the bug dump's download and the browser's WebGL renderer.
     "Navigator", "Document", "Element", "HtmlAnchorElement", "HtmlCanvasElement", "Blob",
     "BlobPropertyBag", "Url", "WebGl2RenderingContext",
 ] }

@@ -1,7 +1,7 @@
 //! Item cells share the authored window's hit regions, anchors and visibility.
 //! Requests never invent item IDs or amounts: server snapshots drive the view.
 use super::*;
-use crate::inventory::{InventoryState, Place, BAG_SLOTS, OVERFLOW_PAGE_SLOTS};
+use crate::gameplay::inventory::{InventoryState, Place, BAG_SLOTS, OVERFLOW_PAGE_SLOTS};
 use dsor_proto::commands::inventory::ItemInfo;
 
 #[derive(Deserialize, Clone)]
@@ -28,7 +28,7 @@ pub fn setup(mut commands: Commands, assets: Res<AssetServer>) {
     commands.insert_resource(Data { catalog: assets.load("interface/inventory.items.json"), tooltip: assets.load("interface/tooltip.ui.json") });
 }
 
-pub fn sync(net:Option<NonSend<crate::net::Net>>,mut windows:Query<&mut WindowControls>) {
+pub fn sync(net:Option<NonSend<crate::network::net::Net>>,mut windows:Query<&mut WindowControls>) {
     if let Some(net)=net {if net.inventory.ready {for mut c in &mut windows {
         c.bag_pages=(net.inventory.allocation.storage_sizes[2] as usize).div_ceil(BAG_SLOTS as usize).clamp(1,8);
         c.premium_bag=net.inventory.writable(Place::Extra(0));
@@ -108,7 +108,7 @@ fn open_split(ui:&mut Interaction, windows:&mut Windows, state:&InventoryState, 
 #[allow(clippy::too_many_arguments)]
 pub fn input(mut ui:ResMut<Interaction>,mut pointer:ResMut<Pointer>,mut windows:Windows,
     primary:Query<&Window,With<PrimaryWindow>>,mouse:Res<ButtonInput<MouseButton>>,keys:Res<ButtonInput<KeyCode>>,
-    net:Option<NonSendMut<crate::net::Net>>,data:Res<Data>,catalogs:Res<Assets<Catalog>>,time:Res<Time<Real>>) {
+    net:Option<NonSendMut<crate::network::net::Net>>,data:Res<Data>,catalogs:Res<Assets<Catalog>>,time:Res<Time<Real>>) {
     let Some(mut net)=net else{return}; let Some(catalog)=catalogs.get(&data.catalog) else{return};
     let Ok(window)=primary.single() else{return};
     let point=window.cursor_position().map(|p|p*(BASE_H/window.height().max(1.0)));
@@ -185,7 +185,7 @@ fn color(catalog:&Catalog,item:Option<&ItemInfo>)->Color {
 }
 
 #[allow(clippy::too_many_arguments,clippy::type_complexity)]
-pub fn render(mut commands:Commands,windows:Query<(Entity,&Window2018,&WindowControls,&Visibility)>,net:Option<NonSend<crate::net::Net>>,
+pub fn render(mut commands:Commands,windows:Query<(Entity,&Window2018,&WindowControls,&Visibility)>,net:Option<NonSend<crate::network::net::Net>>,
     data:Res<Data>,catalogs:Res<Assets<Catalog>>,assets:Res<AssetServer>,screen:Res<Screen>,old:Query<Entity,With<Contents>>,
     mut last:Local<Option<(Entity,u64,usize,u8,usize,usize,u32,u32,u8,usize)>>) {
     let Some(catalog)=catalogs.get(&data.catalog) else{return}; let Some(net)=net else{return};
@@ -257,7 +257,7 @@ fn frame(commands:&mut Commands,assets:&AssetServer,meshes:&mut Assets<Mesh>,mat
 
 #[allow(clippy::too_many_arguments)]
 pub fn overlay(mut commands:Commands,ui:Res<Interaction>,windows:Query<(&Window2018,&WindowControls,&Visibility)>,primary:Query<&Window,With<PrimaryWindow>>,
-    net:Option<NonSend<crate::net::Net>>,data:Res<Data>,catalogs:Res<Assets<Catalog>>,layouts:Res<Assets<Layout>>,assets:Res<AssetServer>,screen:Res<Screen>,
+    net:Option<NonSend<crate::network::net::Net>>,data:Res<Data>,catalogs:Res<Assets<Catalog>>,layouts:Res<Assets<Layout>>,assets:Res<AssetServer>,screen:Res<Screen>,
     old:Query<Entity,With<Overlay>>,mut transforms:Query<&mut Transform,With<Overlay>>,mut meshes:ResMut<Assets<Mesh>>,mut materials:ResMut<Assets<UiMaterial>>,
     mut last:Local<Option<(String,u64,bool,u32)>>) {
     let Some(net)=net else{return};let Some(catalog)=catalogs.get(&data.catalog) else{return};
@@ -296,7 +296,7 @@ mod tests {
             .init_asset::<Layout>().init_asset::<Mesh>().init_asset::<UiMaterial>()
             .init_asset::<Image>().init_asset::<Font>().init_asset::<Catalog>()
             .init_resource::<Loaded>().init_resource::<Screen>().init_resource::<Figures>()
-            .init_resource::<crate::stats::Sheet>().init_resource::<crate::monsters::HoverInfo>()
+            .init_resource::<crate::gameplay::stats::Sheet>().init_resource::<crate::actors::monsters::HoverInfo>()
             .init_resource::<Pointer>().init_resource::<Interaction>().init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<bevy::sprite_render::EntitiesNeedingSpecialization<UiMaterial>>()
             .add_systems(PostUpdate, (refresh_mesh_order, bevy::sprite_render::check_entities_needing_specialization::<UiMaterial>)
@@ -314,8 +314,8 @@ mod tests {
         let template = catalog.ingredients[0].template.clone();
         let catalog = app.world_mut().resource_mut::<Assets<Catalog>>().add(catalog);
         app.insert_resource(Data { catalog, tooltip: default() });
-        crate::net::start_offline(app.world_mut(), 1, 0);
-        app.world_mut().non_send_mut::<crate::net::Net>().inventory.apply(InventoryInfo {
+        crate::network::net::start_offline(app.world_mut(), 1, 0);
+        app.world_mut().non_send_mut::<crate::network::net::Net>().inventory.apply(InventoryInfo {
             items: vec![ItemInfo { id: 1, third: 23, template, ..default() }],
             placements: vec![(1, 0)], storage_sizes: [0, 0, 224, 0, 0, 0], ..default()
         });
@@ -402,13 +402,13 @@ mod tests {
         app.init_resource::<Time<Real>>()
             .init_resource::<Assets<Catalog>>()
             .add_systems(Update, (sync, input).chain().after(edit_text).before(paint));
-        crate::net::start_offline(app.world_mut(), 1, 0);
+        crate::network::net::start_offline(app.world_mut(), 1, 0);
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/interface/inventory.items.json");
         let catalog: Catalog = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
         let ingredient_template = catalog.ingredients.iter().find(|i| i.tab == "Basics" && i.rarity == 1 && i.slot == 0).unwrap().template.clone();
         let handle = app.world_mut().resource_mut::<Assets<Catalog>>().add(catalog);
         app.insert_resource(Data { catalog: handle.clone(), tooltip: default() });
-        let mut net = app.world_mut().non_send_mut::<crate::net::Net>();
+        let mut net = app.world_mut().non_send_mut::<crate::network::net::Net>();
         net.offline = false;
         net.inventory.apply(InventoryInfo {
             items: vec![ItemInfo { id: 1, third: 10, template: ingredient_template.clone(), ..default() },
@@ -439,10 +439,10 @@ mod tests {
         app.update();
         assert_eq!(*app.world().get::<Visibility>(dialog).unwrap(), Visibility::Hidden);
         assert!(app.world().resource::<Interaction>().pending.is_some());
-        assert_eq!(app.world().non_send::<crate::net::Net>().inventory.at(Place::Bag(0)).unwrap().third, 10,
+        assert_eq!(app.world().non_send::<crate::network::net::Net>().inventory.at(Place::Bag(0)).unwrap().third, 10,
             "wait for authoritative IDs and amounts, never fabricate split stacks");
         app.world_mut().resource_mut::<ButtonInput<KeyCode>>().reset_all();
-        app.world_mut().non_send_mut::<crate::net::Net>().inventory.revision += 1;
+        app.world_mut().non_send_mut::<crate::network::net::Net>().inventory.revision += 1;
         cursor(&mut app, 0);
         app.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(MouseButton::Left);
         app.update();
@@ -456,7 +456,7 @@ mod tests {
         assert_eq!(*app.world().get::<Visibility>(inventory).unwrap(), Visibility::Inherited);
         let c = app.world().get::<WindowControls>(inventory).unwrap();
         let catalog = app.world().resource::<Assets<Catalog>>().get(&handle).unwrap();
-        let state = &app.world().non_send::<crate::net::Net>().inventory;
+        let state = &app.world().non_send::<crate::network::net::Net>().inventory;
         assert_eq!(displayed(Cell::Ingredient(0), c, state, catalog).unwrap().amount, 23);
         let empty = displayed(Cell::Ingredient(1), c, state, catalog).unwrap();
         assert_eq!(empty.amount, 0);
@@ -483,7 +483,7 @@ mod tests {
             assert!(!c.enabled(c.buttons.iter().find(|b|b.action==Action::Bag(EXTRA)).unwrap()));
         }
         {
-            let mut net=app.world_mut().non_send_mut::<crate::net::Net>();
+            let mut net=app.world_mut().non_send_mut::<crate::network::net::Net>();
             net.inventory.membership(2,true);
             net.inventory.allocation.storage_sizes[5]=28;
         }
@@ -494,11 +494,11 @@ mod tests {
             c.bag=EXTRA;
             assert_eq!(place(Cell::Bag(27),&c),Some(Place::Extra(27)));
         }
-        app.world_mut().non_send_mut::<crate::net::Net>().inventory.membership(2,false);
+        app.world_mut().non_send_mut::<crate::network::net::Net>().inventory.membership(2,false);
         app.update();
         assert_eq!(app.world().get::<WindowControls>(inventory).unwrap().bag,0);
         {
-            let mut net=app.world_mut().non_send_mut::<crate::net::Net>();
+            let mut net=app.world_mut().non_send_mut::<crate::network::net::Net>();
             net.inventory.allocation.placements.clear();
             net.inventory.allocation.overflow=(1..=28).collect();
             net.inventory.revision+=1;

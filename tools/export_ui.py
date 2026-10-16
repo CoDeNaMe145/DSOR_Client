@@ -398,3 +398,6 @@ if "inventory" in only:
     from equipment_visuals import export_equipment
     print("inventory catalog (items, collection entries):", export_inventory(catalog, tex, loca, assets))
     export_equipment(catalog, assets)
+if "npcscreen" in only:
+    from dialogue_catalog import export_dialogue
+    print("NPC dialogue:", export_dialogue(catalog, tex, loca, assets))

@@ -9,7 +9,7 @@ fn color(rgb: [f32; 3]) -> egui::Color32 {
     )
 }
 
-fn swatches(ui: &mut egui::Ui, look: &crate::lighting::Bubble) {
+fn swatches(ui: &mut egui::Ui, look: &crate::rendering::lighting::Bubble) {
     ui.horizontal(|ui| {
         for (label, rgba) in [
             ("Sun", look.light_color),

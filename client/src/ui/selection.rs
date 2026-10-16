@@ -1,6 +1,6 @@
 //! Original character-selection mesh UI, with a runtime four-row roster.
 use super::*;
-use crate::selection::{Dialog, Request, Selection};
+use crate::screens::selection::{Dialog, Request, Selection};
 use bevy::input::keyboard::KeyboardInput;
 use bevy::input::mouse::MouseWheel;
 
@@ -9,7 +9,7 @@ impl Plugin for SelectionUiPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, setup)
             .add_systems(Update, (spawn, input, modal_input, paint, modal).chain()
-                .after(crate::net::NetReceive).after(super::follow_screen));
+                .after(crate::network::net::NetReceive).after(super::follow_screen));
     }
 }
 
@@ -159,7 +159,7 @@ fn enabled(action: &Action, selection: &Selection) -> bool {
 #[allow(clippy::too_many_arguments)]
 fn input(mut selection: ResMut<Selection>, mut controls: ResMut<Controls>, mouse: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>, mut scroll: MessageReader<MouseWheel>, time: Res<Time>,
-    mut windows: Query<&mut Window, With<PrimaryWindow>>, loading: Res<crate::loading::LoadingScreen>, mut exit: MessageWriter<AppExit>) {
+    mut windows: Query<&mut Window, With<PrimaryWindow>>, loading: Res<crate::screens::loading::LoadingScreen>, mut exit: MessageWriter<AppExit>) {
     if !selection.active || loading.active() { scroll.clear(); return; }
     let Ok(mut window) = windows.single_mut() else { return };
     let cursor = window.cursor_position().map(|p| p * (BASE_H / window.height()));
@@ -352,7 +352,7 @@ mod tests {
         let mut app = App::new();
         app.insert_resource(state).insert_resource(Controls { hits, ..default() })
             .init_resource::<ButtonInput<MouseButton>>().init_resource::<ButtonInput<KeyCode>>()
-            .init_resource::<Time>().init_resource::<crate::loading::LoadingScreen>()
+            .init_resource::<Time>().init_resource::<crate::screens::loading::LoadingScreen>()
             .add_message::<MouseWheel>().add_message::<AppExit>().add_message::<KeyboardInput>()
             .add_systems(Update, (input, modal_input).chain());
         let primary = app.world_mut().spawn((Window { focused: true, resolution: (1280, 720).into(), ..default() }, PrimaryWindow)).id();

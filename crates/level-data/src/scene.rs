@@ -438,8 +438,11 @@ pub fn document(session: &Session, catalogs: &mut Catalogs, revision: u64) -> Re
         }
     }
     let manifest = &session.snapshot["manifest"];
+    let shadow = object(&session.records["_Instance_GlobalShadow"])
+        .find_map(|(_, row)| matrix("_Instance_GlobalShadow", row).ok())
+        .map(|m| [m[8], m[9], m[10]]);
     Ok(
-        json!({"protocol":1,"revision":revision,"map":session.name,"center":manifest.get("center").cloned().unwrap_or(json!([0,0,0])),"extents":manifest.get("extents").cloned().unwrap_or(json!([30,20,30])),"objects":objects,"ambience":catalogs.get(assets,&format!("maps/{}.ambience.json",session.name))["global"]}),
+        json!({"protocol":1,"revision":revision,"map":session.name,"center":manifest.get("center").cloned().unwrap_or(json!([0,0,0])),"extents":manifest.get("extents").cloned().unwrap_or(json!([30,20,30])),"objects":objects,"shadow":shadow,"ambience":catalogs.get(assets,&format!("maps/{}.ambience.json",session.name))["global"]}),
     )
 }
 pub fn apply_transform(session: &mut Session, event: &Value, revision: u64) -> Result<()> {
