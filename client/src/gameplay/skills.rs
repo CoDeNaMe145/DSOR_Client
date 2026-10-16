@@ -1500,6 +1500,13 @@ fn play_sequences(
             p.t %= length / FPS;
             frame = p.t * FPS;
             for i in 0..p.started.len() {
+                // A graphics track over the whole sequence stays: restarted, a
+                // dropped item's glow grew in again every 20 s (drop_<rarity>,
+                // 500 frames, one fx track 0..500).
+                let (start, end) = p.seq.tracks[i].span();
+                if matches!(p.seq.tracks[i], Track::Fx { .. }) && start <= 0 && end >= p.seq.length as i32 && p.spawned[i].is_some() {
+                    continue;
+                }
                 if let Some(s) = p.spawned[i].take() {
                     commands.entity(s).try_despawn();
                 }
@@ -1705,6 +1712,52 @@ fn play_sequences(
 ///   de texture", "certains chargent pas en entier tout de suite"), and for a
 ///   frame at its rest pose before its clip took over ("une frame au debut ou le
 ///   sort est lance et il se reaffiche apres").
+/// A looping clip, played as the game plays it: the curves that end before the
+/// clip does (an appearance -- a dropped item's pop out of the ground, its glow
+/// growing in) once, holding their last key; the others over and over.
+/// CONTRACT: a clip whose curves all span it loops whole, as before.
+/// EVIDENCE: dropitems/all_drop_bag_01.glb "all_drop_bag_01-loop" (3.96 s):
+///   item_spawn's curves end at 0.44 s (scale 0.001 -> 1, a hop), item_rotate's
+///   run the whole 3.96 s; glow_common's white_pPlane2 grows in over 0.6 s. The
+///   conversion joined the spawn and loop clips into one animation.
+/// FAILURE (2026-10-16): looped whole, every item popped out of the ground again
+///   every 4 s ("les items rejouent l'animation de spawn").
+pub(crate) fn looping_graph(clip: &Handle<AnimationClip>, clips: &mut Assets<AnimationClip>, anim: &mut AnimationPlayer) -> AnimationGraph {
+    let split = clips.get(clip).and_then(|c| {
+        let end = c.duration();
+        let (mut once, mut looped) = (AnimationClip::default(), AnimationClip::default());
+        let mut parts = (0, 0);
+        for (target, curves) in c.curves() {
+            for curve in curves {
+                if curve.0.domain().end() < end - 1.0e-3 {
+                    once.add_variable_curve_to_target(*target, curve.clone());
+                    parts.0 += 1;
+                } else {
+                    looped.add_variable_curve_to_target(*target, curve.clone());
+                    parts.1 += 1;
+                }
+            }
+        }
+        looped.set_duration(end);
+        (parts.0 > 0 && parts.1 > 0).then_some((once, looped))
+    });
+    match split {
+        Some((once, looped)) => {
+            let mut graph = AnimationGraph::new();
+            let a = graph.add_clip(clips.add(once), 1.0, graph.root);
+            let b = graph.add_clip(clips.add(looped), 1.0, graph.root);
+            anim.play(a);
+            anim.play(b).repeat();
+            graph
+        }
+        None => {
+            let (graph, node) = AnimationGraph::from_clip(clip.clone());
+            anim.play(node).repeat();
+            graph
+        }
+    }
+}
+
 fn start_fx_animations(
     mut commands: Commands,
     assets: Res<AssetServer>,
@@ -1713,6 +1766,7 @@ fn start_fx_animations(
     children: Query<&Children>,
     players: Query<(), With<AnimationPlayer>>,
     mut graphs: ResMut<Assets<AnimationGraph>>,
+    mut clips: ResMut<Assets<AnimationClip>>,
 ) {
     for (e, mut m) in &mut fx {
         if m.started {
@@ -1740,13 +1794,14 @@ fn start_fx_animations(
         }
         let Some(player) = children.iter_descendants(e).find(|c| players.contains(*c)) else { continue };
         debug!("fx {:?}: playing {} clip(s)", m.gltf.path(), gltf.animations.len());
-        let (graph, node) = AnimationGraph::from_clip(gltf.animations[0].clone());
         let mut anim = AnimationPlayer::default();
-        if m.looping {
-            anim.play(node).repeat();
+        let graph = if m.looping {
+            looping_graph(&gltf.animations[0], &mut clips, &mut anim)
         } else {
+            let (graph, node) = AnimationGraph::from_clip(gltf.animations[0].clone());
             anim.play(node);
-        }
+            graph
+        };
         commands.entity(player).try_insert((AnimationGraphHandle(graphs.add(graph)), anim));
         commands.entity(e).try_insert(Visibility::Inherited);
         m.started = true;

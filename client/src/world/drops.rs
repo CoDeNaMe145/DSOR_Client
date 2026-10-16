@@ -225,6 +225,7 @@ fn animate_drops(
     gltfs: Res<Assets<Gltf>>,
     assets: Res<AssetServer>,
     mut graphs: ResMut<Assets<AnimationGraph>>,
+    mut clips: ResMut<Assets<AnimationClip>>,
 ) {
     for (entity, model) in &drops {
         if assets.load_state(&model.0).is_failed() {
@@ -238,9 +239,8 @@ fn animate_drops(
         };
         let Some(player) = children.iter_descendants(entity).find(|e| players.contains(*e)) else { continue };
         commands.entity(entity).remove::<ItemModel>();
-        let (graph, node) = AnimationGraph::from_clip(clip.clone());
         let mut anim = AnimationPlayer::default();
-        anim.play(node).repeat();
+        let graph = crate::skills::looping_graph(clip, &mut clips, &mut anim);
         commands.entity(player).try_insert((AnimationGraphHandle(graphs.add(graph)), anim));
     }
 }
