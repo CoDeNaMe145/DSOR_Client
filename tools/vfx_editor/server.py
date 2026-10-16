@@ -5,7 +5,7 @@ Usage: python3 tools/vfx_editor/server.py [--assets DIR] [--port 8091]
 then open http://localhost:8091 (the page, editor.js, explains itself).
 
 Edits are kept in vfx-overrides/ (see tools/vfx_apply.py) and applied to the
-assets at once; the preview client (DSOR_VFX_PREVIEW, client/src/skills.rs)
+assets at once; the preview client (DSOR_VFX_PREVIEW, client/src/gameplay/skills.rs)
 reloads what changed and plays it again. Python standard library only.
 """
 import argparse, json, os, subprocess, sys, threading

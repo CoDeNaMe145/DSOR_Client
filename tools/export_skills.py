@@ -171,7 +171,7 @@ def sequence(layout):
             # A character the sequence places (the levels' guards, pigeons, sitting
             # townsfolk): "<model>/<character set>/<clip>" (uniskel/deco_m_guard_01/
             # male_idle_guard, deco_pigeon/deco_pigeon_01/idle_01). Drawn by
-            # client/src/npc.rs from tools/export_deco.py's placements.
+            # client/src/actors/npc.rs from tools/export_deco.py's placements.
             t = {"kind": "character", "object": v.get("characterobject", ""), "at": transform(v.get("graphicstrans")),
                  "speed": num(v.get("animSpeed"), 100) / 100.0, "offset": num(v.get("animOffset"))}
         elif kind == "AttachedGraphicsTrackBar":
@@ -317,12 +317,15 @@ for r in db.execute("select rowid, * from _Template_Skill order by rowid"):
         "post": mapped(r["PostExecuteSequenceMapping"]),
         "impact": r["SkillImpactSequence"] or "",
         # Shifted skills (lightning strike, meteor, singularity): SkillBulletId names
-        # no _Template_SkillBullet row but a sequence, drawn on the aimed point (all
-        # 107 of them in 2018).
-        "shifted": (r["SkillBulletId"] or "") if b is None and r["SkillType"] == "Shifted" else "",
+        # the sequence drawn on the aimed point, stretched over HitFrame ticks (all
+        # 107 of them in 2018). Release 261 points nine of them (stunshot, the ice
+        # minions' shots) at a _Template_SkillBullet row whose LoopSequence carries
+        # that same name: still drawn on the point, never flown (the server lands
+        # every Shifted skill at LoopStartFrame + HitFrame).
+        "shifted": (r["SkillBulletId"] or "") if r["SkillType"] == "Shifted" else "",
         # What the skill leaves on its victims and on the ground: (status id, D:).
         # The server places them (StatusEffect 82 / NewLocationEffect 64); kept for
-        # offline play (client/src/monsters.rs).
+        # offline play (client/src/actors/monsters.rs).
         "user_status": statuses(r["UserStatusEffects"]),
         "victim_status": statuses(r["VictimStatusEffects"]),
         "location_status": statuses(r["LocationStatusEffects"]),
@@ -336,7 +339,7 @@ for r in db.execute("select rowid, * from _Template_Skill order by rowid"):
             "delay": r["SummonSpawnDelay"] or 0},
         "bullet_count": r["BulletCount"] or 1,
         "emit_delay": r["BulletEmitDelay"] or 0,
-        "bullet": None if b is None else {
+        "bullet": None if b is None or r["SkillType"] == "Shifted" else {
             "id": b["Id"],
             "loop": b["LoopSequence"] or "",
             "impact": b["BulletImpactSequence"] or "",
@@ -346,6 +349,9 @@ for r in db.execute("select rowid, * from _Template_Skill order by rowid"):
             "lifetime": b["LifeTime"] or 0.0,
             "radius": b["BulletRadius"] or 0.0,
             "static_collision": bool(b["StaticCollision"]),
+            # How many actors it strikes before it ends: 1 for most, 2 for iceball,
+            # 20 for seismic slam's wave (the server stops at that many too).
+            "impact_count": b["ImpactCount"] or 1,
             # Where the bullet leaves, in the caster's entity frame (Nebula: -Z ahead):
             # mage_fireball_bullet (0.043, 1.49, -1.788) -- the hand, 1.8 ahead.
             "start": list(struct.unpack("<3f", b["StartOffset"][:12])) if b["StartOffset"] and len(b["StartOffset"]) >= 12 else [0.0, 1.2, 0.0],

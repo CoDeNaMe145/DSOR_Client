@@ -24,7 +24,7 @@ EVIDENCE: the particle pixel shader (shaders_sm30, effect "particle", ps_3_0 at
 
 Each glb node named by the path's last component (its parent's name breaking ties)
 gets extras.dsor_anim = [{"var", "loop", "keys": [[t, v], ...]}]; the client
-applies them (client/src/materials.rs, ShaderAnim).
+applies them (client/src/rendering/materials.rs, ShaderAnim).
 """
 import os, struct, sys
 

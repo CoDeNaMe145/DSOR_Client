@@ -158,7 +158,7 @@ The map placements are in the game's map frame, which is also the server's
 frame, one unit = one metre, ground on X/Z, elevation on Y. glTF and Bevy are
 right-handed Y-up too, and DSO_Godot writes the models without any axis
 conversion, so a game position is a Bevy position unchanged. The client keeps
-that mapping in exactly one place, `client/src/map.rs::game_to_bevy`, so any
+that mapping in exactly one place, `client/src/world/map.rs::game_to_bevy`, so any
 later correction lands there. Rotations and scales are used as-is.
 
 ## Running the map viewer

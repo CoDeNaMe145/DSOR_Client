@@ -214,7 +214,7 @@ def reopen(path):
 
 if __name__ == "__main__":
     # CONTRACT: characters only (skeleton and monster clips, which the client
-    #   repeats). An effect model's clip plays ONCE (crate::skills
+    #   repeats). An effect model's clip plays ONCE (crate::gameplay::skills
     #   start_fx_animations) whatever its "-loop" name: closed, its tracks ended
     #   back on their first key -- warrior_mightyswing's emitters went back behind
     #   the warrior before emitting and its swoosh swept twice ("les 3 effets ...

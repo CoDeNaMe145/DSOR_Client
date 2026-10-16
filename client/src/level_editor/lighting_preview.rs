@@ -1,6 +1,6 @@
 //! Effective DB4 lighting and editor-only light/volume handles.
 use super::*;
-use crate::lighting::{Bubble, EditorLook};
+use crate::rendering::lighting::{Bubble, EditorLook};
 
 #[derive(Resource, Default)]
 pub(super) struct State {
@@ -52,6 +52,15 @@ pub(super) fn update(editor: Res<Editor>, roots: Query<&Transform, With<ObjectRo
         if let Ok(at) = roots.get(placed.entity) { bubble.dir = Some((at.rotation * Vec3::Z).to_array()); }
         state.source = placed.object.label.clone();
     } else { state.source = "Map ambience".into(); }
+    // Local volumes never redirect the map's shadow projection. Legacy scenes
+    // without a separate shadow record fall back to the default ambience.
+    let shadow_dir = editor.shadow.or_else(|| global.and_then(|p| roots.get(p.entity).ok())
+        .map(|at| (at.rotation * Vec3::Z).to_array()))
+        .or_else(|| editor.ambience.as_ref().and_then(|b| b.dir));
+    if look.shadow_dir != shadow_dir { look.shadow_dir = shadow_dir; }
+    let shadow_reference = global.and_then(|p| p.object.ambience.as_ref()).map(|b| &b.look)
+        .or(editor.ambience.as_ref()).cloned().unwrap_or_default().sun_luminance();
+    if look.shadow_reference != shadow_reference { look.shadow_reference = shadow_reference; }
     if look.bubble != bubble { look.bubble = bubble; }
 }
 
@@ -114,7 +123,7 @@ mod tests {
             viewport: None, directory: default(), revision: 0, map: "test".into(), center: Vec3::ZERO,
             extents: Vec3::splat(10.), scene_stamp: None, controls_stamp: None, poll_at: 0., status_at: 0.,
             controls: default(), placed: default(), models: default(), events: 0, drag: None,
-            focus_serial: 0, needs_frame: false, error: String::new(), ambience: None,
+            focus_serial: 0, needs_frame: false, error: String::new(), ambience: None, shadow: None,
         };
         for (key, intensity, global) in [("global", 1., true), ("local", 4., false)] {
             let at = Transform::from_scale(Vec3::splat(10.));
@@ -129,6 +138,18 @@ mod tests {
         app.insert_resource(editor);
         let camera = app.world_mut().spawn((ViewCamera, Transform::from_xyz(0., 10., 20.).looking_at(Vec3::ZERO, Vec3::Y))).id();
         (app, camera)
+    }
+
+    #[test]
+    fn local_preview_retains_the_authored_map_shadow_direction() {
+        let (mut app, camera) = scene();
+        let shadow = Some([-0.2747, 0.7545, -0.5961]);
+        app.world_mut().resource_mut::<Editor>().shadow = shadow;
+        for position in [Vec3::new(0., 10., 20.), Vec3::ZERO, Vec3::new(0., 10., 20.)] {
+            app.world_mut().entity_mut(camera).insert(Transform::from_translation(position));
+            app.update();
+            assert_eq!(app.world().resource::<EditorLook>().shadow_dir, shadow);
+        }
     }
 
     #[test]

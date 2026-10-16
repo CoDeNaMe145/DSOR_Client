@@ -15,7 +15,7 @@ stays two-sided; mixed users remain two-sided. CullMode=3/unknown values and
 unrelated materials are left unchanged. Original character N3 audit: 5,720
 surfaces use these defaults, with no CullMode override. Metadata records the
 resolved state so already-converted assets and the runtime compatibility path
-in client/src/model_compact.rs use the same decision.
+in client/src/rendering/model_compact.rs use the same decision.
 """
 import argparse
 from pathlib import Path

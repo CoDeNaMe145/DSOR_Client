@@ -5,7 +5,7 @@ Usage: fix_materials.py <assets> [--dry-run]
 
 Rewrites each .glb's JSON chunk in place (the binary chunk is untouched; images
 are external) and marks every rewritten material with extras.dsor_state, which
-the client turns into the matching render state (client/src/materials.rs):
+the client turns into the matching render state (client/src/rendering/materials.rs):
 
   Decal     shd:decal -- DiffMap0 (base colour) is the artwork and the mask was
             exported as the EMISSIVE texture, so drawn as glTF it added white over
@@ -16,9 +16,9 @@ the client turns into the matching render state (client/src/materials.rs):
             pass adds EmsvMap0). The emission becomes the base colour; the client
             draws it additive and unlit.
   Hidden    particle emitter surfaces: not artwork, the particles are rebuilt
-            from the .fx.json sidecars (client/src/particles.rs). Volume fog and
+            from the .fx.json sidecars (client/src/rendering/particles.rs). Volume fog and
             refraction surfaces carry it too, so no StandardMaterial draws them:
-            the client gives them materials of its own (client/src/surfaces.rs,
+            the client gives them materials of its own (client/src/rendering/surfaces.rs,
             refraction.rs).
 
 Idempotent: a material already carrying dsor_state is left alone.
@@ -130,7 +130,7 @@ print(stats)
 # the node's `Scale` shader parameter (0.2 for Kingshill's stones and sand, read
 # from the original .n3) while the mask covers the box once. The merged texture
 # above cannot do that, so the client draws decals with two UV sets
-# (client/src/decals.rs); this records what it needs as extras.dsor_decal:
+# (client/src/rendering/decals.rs); this records what it needs as extras.dsor_decal:
 #   color / mask: glTF texture indices; scale: the n3 Scale (1.0 when absent).
 # Usage: fix_materials.py <assets> --n3 <export_win32/models>
 if "--n3" in sys.argv:

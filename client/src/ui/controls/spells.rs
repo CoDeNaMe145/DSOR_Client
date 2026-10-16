@@ -27,7 +27,7 @@ pub(super) struct Model {
 
 impl Default for Model {
     fn default() -> Self {
-        Self { class: 1, offline: true, ready: true, book: default(), bar: crate::net::default_bar(1) }
+        Self { class: 1, offline: true, ready: true, book: default(), bar: crate::network::net::default_bar(1) }
     }
 }
 
@@ -39,8 +39,8 @@ impl Model {
 }
 
 pub(in crate::ui) fn sync(
-    net: Option<NonSend<crate::net::Net>>,
-    players: Query<&crate::character::Character, With<crate::net::LocalPlayer>>,
+    net: Option<NonSend<crate::network::net::Net>>,
+    players: Query<&crate::actors::character::Character, With<crate::network::net::LocalPlayer>>,
     mut windows: Query<&mut WindowControls>,
 ) {
     let class = players.iter().next().map(|c| c.desc.class)
@@ -138,7 +138,7 @@ fn edited_bar(slots: &[Slot], drop: &DropSpell) -> Option<Vec<Slot>> {
     (edited != slots).then_some(edited)
 }
 
-pub(in crate::ui) fn apply_drop(mut pointer: ResMut<Pointer>, net: Option<NonSendMut<crate::net::Net>>) {
+pub(in crate::ui) fn apply_drop(mut pointer: ResMut<Pointer>, net: Option<NonSendMut<crate::network::net::Net>>) {
     let Some(drop) = pointer.spell_drop.take() else { return };
     let Some(mut net) = net else { return };
     if drop.source.is_none() && !net.offline && !drop.spell.wire.is_some_and(|wire|
@@ -242,14 +242,14 @@ mod tests {
     fn applying_a_drop_updates_the_display_and_preserves_other_bars() {
         let mut app = App::new();
         app.init_resource::<Time<Real>>().init_resource::<Pointer>().add_systems(Update, apply_drop);
-        crate::net::start_offline(app.world_mut(), 1, 0);
+        crate::network::net::start_offline(app.world_mut(), 1, 0);
         let mut slots = vec![Slot { kind: Slot::EMPTY, id: None }; BAR_SIZE];
         slots[16] = Slot { kind: 2, id: Some("essence".into()) };
         let other = vec![Slot { kind: 1, id: Some("item".into()) }; BAR_SIZE];
-        app.world_mut().non_send_resource_mut::<crate::net::Net>().quickbars.bars = vec![slots.clone(), other.clone()];
+        app.world_mut().non_send_resource_mut::<crate::network::net::Net>().quickbars.bars = vec![slots.clone(), other.clone()];
         app.world_mut().resource_mut::<Pointer>().spell_drop = Some(DropSpell { spell: spell(), source: None, target: 3 });
         app.update();
-        let net = app.world().non_send_resource::<crate::net::Net>();
+        let net = app.world().non_send_resource::<crate::network::net::Net>();
         assert_eq!(net.bar[3].as_deref(), Some("magicmissile"));
         assert_eq!(net.quickbars.bars[0].len(), BAR_SIZE);
         assert_eq!(net.quickbars.bars[0][16], slots[16]);

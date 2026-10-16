@@ -142,6 +142,9 @@ cone produces a standard spotlight. Projected light textures are not supported.
 
 **Select environment** opens the default ambience: sun color/intensity, back-light
 color, ambient color, fog, bloom and saturation. E rotates its sun direction.
+Under **Color & bloom**, edit `Saturation`, RGB `Balance`, bloom and vignette
+settings, then press **Apply**. These values directly control the scene and
+camera monitor; saved F2 colour multipliers no longer alter them.
 Local ambience volumes also expose enabled state, priority, shape and game fade
 time; R scales their volume. Normal lighting follows the editor camera's actual
 position inside a volume. Looking toward a volume or selecting it does not activate

@@ -34,7 +34,10 @@ use bevy::sprite_render::{AlphaMode2d, Material2d, Material2dPlugin};
 use bevy::window::{PrimaryWindow, WindowResized};
 use serde::Deserialize;
 
+pub(crate) mod combat_text;
+pub(crate) mod input;
 mod controls;
+mod dialogue;
 mod local_map;
 mod selection;
 #[cfg(not(target_arch = "wasm32"))]
@@ -101,18 +104,18 @@ fn death_part(id: &str) -> bool {
 }
 
 /// The local player's death dialog: opened by the server's ShowDeathDialogCommand,
-/// its buttons send RespawnCommand (crate::net::player_deaths).
+/// its buttons send RespawnCommand (crate::network::net::player_deaths).
 const DEATH_WINDOW: &str = "deathdialog";
 /// _Globals RespawnCost (at the nearest exit) and InstantRespawnCost (on the spot).
 const RESPAWN_COST: u32 = 40;
 const INSTANT_RESPAWN_COST: u32 = 120;
 
 fn is_menu(name: &str) -> bool {
-    MENU_WINDOWS.iter().any(|(n, _, _)| *n == name) || NAV_WINDOWS.contains(&name) || name == "unstackwindow" || name == DEATH_WINDOW || name == CHAT_MENU
+    MENU_WINDOWS.iter().any(|(n, _, _)| *n == name) || NAV_WINDOWS.contains(&name) || dialogue::WINDOWS.contains(&name) || name == "unstackwindow" || name == DEATH_WINDOW || name == CHAT_MENU
 }
 
-/// The chat window (crate::chat): its full mode (the compact one, with its speech
-/// bubble preview, is not wired), shown from the start and toggled with V; and its
+/// The chat window (crate::network::chat): full controls or a compact click-through
+/// preview, switched with V; and its
 /// channel menu (ButtonChatMenu). Their depth: over the HUD, under the menus.
 /// SEE: controls::edit_text (Enter), controls::chat_rows (the log).
 const CHAT_WINDOW: &str = "chatwindow2";
@@ -121,10 +124,21 @@ const CHAT_DEPTH: f32 = 45.0;
 /// Characters per log row: the List is 343 reference pixels wide, Tahoma at 9 x
 /// FONT_SCALE averages ~5.5. UNVERIFIED: measured by eye, not from the font.
 const CHAT_COLUMNS: usize = 60;
+const CHAT_PREVIEW_ROWS: usize = 4;
 
 /// One row of the chat log, drawn over the List's TextLine template, top first.
 #[derive(Component)]
-struct ChatRow(usize);
+struct ChatRow {
+    index: usize,
+    compact: bool,
+}
+
+/// Both chat layouts use screen-left coordinates despite the source's centre anchor.
+fn prepare_chat(layout: &Layout) -> Layout {
+    let mut widgets = layout.widgets.clone();
+    for widget in &mut widgets { widget.k = 0.0; }
+    Layout { window: layout.window.clone(), widgets }
+}
 
 // -- data ------------------------------------------------------------------------
 
@@ -278,7 +292,7 @@ struct UiCamera;
 #[allow(clippy::type_complexity)]
 fn match_scene_camera(
     mut commands: Commands,
-    scene: Query<(Has<Hdr>, &Msaa), (With<Camera3d>, Without<crate::highlight::HighlightCamera>, Without<UiCamera>)>,
+    scene: Query<(Has<Hdr>, &Msaa), (With<Camera3d>, Without<crate::rendering::highlight::HighlightCamera>, Without<UiCamera>)>,
     mut ui: Query<(Entity, Has<Hdr>, &mut Msaa), With<UiCamera>>,
 ) {
     let (Some((hdr, msaa)), Ok((e, ui_hdr, mut ui_msaa))) = (scene.iter().next(), ui.single_mut()) else { return };
@@ -346,11 +360,11 @@ enum ValueKind {
     /// The hovered monster's title and level (interactinfo).
     TargetName,
     TargetLevel,
-    /// A character sheet figure (crate::stats::Sheet, by widget name).
+    /// A character sheet figure (crate::gameplay::stats::Sheet, by widget name).
     Sheet(&'static str),
 }
 
-/// The character sheet's widgets crate::stats fills.
+/// The character sheet's widgets crate::gameplay::stats fills.
 const SHEET_WIDGETS: &[&str] = &[
     "CharacterClass", "Guildname", "Level", "NextLevel", "XP", "BaseDamage", "AttackSpeed", "LMKSkill", "RMKSkill",
     "DamageLMK", "DamageRMK", "CurHealth", "MaxHealth", "SkillResourceTitle", "CurSkillResource", "MaxSkillResource",
@@ -408,6 +422,9 @@ impl Plugin for UiPlugin {
             .init_asset_loader::<MapNamesLoader>()
             .init_asset_loader::<LayoutLoader>()
             .init_asset_loader::<SkillIconsLoader>()
+            .init_asset::<dialogue::Catalog>()
+            .init_asset_loader::<dialogue::CatalogLoader>()
+            .init_resource::<crate::gameplay::dialogue::Dialogue>()
             .init_asset::<controls::items::Catalog>()
             .init_asset_loader::<controls::items::CatalogLoader>()
             .init_resource::<controls::items::Interaction>()
@@ -416,18 +433,18 @@ impl Plugin for UiPlugin {
             .init_resource::<controls::Pointer>()
             .init_resource::<SkillClicks>()
             .insert_resource(local_map::MapSettings::load())
-            .add_systems(Startup, (setup, controls::items::setup))
+            .add_systems(Startup, (setup, controls::items::setup, dialogue::setup))
             .add_systems(Update, (match_scene_camera, follow_screen).chain())
             .add_systems(PostUpdate, refresh_mesh_order
                 .after(TransformSystems::Propagate)
                 .before(bevy::sprite_render::check_entities_needing_specialization::<UiMaterial>))
             .add_systems(
                 Update,
-                (spawn_windows, controls::spells::sync, controls::items::sync, controls::keyboard, controls::interact, controls::spells::apply_drop, read_figures, controls::edit_text, controls::items::input, controls::order_windows, (update_fills, update_values, update_slots, (local_map::update, local_map::update_markers, local_map::appearance).chain()), controls::paint, controls::chat_rows, controls::items::render, (controls::spells::overlay, controls::items::overlay), show_hover_window, death_dialog).chain().run_if(crate::loading::gameplay_ready),
+                ((dialogue::sync, spawn_windows, controls::sync_chat).chain(), controls::spells::sync, controls::items::sync, controls::keyboard, controls::interact, controls::spells::apply_drop, read_figures, controls::edit_text, controls::items::input, controls::order_windows, (update_fills, update_values, update_slots, (local_map::update, local_map::update_markers, local_map::appearance).chain()), controls::chat_rows, controls::paint, controls::items::render, (controls::spells::overlay, controls::items::overlay), show_hover_window, death_dialog).chain().before(crate::network::net::NetSystems).run_if(crate::screens::loading::gameplay_ready),
             );
         #[cfg(not(target_arch = "wasm32"))]
         app.add_systems(PreUpdate, replay::run.after(bevy::input::InputSystems)
-            .before(bevy::ui::UiSystems::Focus).run_if(crate::loading::gameplay_ready));
+            .before(bevy::ui::UiSystems::Focus).run_if(crate::screens::loading::gameplay_ready));
     }
 }
 
@@ -472,6 +489,7 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>) {
         loaded.layouts.push((assets.load(format!("interface/{name}.ui.json")), depth, None));
     }
     loaded.layouts.push((assets.load(format!("interface/{DEATH_WINDOW}.ui.json")), 700.0, None));
+    for name in dialogue::WINDOWS { loaded.layouts.push((assets.load(format!("interface/{name}.ui.json")), 380.0, None)); }
     loaded.spawned = vec![false; loaded.layouts.len()];
     commands.insert_resource(loaded);
 }
@@ -543,7 +561,7 @@ fn value_of(id: &str) -> Option<ValueKind> {
 }
 
 /// The quick slots by wire slot: Shift + left button = 0, right button = 1, keys
-/// 1-5 = 2-6 (crate::skills), 6 and 7 the bar's last two.
+/// 1-5 = 2-6 (crate::gameplay::skills), 6 and 7 the bar's last two.
 fn quick_slot_of(id: &str) -> Option<usize> {
     let (parent, leaf) = {
         let mut it = id.rsplit('/');
@@ -615,7 +633,9 @@ fn spawn_windows(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<UiMaterial>>,
     screen: Res<Screen>,
-    players: Query<&crate::character::Character, With<crate::net::LocalPlayer>>,
+    players: Query<&crate::actors::character::Character, With<crate::network::net::LocalPlayer>>,
+    dialogue: Res<dialogue::Presentation>,
+    dialogue_catalogs: Res<Assets<dialogue::Catalog>>,
     mut windows: Query<(Entity, &Window2018, &Visibility, &mut WindowControls)>,
 ) {
     let class = players.iter().next().map(|c| c.desc.class).unwrap_or(1);
@@ -625,8 +645,20 @@ fn spawn_windows(
         }
         let (handle, z, _key) = loaded.layouts[i].clone();
         let Some(layout) = layouts.get(&handle) else { continue };
+        // A closed dropdown only needs its existing control model until opened.
+        if layout.window == CHAT_MENU && windows.iter().any(|(_, w, v, _)| w.0 == CHAT_MENU && *v == Visibility::Hidden) { continue; }
+        let prepared;
+        let npc_window = dialogue::WINDOWS.contains(&layout.window.as_str());
+        let layout = if npc_window {
+            prepared = dialogue::prepare(layout, &dialogue, &dialogue_catalogs);
+            if prepared.widgets.is_empty() { loaded.spawned[i] = true; continue; }
+            &prepared
+        } else if matches!(layout.window.as_str(), CHAT_WINDOW | CHAT_MENU) {
+            prepared = prepare_chat(layout);
+            &prepared
+        } else { layout };
         // DSOR_UI_OPEN=inventory,...: menus open from the start (screenshots).
-        let open = std::env::var("DSOR_UI_OPEN").is_ok_and(|v| v.split(',').any(|w| w == layout.window));
+        let open = npc_window || std::env::var("DSOR_UI_OPEN").is_ok_and(|v| v.split(',').any(|w| w == layout.window));
         let hidden = (is_menu(&layout.window) || layout.window == HOVER_WINDOW) && !open;
         // Keep a light root/control model so every existing shortcut, network
         // event and navigation button can open the window. Build its thousands
@@ -641,7 +673,7 @@ fn spawn_windows(
                 Window2018(layout.window.clone()),
                 Transform::from_xyz(0.0, 0.0, z),
                 if hidden { Visibility::Hidden } else { Visibility::Inherited },
-                WindowControls::new(layout), crate::ui_input::UiRegions::default(),
+                WindowControls::new(layout), crate::ui::input::UiRegions::default(),
             ))
             .id();
             if hidden { continue; }
@@ -656,7 +688,19 @@ fn spawn_windows(
                 commands.spawn((Follows { k, flip }, tf, Visibility::Inherited, ChildOf(root))).id()
             })
         };
-        let atlas = |tex: &Option<String>| tex.as_ref().map(|t| assets.load::<Image>(t.clone()));
+        let atlas = |tex: &Option<String>| tex.as_ref().map(|t| {
+            if t == "textures/ui/npcscreen.png" {
+                // The authored speech tails use UVs above 1 to select wrapped
+                // atlas regions. Clamping cuts off every tail after the first.
+                assets.load_builder().with_settings(|s: &mut bevy::image::ImageLoaderSettings| {
+                    s.sampler = bevy::image::ImageSampler::Descriptor(bevy::image::ImageSamplerDescriptor {
+                        address_mode_u: bevy::image::ImageAddressMode::Repeat,
+                        address_mode_v: bevy::image::ImageAddressMode::Repeat,
+                        ..bevy::image::ImageSamplerDescriptor::linear()
+                    });
+                }).load(t.clone())
+            } else { assets.load::<Image>(t.clone()) }
+        });
         let mut run: Option<Run> = None;
         let mut depth = 0.0f32;
         // Large XML trees must not let their last widget enter another window's
@@ -676,7 +720,7 @@ fn spawn_windows(
         // The map is a runtime overlay with no legacy frame or hit regions,
         // including when using an older exported locationmap layout.
         if layout.window == "locationmap" {
-            commands.entity(root).insert((controls, crate::ui_input::UiRegions::default()));
+            commands.entity(root).insert((controls, crate::ui::input::UiRegions::default()));
             continue;
         }
         // Each gauge fills one rectangle: the union of its pieces (a globe's two
@@ -714,7 +758,9 @@ fn spawn_windows(
                 // The chat windows' invisible containers span far above the visible
                 // log: they must not take the world's clicks there.
                 let invisible = art.tex.is_none() && art.color.chunks(4).all(|c| c.get(3).is_some_and(|a| *a <= 0.0));
-                if !(invisible && matches!(layout.window.as_str(), CHAT_WINDOW | CHAT_MENU)) {
+                // The NPC quest backdrop shades the world but is explicitly
+                // click-through; walking outside the conversation still works.
+                if !(npc_window && w.click_through) && !(invisible && matches!(layout.window.as_str(), CHAT_WINDOW | CHAT_MENU)) {
                     controls.region(w.k, bounds(&art.pos), gate.clone());
                 }
                 depth += depth_step;
@@ -756,23 +802,31 @@ fn spawn_windows(
                 let [l, t, _, b] = w.rect;
                 let height = (b - t).max(1.0);
                 let p = parent(&mut commands, w.k, false);
-                for row in 0..((bottom - t) / height).floor().max(1.0) as usize {
-                    commands.spawn((
-                        ChatRow(row),
-                        Text2d::new(""),
-                        TextFont { font: assets.load("fonts/tahoma.ttf").into(), font_size: bevy::text::FontSize::Px(label.size * FONT_SCALE * screen.scale), ..default() },
-                        TextColor(Color::WHITE),
-                        Anchor(Vec2::new(-0.5, 0.0)),
-                        Transform::from_xyz(l + 2.0, -(t + height * (row as f32 + 0.5)), depth + depth_step * 0.5).with_scale(Vec3::splat(1.0 / screen.scale)),
-                        RenderLayers::layer(LAYER),
-                        ChildOf(p),
-                        Element { root, gate: Gate::default() },
-                        Visibility::Hidden,
-                    ));
+                let preview_bottom = layout.widgets.iter().find(|w| w.event == "SwitchToFull").map_or(bottom, |w| w.rect[3]);
+                for compact in [false, true] {
+                    let count = if compact { CHAT_PREVIEW_ROWS } else { ((bottom - t) / height).floor().max(1.0) as usize };
+                    // Beside the expand button, ending just above the full entry bar.
+                    let top = if compact { preview_bottom - height * count as f32 } else { t };
+                    for row in 0..count {
+                        commands.spawn((
+                            ChatRow { index: row, compact },
+                            Text2d::new(""),
+                            TextFont { font: assets.load("fonts/tahoma.ttf").into(), font_size: bevy::text::FontSize::Px(label.size * FONT_SCALE * screen.scale), ..default() },
+                            TextColor(Color::WHITE),
+                            Anchor(Vec2::new(-0.5, 0.0)),
+                            Transform::from_xyz(l + 2.0, -(top + height * (row as f32 + 0.5)), depth + depth_step * 0.5).with_scale(Vec3::splat(1.0 / screen.scale)),
+                            RenderLayers::layer(LAYER),
+                            ChildOf(p),
+                            Element { root, gate: Gate::chat(compact) },
+                            Visibility::Hidden,
+                        ));
+                    }
                 }
             }
             if let Some(label) = &w.text {
-                let value = value_of(&w.id);
+                // Dialogue owns these labels, including the trading page
+                // counter. Do not bind them to inventory/global HUD values.
+                let value = if label.key == "gui.runtime.dialogue" { None } else { value_of(&w.id) };
                 // The stickerbook's authored empty-state labels are literal
                 // English text, unlike the usual gui.* localization keys.
                 let stickerbook_text = layout.window == "collectorsalbum"
@@ -821,7 +875,7 @@ fn spawn_windows(
             let p = parent(&mut commands, prev_k, true);
             flush(&mut commands, run.take(), p, &mut meshes, &mut materials);
         }
-        commands.entity(root).insert((controls, crate::ui_input::UiRegions::default()));
+        commands.entity(root).insert((controls, crate::ui::input::UiRegions::default()));
     }
 }
 
@@ -880,7 +934,7 @@ fn follow_screen(
 }
 
 /// The server's figures, or a resting HUD offline.
-fn read_figures(net: Option<NonSend<crate::net::Net>>, mut figures: ResMut<Figures>) {
+fn read_figures(net: Option<NonSend<crate::network::net::Net>>, mut figures: ResMut<Figures>) {
     let Some(net) = net else {
         if !figures.online && figures.health.1 == 0.0 {
             // Offline (the map viewer): a full-looking HUD, so it can be seen.
@@ -951,7 +1005,7 @@ fn fraction(v: (f32, f32)) -> f32 {
 
 fn update_fills(
     figures: Res<Figures>,
-    hover: Res<crate::monsters::HoverInfo>,
+    hover: Res<crate::actors::monsters::HoverInfo>,
     screen: Res<Screen>,
     mut fills: Query<(&mut Fill, &MeshMaterial2d<UiMaterial>, &Element)>,
     roots: Query<Ref<Transform>, With<Window2018>>,
@@ -986,9 +1040,9 @@ fn update_fills(
 
 fn update_values(
     figures: Res<Figures>,
-    sheet: Res<crate::stats::Sheet>,
-    hover: Res<crate::monsters::HoverInfo>,
-    current_map: Option<Res<crate::map::CurrentMap>>,
+    sheet: Res<crate::gameplay::stats::Sheet>,
+    hover: Res<crate::actors::monsters::HoverInfo>,
+    current_map: Option<Res<crate::world::map::CurrentMap>>,
     mut texts: Query<(&Value, &mut Text2d)>,
 ) {
     let changed = figures.is_changed() || sheet.is_changed() || hover.is_changed() || current_map.as_ref().is_some_and(|m| m.is_changed());
@@ -1066,7 +1120,7 @@ fn update_slots(
 }
 
 /// The hovered monster's info window, shown while one is under the cursor.
-fn show_hover_window(hover: Res<crate::monsters::HoverInfo>, mut windows: Query<(&Window2018, &mut Visibility)>) {
+fn show_hover_window(hover: Res<crate::actors::monsters::HoverInfo>, mut windows: Query<(&Window2018, &mut Visibility)>) {
     if !hover.is_changed() {
         return;
     }
@@ -1081,8 +1135,8 @@ fn show_hover_window(hover: Res<crate::monsters::HoverInfo>, mut windows: Query<
 }
 
 /// The death dialog follows the server: shown from ShowDeathDialogCommand until a
-/// respawn is chosen or the player is revived (crate::net::Net::death).
-fn death_dialog(net: Option<NonSend<crate::net::Net>>, mut windows: Query<(&Window2018, &mut Visibility)>) {
+/// respawn is chosen or the player is revived (crate::network::net::Net::death).
+fn death_dialog(net: Option<NonSend<crate::network::net::Net>>, mut windows: Query<(&Window2018, &mut Visibility)>) {
     // DSOR_UI_OPEN=deathdialog: shown regardless (to look at it offline).
     let wanted = net.as_ref().is_some_and(|n| n.death.dialog && !n.death.requested)
         || std::env::var("DSOR_UI_OPEN").is_ok_and(|v| v.split(',').any(|w| w == DEATH_WINDOW));
@@ -1106,8 +1160,8 @@ mod residency_tests {
         let mut app=App::new();
         app.add_plugins((MinimalPlugins,bevy::asset::AssetPlugin::default()))
             .init_asset::<Layout>().init_asset::<Mesh>().init_asset::<UiMaterial>()
-            .init_asset::<Image>().init_asset::<Font>()
-            .init_resource::<Loaded>().init_resource::<Screen>()
+            .init_asset::<Image>().init_asset::<Font>().init_asset::<dialogue::Catalog>()
+            .init_resource::<Loaded>().init_resource::<Screen>().init_resource::<dialogue::Presentation>()
             .add_systems(Update,spawn_windows);
         let layout: Layout=serde_json::from_value(serde_json::json!({"window":"inventory","widgets":[{
             "id":"Canvas/background","k":0.0,"rect":[0,0,20,20],"hidden":false,

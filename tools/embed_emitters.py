@@ -5,7 +5,7 @@ Usage: embed_emitters.py <assets> [--dry-run]
 
 The emitter's parameters land in the extras of the glTF node that carries the
 emitter mesh (`gltf_node` in the sidecar), as `extras.dsor_emitter`. The client
-reads them while the model loads (client/src/particles.rs), so a map needs no
+reads them while the model loads (client/src/rendering/particles.rs), so a map needs no
 extra file per effect. The JSON chunk is rewritten in place; the binary chunk is
 untouched. Re-running replaces what an earlier run wrote.
 

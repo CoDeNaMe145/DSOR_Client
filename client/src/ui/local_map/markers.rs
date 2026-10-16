@@ -174,6 +174,58 @@ mod tests {
         app.update();
         assert_eq!(query.iter(app.world()).count(), 0);
     }
+
+    #[test]
+    fn overlapping_icons_keep_distinct_depths_through_style_changes_and_rebuilds() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Image>().init_asset::<Mesh>().init_asset::<UiMaterial>()
+            .add_systems(Update, update);
+        let map = app.world_mut().spawn(MapGeometry {
+            source: Handle::<NavMesh>::default().id(), view: View::new(MapMode::Compact, BASE_W),
+            projection: GroundProjection::gameplay(), min: Vec2::ZERO, origin: Vec2::ZERO, scale: 2.0,
+        }).id();
+        app.world_mut().spawn((MarkerLayer, ChildOf(map)));
+        let sources: Vec<_> = (0..128).map(|_| app.world_mut().spawn((
+            MapIcon("ui/icon_map_amphora".into()), GlobalTransform::IDENTITY,
+        )).id()).collect();
+        let snapshot = |world: &mut World| {
+            let mut query = world.query::<(&Marker, &Transform)>();
+            let mut rows: Vec<_> = query.iter(world).map(|(marker, at)| {
+                assert_eq!(at.translation.xy(), Vec2::ZERO, "all icons overlap");
+                assert!((2.0..3.0).contains(&at.translation.z), "icons stay below the player");
+                // Include the window's depth to catch loss of float precision.
+                (marker.target, 80.0 + at.translation.z)
+            }).collect();
+            rows.sort_by(|a, b| a.1.total_cmp(&b.1));
+            assert!(rows.windows(2).all(|w| w[0].1 < w[1].1), "overlapping icons need unique sort keys");
+            rows
+        };
+        app.update();
+        let baseline = snapshot(app.world_mut());
+        assert_eq!(baseline.len(), sources.len());
+        // Move sources into different archetypes and change their materials.
+        for (i, &source) in sources.iter().enumerate().rev().step_by(2) {
+            app.world_mut().entity_mut(source).insert((
+                crate::actors::npc::Npc { actor: i as u32, ..default() }, MapIcon("ui/icon_map_questionmark".into()),
+            ));
+        }
+        for _ in 0..3 {
+            app.update();
+            assert_eq!(snapshot(app.world_mut()), baseline);
+        }
+        // Reopening/resizing the map creates new marker entities.
+        let mut query = app.world_mut().query_filtered::<Entity, With<Marker>>();
+        let markers: Vec<_> = query.iter(app.world()).collect();
+        for marker in markers { app.world_mut().despawn(marker); }
+        app.world_mut().get_mut::<MapGeometry>(map).unwrap().view = View::new(MapMode::Expanded, BASE_W);
+        app.update();
+        assert_eq!(snapshot(app.world_mut()), baseline);
+        app.world_mut().despawn(sources[32]);
+        app.update();
+        let order: Vec<_> = snapshot(app.world_mut()).into_iter().map(|(target, _)| target).collect();
+        assert_eq!(order, baseline.into_iter().map(|(target, _)| target).filter(|&target| target != sources[32]).collect::<Vec<_>>());
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -198,16 +250,31 @@ pub(in crate::ui) struct Marker { target: Entity, style: Style }
 #[derive(Default)]
 pub(in crate::ui) struct ArtCache(HashMap<Style, (Handle<Mesh>, Handle<UiMaterial>)>);
 
+fn order_markers(wanted: &mut HashMap<Entity, (Style, Transform)>) {
+    // Transparent2d sorts by global Z. Equal-depth icons can change order when
+    // batches/materials change, even if the markers themselves have not moved.
+    // Source entities keep their relative order across query/archetype changes
+    // and marker rebuilds. Reserve [2, 3) for them, below the player at Z = 3.
+    let mut targets: Vec<_> = wanted.iter()
+        .filter(|(_, (_, at))| at.translation.z < 3.0)
+        .map(|(&target, _)| target).collect();
+    targets.sort_unstable();
+    let step = 1.0 / (targets.len() + 1) as f32;
+    for (rank, target) in targets.into_iter().enumerate() {
+        wanted.get_mut(&target).unwrap().1.translation.z = 2.0 + rank as f32 * step;
+    }
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(in crate::ui) fn update(
     mut commands: Commands,
     layers: Query<(Entity, &ChildOf), With<MarkerLayer>>,
     geometry: Query<&MapGeometry>,
-    sources: Query<(Entity, &GlobalTransform, Option<&MapIcon>, Option<&crate::npc::Npc>,
-        Option<&crate::net::RemotePlayer>, Option<&crate::monsters::Monster>, Has<crate::net::LocalPlayer>, Option<&crate::character::CharacterAnim>),
-        (Without<Marker>, Or<(With<MapIcon>, With<crate::net::RemotePlayer>, With<crate::net::LocalPlayer>)>)>,
+    sources: Query<(Entity, &GlobalTransform, Option<&MapIcon>, Option<&crate::actors::npc::Npc>,
+        Option<&crate::network::net::RemotePlayer>, Option<&crate::actors::monsters::Monster>, Has<crate::network::net::LocalPlayer>, Option<&crate::actors::character::CharacterAnim>),
+        (Without<Marker>, Or<(With<MapIcon>, With<crate::network::net::RemotePlayer>, With<crate::network::net::LocalPlayer>)>)>,
     mut markers: Query<(Entity, &mut Marker, &mut Transform, &mut Mesh2d, &mut MeshMaterial2d<UiMaterial>)>,
-    net: Option<NonSend<crate::net::Net>>,
+    net: Option<NonSend<crate::network::net::Net>>,
     assets: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<UiMaterial>>,
@@ -229,6 +296,7 @@ pub(in crate::ui) fn update(
             if position.is_finite() { wanted.insert(entity, (style, Transform::from_translation(position.extend(if local { 3.0 } else { 2.0 })))); }
         }
     }
+    order_markers(&mut wanted);
     let mut art = |style: &Style| {
         cache.0.entry(style.clone()).or_insert_with(|| {
             let half = style.size as f32 * 0.5;

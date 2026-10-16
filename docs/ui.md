@@ -249,9 +249,10 @@ Each completed edit sends `QuickSlots` (0x51) with exactly 17 slots and bar inde
 command; the client updates the displayed bar immediately.
 
 The navigation audit selects `leaderboards` (PvP/PvE/event), `skilltalentswindow`
-and `questlog`; the older `pvpleaderboards`, `skillwindow2`, `talentwindow`,
-`questscreen` and `questscreen2` are not loaded by runtime navigation. Inventory,
-character sheet, social, shop, matchmaking and events each use their named
+and `questlog`; the older `pvpleaderboards`, `skillwindow2`, `talentwindow` and
+`questscreen` are not loaded by runtime navigation. `questscreen2` is the current
+NPC conversation view, opened by the dialogue controller rather than navigation.
+Inventory, character sheet, social, shop, matchmaking and events each use their named
 current layout. Ranking categories are cloned from the current templates using
 `_Template_LeaderBoardCategory` and `RankPriority`. Only the selected group's
 table and the appropriate overall/category header render. Class filters and
@@ -266,6 +267,58 @@ its ownership while held over UI, so crossing a panel does not interrupt walking
 or start a window drag. A new press over UI is captured normally. Scroll still
 respects the UI under the cursor.
 
+## Chat
+
+The chat panel and channel dropdown stay anchored to the screen's left edge at
+every aspect ratio. V and the mode button switch between expanded controls and
+a compact preview. Compact mode shows only the expand button and the four newest
+message rows; the text lets clicks pass through to the world. Enter expands the
+chat and focuses its entry. Expanded scrollback is preserved while the compact
+preview continues to show recent messages.
+
+The entry's channel button shows only the current channel's icon, including its
+hover and pressed states. Tabs and dropdown choices use their disabled artwork
+until the chat server confirms membership (or login, for whispers). Leaving a
+group or guild disables that channel and selects an available channel instead;
+disconnecting disables all channel choices.
+
+## NPC dialogue
+
+Left-clicking a talkable NPC follows a route on the navigation mesh and stops about
+1.8 world units from its feet. The character faces the NPC, idles, and sends
+`Encounter` and `NpcRequest` once upon arrival. Routes go around stalls and walls,
+and choose another stopping point if the NPC's near side is blocked. The original `npcscreen` layout
+provides the portrait, expandable nameplate and curved buttons with their hover
+and pressed states. It is anchored to the upper-left, independent of screen
+width and NPC position. Its atlas repeats: the later buttons' left-side tails
+use UV coordinates above 1. `NPCInfo` supplies the current quest and talk options;
+task-target map markers do not produce duplicate conversation buttons. Additional
+options are paged. The current `questscreen2` speech bubble and shaded backdrop
+display localized quest and conversation text alongside the NPC portrait,
+including further pages for long passages. The backdrop remains click-through.
+Acceptance, turn-in and Continue send
+the corresponding `Quest` or `Talk` command and refresh the NPC's options.
+
+The merchant's **View selection** requests its current offers and opens
+`tradingscreen`, with twelve item cards per page, icons, quantities and prices.
+The top-navigation `shopwindow` remains the separate global shop. Purchasing and selling still
+need the trading controller. Other NPC services and delivery/payment choices
+are not implemented by the conversation controller.
+
+Close or Escape dismisses the interaction. A new ground click, attack, loss of
+focus, death, map change or removed NPC cancels it. A blocked approach does not
+open a remote conversation; holding the original NPC click cannot change into
+ground walking after arrival. Decorative `NoTalk` actors remain noninteractive.
+
+Re-export `export_npcs.py`, then `export_ui.py ... npcscreen questscreen2 tradingscreen` to
+include portrait/interaction metadata, NPC portrait textures, option icons and
+`interface/dialogue.catalog.json`. The catalogue uses the original English
+localizations and strips Nebula's inline colour tags. Offline `--play --npcs`
+also supports approaching NPCs. The native UI replay accepts an `npc` template
+ID to point at its actual torso; offline-only `player: [x,y,z]`, `npc_quest`, and
+`npc_offers: [item-template, ...]` provide repeatable placement and menu fixtures
+without changing an account. `left_point` addresses left-anchored UI controls.
+
 ## Missing
 
 - Text uses `assets/fonts/tahoma.ttf`; the original bitmap font and text effects
@@ -274,8 +327,8 @@ respects the UI under the cursor.
   (use, sell, repair, identify, sockets and customization) need their controllers.
   Equipment comparison tooltips remain.
 - Character preview render targets and list scrolling are not implemented.
-- Server-backed quests, catalogue entries, social rosters, event payloads,
+- Quest-log presentation, catalogue entries, social rosters, event payloads,
   leaderboard rows and talent allocation are not bound yet; opening their
   panels and switching their UI pages works independently of those services.
-- Context-specific dialogs outside the top navigation (crafting, chat, etc.)
+- Context-specific dialogs outside the top navigation (crafting, etc.)
   still need their owning gameplay controllers.

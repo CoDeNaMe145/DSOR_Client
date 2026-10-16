@@ -1,4 +1,4 @@
-//! The commit the client is built from, for the bug dump (crate::dump).
+//! The commit the client is built from, for the bug dump (crate::diagnostics::dump).
 fn main() {
     let commit = std::process::Command::new("git")
         .args(["describe", "--always", "--dirty"])

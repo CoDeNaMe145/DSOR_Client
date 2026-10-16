@@ -1,7 +1,7 @@
 //! Click-through terrain overlay: compact upper-left, expanded centre, then off.
 //! Transparency lives in the debug menu until a settings window is available.
 use super::*;
-use crate::nav::{CurrentNav, NavMesh};
+use crate::world::nav::{CurrentNav, NavMesh};
 
 mod markers;
 pub(crate) use markers::{MapIcon, MapMarkers};
@@ -103,7 +103,7 @@ pub(super) fn appearance(
     mut settings: ResMut<MapSettings>,
     terrain: Query<&MeshMaterial2d<UiMaterial>, With<MapTerrain>>,
     mut materials: ResMut<Assets<UiMaterial>>,
-    current: Option<Res<crate::map::CurrentMap>>,
+    current: Option<Res<crate::world::map::CurrentMap>>,
     names: Res<Assets<MapNames>>,
     loaded: Res<Loaded>,
     mut labels: Query<&mut Text2d, With<MapCaption>>,
@@ -148,7 +148,7 @@ struct GroundProjection {
 impl GroundProjection {
     fn gameplay() -> Self {
         Self::from_rotation(Quat::from_euler(EulerRot::YXZ,
-            crate::net::CAM_YAW_DEG.to_radians(), crate::net::CAM_PITCH_DEG.to_radians(), 0.0))
+            crate::network::net::CAM_YAW_DEG.to_radians(), crate::network::net::CAM_PITCH_DEG.to_radians(), 0.0))
     }
 
     fn from_rotation(rotation: Quat) -> Self {
@@ -213,7 +213,7 @@ pub(super) fn update(
     assets: Res<AssetServer>,
     roots: Query<(Entity, &Window2018, &WindowControls)>,
     geometry: Query<(Entity, &MapGeometry)>,
-    cameras: Query<&Transform, (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
+    cameras: Query<&Transform, (With<Camera3d>, Without<crate::rendering::highlight::HighlightCamera>)>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<UiMaterial>>,
 ) {
@@ -282,7 +282,7 @@ mod tests {
         for camera in [
             Transform::from_xyz(0.0, 10.0, 10.0).looking_at(Vec3::ZERO, Vec3::Y),
             Transform::from_rotation(Quat::from_euler(EulerRot::YXZ,
-                crate::net::CAM_YAW_DEG.to_radians(), crate::net::CAM_PITCH_DEG.to_radians(), 0.0)),
+                crate::network::net::CAM_YAW_DEG.to_radians(), crate::network::net::CAM_PITCH_DEG.to_radians(), 0.0)),
             Transform::from_xyz(12.0, 15.0, -8.0).looking_at(Vec3::ZERO, Vec3::Y),
         ] {
             for mode in [MapMode::Compact, MapMode::Expanded] {

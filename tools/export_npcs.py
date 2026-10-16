@@ -13,7 +13,7 @@ Writes:
 
 NewNPCCommand carries the template name, the level Guid and a position, not the
 facing: the 2018 client takes the placement from the level by Guid, and so does
-client/src/npc.rs. Instance rows override template columns (same names).
+client/src/actors/npc.rs. Instance rows override template columns (same names).
 """
 import json, os, re, sqlite3, struct, sys
 
@@ -24,11 +24,12 @@ xml = open(os.path.join(export, "language", "en", "db.npc.xml"), encoding="utf-8
 for name, text in re.findall(r'<item name="([^"]+)Title"><!\[CDATA\[(.*?)\]\]></item>', xml, re.S):
     titles[name] = text
 
-COLUMNS = ["Id", "Graphics", "CharacterSet", "AnimSet", "StartAnimationState", "LoopStartAnimation", "LocationMapIcon"]
+COLUMNS = ["Id", "Graphics", "CharacterSet", "AnimSet", "StartAnimationState", "LoopStartAnimation", "LocationMapIcon",
+           "Portrait", "NoTalk", "ShopId", "Profession"]
 
 
 def look(row):
-    rid, graphics, outfit, anim_set, state, loop, map_icon = row
+    rid, graphics, outfit, anim_set, state, loop, map_icon, portrait, no_talk, shop, profession = row
     return {
         "graphics": graphics or "",
         "outfit": outfit or "",
@@ -37,6 +38,10 @@ def look(row):
         "loop": bool(loop),
         "title": titles.get(rid, ""),
         "map_icon": (map_icon or "").replace("\\", "/"),
+        "portrait": (portrait or "").replace("\\", "/"),
+        "no_talk": bool(no_talk),
+        "shop": shop or "",
+        "profession": profession or "",
     }
 
 

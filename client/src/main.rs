@@ -7,51 +7,30 @@
 //! DSO_Godot export, see `docs/assets.md`), always through Bevy's `AssetServer`
 //! so the browser build fetches them over HTTP.
 
-mod character;
-mod chat;
-mod appearance;
-mod clamp;
-mod combat_text;
-mod debug;
-mod decals;
-mod draw_mode;
-mod dump;
-mod exits;
-mod highlight;
-mod hud;
-mod inventory;
-mod corrections;
-mod anim_cull;
-mod refraction;
-mod lighting;
-mod shadow_views;
-mod occlusion;
-mod loading;
-mod selection;
-mod camera_view;
-#[cfg(not(target_arch = "wasm32"))]
-mod login;
-mod map;
+mod actors;
+mod diagnostics;
+mod gameplay;
 #[cfg(not(target_arch = "wasm32"))]
 mod level_editor;
-mod materials;
-mod merge;
-mod monsters;
-mod model_variant;
-mod model_compact;
-mod nav;
-mod nameplate;
-mod nebula_bloom;
-mod net;
-mod npc;
-mod particles;
-mod picking;
-mod props;
-mod skills;
-mod stats;
-mod surfaces;
+mod network;
+mod rendering;
+mod screens;
 mod ui;
-mod ui_input;
+mod world;
+
+use actors::{appearance, character, monsters, nameplate, npc, picking};
+use diagnostics::{debug, dump, hud};
+use gameplay::{skills, stats};
+use network::{chat, net};
+use rendering::{
+    anim_cull, clamp, decals, draw_mode, highlight, lighting, materials, model_variant,
+    nebula_bloom, occlusion, particles, refraction, shadow_views, surfaces,
+};
+#[cfg(not(target_arch = "wasm32"))]
+use screens::login;
+use screens::{loading, selection};
+use ui::{combat_text, input as ui_input};
+use world::{exits, map, nav, props};
 
 use bevy::camera_controller::free_camera::{FreeCamera, FreeCameraPlugin};
 use bevy::diagnostic::{EntityCountDiagnosticsPlugin, FrameTimeDiagnosticsPlugin};
@@ -83,7 +62,7 @@ struct Options {
     /// Play online: the login server and the launcher's identity.
     net: Option<net::NetConfig>,
     /// Play offline (class, gender): a character of one's own without a server
-    /// (crate::net::start_offline). The debug map starts one by itself.
+    /// (crate::network::net::start_offline). The debug map starts one by itself.
     play: Option<(u8, u8)>,
 }
 
@@ -494,7 +473,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, opts: Res<Optio
     };
     let camera = commands.spawn((Camera3d::default(), clusters, cam)).id();
     // The depth of the opaque scene, for the 2018 shaders' soft edges: particles
-    // (depthDensity), volume fog, water borders (crate::surfaces). Natively and on
+    // (depthDensity), volume fog, water borders (crate::rendering::surfaces). Natively and on
     // WebGPU always; on WebGL2 on request (?flag=depth): it binds the depth
     // texture only without MSAA, and the pre-pass draws every opaque surface again.
     // WebGL2: one hardware 2x2 comparison per pixel. bevy's default Gaussian
@@ -531,7 +510,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, opts: Res<Optio
         commands.entity(camera).insert(FreeCamera { walk_speed: 15.0, run_speed: 60.0, ..default() });
     }
 
-    // The level's global light (crate::lighting sets its colour, strength and
+    // The level's global light (crate::rendering::lighting sets its colour, strength and
     // direction from the level's data).
     commands.spawn((
         lighting::Sun,
@@ -630,7 +609,7 @@ fn demo_character(
     current: Option<Res<CurrentMap>>,
     manifests: Res<Assets<map::MapManifest>>,
     mut done: Local<bool>,
-    mut cameras: Query<&mut Transform, (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
+    mut cameras: Query<&mut Transform, (With<Camera3d>, Without<crate::rendering::highlight::HighlightCamera>)>,
     mut anims: Query<&mut character::CharacterAnim>,
 ) {
     let Some((class, gender)) = opts.character else { return };

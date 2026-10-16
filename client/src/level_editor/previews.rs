@@ -17,7 +17,7 @@ pub(super) struct Previews {
 
 pub(super) fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>, mut previews: ResMut<Previews>) {
     previews.image = images.add(Image::new_target_texture(256, 256, TextureFormat::Rgba8UnormSrgb, None));
-    commands.spawn((PreviewCamera, crate::lighting::NoLevelLook, Camera3d::default(),
+    commands.spawn((PreviewCamera, crate::rendering::lighting::NoLevelLook, Camera3d::default(),
         AmbientLight { color: Color::srgb(0.75, 0.82, 0.93), brightness: 650., ..default() },
         Camera { order: -10, is_active: false, clear_color: ClearColorConfig::Custom(Color::srgb(0.065, 0.095, 0.13)), ..default() },
         RenderTarget::Image(previews.image.clone().into()), RenderLayers::layer(LAYER),
@@ -41,7 +41,7 @@ pub(super) fn isolate(mut commands: Commands, roots: Query<Entity, With<PreviewR
 pub(super) fn update(mut commands: Commands, mut previews: ResMut<Previews>, mut editor: ResMut<Editor>,
     time: Res<Time>, assets: Res<AssetServer>, children: Query<&Children>,
     meshes: Query<(&Mesh3d, &GlobalTransform)>, mesh_assets: Res<Assets<Mesh>>,
-    characters: Query<&crate::character::Character>,
+    characters: Query<&crate::actors::character::Character>,
     mut cameras: Query<(&mut Camera, &mut Transform, &mut Projection), With<PreviewCamera>>) {
     let now = time.elapsed_secs();
     let Ok((mut camera, mut camera_at, mut projection)) = cameras.single_mut() else { return };
@@ -122,14 +122,14 @@ pub(super) fn update(mut commands: Commands, mut previews: ResMut<Previews>, mut
     }
     let root = commands.spawn((PreviewRoot, Transform::from_translation(ORIGIN), Visibility::Inherited, RenderLayers::layer(LAYER))).id();
     if let Some(character) = character {
-        let mut animation = crate::character::CharacterAnim::default();
-        animation.state = crate::character::AnimState::Named(character.state);
-        let desc = crate::character::CharacterDesc { look: Some(crate::character::NpcLook {
+        let mut animation = crate::actors::character::CharacterAnim::default();
+        animation.state = crate::actors::character::AnimState::Named(character.state);
+        let desc = crate::actors::character::CharacterDesc { look: Some(crate::actors::character::NpcLook {
             skeleton: character.skeleton, parts: character.parts, anim_set: character.anim_set,
             variation: character.variation.into_iter().map(|v| (v.bone, Vec3::from(v.t), Vec3::from(v.s))).collect(),
         }), ..default() };
-        let child = crate::character::spawn_character(&mut commands, desc, Transform::IDENTITY);
-        commands.entity(child).insert((ChildOf(root), RenderLayers::layer(LAYER), crate::selection::Preview, animation));
+        let child = crate::actors::character::spawn_character(&mut commands, desc, Transform::IDENTITY);
+        commands.entity(child).insert((ChildOf(root), RenderLayers::layer(LAYER), crate::screens::selection::Preview, animation));
     } else if let Some(model) = editor.models.get(&request.model) {
         match model.visual.as_ref().unwrap() {
             Visual::Flat(surfaces) => for surface in surfaces {
