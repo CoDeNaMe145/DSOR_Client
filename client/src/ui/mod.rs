@@ -296,7 +296,7 @@ fn match_scene_camera(
 
 /// A window's root: its name, shown or not.
 #[derive(Component)]
-struct Window2018(String);
+pub(crate) struct Window2018(pub(crate) String);
 
 /// A cut fill: the widget rect it fills and which way.
 #[derive(Component)]
@@ -616,6 +616,7 @@ fn spawn_windows(
     mut materials: ResMut<Assets<UiMaterial>>,
     screen: Res<Screen>,
     players: Query<&crate::character::Character, With<crate::net::LocalPlayer>>,
+    mut windows: Query<(Entity, &Window2018, &Visibility, &mut WindowControls)>,
 ) {
     let class = players.iter().next().map(|c| c.desc.class).unwrap_or(1);
     for i in 0..loaded.layouts.len() {
@@ -624,16 +625,29 @@ fn spawn_windows(
         }
         let (handle, z, _key) = loaded.layouts[i].clone();
         let Some(layout) = layouts.get(&handle) else { continue };
-        loaded.spawned[i] = true;
         // DSOR_UI_OPEN=inventory,...: menus open from the start (screenshots).
         let open = std::env::var("DSOR_UI_OPEN").is_ok_and(|v| v.split(',').any(|w| w == layout.window));
+        let hidden = (is_menu(&layout.window) || layout.window == HOVER_WINDOW) && !open;
+        // Keep a light root/control model so every existing shortcut, network
+        // event and navigation button can open the window. Build its thousands
+        // of artwork/text entities only when it is first requested.
+        let existing = windows.iter_mut().find(|(_, w, _, _)| w.0 == layout.window);
+        let (root, mut controls) = if let Some((root, _, visibility, mut controls)) = existing {
+            if *visibility == Visibility::Hidden { continue; }
+            (root, std::mem::replace(&mut *controls, WindowControls::new(layout)))
+        } else {
         let root = commands
             .spawn((
                 Window2018(layout.window.clone()),
                 Transform::from_xyz(0.0, 0.0, z),
-                if (is_menu(&layout.window) || layout.window == HOVER_WINDOW) && !open { Visibility::Hidden } else { Visibility::Inherited },
+                if hidden { Visibility::Hidden } else { Visibility::Inherited },
+                WindowControls::new(layout), crate::ui_input::UiRegions::default(),
             ))
             .id();
+            if hidden { continue; }
+            (root, WindowControls::new(layout))
+        };
+        loaded.spawned[i] = true;
         // One artwork parent (y flipped) and one text parent per k.
         let mut parents: HashMap<(u32, bool), Entity> = HashMap::new();
         let mut parent = |commands: &mut Commands, k: f32, flip: bool| -> Entity {
@@ -659,7 +673,6 @@ fn spawn_windows(
             commands.spawn((Mesh2d(meshes.add(run.mesh())), MeshMaterial2d(m), Transform::from_xyz(0.0, 0.0, z), RenderLayers::layer(LAYER), ChildOf(parent), Element { root, gate }, Visibility::Hidden));
         };
         let wanted_resource = resource_bar(class);
-        let mut controls = WindowControls::new(layout);
         // The map is a runtime overlay with no legacy frame or hit regions,
         // including when using an older exported locationmap layout.
         if layout.window == "locationmap" {
@@ -1081,5 +1094,41 @@ fn death_dialog(net: Option<NonSend<crate::net::Net>>, mut windows: Query<(&Wind
         if *v != want {
             *v = want;
         }
+    }
+}
+
+#[cfg(test)]
+mod residency_tests {
+    use super::*;
+
+    #[test]
+    fn unopened_menu_has_no_art_and_first_open_builds_it_once() {
+        let mut app=App::new();
+        app.add_plugins((MinimalPlugins,bevy::asset::AssetPlugin::default()))
+            .init_asset::<Layout>().init_asset::<Mesh>().init_asset::<UiMaterial>()
+            .init_asset::<Image>().init_asset::<Font>()
+            .init_resource::<Loaded>().init_resource::<Screen>()
+            .add_systems(Update,spawn_windows);
+        let layout: Layout=serde_json::from_value(serde_json::json!({"window":"inventory","widgets":[{
+            "id":"Canvas/background","k":0.0,"rect":[0,0,20,20],"hidden":false,
+            "art":{"tex":null,"pos":[0,0,20,0,0,20],"uv":[0,0,1,0,0,1],"color":[1,1,1,1,1,1,1,1,1,1,1,1],"idx":[0,1,2]}
+        }]})).unwrap();
+        let handle=app.world_mut().resource_mut::<Assets<Layout>>().add(layout);
+        app.world_mut().resource_mut::<Loaded>().layouts.push((handle,100.,None));
+        app.world_mut().resource_mut::<Loaded>().spawned.push(false);
+        app.update(); app.update();
+        let root=app.world_mut().query_filtered::<Entity,With<Window2018>>().single(app.world()).unwrap();
+        assert!(app.world().get::<WindowControls>(root).is_some());
+        assert_eq!(app.world_mut().query::<&Mesh2d>().iter(app.world()).count(),0);
+        assert!(app.world().get::<Children>(root).is_none());
+        *app.world_mut().get_mut::<Visibility>(root).unwrap()=Visibility::Inherited;
+        app.update();
+        assert_eq!(app.world_mut().query::<&Mesh2d>().iter(app.world()).count(),1);
+        for visibility in [Visibility::Hidden,Visibility::Inherited,Visibility::Hidden,Visibility::Inherited] {
+            *app.world_mut().get_mut::<Visibility>(root).unwrap()=visibility;
+            app.update();
+        }
+        assert_eq!(app.world_mut().query::<&Mesh2d>().iter(app.world()).count(),1);
+        assert_eq!(app.world_mut().query::<&Window2018>().iter(app.world()).count(),1);
     }
 }

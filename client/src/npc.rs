@@ -21,12 +21,12 @@ use bevy::prelude::*;
 use bevy::world_serialization::WorldAssetRoot;
 use serde::Deserialize;
 
-use crate::character::{spawn_character, AnimState, AnimTable, CharacterAnim, CharacterDesc, CharacterLibrary, NpcLook};
+use crate::character::{attach_character, spawn_character, AnimState, AnimTable, Character, CharacterAnim, CharacterDesc, CharacterLibrary, CharacterVisual, NpcLook};
 use crate::map::CurrentMap;
 
 use crate::net::Net;
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Debug, Clone, Default)]
 pub struct NpcTemplate {
     pub graphics: String,
     pub outfit: String,
@@ -47,6 +47,25 @@ pub struct Placement {
     /// is glam's column-major layout read as is.
     pub m: [f32; 16],
     pub look: Option<NpcTemplate>,
+    /// Authored event-set membership. Older sidecars predate this metadata.
+    #[serde(default = "always_present")]
+    pub event: i32,
+    #[serde(default)]
+    pub event_flags: Option<String>,
+}
+
+fn always_present() -> i32 { -1 }
+
+impl Placement {
+    /// The offline viewer starts with no active events. Negative-only rules
+    /// still enable ordinary actors (for example the pre-quest prince).
+    /// Online presence is exclusively decided by the server's NewNpc command.
+    fn enabled_offline(&self) -> bool {
+        self.event == -1 || self.event_flags.as_ref().is_some_and(|rule| {
+            !rule.split(';').filter_map(|d| d.split_once('='))
+                .any(|(key, value)| !key.trim().is_empty() && value.trim().eq_ignore_ascii_case("true"))
+        })
+    }
 }
 
 #[derive(Asset, TypePath, Deserialize, Debug)]
@@ -133,8 +152,7 @@ struct DecoSeq {
 #[derive(Resource, Default)]
 struct Deco {
     file: Option<(String, Handle<DecoFile>)>,
-    done: bool,
-    spawned: Vec<Entity>,
+    spawned: HashMap<usize, Entity>,
 }
 
 #[derive(Resource)]
@@ -146,42 +164,74 @@ struct NpcData {
     placements: Option<(String, Handle<NpcPlacements>)>,
 }
 
-/// Map viewer (`--npcs` / `?npcs`): every NPC the level places, as if the server
-/// had sent each one. Online, the server decides who is there.
+/// Map viewer (`--npcs` / `?npcs`): stream the level's nearby NPC placements.
+/// Online, the server decides which actors are present.
 #[derive(Resource, Default)]
 pub struct OfflineNpcs {
     pub queued: Vec<crate::net::NpcSpawn>,
     done_for: Option<String>,
+    resident: std::collections::HashSet<u32>,
 }
 
 fn offline_npcs(
+    mut commands: Commands,
     offline: Option<ResMut<OfflineNpcs>>,
     data: Res<NpcData>,
     placements: Res<Assets<NpcPlacements>>,
+    current: Option<Res<CurrentMap>>,
+    manifests: Res<Assets<crate::map::MapManifest>>,
+    cameras: Query<&GlobalTransform, (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
+    players: Query<&GlobalTransform, With<crate::net::LocalPlayer>>,
+    existing: Query<(Entity, &Npc)>,
 ) {
     let Some(mut offline) = offline else { return };
     let Some((map, handle)) = &data.placements else { return };
-    if offline.done_for.as_ref() == Some(map) {
-        return;
+    if offline.done_for.as_ref() != Some(map) {
+        offline.resident.clear();
+        offline.queued.clear();
+        offline.done_for = Some(map.clone());
     }
     let Some(placed) = placements.get(handle) else { return };
-    offline.done_for = Some(map.clone());
+    let Ok(cam) = cameras.single() else { return };
+    let ground = current.as_ref().and_then(|c| manifests.get(&c.manifest)).map(|m| m.center[1]).unwrap_or(0.0);
+    let focus = crate::map::camera_focus(cam, players.iter().next().map(|p| p.translation()), ground);
+    let mut added = 0;
+    // Diagnostic comparison with the historical viewer population, which
+    // included every event at once. The default obeys authored event rules.
+    let all_placements = crate::flag("allnpcplacements");
     for (i, (guid, p)) in placed.0.iter().enumerate() {
+        let actor = 0x7000_0000 + i as u32;
+        let distance = Vec2::new(p.m[12], p.m[14]).distance(focus.xz());
+        let enabled = all_placements || p.enabled_offline();
+        if offline.resident.contains(&actor) {
+            if !enabled || distance > crate::map::UNLOAD_DISTANCE {
+                offline.resident.remove(&actor);
+                offline.queued.retain(|s| s.actor != actor);
+                for (entity, npc) in &existing {
+                    if npc.actor == actor { commands.entity(entity).try_despawn(); }
+                }
+            }
+            continue;
+        }
+        if !enabled || distance > crate::map::LOAD_DISTANCE || added >= 4 { continue; }
         offline.queued.push(crate::net::NpcSpawn {
-            actor: 0x7000_0000 + i as u32,
+            actor,
             template: p.id.clone(),
             guid: guid.clone(),
             position: Vec3::new(p.m[12], p.m[13], p.m[14]),
             visible: true,
         });
+        offline.resident.insert(actor);
+        added += 1;
     }
-    info!("{}: {} NPCs placed by the level", map, placed.0.len());
 }
 
 /// An NPC on the map.
-#[derive(Component)]
+#[derive(Component, Default)]
 pub struct Npc {
     pub actor: u32,
+    pub template: String,
+    pub profile: NpcTemplate,
 }
 
 /// A whole-model NPC whose idle has not started yet.
@@ -190,11 +240,28 @@ struct ModelNpc {
     gltf: Handle<Gltf>,
     anim_set: String,
     state: String,
-    /// Its character set, for a model holding several (horse: 48): the other
-    /// sets' skins are hidden.
-    set: Option<(Handle<crate::monsters::ModelSets>, String)>,
     speed: f32,
 }
+
+/// Only server-owned NPCs keep their actor while visual descendants stream.
+/// Recipes contain no asset handles: absent rigs do not retain model assets.
+#[derive(Component)]
+struct OnlineNpcVisual {
+    recipe: NpcVisualRecipe,
+    resident: bool,
+}
+
+enum NpcVisualRecipe {
+    Character(CharacterDesc),
+    Model(String),
+}
+
+/// Prevent interaction/effect attachment until the streamed visual is ready.
+#[derive(Component)]
+pub(crate) struct NpcVisualPending;
+
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct NpcVisualSystems;
 
 pub struct NpcPlugin;
 
@@ -212,7 +279,9 @@ impl Plugin for NpcPlugin {
             .register_asset_loader(DecoLoader)
             .init_resource::<Deco>()
             .add_systems(Startup, load)
-            .add_systems(Update, (follow_map, offline_npcs, spawn_npcs, spawn_deco, animate_models, cull_actors, npc_no_shadow).chain());
+            .add_systems(Update, (follow_map, offline_npcs, spawn_npcs, stream_online_npcs, spawn_deco,
+                animate_models, finish_online_visuals, cull_actors, npc_no_shadow)
+                .chain().in_set(NpcVisualSystems).after(crate::net::NetSystems));
     }
 }
 
@@ -252,12 +321,12 @@ fn spawn_npcs(
     assets: Res<AssetServer>,
     existing: Query<(Entity, &Npc)>,
 ) {
-    let (queue, gone) = match (net, offline) {
-        (Some(net), _) => {
+    let (queue, gone, online) = match (net, offline) {
+        (Some(net), _) if !net.offline => {
             let net = net.into_inner();
-            (&mut net.npc_spawns, std::mem::take(&mut net.npc_gone))
+            (&mut net.npc_spawns, std::mem::take(&mut net.npc_gone), true)
         }
-        (None, Some(offline)) => (&mut offline.into_inner().queued, Vec::new()),
+        (_, Some(offline)) => (&mut offline.into_inner().queued, Vec::new(), false),
         _ => return,
     };
     for actor in gone {
@@ -307,7 +376,7 @@ fn spawn_npcs(
             .unwrap_or_default();
         let transform = Transform::from_translation(spawn.position).with_rotation(rotation);
         let skeleton = template.graphics.strip_prefix("characters/").unwrap_or(&template.graphics).to_owned();
-        let entity = if skeleton == "uniskel" || skeleton == "uniskel_dwarf" {
+        let recipe = if skeleton == "uniskel" || skeleton == "uniskel_dwarf" {
             let outfit = data
                 .outfits
                 .get(skeleton.as_str())
@@ -323,48 +392,127 @@ fn spawn_npcs(
                 .and_then(|v| data.variations.get(skeleton.as_str()).and_then(|h| variations.get(h)).and_then(|all| all.variations.get(v)))
                 .map(|shape| shape.iter().map(|j| (j.bone.clone(), Vec3::from(j.t), Vec3::from(j.s))).collect())
                 .unwrap_or_default();
-            let desc = CharacterDesc {
+            NpcVisualRecipe::Character(CharacterDesc {
                 look: Some(NpcLook { skeleton, parts: outfit.parts.clone(), anim_set: template.anim_set.clone(), variation }),
                 ..default()
-            };
-            let e = spawn_character(&mut commands, desc, transform);
-            if template.state != "Idle" {
-                let mut anim = CharacterAnim::default();
-                anim.state = AnimState::Named(template.state.clone());
-                commands.entity(e).insert(anim);
-            }
-            e
+            })
         } else if std::env::var("DSOR_NPC_SKIP").is_ok_and(|v| template.graphics.contains(&v)) {
             continue;
         } else {
-            let path = format!("{}.glb", template.graphics);
-            let gltf: Handle<Gltf> = assets.load(path.clone());
-            let e = commands
-                .spawn((
-                    Name::new(format!("npc {}", spawn.template)),
-                    transform,
-                    Visibility::default(),
-                    ModelNpc { gltf, anim_set: template.anim_set.clone(), state: template.state.clone(), set: None, speed: 1.0 },
-                ))
-                .id();
-            commands.spawn((
-                WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(path))),
-                ChildOf(e),
-                Transform::default(),
-                Visibility::default(),
-            ));
-            e
+            NpcVisualRecipe::Model(crate::model_variant::path(&template.graphics, &template.outfit))
         };
-        commands.entity(entity).insert((
-            Npc { actor: spawn.actor },
+        let entity = commands.spawn((
+            Name::new(format!("npc {}", spawn.template)), transform, GlobalTransform::from(transform),
+            Visibility::Hidden,
+            Npc { actor: spawn.actor, template: spawn.template.clone(), profile: template.clone() },
             crate::ui::MapIcon(template.map_icon.clone()),
-            crate::picking::PickModel(template.graphics.clone()),
-            // No name over NPCs: the game draws names over players only.
-            // NPCs idle at a third of the frame rate (crate::character::AnimLod).
-            crate::character::AnimLod::new(3, spawn.actor % 3),
-        ));
+        )).id();
+        if matches!(&recipe, NpcVisualRecipe::Character(_)) {
+            let mut anim = CharacterAnim::default();
+            if template.state != "Idle" { anim.state = AnimState::Named(template.state.clone()); }
+            commands.entity(entity).insert(anim);
+        }
+        if online {
+            commands.entity(entity).insert((OnlineNpcVisual { recipe, resident: false }, NpcVisualPending));
+        } else {
+            attach_npc_visual(&mut commands, &assets, entity, &recipe, &template, spawn.actor);
+        }
         if crate::flag("nonpcs-shadow") {
             commands.entity(entity).insert(NpcNoShadow);
+        }
+    }
+}
+
+fn attach_npc_visual(
+    commands: &mut Commands, assets: &AssetServer, entity: Entity,
+    recipe: &NpcVisualRecipe, profile: &NpcTemplate, actor: u32,
+) {
+    match recipe {
+        NpcVisualRecipe::Character(desc) => attach_character(commands, entity, desc.clone()),
+        NpcVisualRecipe::Model(path) => {
+            commands.entity(entity).insert(ModelNpc {
+                gltf: assets.load(path.clone()), anim_set: profile.anim_set.clone(),
+                state: profile.state.clone(), speed: 1.0,
+            });
+            commands.spawn((
+                CharacterVisual, WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(path.clone()))),
+                ChildOf(entity), Transform::default(), Visibility::default(),
+            ));
+        }
+    }
+    commands.entity(entity).insert((
+        crate::picking::PickModel(profile.graphics.clone()),
+        crate::character::AnimLod::new(3, actor % 3),
+    ));
+}
+
+/// Keep the authoritative root, dialogue identity and map marker everywhere;
+/// only nearby actors own rigs. Existing effects pin a resident rig until their
+/// sequence retires. A new effect on an absent rig waits rather than loading it.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn stream_online_npcs(
+    mut commands: Commands,
+    assets: Res<AssetServer>,
+    current: Option<Res<CurrentMap>>,
+    manifests: Res<Assets<crate::map::MapManifest>>,
+    cameras: Query<&GlobalTransform, (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
+    players: Query<&GlobalTransform, With<crate::net::LocalPlayer>>,
+    mut npcs: Query<(Entity, &Transform, &Npc, &mut OnlineNpcVisual, Option<&mut CharacterAnim>)>,
+    children: Query<&Children>,
+    visuals: Query<(), With<CharacterVisual>>,
+    sequences: Query<&crate::skills::SequencePlayer>,
+) {
+    let Ok(camera) = cameras.single() else { return };
+    let ground = current.as_ref().and_then(|c| manifests.get(&c.manifest)).map(|m| m.center[1]).unwrap_or(0.0);
+    let focus = crate::map::camera_focus(camera, players.iter().next().map(|p| p.translation()), ground);
+    let pinned: std::collections::HashSet<Entity> = sequences.iter().flat_map(|s| s.visual_actors()).collect();
+    let legacy = crate::flag("legacyonlinenpcs");
+    let mut pending = Vec::new();
+    for (entity, at, _, mut visual, anim) in &mut npcs {
+        // These are unparented network roots; Transform is current even on the
+        // spawn frame before GlobalTransform propagation.
+        let distance = at.translation.xz().distance(focus.xz());
+        if visual.resident {
+            if !legacy && distance > crate::map::UNLOAD_DISTANCE && !pinned.contains(&entity) {
+                for child in children.get(entity).into_iter().flatten() {
+                    if visuals.contains(*child) { commands.entity(*child).try_despawn(); }
+                }
+                commands.entity(entity)
+                    .remove::<(Character, ModelNpc, crate::character::ModelBones,
+                        crate::model_variant::ResidentModel, crate::character::AnimLod,
+                        crate::picking::PickModel, crate::picking::PickBoxes)>()
+                    .insert(NpcVisualPending);
+                if let Some(mut anim) = anim { anim.release_rig(); }
+                visual.resident = false;
+            }
+        } else if legacy || distance <= crate::map::LOAD_DISTANCE {
+            pending.push((distance, entity));
+        }
+    }
+    pending.sort_by(|a, b| a.0.total_cmp(&b.0));
+    for (_, entity) in pending.into_iter().take(4) {
+        let Ok((_, _, npc, mut visual, _)) = npcs.get_mut(entity) else { continue };
+        attach_npc_visual(&mut commands, &assets, entity, &visual.recipe, &npc.profile, npc.actor);
+        visual.resident = true;
+    }
+}
+
+#[allow(clippy::type_complexity)]
+fn finish_online_visuals(
+    mut commands: Commands,
+    npcs: Query<(Entity, &OnlineNpcVisual, Option<&Character>, Option<&CharacterAnim>,
+        Option<&crate::character::ModelBones>), With<NpcVisualPending>>,
+    children: Query<&Children>,
+    first_poses: Query<(), With<crate::anim_cull::PendingFirstPose>>,
+) {
+    for (entity, visual, character, anim, bones) in &npcs {
+        if visual.resident && (bones.is_some()
+            || character.is_some_and(|c| c.outfit_ready())
+                && anim.is_some_and(|a| if crate::flag("noanim") { a.is_ready() } else { a.is_animating() }))
+        {
+            if !children.iter_descendants(entity).any(|child| first_poses.contains(child)) {
+                commands.entity(entity).remove::<NpcVisualPending>();
+            }
         }
     }
 }
@@ -375,9 +523,10 @@ fn animate_models(
     mut commands: Commands,
     npcs: Query<(Entity, &ModelNpc)>,
     children: Query<&Children>,
+    names: Query<&Name>,
+    instances: Query<&bevy::world_serialization::WorldInstance>,
+    spawner: Res<bevy::world_serialization::WorldInstanceSpawner>,
     players: Query<(), With<AnimationPlayer>>,
-    extras: Query<&bevy::gltf::GltfExtras>,
-    sets: Res<Assets<crate::monsters::ModelSets>>,
     gltfs: Res<Assets<Gltf>>,
     library: Option<Res<CharacterLibrary>>,
     tables: Res<Assets<AnimTable>>,
@@ -385,22 +534,13 @@ fn animate_models(
 ) {
     for (entity, npc) in &npcs {
         let Some(gltf) = gltfs.get(&npc.gltf) else { continue };
+        if !children.get(entity).into_iter().flatten().any(|e|
+            instances.get(*e).is_ok_and(|i| spawner.instance_is_ready(**i))) { continue; }
+        let bones = children.iter_descendants(entity).filter_map(|e|
+            names.get(e).ok().map(|n| (n.as_str().to_owned(), e))).collect();
+        commands.entity(entity).insert((crate::character::ModelBones(bones),
+            crate::model_variant::ResidentModel(npc.gltf.clone()))).remove::<ModelNpc>();
         let Some(player) = children.iter_descendants(entity).find(|e| players.contains(*e)) else { continue };
-        if let Some((handle, name)) = &npc.set {
-            let Some(file) = sets.get(handle) else { continue };
-            if let Some(set) = file.0.get(name) {
-                for d in children.iter_descendants(entity) {
-                    let skin = extras
-                        .get(d)
-                        .ok()
-                        .and_then(|x| serde_json::from_str::<serde_json::Value>(&x.value).ok())
-                        .and_then(|v| v.get("dsor_skin").and_then(|s| s.as_str()).map(str::to_owned));
-                    if skin.is_some_and(|s| !set.skins.contains(&s)) {
-                        commands.entity(d).insert(Visibility::Hidden);
-                    }
-                }
-            }
-        }
         let from_table = library
             .as_ref()
             .and_then(|l| tables.get(&l.anims))
@@ -412,7 +552,6 @@ fn animate_models(
             names.sort();
             names.iter().find(|n| n.contains("idle")).and_then(|n| gltf.named_animations.get(*n))
         });
-        commands.entity(entity).remove::<ModelNpc>();
         let Some(clip) = clip else {
             warn!("npc model {:?}: no idle among {} clips", npc.gltf.path(), gltf.named_animations.len());
             continue;
@@ -421,7 +560,8 @@ fn animate_models(
         let (graph, node) = AnimationGraph::from_clip(clip.clone());
         let mut anim = AnimationPlayer::default();
         anim.play(node).repeat().set_speed(npc.speed);
-        commands.entity(player).insert((AnimationGraphHandle(graphs.add(graph)), anim));
+        commands.entity(player).insert((AnimationGraphHandle(graphs.add(graph)), anim,
+            crate::anim_cull::PendingFirstPose::default()));
     }
 }
 
@@ -433,15 +573,15 @@ fn cull_actors(
     manifests: Res<Assets<crate::map::MapManifest>>,
     cameras: Query<&GlobalTransform, (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
     players: Query<&GlobalTransform, With<crate::net::LocalPlayer>>,
-    mut actors: Query<(&GlobalTransform, &mut Visibility), Or<(With<Npc>, With<crate::net::RemotePlayer>)>>,
+    mut actors: Query<(&GlobalTransform, &mut Visibility, Option<&NpcVisualPending>), Or<(With<Npc>, With<crate::net::RemotePlayer>)>>,
 ) {
     let Ok(cam) = cameras.single() else { return };
     let ground = current.as_ref().and_then(|c| manifests.get(&c.manifest)).map(|m| m.center[1]).unwrap_or(0.0);
     let focus = crate::map::camera_focus(cam, players.iter().next().map(|p| p.translation()), ground);
-    for (at, mut v) in &mut actors {
+    for (at, mut v, pending) in &mut actors {
         let p = at.translation();
         let near = Vec2::new(p.x - focus.x, p.z - focus.z).length() <= crate::map::CULL_DISTANCE;
-        let wanted = if near { Visibility::Inherited } else { Visibility::Hidden };
+        let wanted = if near && pending.is_none() { Visibility::Inherited } else { Visibility::Hidden };
         if *v != wanted {
             *v = wanted;
         }
@@ -455,20 +595,21 @@ struct NpcNoShadow;
 fn npc_no_shadow(
     mut commands: Commands,
     npcs: Query<Entity, With<NpcNoShadow>>,
-    children: Query<&Children>,
-    meshes: Query<(), (With<Mesh3d>, Without<bevy::light::NotShadowCaster>)>,
+    parents: Query<&ChildOf>,
+    meshes: Query<Entity, (Added<Mesh3d>, Without<bevy::light::NotShadowCaster>)>,
 ) {
-    for n in &npcs {
-        for c in children.iter_descendants(n) {
-            if meshes.contains(c) {
-                commands.entity(c).insert(bevy::light::NotShadowCaster);
-            }
+    if npcs.is_empty() { return; }
+    // Scenes and re-streamed rigs arrive asynchronously. Inspect each new mesh
+    // once rather than traversing the entire crowd on every diagnostic frame.
+    for mesh in &meshes {
+        if parents.iter_ancestors(mesh).any(|root| npcs.contains(root)) {
+            commands.entity(mesh).insert(bevy::light::NotShadowCaster);
         }
     }
 }
 
-/// The level's decorative sequences (DecoFile), once per map: their characters
-/// as NPCs nobody can talk to, their effects as looping sequences.
+/// Stream nearby decorative characters and looping sequences, using the same
+/// prefetch/unload buffer as map geometry.
 #[allow(clippy::too_many_arguments)]
 fn spawn_deco(
     mut commands: Commands,
@@ -480,32 +621,44 @@ fn spawn_deco(
     variations: Res<Assets<Variations>>,
     assets: Res<AssetServer>,
     (skill_data, seqs): (Option<Res<crate::skills::SkillData>>, Res<Assets<crate::skills::SequenceTable>>),
+    cameras: Query<&GlobalTransform, (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
+    players: Query<&GlobalTransform, With<crate::net::LocalPlayer>>,
+    manifests: Res<Assets<crate::map::MapManifest>>,
 ) {
     let Some(current) = current else { return };
     if deco.file.as_ref().is_none_or(|(m, _)| *m != current.name) {
-        for e in std::mem::take(&mut deco.spawned) {
+        for e in std::mem::take(&mut deco.spawned).into_values() {
             commands.entity(e).try_despawn();
         }
         deco.file = Some((current.name.clone(), assets.load(format!("maps/{}.deco.json", current.name))));
-        deco.done = false;
     }
-    if deco.done || std::env::var("DSOR_NO_DECO").is_ok() {
+    if std::env::var("DSOR_NO_DECO").is_ok() {
         return;
     }
     let Some((_, handle)) = &deco.file else { return };
-    let Some(file) = files.get(handle) else {
-        deco.done = assets.load_state(handle).is_failed();
-        return;
-    };
+    let Some(file) = files.get(handle) else { return };
+    let Ok(cam) = cameras.single() else { return };
+    let ground = manifests.get(&current.manifest).map(|m| m.center[1]).unwrap_or(0.0);
+    let focus = crate::map::camera_focus(cam, players.iter().next().map(|p| p.translation()), ground);
+    let near = |m: &[f32; 16], radius: f32| Vec2::new(m[12], m[14]).distance(focus.xz()) <= radius;
+    deco.spawned.retain(|&i, entity| {
+        let m = if i < file.chars.len() { &file.chars[i].m } else { &file.seqs[i - file.chars.len()].m };
+        if near(m, crate::map::UNLOAD_DISTANCE) { return true; }
+        // SequencePlayer detects a missing anchor and disposes its effects.
+        commands.entity(*entity).try_despawn();
+        false
+    });
     let ready = data.outfits.values().all(|h| outfits.get(h).is_some() || assets.load_state(h).is_failed())
         && data.variations.values().all(|h| variations.get(h).is_some() || assets.load_state(h).is_failed());
     let Some(table) = skill_data.as_ref().and_then(|d| seqs.get(d.sequences())) else { return };
     if !ready {
         return;
     }
-    deco.done = true;
-    let mut spawned = Vec::new();
+    // Bound actor hierarchy creation when entering a populated area.
+    let mut spawned = 0;
     for (i, c) in file.chars.iter().enumerate() {
+        if spawned >= 4 { break; }
+        if deco.spawned.contains_key(&i) || !near(&c.m, crate::map::LOAD_DISTANCE) { continue; }
         // As the NPCs: the level faces them down -Z, the models face +Z.
         let m = Mat4::from_cols_array(&c.m);
         let (scale, rotation, at) = m.to_scale_rotation_translation();
@@ -532,7 +685,7 @@ fn spawn_deco(
             }
             e
         } else {
-            let path = format!("{}.glb", c.g);
+            let path = crate::model_variant::path(&c.g, &c.outfit);
             let e = commands
                 .spawn((
                     Name::new(format!("deco {}", c.outfit)),
@@ -542,7 +695,6 @@ fn spawn_deco(
                         gltf: assets.load(path.clone()),
                         anim_set: c.set.clone(),
                         state: "Idle".into(),
-                        set: Some((assets.load(format!("{}.sets.json", c.g)), c.outfit.clone())),
                         speed: c.speed,
                     },
                 ))
@@ -552,18 +704,166 @@ fn spawn_deco(
         };
         // An actor id of its own, for the distance culling (cull_actors); no
         // picking: nobody answers.
-        commands.entity(entity).insert((Npc { actor: DECO_ACTORS + i as u32 }, crate::character::AnimLod::new(3, i as u32 % 3)));
-        spawned.push(entity);
+        commands.entity(entity).insert((Npc { actor: DECO_ACTORS + i as u32, ..default() }, crate::character::AnimLod::new(3, i as u32 % 3)));
+        if crate::flag("nonpcs-shadow") {
+            commands.entity(entity).insert(NpcNoShadow);
+        }
+        deco.spawned.insert(i, entity);
+        spawned += 1;
     }
-    for s in &file.seqs {
+    for (i, s) in file.seqs.iter().enumerate() {
+        let key = file.chars.len() + i;
+        if deco.spawned.contains_key(&key) || !near(&s.m, crate::map::LOAD_DISTANCE) { continue; }
         let Some(seq) = table.0.get(&s.seq) else { continue };
         let anchor = commands.spawn((Transform::from_matrix(Mat4::from_cols_array(&s.m)), Visibility::default())).id();
         crate::skills::play(&mut commands, seq.clone(), None, anchor, true);
-        spawned.push(anchor);
+        deco.spawned.insert(key, anchor);
     }
-    info!("{}: {} decorative characters, {} decorative sequences", current.name, file.chars.len(), file.seqs.len());
-    deco.spawned = spawned;
 }
 
 /// Actor ids of the decorations' characters (no server actor has them).
 const DECO_ACTORS: u32 = 0x7800_0000;
+
+#[cfg(test)]
+pub(crate) mod placement_tests {
+    use super::*;
+    use bevy::ecs::system::RunSystemOnce;
+
+    pub(crate) fn mark_resident_for_pose_test(world: &mut World, entity: Entity) {
+        world.entity_mut(entity).insert((Npc::default(), NpcVisualPending,
+            OnlineNpcVisual { recipe: NpcVisualRecipe::Character(CharacterDesc::default()), resident: true }));
+    }
+
+    pub(crate) fn finish_pose_test(world: &mut World) {
+        world.run_system_once(finish_online_visuals).unwrap();
+        world.run_system_once(cull_actors).unwrap();
+    }
+
+    fn stream_test() -> App {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default()))
+            .init_asset::<Gltf>().init_asset::<bevy::world_serialization::WorldAsset>()
+            .init_resource::<Assets<crate::map::MapManifest>>()
+            .add_systems(Update, stream_online_npcs);
+        let camera = Transform::from_xyz(0.0, 10.0, 0.0).looking_at(Vec3::ZERO, Vec3::Z);
+        app.world_mut().spawn((Camera3d::default(), GlobalTransform::from(camera)));
+        app
+    }
+
+    fn test_actor(world: &mut World, x: f32, actor: u32) -> Entity {
+        world.spawn((
+            Npc { actor, template: "smith".into(), profile: NpcTemplate { graphics: "characters/uniskel".into(), ..default() } },
+            Transform::from_xyz(x, 0.0, 0.0), Visibility::Hidden,
+            crate::ui::MapIcon("smith_icon".into()), CharacterAnim::default(), NpcVisualPending,
+            OnlineNpcVisual { recipe: NpcVisualRecipe::Character(CharacterDesc::default()), resident: false },
+        )).id()
+    }
+
+    #[test]
+    fn online_rigs_stream_with_budget_and_hysteresis_without_replacing_actor_roots() {
+        let mut app = stream_test();
+        let roots: Vec<_> = (0..5).map(|i| test_actor(app.world_mut(), i as f32, i)).collect();
+        let far = test_actor(app.world_mut(), 95.0, 99);
+        app.update();
+        assert_eq!(roots.iter().filter(|e| app.world().get::<Character>(**e).is_some()).count(), 4);
+        assert!(app.world().get::<Character>(far).is_none());
+        app.update();
+        assert!(roots.iter().all(|e| app.world().get::<Character>(*e).is_some()));
+
+        let root = roots[0];
+        let rig = app.world_mut().spawn((CharacterVisual, ChildOf(root))).id();
+        let joint = app.world_mut().spawn(ChildOf(rig)).id();
+        let attachment = app.world_mut().spawn(ChildOf(root)).id();
+        app.world_mut().entity_mut(root).insert(crate::picking::PickBoxes(vec![(joint, Transform::default(), Vec3::ONE)]));
+        app.world_mut().get_mut::<CharacterAnim>(root).unwrap().state = AnimState::Named("Stunned".into());
+        app.world_mut().get_mut::<Transform>(root).unwrap().translation.x = 80.0;
+        app.update();
+        assert!(app.world().get::<Character>(root).is_some(), "prefetch/unload buffer must retain the rig");
+        app.world_mut().get_mut::<Transform>(root).unwrap().translation.x = 91.0;
+        app.update();
+        assert!(app.world().get::<Character>(root).is_none());
+        assert!(app.world().get_entity(rig).is_err() && app.world().get_entity(joint).is_err());
+        assert!(app.world().get_entity(attachment).is_ok(), "unrelated root attachments survive");
+        assert!(app.world().get::<crate::picking::PickBoxes>(root).is_none());
+        assert!(app.world().get::<crate::picking::PickModel>(root).is_none());
+        assert_eq!(app.world().get::<Npc>(root).unwrap().actor, 0);
+        assert_eq!(app.world().get::<Npc>(root).unwrap().profile.graphics, "characters/uniskel");
+        assert_eq!(app.world().get::<crate::ui::MapIcon>(root).unwrap().0, "smith_icon");
+        assert_eq!(app.world().get::<CharacterAnim>(root).unwrap().state, AnimState::Named("Stunned".into()));
+
+        app.world_mut().get_mut::<Transform>(root).unwrap().translation.x = 80.0;
+        app.update();
+        assert!(app.world().get::<Character>(root).is_none(), "returning inside 90 alone must not reload");
+        app.world_mut().get_mut::<Transform>(root).unwrap().translation.x = 69.0;
+        app.update();
+        assert!(app.world().get::<Character>(root).is_some());
+        assert_eq!(app.world().get::<CharacterAnim>(root).unwrap().state, AnimState::Named("Stunned".into()));
+        assert!(app.world().get::<crate::picking::PickModel>(root).is_some());
+        assert!(app.world().get::<crate::picking::PickBoxes>(root).is_none(), "old joint bindings must not return");
+    }
+
+    #[test]
+    fn sequences_pin_resident_rigs_but_do_not_load_absent_distant_actors() {
+        let mut app = stream_test();
+        let root = test_actor(app.world_mut(), 1.0, 1);
+        let far = test_actor(app.world_mut(), 100.0, 2);
+        app.update();
+        let rig = app.world_mut().spawn((CharacterVisual, ChildOf(root))).id();
+        let sequence = crate::skills::Sequence { length: 100, repeat: true, tracks: Vec::new() };
+        let player = app.world_mut().run_system_once(move |mut commands: Commands| {
+            crate::skills::play(&mut commands, sequence.clone(), Some(far), far, true);
+            crate::skills::play(&mut commands, sequence.clone(), Some(root), root, true)
+        }).unwrap();
+        app.world_mut().get_mut::<Transform>(root).unwrap().translation.x = 100.0;
+        app.update();
+        assert!(app.world().get_entity(rig).is_ok());
+        assert!(app.world().get::<Character>(far).is_none(), "pending remote statuses must not defeat streaming");
+        app.world_mut().despawn(player);
+        app.update();
+        assert!(app.world().get_entity(rig).is_err());
+        assert!(app.world().get::<Npc>(root).is_some());
+        // Authoritative discard/replacement still removes the entire actor tree.
+        app.world_mut().despawn(root);
+        assert!(app.world().get_entity(root).is_err());
+    }
+
+    #[test]
+    fn npc_shadow_diagnostic_tags_late_and_restreamed_meshes_only() {
+        let mut app = App::new();
+        app.add_systems(Update, npc_no_shadow);
+        let root = app.world_mut().spawn(NpcNoShadow).id();
+        let scene = app.world_mut().spawn(ChildOf(root)).id();
+        let unrelated = app.world_mut().spawn(Mesh3d::default()).id();
+        app.update();
+        let first = app.world_mut().spawn((Mesh3d::default(), ChildOf(scene))).id();
+        app.update();
+        assert!(app.world().get::<bevy::light::NotShadowCaster>(first).is_some());
+        assert!(app.world().get::<bevy::light::NotShadowCaster>(unrelated).is_none());
+        app.world_mut().despawn(scene);
+        let replacement = app.world_mut().spawn((Mesh3d::default(), ChildOf(root))).id();
+        app.update();
+        assert!(app.world().get::<bevy::light::NotShadowCaster>(replacement).is_some());
+    }
+
+    #[test]
+    fn offline_population_obeys_event_conditions_without_hiding_base_quest_actors() {
+        let legacy = serde_json::json!({"id":"guard","m":[1.,0.,0.,0.,0.,1.,0.,0.,0.,0.,1.,0.,0.,0.,0.,1.]});
+        assert!(serde_json::from_value::<Placement>(legacy.clone()).unwrap().enabled_offline());
+        for (rule, expected) in [
+            (None, false),
+            (Some("christmas=True;"), false),
+            (Some("easter=False;"), true),
+            (Some("prince_has_left=False;"), true),
+            (Some("christmas=False;anniversary=True;"), false),
+            (Some(" summer = TRUE ;"), false),
+            (Some(""), true),
+            (Some("malformed;=true;flag=unexpected;"), true),
+        ] {
+            let mut entry = legacy.clone();
+            entry["event"] = 92.into();
+            entry["event_flags"] = serde_json::json!(rule);
+            let placement: Placement = serde_json::from_value(entry).unwrap();
+            assert_eq!(placement.enabled_offline(), expected, "{rule:?}");
+        }
+    }
+}

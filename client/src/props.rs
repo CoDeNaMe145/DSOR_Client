@@ -266,6 +266,7 @@ fn desired(map: &MapProps, templates: &MapProps, net: &NetworkProps) -> Vec<Desi
 struct Placed {
     entity: Entity,
     desired: Desired,
+    visual: Option<Entity>,
 }
 #[derive(Resource, Default)]
 pub struct PropScene {
@@ -277,8 +278,13 @@ pub struct PropScene {
     revision: Option<(u64, bool)>,
     complete: bool,
     waiting_states: bool,
+    focus: Option<Vec3>,
 }
 impl PropScene {
+    pub(crate) fn residency(&self) -> (usize, usize, usize) {
+        (self.placed.len(), self.placed.values().filter(|p| p.visual.is_some()).count(), self.models.len())
+    }
+
     pub fn ready(&self, current: &CurrentMap, assets: &AssetServer) -> bool {
         self.map
             .as_ref()
@@ -347,125 +353,102 @@ fn reconcile(
     maps: Res<Assets<MapProps>>,
     gltfs: Res<Assets<Gltf>>,
     net: Option<NonSend<crate::net::Net>>,
+    manifests: Res<Assets<MapManifest>>,
+    cameras: Query<&GlobalTransform, (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
+    players: Query<&GlobalTransform, With<crate::net::LocalPlayer>>,
 ) {
     let Some(root) = current.root else { return };
     let Some(map) = maps.get(&scene.data) else {
         if assets.load_state(&scene.data).is_failed() && !scene.complete {
-            warn!(
-                "{}: prop placements unavailable; run dsor-levels props",
-                current.name
-            );
+            warn!("{}: prop placements unavailable; run dsor-levels props", current.name);
             scene.complete = true;
         }
         return;
     };
+    let Ok(camera) = cameras.single() else { return };
+    let ground = manifests.get(&current.manifest).map_or(0.0, |m| m.center[1]);
+    let focus = crate::map::camera_focus(camera, players.iter().next().map(|p| p.translation()), ground);
     let empty = NetworkProps::default();
     let net = net.as_ref().map(|n| &n.props).unwrap_or(&empty);
     let catalog = maps.get(&scene.catalog);
     let revision = (net.revision, catalog.is_some());
-    if scene.complete && scene.revision == Some(revision) {
-        return;
-    }
-    let list = desired(map, catalog.unwrap_or(map), net);
+    if scene.complete && scene.revision == Some(revision)
+        && scene.focus.is_some_and(|p| p.xz().distance_squared(focus.xz()) < 1.0) { return; }
+    scene.focus = Some(focus);
+    let mut list = desired(map, catalog.unwrap_or(map), net);
     let keys: HashSet<_> = list.iter().map(|p| p.key.as_str()).collect();
     scene.placed.retain(|key, placed| {
-        if keys.contains(key.as_str()) {
-            true
-        } else {
-            commands.entity(placed.entity).try_despawn();
-            false
-        }
+        if keys.contains(key.as_str()) { true }
+        else { commands.entity(placed.entity).try_despawn(); false }
     });
-    let mut in_flight = scene
-        .models
-        .values()
-        .filter(|h| {
-            !matches!(
-                assets.load_state(*h),
-                LoadState::Loaded | LoadState::Failed(_)
-            )
-        })
-        .count();
+    list.sort_by(|a, b| a.transform.translation.xz().distance_squared(focus.xz())
+        .total_cmp(&b.transform.translation.xz().distance_squared(focus.xz())));
+    let mut needed_models = HashSet::new();
+    let mut in_flight = scene.models.values().filter(|h|
+        !matches!(assets.load_state(*h), LoadState::Loaded | LoadState::Failed(_))).count();
     let budget = crate::map::MAX_MODELS_IN_FLIGHT.saturating_sub(current.in_flight.len());
     let mut complete = true;
+    let mut added = 0;
     for wanted in list {
-        if let Some(placed) = scene.placed.get(&wanted.key) {
-            if placed.desired == wanted {
-                continue;
+        // Keep authored/network identity and map markers even while geometry is
+        // unloaded. A distant server update is applied to this record immediately.
+        if let Some(placed) = scene.placed.get_mut(&wanted.key) {
+            if placed.desired != wanted {
+                commands.entity(placed.entity).insert((wanted.transform, crate::ui::MapIcon(wanted.map_icon.clone())));
+                if placed.desired.graphics != wanted.graphics || placed.desired.state != wanted.state {
+                    if let Some(visual) = placed.visual.take() { commands.entity(visual).try_despawn(); }
+                }
+                placed.desired = wanted.clone();
             }
-            if placed.desired.graphics == wanted.graphics {
-                let entity = placed.entity;
-                let handle = scene.models[&wanted.graphics].clone();
-                commands.entity(entity).insert((
-                    wanted.transform,
-                    crate::ui::MapIcon(wanted.map_icon.clone()),
-                    PendingState {
-                        state: wanted.state.clone(),
-                        model: handle,
-                        animate: false,
-                    },
-                ));
-                let placed = scene.placed.get_mut(&wanted.key).unwrap();
-                placed.desired = wanted;
-                continue;
-            }
-            commands.entity(placed.entity).try_despawn();
-            scene.placed.remove(&wanted.key);
+        } else {
+            let entity = commands.spawn((Name::new(format!("prop {}", wanted.key)),
+                crate::ui::MapIcon(wanted.map_icon.clone()), wanted.transform,
+                Visibility::Inherited, ChildOf(root))).id();
+            scene.placed.insert(wanted.key.clone(), Placed { entity, desired: wanted.clone(), visual: None });
         }
-        if !scene.models.contains_key(&wanted.graphics) {
-            if in_flight >= budget {
-                complete = false;
-                continue;
+        let placed = &scene.placed[&wanted.key];
+        let resident = prop_near(wanted.transform.translation, focus, placed.visual.is_some());
+        if !resident {
+            if let Some(visual) = scene.placed.get_mut(&wanted.key).unwrap().visual.take() {
+                commands.entity(visual).try_despawn();
             }
-            let h = assets.load(crate::map::model_path(&wanted.graphics));
-            scene.models.insert(wanted.graphics.clone(), h);
+            continue;
+        }
+        let path = crate::model_variant::prop_path(&wanted.graphics, &wanted.state);
+        needed_models.insert(path.clone());
+        if placed.visual.is_some() { continue; }
+        if !scene.models.contains_key(&path) {
+            if in_flight >= budget { complete = false; continue; }
+            scene.models.insert(path.clone(), assets.load(path.clone()));
             in_flight += 1;
         }
-        let handle = scene.models[&wanted.graphics].clone();
+        let handle = scene.models[&path].clone();
         let Some(gltf) = gltfs.get(&handle) else {
-            if !assets.load_state(&handle).is_failed() {
-                complete = false;
-            }
+            if !assets.load_state(&handle).is_failed() { complete = false; }
             continue;
         };
-        let Some(world) = gltf.scenes.first() else {
-            continue;
-        };
-        let entity = commands
-            .spawn((
-                Name::new(format!("prop {}", wanted.key)),
-                crate::ui::MapIcon(wanted.map_icon.clone()),
-                WorldAssetRoot(world.clone()),
-                wanted.transform,
-                Visibility::Hidden,
-                ChildOf(root),
-                PendingState {
-                    state: wanted.state.clone(),
-                    model: handle,
-                    animate: true,
-                },
-            ))
-            .id();
-        scene.placed.insert(
-            wanted.key.clone(),
-            Placed {
-                entity,
-                desired: wanted,
-            },
-        );
+        let Some(world) = gltf.scenes.first() else { continue };
+        if added >= 8 { complete = false; continue; }
+        added += 1;
+        let visual = commands.spawn((WorldAssetRoot(world.clone()), Transform::default(), Visibility::Hidden,
+            ChildOf(scene.placed[&wanted.key].entity),
+            PendingState { state: wanted.state.clone(), model: handle, animate: true })).id();
+        scene.placed.get_mut(&wanted.key).unwrap().visual = Some(visual);
     }
+    scene.models.retain(|path, _| needed_models.contains(path));
     if complete && (!scene.complete || scene.revision != Some(revision)) {
-        info!(
-            "{}: {} DB4/network props drawn",
-            current.name,
-            scene.placed.len()
-        );
+        info!("{}: {} of {} DB4/network prop visuals resident", current.name,
+            scene.placed.values().filter(|p| p.visual.is_some()).count(), scene.placed.len());
     }
     scene.complete = complete;
     scene.revision = Some(revision);
 }
 
-const STATES: &[&str] = &[
+fn prop_near(position: Vec3, focus: Vec3, resident: bool) -> bool {
+    position.xz().distance(focus.xz()) <= if resident { crate::map::UNLOAD_DISTANCE } else { crate::map::LOAD_DISTANCE }
+}
+
+pub(crate) const STATES: &[&str] = &[
     "active",
     "inactive",
     "cooldown",
@@ -479,7 +462,7 @@ const STATES: &[&str] = &[
     "goininactive", // Misspelled transition group in the original shrine models.
     "goingcooldown",
 ];
-fn selected_state<'a>(wanted: &'a str, available: &HashSet<String>) -> &'a str {
+pub(crate) fn selected_state<'a>(wanted: &'a str, available: &HashSet<String>) -> &'a str {
     if available.contains(wanted) {
         wanted
     } else if wanted == "cooldown" && available.contains("inactive") {

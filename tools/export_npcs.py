@@ -42,7 +42,7 @@ def look(row):
 
 db = sqlite3.connect(os.path.join(export, "db", "static.db4"))
 templates = {r[0]: look(r) for r in db.execute(f"select {','.join(COLUMNS)} from _Template_NPC")}
-with open(os.path.join(assets, "characters", "npc_templates.json"), "w") as f:
+with open(os.path.join(assets, "characters", "npc_templates.json"), "w", encoding="utf-8") as f:
     json.dump(templates, f, separators=(",", ":"), ensure_ascii=False)
 
 maps = 0
@@ -52,23 +52,30 @@ for name in sorted(os.listdir(os.path.join(export, "maps"))):
         continue
     try:
         mdb = sqlite3.connect(os.path.join(export, "maps", name))
-        rows = mdb.execute(f"select hex(Guid), Transform, {','.join(COLUMNS)} from _Instance_NPC").fetchall()
+        rows = mdb.execute(f"select hex(Guid), Transform, EventSetRow, {','.join(COLUMNS)} from _Instance_NPC").fetchall()
     except sqlite3.Error:
         continue
+    try:
+        event_sets = {int(i): flags for i, flags in mdb.execute("select Id, EventFlags from _Instance_EventSets")}
+    except sqlite3.Error:
+        event_sets = {}
     if not rows:
         continue
     out = {}
-    for guid, transform, *cols in rows:
+    for guid, transform, event, *cols in rows:
         if not transform or len(transform) != 64:
             continue
-        entry = {"id": cols[0], "m": [round(v, 5) for v in struct.unpack("<16f", transform)]}
+        event = -1 if event is None else int(event)
+        entry = {"id": cols[0], "m": [round(v, 5) for v in struct.unpack("<16f", transform)], "event": event}
+        if event in event_sets:
+            entry["event_flags"] = event_sets[event] or ""
         # Instance columns that differ from the template's.
         own = look(cols)
         base = templates.get(cols[0])
-        if base is None or any(own[k] != base[k] for k in ("graphics", "outfit", "anim_set", "state", "map_icon")):
+        if base is None or own != base:
             entry["look"] = own
         out[guid.upper()] = entry
-    with open(os.path.join(assets, "maps", name[:-4] + ".npcs.json"), "w") as f:
+    with open(os.path.join(assets, "maps", name[:-4] + ".npcs.json"), "w", encoding="utf-8") as f:
         json.dump(out, f, separators=(",", ":"), ensure_ascii=False)
     maps += 1
     placed += len(out)

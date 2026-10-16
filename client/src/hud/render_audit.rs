@@ -17,6 +17,9 @@ struct Counts {
     entities: usize,
     meshes: usize,
     skinned_meshes: usize,
+    skin_palette_entries: usize,
+    visible_skin_palette_entries: usize,
+    mesh2d: usize,
     animation_targets: usize,
     active_animation_targets: usize,
     hidden_meshes: usize,
@@ -51,6 +54,8 @@ pub(super) fn snapshot(world: &mut World, mut last: Local<f64>) {
     }
     let Some(map) = world.get_resource::<crate::map::CurrentMap>().filter(|m| m.spawned) else { return };
     let map_name = map.name.clone();
+    let resident_models = map.models.len();
+    let total_models = map.by_model.len();
     let cells: HashSet<_> = map.cells.values().copied().collect();
     *last = now;
 
@@ -65,9 +70,16 @@ pub(super) fn snapshot(world: &mut World, mut last: Local<f64>) {
         && world.get::<crate::lighting::NoLevelLook>(*entity).is_none()) else { return };
     let entities: Vec<_> = world.query::<Entity>().iter(world).collect();
     let mut shadow_candidates = HashSet::new();
-    for cascades in world.query::<&CascadesVisibleEntities>().iter(world) {
-        for views in cascades.entities.values() {
+    let mut directional_shadow_views = Vec::new();
+    for (light, cascades) in world.query::<(Entity, &CascadesVisibleEntities)>().iter(world) {
+        for (camera, views) in &cascades.entities {
             for view in views { shadow_candidates.extend(view.entities.iter().copied()); }
+            directional_shadow_views.push(serde_json::json!({
+                "light": format!("{light:?}"), "camera": format!("{camera:?}"),
+                "camera_3d": world.get::<Camera3d>(*camera).is_some(),
+                "camera_active": world.get::<Camera>(*camera).is_some_and(|c| c.is_active),
+                "cascade_candidates": views.iter().map(|view| view.entities.len()).collect::<Vec<_>>(),
+            }));
         }
     }
     for cube in world.query::<&CubemapVisibleEntities>().iter(world) {
@@ -97,7 +109,7 @@ pub(super) fn snapshot(world: &mut World, mut last: Local<f64>) {
                     else if node.contains::<crate::net::RemotePlayer>() { "remote_player" }
                     else if node.contains::<crate::character::Character>() { "character" }
                     else if node.contains::<crate::map::MapRoot>() { "map" }
-                    else if node.contains::<Node>() { "ui" }
+                    else if node.contains::<Node>() || node.contains::<crate::ui::Window2018>() { "ui" }
                     else { "other" };
             }
             if scene.is_none() {
@@ -138,6 +150,11 @@ pub(super) fn snapshot(world: &mut World, mut last: Local<f64>) {
             counts.entities += 1;
             counts.animation_targets += usize::from(node.contains::<bevy::animation::AnimationTargetId>());
             counts.active_animation_targets += usize::from(node.contains::<bevy::animation::AnimatedBy>());
+            counts.mesh2d += usize::from(node.contains::<Mesh2d>());
+            if let Some(skin) = node.get::<SkinnedMesh>() {
+                counts.skin_palette_entries += skin.joints.len();
+                if any_view { counts.visible_skin_palette_entries += skin.joints.len(); }
+            }
             if mesh.is_none() { continue; }
             counts.meshes += 1;
             counts.skinned_meshes += usize::from(node.contains::<SkinnedMesh>());
@@ -159,10 +176,30 @@ pub(super) fn snapshot(world: &mut World, mut last: Local<f64>) {
         }
     }
     let hidden_cells = cells.iter().filter(|&&e| world.get::<InheritedVisibility>(e).is_some_and(|v| !v.get())).count();
+    let resident_chunks = world.query_filtered::<Entity, With<crate::map::MapChunk>>().iter(world).count();
+    let npc_roots: Vec<_> = world.query::<(Entity, &crate::npc::Npc, &GlobalTransform)>()
+        .iter(world).filter(|(_, npc, _)| npc.actor != 0)
+        .map(|(entity, npc, at)| serde_json::json!({
+            "entity": format!("{entity:?}"), "actor": npc.actor, "template": npc.template,
+            "position": at.translation().to_array(),
+            "character_resident": world.get::<crate::character::Character>(entity).is_some(),
+            "model_bones": world.get::<crate::character::ModelBones>(entity).is_some(),
+            "pending_visual": world.get::<crate::npc::NpcVisualPending>(entity).is_some(),
+            "pick_boxes": world.get::<crate::picking::PickBoxes>(entity).is_some(),
+            "visual_children": world.get::<Children>(entity).into_iter().flatten()
+                .filter(|child| world.get::<crate::character::CharacterVisual>(**child).is_some()
+                    || world.get::<WorldAssetRoot>(**child).is_some())
+                .map(|child| format!("{child:?}")).collect::<Vec<_>>(),
+        })).collect();
     let report = serde_json::json!({
         "map": map_name, "uptime_s": now, "entities": entities.len(),
+        "directional_shadow_views": directional_shadow_views,
+        "npc_roots": npc_roots,
         "note": "CPU candidates, not GPU draw counts or pixel visibility. Main frustum ignores occlusion; all views include shadows. Triangle counts omit GPU-only geometry.",
         "cells": {"total": cells.len(), "hidden": hidden_cells},
+        "residency": {"chunks": resident_chunks, "models": resident_models, "map_models": total_models,
+            "props_records_visuals_models": world.get_resource::<crate::props::PropScene>().map(|p| p.residency()),
+            "mesh_assets": world.resource::<Assets<Mesh>>().len(), "image_assets": world.resource::<Assets<Image>>().len()},
         "cameras": cameras.iter().map(|(e, order, at, _, layers, candidates)| serde_json::json!({
             "entity": format!("{e:?}"), "order": order, "position": at.translation().to_array(),
             "forward": at.forward().to_array(), "layers": format!("{layers:?}"), "cpu_list_meshes": candidates,
@@ -176,5 +213,5 @@ pub(super) fn snapshot(world: &mut World, mut last: Local<f64>) {
             warn!("render audit: cannot write {path}: {error}");
         }
     }
-    info!("render audit: {}", serde_json::json!({"map": map_name, "groups": report["groups"], "cells": report["cells"], "cameras": report["cameras"]}));
+    info!("render audit: {}", serde_json::json!({"map": map_name, "groups": report["groups"], "cells": report["cells"], "cameras": report["cameras"], "directional_shadow_views": report["directional_shadow_views"]}));
 }

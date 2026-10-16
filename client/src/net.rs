@@ -345,7 +345,7 @@ pub struct RemotePlayer {
 }
 
 /// The player this client controls.
-#[derive(Component)]
+#[derive(Component, Default)]
 pub struct LocalPlayer {
     pub actor: u32,
     /// Where the player is walking to, game frame.
@@ -1029,6 +1029,7 @@ fn pump(
     mut loading: ResMut<crate::loading::LoadingScreen>,
     mut selection: ResMut<crate::selection::Selection>,
 ) {
+    let _profile = crate::hud::FrameSpan::new("net::pump");
     let now = now_ms(&time);
     let mut changed_map = false;
     let net = &mut *net;
@@ -1691,6 +1692,7 @@ fn walk_local(
     mut players: Query<(&mut Transform, &mut LocalPlayer, &mut CharacterAnim)>,
     mut autowalked: Local<bool>,
 ) {
+    let _profile = crate::hud::FrameSpan::new("net::walk_local");
     let mesh = nav.as_ref().and_then(|n| meshes.get(&n.0));
     for (mut tf, mut player, mut anim) in &mut players {
         // On arrival, stand on the ground nearest where the server put us.

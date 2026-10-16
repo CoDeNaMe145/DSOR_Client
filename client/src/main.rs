@@ -14,6 +14,7 @@ mod clamp;
 mod combat_text;
 mod debug;
 mod decals;
+mod draw_mode;
 mod dump;
 mod exits;
 mod highlight;
@@ -23,6 +24,7 @@ mod corrections;
 mod anim_cull;
 mod refraction;
 mod lighting;
+mod shadow_views;
 mod occlusion;
 mod loading;
 mod selection;
@@ -35,6 +37,8 @@ mod level_editor;
 mod materials;
 mod merge;
 mod monsters;
+mod model_variant;
+mod model_compact;
 mod nav;
 mod nameplate;
 mod nebula_bloom;
@@ -345,6 +349,7 @@ fn main() {
     }
     let opts = options();
     let mut app = App::new();
+    app.register_asset_source(bevy::asset::io::AssetSourceId::Default, model_variant::source(asset_root()));
     if let Some(config) = opts.net.as_ref().filter(|_| !opts.login_screen) {
         app.insert_resource(config.clone());
     }
@@ -369,7 +374,19 @@ fn main() {
                             task_pool_options: bevy::app::TaskPoolOptions::with_num_threads(1),
                         })
                 } else {
-                    plugins
+                    // Opt-in diagnostic: test scheduler overhead independently
+                    // of rendering pipelining and the asset-loading pools.
+                    let mut pools = bevy::app::TaskPoolOptions::default();
+                    if let Some(threads) = std::env::var("DSOR_COMPUTE_THREADS").ok()
+                        .and_then(|value| value.parse::<usize>().ok())
+                        .filter(|threads| *threads > 0)
+                    {
+                        let available = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+                        let threads = threads.min(available);
+                        pools.compute.min_threads = threads;
+                        pools.compute.max_threads = threads;
+                    }
+                    plugins.set(bevy::app::TaskPoolPlugin { task_pool_options: pools })
                 };
                 plugins
             }
@@ -409,7 +426,7 @@ fn main() {
             nav::NavPlugin,
             hud::HudPlugin,
         ))
-        .add_plugins(dump::DumpPlugin)
+        .add_plugins((dump::DumpPlugin, shadow_views::ShadowViewsPlugin, draw_mode::DrawModePlugin::default()))
         .add_plugins(ui::UiPlugin)
         .add_plugins(ui_input::UiInputPlugin)
         .add_plugins(loading::LoadingPlugin)

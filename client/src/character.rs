@@ -397,6 +397,11 @@ impl Default for CharacterAnim {
 }
 
 impl CharacterAnim {
+    /// Release a streamed-out rig without losing authoritative status state.
+    pub(crate) fn release_rig(&mut self) {
+        *self = Self { state: self.state.clone(), speed: self.speed, dead: self.dead, ..default() };
+    }
+
     /// Whether bevy evaluates this character's animation (playing, bones hooked).
     pub fn is_animating(&self) -> bool {
         self.current.is_some() && self.parked.is_empty()
@@ -549,6 +554,12 @@ pub struct CharacterPlugin;
 
 impl Plugin for CharacterPlugin {
     fn build(&self, app: &mut App) {
+        app.register_type::<JointNames>();
+        let handlers = app.world().resource::<bevy::gltf::extensions::GltfExtensionHandlers>().0.clone();
+        #[cfg(target_family = "wasm")]
+        bevy::tasks::block_on(async { handlers.write().await.push(Box::new(SharedPartSkeleton)) });
+        #[cfg(not(target_family = "wasm"))]
+        handlers.write_blocking().push(Box::new(SharedPartSkeleton));
         app.init_asset::<AnimTable>()
             .init_asset::<PartList>()
             .init_asset::<ItemSkins>()
@@ -557,7 +568,8 @@ impl Plugin for CharacterPlugin {
             .register_asset_loader(PartListLoader)
             .add_systems(Startup, load_library)
             .add_systems(Update, (build_characters, revive_skeletons, keep_parts_bound, apply_equipment_dyes,
-                finish_outfits, update_animation_sets, drive_animations, check_skins, prune_idle_targets).chain().after(crate::net::NetSystems))
+                finish_outfits, update_animation_sets, drive_animations, check_skins, prune_idle_targets).chain()
+                .after(crate::net::NetSystems).after(crate::npc::NpcVisualSystems))
             .add_systems(
                 PostUpdate,
                 apply_variations.after(bevy::app::AnimationSystems).before(TransformSystems::Propagate),
@@ -601,17 +613,26 @@ fn body_variation(desc: &CharacterDesc, library: Option<&CharacterLibrary>, vari
 
 /// Spawn a character; it dresses and animates itself once its assets are in.
 pub fn spawn_character(commands: &mut Commands, desc: CharacterDesc, transform: Transform) -> Entity {
-    let displayed_set = desc.animation_set();
-    commands
+    let entity = commands
         .spawn((
             Name::new(format!("character {}", desc.animation_set())),
-            Character { desc, built: false, bones: None, pending_parts: Vec::new(), generation: 0,
-                skeleton: None, displayed_set, drawn_parts: Vec::new(), pending_outfit: None },
             CharacterAnim::default(),
             transform,
             Visibility::default(),
         ))
-        .id()
+        .id();
+    attach_character(commands, entity, desc);
+    entity
+}
+
+/// Build visuals on an existing actor. Its identity, placement and logical
+/// animation state survive online NPC visual eviction/re-entry.
+pub(crate) fn attach_character(commands: &mut Commands, entity: Entity, desc: CharacterDesc) {
+    let displayed_set = desc.animation_set();
+    commands.entity(entity).insert(Character {
+        desc, built: false, bones: None, pending_parts: Vec::new(), generation: 0,
+        skeleton: None, displayed_set, drawn_parts: Vec::new(), pending_outfit: None,
+    });
 }
 
 fn build_characters(
@@ -691,7 +712,7 @@ struct OutfitReadiness<'w, 's> {
     instances: Res<'w, bevy::world_serialization::WorldInstanceSpawner>,
     children: Query<'w, 's, &'static Children>,
     meshes: Query<'w, 's, (&'static Mesh3d, Option<&'static MeshMaterial3d<StandardMaterial>>,
-        Option<&'static MeshMaterial3d<crate::surfaces::NebulaMaterial>>, Option<&'static MeshMaterial3d<crate::refraction::RefractionMaterial>>)>,
+        Option<&'static MeshMaterial3d<crate::surfaces::NebulaMaterial>>, Option<&'static MeshMaterial3d<crate::refraction::RefractionMaterial>>, Option<&'static SkinnedMesh>)>,
     standard: Res<'w, Assets<StandardMaterial>>,
     surfaces: Res<'w, Assets<crate::surfaces::NebulaMaterial>>,
     refractions: Res<'w, Assets<crate::refraction::RefractionMaterial>>,
@@ -714,7 +735,8 @@ impl OutfitReadiness<'_, '_> {
         // its render assets arrive. Check the actual mesh/material textures,
         // including cloned dye materials and extension textures, instead.
         self.children.iter_descendants(entity).all(|e| {
-            let Ok((mesh, standard, surface, refraction)) = self.meshes.get(e) else { return true };
+            let Ok((mesh, standard, surface, refraction, skin)) = self.meshes.get(e) else { return true };
+            if skin.is_some_and(|s| s.joints.is_empty()) { return false; }
             if !self.mesh_assets.contains(mesh.id()) && !self.assets.is_loaded(mesh.id()) { return false; }
             let loaded = |id: bevy::asset::UntypedAssetId| self.assets.is_loaded(id)
                 || id.try_typed::<Image>().is_ok_and(|id| self.images.contains(id));
@@ -964,20 +986,30 @@ fn update_animation_sets(
     }
 }
 
-/// A skeleton whose instance was replaced is adopted again.
-/// CONTRACT: the skeleton scene is instanced again when its assets finish loading
-///   (and WorldInstanceReady does not fire again): its old bones and animation
-///   player are despawned, and parts bound to them stayed where they were.
+/// Recover bindings when an individual shared bone or animation player dies.
+/// Bevy 0.19 emits WorldInstanceReady for complete scene replacements, handled
+/// by on_instance_ready. This fallback also covers partial removals and delayed
+/// reconstruction. Every cached bone had a Name when adopted, so removals wake
+/// the sweep instead of checking every retained bone on every steady frame.
 /// FAILURE (2026-10-06): "si ca n'a pas fini de charger et que je me deplace tout
 ///   reste a sa place"; after quick casts "l'anim ne marche plus" (the player was
 ///   gone). Reproduced with DSOR_CHECK_SKIN: parts bound to a dead joint.
 fn revive_skeletons(
     alive: Query<()>,
     skeletons: Query<(Entity, &SkeletonOf, &Children)>,
+    mut removed_names: RemovedComponents<Name>,
+    mut removed_players: RemovedComponents<AnimationPlayer>,
+    mut retry: Local<bool>,
     mut ctx: SkeletonCtx,
 ) {
+    // Drain both readers even when diagnostics force a sweep. A partial rebuild
+    // can be empty this frame and acquire its children without another removal.
+    let names_removed = removed_names.read().count() != 0;
+    let players_removed = removed_players.read().count() != 0;
+    let check_skins = std::env::var("DSOR_CHECK_SKIN").is_ok();
+    if !names_removed && !players_removed && !*retry && !check_skins { return; }
     let mut stale = Vec::new();
-    if std::env::var("DSOR_CHECK_SKIN").is_ok() {
+    if check_skins {
         for (owner, (c, a)) in ctx.characters.iter().enumerate() {
             let dead = c.bones.as_ref().map(|b| b.values().filter(|b| !alive.contains(**b)).count());
             let _ = (owner, a);
@@ -1002,6 +1034,14 @@ fn revive_skeletons(
         info!("character {owner:?}: skeleton instance replaced, adopting it again");
         adopt_skeleton(&mut ctx, sk, owner, generation);
     }
+    // Also keep watching a still-live bone whose Name was removed: its later
+    // despawn cannot emit another Name removal. Newly reserved scale helpers
+    // become alive when commands apply, so they need at most one extra sweep.
+    *retry = ctx.characters.iter().any(|(character, anim)| character.skeleton.is_some() && (
+        character.bones.as_ref().is_some_and(|bones| bones.values().any(|bone|
+            !alive.contains(*bone) || !ctx.names.contains(*bone)))
+        || anim.player.is_some_and(|player| !alive.contains(player))
+    ));
 }
 
 /// Point every skinned mesh of `part` at the shared skeleton, joint by joint by name.
@@ -1045,11 +1085,9 @@ fn bind(
         info!("bind skin {e:?}: first joint {:?} -> {:?}", skin.joints.first(), joint_names.first().and_then(|n| bones.get(n.as_str())));
     }
     drop_own_skeleton(commands, e, skin, bones, parents);
-    let joints: Vec<Entity> = joint_names
-        .iter()
-        .zip(skin.joints.iter())
-        .map(|(n, own)| bones.get(n.as_str()).copied().unwrap_or(*own))
-        .collect();
+    let Some(joints) = joint_names.iter().enumerate()
+        .map(|(i, n)| bones.get(n.as_str()).copied().or_else(|| skin.joints.get(i).copied()))
+        .collect::<Option<Vec<Entity>>>() else { return };
     // CONTRACT: a re-bound part's bounds are a box around the whole character, not
     //   the box computed for its own unanimated skeleton copy. The part's mesh sits
     //   at the character's origin, so a character-sized box in its space covers
@@ -1099,8 +1137,54 @@ fn drop_own_skeleton(
 }
 
 /// The joint names of a part's skin, as its own skeleton copy named them.
-#[derive(Component)]
+#[derive(Component, Clone, Reflect)]
+#[reflect(Component)]
 struct JointNames(Vec<String>);
+
+/// Equipment uses the actor's skeleton. Strip its private copy from the scene
+/// asset before instancing, rather than spawning ~69 joints and immediately
+/// despawning them for every piece and every scene reload.
+#[derive(Clone)]
+struct SharedPartSkeleton;
+
+impl bevy::gltf::extensions::GltfExtensionHandler for SharedPartSkeleton {
+    fn dyn_clone(&self) -> Box<dyn bevy::gltf::extensions::ErasedGltfExtensionHandler> { Box::new(self.clone()) }
+
+    fn on_scene_completed(&mut self, context: &mut bevy::asset::LoadContext<'_>, _: &gltf::Scene,
+        root: Entity, world: &mut World) {
+        if !context.path().path().components().any(|c| c.as_os_str() == "parts") { return; }
+        strip_part_skeleton(root, world);
+    }
+}
+
+fn strip_part_skeleton(root: Entity, world: &mut World) {
+    let skins: Vec<_> = world.query::<(Entity, &SkinnedMesh)>().iter(world).map(|(e, s)| (e, s.clone())).collect();
+    let mut skeleton_roots = std::collections::HashSet::new();
+    for (entity, skin) in skins {
+        let Some(names) = skin.joints.iter().map(|&j| world.get::<Name>(j).map(|n| n.as_str().to_owned()))
+            .collect::<Option<Vec<_>>>() else { continue };
+        let mut roots = std::collections::HashSet::new();
+        for &joint in &skin.joints {
+            let mut top = joint;
+            while let Some(parent) = world.get::<ChildOf>(top).map(ChildOf::parent).filter(|&p| p != root) { top = parent; }
+            roots.insert(top);
+        }
+        // Only the separate skeleton trees produced by the equipment converter.
+        // Retain any unusual asset with renderable content under a joint tree.
+        let meshes: Vec<_> = world.query_filtered::<Entity, With<Mesh3d>>().iter(world).collect();
+        if meshes.iter().any(|&mesh| {
+            let mut next = Some(mesh);
+            while let Some(e) = next {
+                if roots.contains(&e) { return true; }
+                next = world.get::<ChildOf>(e).map(ChildOf::parent);
+            }
+            false
+        }) { continue; }
+        skeleton_roots.extend(roots);
+        world.entity_mut(entity).insert((JointNames(names), SkinnedMesh { joints: Vec::new(), ..skin }));
+    }
+    for root in skeleton_roots { world.despawn(root); }
+}
 
 /// A skinned mesh that appears under a character after its skeleton is ready is
 /// bound to that skeleton.
@@ -1124,7 +1208,7 @@ fn keep_parts_bound(
         // Not ready yet: on_instance_ready binds the parts once the skeleton is.
         let Some(bones) = &character.bones else { continue };
         let shared: std::collections::HashSet<Entity> = bones.values().copied().collect();
-        if skin.joints.iter().all(|j| shared.contains(j)) {
+        if !skin.joints.is_empty() && skin.joints.iter().all(|j| shared.contains(j)) {
             continue; // our own binding, re-inserted
         }
         let joint_names: Vec<String> = match known {
@@ -1208,7 +1292,7 @@ struct VariedChild;
 fn drive_animations(
     time: Res<Time>,
     mut frame: Local<u32>,
-    mut characters: Query<(Entity, &mut CharacterAnim, &GlobalTransform, &InheritedVisibility, Option<&mut AnimLod>, Option<&crate::selection::Preview>)>,
+    mut characters: Query<(Entity, &mut CharacterAnim, &GlobalTransform, &InheritedVisibility, Option<&mut AnimLod>, Option<&crate::selection::Preview>, Option<&crate::npc::NpcVisualPending>)>,
     visibility: Option<Res<crate::anim_cull::AnimationVisibility>>,
     targets: Query<(Entity, &AnimatedBy)>,
     mut commands: Commands,
@@ -1217,18 +1301,24 @@ fn drive_animations(
     cameras: Query<(&Camera, &GlobalTransform, &bevy::camera::RenderTarget), (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
     me: Query<&GlobalTransform, With<crate::net::LocalPlayer>>,
 ) {
+    let _profile = crate::hud::FrameSpan::new("character::drive_animations");
     // Distance is a coarse gate; completed camera/shadow visibility additionally
     // gates NPC pose sampling without stopping their animation clocks.
     let focus = cameras.iter().find(|(_, _, target)| matches!(target, bevy::camera::RenderTarget::Window(_)))
         .map(|(_, g, _)| crate::map::camera_focus(g, me.iter().next().map(|p| p.translation()), 0.0));
     let near = |p: Vec3| focus.is_none_or(|f| Vec2::new(p.x - f.x, p.z - f.z).length() <= crate::map::CULL_DISTANCE);
     *frame = frame.wrapping_add(1);
-    for (entity, mut anim, at, shown, mut lod, preview) in &mut characters {
+    for (entity, mut anim, at, shown, mut lod, preview, pending) in &mut characters {
         let Some(player) = anim.player else { continue };
         let Ok(mut p) = players.get_mut(player) else { continue };
         // A pending portrait must pose before it is revealed. Check distance
         // before the LOD early return so a hidden actor parks immediately.
-        let far = crate::flag("noanim") || (preview.is_none() && (!shown.get() || !near(at.translation())));
+        // The diagnostic freezes world actors, but selection still needs its
+        // first posed preview before it can enter the world.
+        // Streamed NPCs must sample their first pose while still hidden. Their
+        // readiness gate is cleared on a later Update, after this frame's pose.
+        let preparing = pending.is_some();
+        let far = preview.is_none() && (crate::flag("noanim") || (!shown.get() && !preparing) || !near(at.translation()));
         if far {
             if anim.current.is_some() || anim.applied.is_some() {
                 p.stop_all();
@@ -1243,7 +1333,7 @@ fn drive_animations(
             }
             continue;
         }
-        let unseen = visibility.as_ref().is_some_and(|v| !v.needs_animation(entity));
+        let unseen = !preparing && visibility.as_ref().is_some_and(|v| !v.needs_animation(entity));
         let waking = !unseen && !anim.parked.is_empty();
         if unseen {
             if anim.parked.is_empty() && !anim.parking {
@@ -1259,7 +1349,7 @@ fn drive_animations(
         // A lower-rate character between its frames: held still, unevaluated.
         if let Some(lod) = lod.as_mut() {
             let mine = (*frame + lod.phase) % lod.stride == 0;
-            let steady = !unseen && !waking && !anim.set_changed && anim.fading.is_empty() && anim.applied.as_ref() == Some(&(anim.state.clone(), anim.speed));
+            let steady = !preparing && !unseen && !waking && !anim.set_changed && anim.fading.is_empty() && anim.applied.as_ref() == Some(&(anim.state.clone(), anim.speed));
             if let (true, Some(node)) = (steady, anim.current) {
                 if !mine {
                     match lod.held.as_mut() {
@@ -1302,6 +1392,9 @@ fn drive_animations(
         let Some(&(node, looping)) = anim.nodes.get(&key).or_else(|| anim.nodes.get("Idle")) else {
             continue;
         };
+        if preparing && anim.current.is_none() {
+            commands.entity(player).insert(crate::anim_cull::PendingFirstPose::default());
+        }
         anim.transition(&mut p, node, looping);
     }
     if !to_park.is_empty() {
@@ -1426,9 +1519,170 @@ fn prune_idle_targets(
 }
 
 #[cfg(test)]
+mod skeleton_liveness_tests {
+    use super::*;
+    use bevy::ecs::system::RunSystemOnce;
+
+    struct Rig { owner: Entity, skeleton: Entity, player: Entity, bone: Entity, mesh: Entity }
+
+    fn fixture() -> (App, Rig) {
+        let mut app = App::new();
+        app.init_resource::<Assets<AnimationGraph>>()
+            .init_resource::<Assets<crate::npc::Variations>>()
+            .add_systems(Update, revive_skeletons);
+        let world = app.world_mut();
+        let owner = world.run_system_once(|mut commands: Commands|
+            spawn_character(&mut commands, CharacterDesc::default(), Transform::default())).unwrap();
+        let skeleton = world.spawn((SkeletonOf(owner, 0), ChildOf(owner))).id();
+        // Keep these siblings so deleting the unnamed player tests its own
+        // removal reader rather than incidentally deleting a named bone.
+        let player = world.spawn((AnimationPlayer::default(), ChildOf(skeleton))).id();
+        let bone = world.spawn((Name::new("hand"), Transform::default(), ChildOf(skeleton))).id();
+        let part = world.spawn((PartOf(owner, 0), ChildOf(owner))).id();
+        let mesh = world.spawn((SkinnedMesh { joints: vec![bone], ..default() },
+            JointNames(vec!["hand".into()]), ChildOf(part))).id();
+        {
+            let mut character = world.get_mut::<Character>(owner).unwrap();
+            character.skeleton = Some(skeleton);
+            character.bones = Some(HashMap::from([("hand".into(), bone)]));
+        }
+        world.get_mut::<CharacterAnim>(owner).unwrap().player = Some(player);
+        app.update();
+        (app, Rig { owner, skeleton, player, bone, mesh })
+    }
+
+    fn new_bone(world: &mut World, skeleton: Entity) -> Entity {
+        world.spawn((Name::new("hand"), Transform::default(), ChildOf(skeleton))).id()
+    }
+
+    fn assert_binding(app: &App, rig: &Rig, bone: Entity) {
+        assert_eq!(app.world().get::<Character>(rig.owner).unwrap().bone("hand"), Some(bone));
+        assert_eq!(app.world().get::<SkinnedMesh>(rig.mesh).unwrap().joints, vec![bone]);
+    }
+
+    #[test]
+    fn removed_shared_bone_rebinds_existing_clothing() {
+        let (mut app, rig) = fixture();
+        app.world_mut().despawn(rig.bone);
+        let replacement = new_bone(app.world_mut(), rig.skeleton);
+        app.update();
+        assert_binding(&app, &rig, replacement);
+        app.update();
+        assert_binding(&app, &rig, replacement);
+    }
+
+    #[test]
+    fn removed_unnamed_animation_player_is_adopted_again() {
+        let (mut app, rig) = fixture();
+        app.world_mut().despawn(rig.player);
+        let replacement = app.world_mut().spawn((AnimationPlayer::default(), ChildOf(rig.skeleton))).id();
+        app.update();
+        assert_eq!(app.world().get::<CharacterAnim>(rig.owner).unwrap().player, Some(replacement));
+        assert!(app.world().get::<AnimationGraphHandle>(replacement).is_some());
+        assert_binding(&app, &rig, rig.bone);
+    }
+
+    #[test]
+    fn an_empty_skeleton_retries_when_replacement_arrives_without_another_removal() {
+        let (mut app, rig) = fixture();
+        app.world_mut().despawn(rig.player);
+        app.world_mut().despawn(rig.bone);
+        app.update();
+        app.update();
+        let replacement = app.world_mut().spawn((AnimationPlayer::default(), ChildOf(rig.skeleton))).id();
+        let bone = new_bone(app.world_mut(), rig.skeleton);
+        app.update();
+        assert_eq!(app.world().get::<CharacterAnim>(rig.owner).unwrap().player, Some(replacement));
+        assert_binding(&app, &rig, bone);
+    }
+
+    #[test]
+    fn a_bone_despawn_after_its_name_was_removed_still_repairs_bindings() {
+        let (mut app, rig) = fixture();
+        app.world_mut().entity_mut(rig.bone).remove::<Name>();
+        app.update();
+        app.world_mut().despawn(rig.bone);
+        let replacement = new_bone(app.world_mut(), rig.skeleton);
+        app.update();
+        assert_binding(&app, &rig, replacement);
+    }
+
+    #[test]
+    fn unrelated_removals_and_owner_despawn_do_not_rebuild_valid_rigs() {
+        let (mut app, rig) = fixture();
+        let unrelated = app.world_mut().spawn(Name::new("temporary UI node")).id();
+        app.world_mut().despawn(unrelated);
+        app.update();
+        assert_binding(&app, &rig, rig.bone);
+        assert_eq!(app.world().get::<CharacterAnim>(rig.owner).unwrap().player, Some(rig.player));
+        assert!(app.world().get::<AnimationGraphHandle>(rig.player).is_none(), "no adoption for a healthy rig");
+        app.world_mut().despawn(rig.owner);
+        app.update();
+        app.update();
+        assert!(app.world().get_entity(rig.skeleton).is_err());
+    }
+}
+
+#[cfg(test)]
 mod appearance_tests {
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
+
+    #[test]
+    fn streamed_rig_release_preserves_status_but_drops_old_bindings() {
+        let mut world = World::new();
+        let player = world.spawn_empty().id();
+        let mut anim = CharacterAnim::default();
+        anim.state = AnimState::Named("Stunned".into());
+        anim.speed = 0.5;
+        anim.dead = true;
+        anim.bind_model(player, HashMap::new());
+        anim.parked.push((player, AnimatedBy(player)));
+        anim.release_rig();
+        assert!(!anim.is_ready());
+        assert!(anim.parked.is_empty() && anim.nodes.is_empty() && anim.current.is_none());
+        assert_eq!(anim.state, AnimState::Named("Stunned".into()));
+        assert_eq!(anim.speed, 0.5);
+        assert!(anim.dead);
+        let root = world.spawn((anim, Transform::from_xyz(3.0, 0.0, 7.0))).id();
+        world.run_system_once(move |mut commands: Commands| attach_character(&mut commands, root, CharacterDesc::default())).unwrap();
+        assert!(world.get::<Character>(root).is_some());
+        assert_eq!(world.get::<CharacterAnim>(root).unwrap().state, AnimState::Named("Stunned".into()));
+        assert_eq!(world.get::<Transform>(root).unwrap().translation, Vec3::new(3.0, 0.0, 7.0));
+    }
+
+    #[test]
+    fn compact_equipment_scene_binds_to_shared_skeleton_without_spawning_private_bones() {
+        let mut world = World::new();
+        let scene = world.spawn_empty().id();
+        let joint_root = world.spawn((Name::new("Skeleton_Root"), Transform::default(), ChildOf(scene))).id();
+        let hand = world.spawn((Name::new("hand"), Transform::default(), ChildOf(joint_root))).id();
+        let unused = world.spawn((Name::new("unused"), ChildOf(joint_root))).id();
+        let mesh = world.spawn((Mesh3d::default(), ChildOf(scene), SkinnedMesh { joints: vec![hand], ..default() })).id();
+        strip_part_skeleton(scene, &mut world);
+        assert!(world.get_entity(joint_root).is_err());
+        assert!(world.get_entity(hand).is_err());
+        assert!(world.get_entity(unused).is_err());
+        assert_eq!(world.get::<JointNames>(mesh).unwrap().0, vec!["hand"]);
+        assert!(world.get::<SkinnedMesh>(mesh).unwrap().joints.is_empty());
+        let shared_hand = world.spawn(Name::new("hand")).id();
+        world.run_system_once(move |mut commands: Commands, skins: Query<&SkinnedMesh>, parents: Query<&ChildOf>| {
+            bind(&mut commands, mesh, skins.get(mesh).unwrap(), &["hand".into()],
+                &HashMap::from([("hand".into(), shared_hand)]), &parents);
+        }).unwrap();
+        assert_eq!(world.get::<SkinnedMesh>(mesh).unwrap().joints, vec![shared_hand]);
+    }
+
+    #[test]
+    fn equipment_with_geometry_under_its_rig_keeps_that_rig() {
+        let mut world = World::new();
+        let scene = world.spawn_empty().id();
+        let joint = world.spawn((Name::new("bone"), ChildOf(scene))).id();
+        let mesh = world.spawn((Mesh3d::default(), ChildOf(joint), SkinnedMesh { joints: vec![joint], ..default() })).id();
+        strip_part_skeleton(scene, &mut world);
+        assert_eq!(world.get::<SkinnedMesh>(mesh).unwrap().joints, vec![joint]);
+        assert!(world.get_entity(joint).is_ok());
+    }
 
     #[test]
     fn clothing_coverage_keeps_exposed_skin_and_restores_defaults() {
@@ -1628,9 +1882,73 @@ mod appearance_tests {
     }
 
     #[test]
+    fn streamed_npc_is_posed_on_first_visible_frame_and_after_rig_reentry() {
+        use bevy::animation::{AnimationPlugin, AnimationTargetId, animated_field};
+        use crate::npc::placement_tests::{finish_pose_test, mark_resident_for_pose_test};
+        // Neither relative Update order may publish just because drive called
+        // play(): the graph's threaded cache and a sampled pose must exist first.
+        for finish_first in [true, false] {
+            let mut app = App::new();
+            app.add_plugins((MinimalPlugins, AssetPlugin::default(), AnimationPlugin, crate::anim_cull::AnimCullPlugin))
+                .init_resource::<Assets<crate::map::MapManifest>>();
+            app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(Duration::from_secs_f32(1.0 / 60.0)));
+            if finish_first { app.add_systems(Update, (finish_pose_test, drive_animations).chain()); }
+            else { app.add_systems(Update, (drive_animations, finish_pose_test).chain()); }
+            let camera = Transform::from_xyz(0.0, 10.0, 0.0).looking_at(Vec3::ZERO, Vec3::Z);
+            app.world_mut().spawn((Camera3d::default(), GlobalTransform::from(camera)));
+            let target = AnimationTargetId::from_name(&Name::new("npc bone"));
+            let pose = Vec3::new(0.0, 2.0, 0.0);
+            let mut clip = AnimationClip::default();
+            clip.add_curve_to_target(target, AnimatableCurve::new(animated_field!(Transform::translation),
+                UnevenSampleAutoCurve::new([(0.0, pose), (2.0, pose)]).unwrap()));
+            let clip = app.world_mut().resource_mut::<Assets<AnimationClip>>().add(clip);
+            let (graph, node) = AnimationGraph::from_clip(clip);
+            let graph = app.world_mut().resource_mut::<Assets<AnimationGraph>>().add(graph);
+            let root = app.world_mut().run_system_once(|mut commands: Commands|
+                spawn_character(&mut commands, CharacterDesc::default(), Transform::default())).unwrap();
+            let mut old_player = None;
+            for _ in 0..2 {
+                if let Some(old) = old_player { app.world_mut().despawn(old); }
+                let player = app.world_mut().spawn((AnimationPlayer::default(), AnimationGraphHandle(graph.clone()), ChildOf(root))).id();
+                let bone = app.world_mut().spawn((target, AnimatedBy(player), Transform::default(), ChildOf(player))).id();
+                old_player = Some(player);
+                let mut anim = app.world_mut().get_mut::<CharacterAnim>(root).unwrap();
+                anim.release_rig();
+                anim.bind_model(player, [("Idle".into(), (node, true))].into_iter().collect());
+                let mut character = app.world_mut().get_mut::<Character>(root).unwrap();
+                character.built = true;
+                character.bones = Some([("npc bone".into(), bone)].into_iter().collect());
+                character.drawn_parts = vec![OutfitPart { entity: bone, name: "body".into(), colour: None }];
+                app.world_mut().entity_mut(root).insert((Visibility::Hidden, InheritedVisibility::HIDDEN));
+                mark_resident_for_pose_test(app.world_mut(), root);
+                finish_pose_test(app.world_mut());
+                assert!(app.world().get::<crate::npc::NpcVisualPending>(root).is_some(),
+                    "a loaded skeleton without a sampled pose must stay hidden");
+                for frame in 0..3 {
+                    app.update();
+                    if app.world().get::<crate::npc::NpcVisualPending>(root).is_none() {
+                        assert_eq!(app.world().get::<Transform>(bone).unwrap().translation, pose,
+                            "publication must follow actual curve evaluation, not just play()");
+                        break;
+                    }
+                    assert_eq!(*app.world().get::<Visibility>(root).unwrap(), Visibility::Hidden);
+                    if frame >= 1 {
+                        assert_eq!(app.world().get::<Transform>(bone).unwrap().translation, pose,
+                            "the hidden warm-up must evaluate once the graph cache is ready");
+                    }
+                }
+                assert!(app.world().get::<crate::npc::NpcVisualPending>(root).is_none());
+                assert_eq!(*app.world().get::<Visibility>(root).unwrap(), Visibility::Inherited);
+                assert_eq!(app.world().get::<Transform>(bone).unwrap().translation, pose);
+            }
+        }
+    }
+
+    #[test]
     fn view_culling_parks_bones_without_restarting_clips_or_delaying_lod_reentry() {
         let mut app = App::new();
-        app.init_resource::<Time>().add_plugins(crate::anim_cull::AnimCullPlugin)
+        app.init_resource::<Time>().init_resource::<Assets<AnimationGraph>>()
+            .init_resource::<Assets<AnimationClip>>().add_plugins(crate::anim_cull::AnimCullPlugin)
             .add_systems(Update, drive_animations);
         let (_, nodes) = AnimationGraph::from_clips([Handle::default()]);
         let player = app.world_mut().spawn(AnimationPlayer::default()).id();

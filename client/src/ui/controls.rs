@@ -1033,6 +1033,7 @@ mod tests {
             .init_resource::<items::Interaction>()
             .init_resource::<SkillClicks>()
             .init_resource::<crate::chat::ChatLog>()
+            .init_resource::<crate::net::RespawnChoice>()
             .init_resource::<local_map::MapSettings>()
             .add_systems(Update, (keyboard, interact, edit_text, order_windows, paint).chain());
         let primary = app.world_mut().spawn((Window { focused: true, resolution: (1024, 768).into(), ..default() }, PrimaryWindow)).id();

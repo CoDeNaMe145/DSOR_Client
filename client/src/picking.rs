@@ -53,7 +53,7 @@ impl Plugin for PickingPlugin {
             .add_systems(Startup, |mut commands: Commands, assets: Res<AssetServer>| {
                 commands.insert_resource(PickingFile(assets.load("characters/picking.json")));
             })
-            .add_systems(Update, bind);
+            .add_systems(Update, bind.after(crate::npc::NpcVisualSystems));
     }
 }
 

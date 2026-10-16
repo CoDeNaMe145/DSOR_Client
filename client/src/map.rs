@@ -4,8 +4,8 @@
 //! The manifest is loaded through the `AssetServer`, never `std::fs`, so the same
 //! code reads it from disk natively and over HTTP in the browser.
 //!
-//! Performance contract: every distinct model of the map is loaded ONCE
-//! (`models[i]` -> one `Handle<WorldAsset>`), and every placement that uses it
+//! Performance contract: each distinct model in the resident area is loaded ONCE
+//! (`models[i]` -> one shared glTF), and every placement that uses it
 //! spawns that same handle. The glTF scene therefore shares one `Handle<Mesh>`
 //! and one `Handle<StandardMaterial>` per primitive across all of its instances,
 //! which is what lets Bevy batch them, and no placement triggers a load of its own.
@@ -17,6 +17,7 @@ use bevy::gltf::{Gltf, GltfMaterial, GltfMesh, GltfNode};
 use bevy::camera::primitives::MeshAabb;
 use bevy::prelude::*;
 use serde::Deserialize;
+use std::collections::{HashMap, HashSet};
 
 use crate::merge::MapMaterial;
 
@@ -103,20 +104,24 @@ pub const MAX_MODELS_IN_FLIGHT: usize = 24;
 pub struct CurrentMap {
     pub name: String,
     pub manifest: Handle<MapManifest>,
-    /// One glTF handle per distinct model requested so far (index = manifest
-    /// model index). Models are requested in order, so `models.len()` is also
-    /// the number requested.
-    pub models: Vec<Handle<Gltf>>,
+    /// Only models used by the resident cells. Dropping the last handle releases
+    /// their meshes and textures after the cell's entities are removed.
+    pub models: HashMap<usize, Handle<Gltf>>,
     /// Requested models whose file has not finished parsing yet.
     pub in_flight: Vec<usize>,
     /// Placements per model, built once the manifest arrives.
     pub by_model: Vec<Vec<usize>>,
+    by_cell: HashMap<(i32, i32), Vec<usize>>,
+    wanted_cells: HashSet<(i32, i32)>,
+    wanted_models: HashSet<usize>,
+    /// Geometry roots, separate from the lightweight cells used by level lights.
+    contents: HashMap<(i32, i32), Entity>,
+    stream_focus: Option<Vec3>,
     pub root: Option<Entity>,
     /// Culling cells (CELL units square) by grid key; every placement is a child
     /// of its cell. SEE: cull_cells.
     pub cells: std::collections::HashMap<(i32, i32), Entity>,
-    /// Static surfaces waiting to be merged (crate::merge), baked once every
-    /// model is placed.
+    /// Static surfaces being merged for cells completed in this frame.
     pub batches: crate::merge::Batches,
     /// Materials by what they look like (textures, colours, states): the many
     /// identical materials of different models share one, so their surfaces merge.
@@ -125,7 +130,7 @@ pub struct CurrentMap {
     /// crate::refraction): one per look across all the map's models.
     pub canonical_surfaces: std::collections::HashMap<String, Handle<crate::surfaces::NebulaMaterial>>,
     pub canonical_refractions: std::collections::HashMap<String, Handle<crate::refraction::RefractionMaterial>>,
-    /// True once every model has been requested and every placement spawned.
+    /// True once the requested nearby cells have been built.
     pub spawned: bool,
     pub instances: usize,
 }
@@ -135,9 +140,14 @@ impl CurrentMap {
         Self {
             name,
             manifest,
-            models: Vec::new(),
+            models: Default::default(),
             in_flight: Vec::new(),
             by_model: Vec::new(),
+            by_cell: Default::default(),
+            wanted_cells: Default::default(),
+            wanted_models: Default::default(),
+            contents: Default::default(),
+            stream_focus: None,
             root: None,
             cells: Default::default(),
             batches: Default::default(),
@@ -149,11 +159,11 @@ impl CurrentMap {
         }
     }
 
-    /// (models fully loaded including textures, or failed; models in the map)
+    /// (models fully loaded including textures, or failed; models needed nearby)
     pub fn progress(&self, asset_server: &AssetServer) -> (usize, usize) {
         let done = self
             .models
-            .iter()
+            .values()
             .filter(|h| {
                 matches!(asset_server.get_load_state(*h), Some(LoadState::Failed(_))) || matches!(
                     asset_server.get_recursive_dependency_load_state(*h),
@@ -162,7 +172,7 @@ impl CurrentMap {
             })
             .count();
         if std::env::var("DSOR_DEBUG_LOAD").is_ok() {
-            for h in &self.models {
+            for h in self.models.values() {
                 let rec = asset_server.get_recursive_dependency_load_state(h);
                 if !matches!(rec, Some(RecursiveDependencyLoadState::Loaded | RecursiveDependencyLoadState::Failed(_)))
                     && !matches!(asset_server.get_load_state(h), Some(LoadState::Failed(_)))
@@ -171,13 +181,17 @@ impl CurrentMap {
                 }
             }
         }
-        (done, self.by_model.len())
+        (done, self.wanted_models.len())
     }
 }
 
 /// Root entity of the spawned map; every placement is its child.
 #[derive(Component)]
 pub struct MapRoot;
+
+/// Streamed geometry and its projected decals share this lifetime.
+#[derive(Component)]
+pub struct MapChunk;
 
 /// Asset path of a model reference from a manifest.
 pub fn model_path(reference: &str) -> String {
@@ -226,6 +240,7 @@ fn start_map(
         }
         if let Some(list) = by_model.get_mut(inst.m) {
             list.push(i);
+            current.by_cell.entry(cell_of(game_to_bevy(inst.p))).or_default().push(i);
         }
     }
     current.by_model = by_model;
@@ -253,11 +268,8 @@ fn start_map(
     );
 }
 
-/// Request the map's models a few at a time and spawn each model's placements
-/// as soon as it is requested (a `WorldAssetRoot` whose scene is still loading
-/// simply spawns its children when the scene arrives).
-/// Map models stream in, MAX_MODELS_IN_FLIGHT at a time; each one's placements
-/// are spawned once its glTF is parsed.
+/// Load models needed by nearby cells, with bounded IO and cell creation.
+/// Cells prefetch beyond visibility range and unload beyond a wider radius.
 ///
 /// CONTRACT: a static model (no animation, skin, particle emitter or decal) is
 ///   spawned FLAT: one entity per visible surface, its node chain folded into its
@@ -281,127 +293,153 @@ fn stream_models(
     std_materials: Res<Assets<StandardMaterial>>,
     surface_materials: Res<Assets<crate::surfaces::NebulaMaterial>>,
     refraction_materials: Res<Assets<crate::refraction::RefractionMaterial>>,
+    cameras: Query<&GlobalTransform, (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
+    players: Query<&GlobalTransform, With<crate::net::LocalPlayer>>,
 ) {
-    let mesh_assets = &*mesh_assets_mut;
     let Some(root) = current.root else { return };
-    if current.spawned {
-        return;
-    }
     let Some(manifest) = manifests.get(&current.manifest) else { return };
-
-    // Place the models whose glTF has been parsed; forget the failed ones.
-    let mut still = Vec::new();
-    for m in std::mem::take(&mut current.in_flight) {
-        match asset_server.get_load_state(&current.models[m]) {
-            Some(LoadState::Loaded) => {
-                let Some(gltf) = gltfs.get(&current.models[m]) else {
-                    still.push(m);
-                    continue;
-                };
-                let placements = current.by_model[m].clone();
-                let flat = flat_surfaces(gltf, &nodes, &meshes, &materials, mesh_assets, &asset_server);
-                for &i in &placements {
-                    let inst = &manifest.instances[i];
-                    let at = Transform {
-                        translation: game_to_bevy(inst.p),
-                        rotation: Quat::from_xyzw(inst.r[0], inst.r[1], inst.r[2], inst.r[3]).normalize(),
-                        scale: Vec3::from_array(inst.s),
-                    };
-                    let key = cell_of(at.translation);
-                    let cell = *current.cells.entry(key).or_insert_with(|| {
-                        commands
-                            .spawn((Name::new(format!("cell {key:?}")), Transform::default(), Visibility::default(), ChildOf(root)))
-                            .id()
-                    });
-                    match &flat {
-                        Some(surfaces) => {
-                            let inst_affine = at.compute_affine();
-                            for s in surfaces {
-                                let world = inst_affine * s.local;
-                                let size = s.size * at.scale.abs().max_element();
-                                let casts_shadow = !(s.no_shadow || size < MIN_SHADOW_CASTER);
-                                // Merged with its cell's like surfaces (crate::merge);
-                                // alone when its layout cannot be.
-                                let material = match &s.material {
-                                    MapMaterial::Standard(h) => match std_materials.get(h) {
-                                        Some(m) => {
-                                            let sig = material_signature(m);
-                                            MapMaterial::Standard(current.canonical.entry(sig).or_insert_with(|| h.clone()).clone())
-                                        }
-                                        None => s.material.clone(),
-                                    },
-                                    MapMaterial::Surface(h) => match surface_materials.get(h) {
-                                        Some(m) => {
-                                            let e = &m.extension;
-                                            let t = |h: &Option<Handle<Image>>| h.as_ref().map(|h| format!("{:?}", h.id())).unwrap_or_default();
-                                            let sig = format!("{}|{:?}|{}|{}|{}", material_signature(&m.base), e.params, t(&e.cube), t(&e.layer), t(&e.mask));
-                                            MapMaterial::Surface(current.canonical_surfaces.entry(sig).or_insert_with(|| h.clone()).clone())
-                                        }
-                                        None => s.material.clone(),
-                                    },
-                                    MapMaterial::Refraction(h) => match refraction_materials.get(h) {
-                                        Some(m) => {
-                                            let dudv = m.extension.dudv.as_ref().map(|h| format!("{:?}", h.id())).unwrap_or_default();
-                                            let sig = format!("{}|{:?}|{dudv}", material_signature(&m.base), m.extension.params);
-                                            MapMaterial::Refraction(current.canonical_refractions.entry(sig).or_insert_with(|| h.clone()).clone())
-                                        }
-                                        None => s.material.clone(),
-                                    },
-                                };
-                                let merged = mesh_assets.get(&s.mesh).and_then(|mesh| {
-                                    let layout = crate::merge::layout_of(mesh)?;
-                                    let key = crate::merge::BatchKey { cell: key, material: material.id(), casts_shadow, layout };
-                                    current.batches.batch(key, &material).push(mesh, &world, layout).then_some(())
-                                });
-                                if merged.is_none() {
-                                    let tf = Transform::from_matrix(Mat4::from(world));
-                                    let mut e = commands.spawn((Mesh3d(s.mesh.clone()), tf, ChildOf(cell)));
-                                    s.material.insert(&mut e);
-                                    if !casts_shadow {
-                                        e.insert(bevy::light::NotShadowCaster);
-                                    }
+    let Ok(cam) = cameras.single() else { return };
+    let focus = camera_focus(cam, players.iter().next().map(|p| p.translation()), manifest.center[1]);
+    if current.spawned && current.stream_focus.is_some_and(|p| p.xz().distance_squared(focus.xz()) < 1.0) { return; }
+    current.stream_focus = Some(focus);
+    let wanted: HashSet<_> = current.by_cell.keys().copied().filter(|key| {
+        let radius = if current.wanted_cells.contains(key) { UNLOAD_DISTANCE } else { LOAD_DISTANCE };
+        cell_distance(*key, focus) <= radius
+    }).collect();
+    if current.spawned && wanted == current.wanted_cells { return; }
+    if wanted != current.wanted_cells {
+        let leaving: Vec<_> = current.contents.keys().copied().filter(|k| !wanted.contains(k)).collect();
+        for key in leaving {
+            if let Some(entity) = current.contents.remove(&key) { commands.entity(entity).try_despawn(); }
+        }
+        current.wanted_models = wanted.iter().flat_map(|k| current.by_cell[k].iter().map(|&i| manifest.instances[i].m)).collect();
+        let wanted_models = current.wanted_models.clone();
+        current.models.retain(|m, _| wanted_models.contains(m));
+        current.in_flight.retain(|m| wanted_models.contains(m));
+        // These are only a merge-time deduplication cache. Keeping them forever
+        // would pin the textures of every cell the player had ever visited.
+        current.canonical.clear();
+        current.canonical_surfaces.clear();
+        current.canonical_refractions.clear();
+        current.wanted_cells = wanted;
+    }
+    let active: Vec<_> = current.in_flight.iter().copied().filter(|m| {
+        !matches!(asset_server.get_load_state(&current.models[m]), Some(LoadState::Loaded | LoadState::Failed(_)))
+    }).collect();
+    current.in_flight = active;
+    // Nearest cells first; only a bounded number of model loads may run at once.
+    let mut cells: Vec<_> = current.wanted_cells.iter().copied().collect();
+    cells.sort_by(|a, b| cell_distance(*a, focus).total_cmp(&cell_distance(*b, focus)));
+    for key in &cells {
+        let placements = current.by_cell[key].clone();
+        for i in placements {
+            let m = manifest.instances[i].m;
+            if current.in_flight.len() >= MAX_MODELS_IN_FLIGHT { break; }
+            if current.models.contains_key(&m) { continue; }
+            current.models.insert(m, asset_server.load(model_path(&manifest.models[m])));
+            current.in_flight.push(m);
+        }
+    }
+    // Complete cells atomically, with a small per-frame budget. No partial
+    // static batches are rebuilt when another model arrives.
+    let mut built = 0;
+    for key in cells {
+        if current.contents.contains_key(&key) { continue; }
+        let placements = current.by_cell[&key].clone();
+        if !placements.iter().all(|&i| current.models.get(&manifest.instances[i].m).is_some_and(|h| {
+            gltfs.get(h).is_some() || asset_server.load_state(h).is_failed()
+        })) { continue; }
+        let cell = *current.cells.entry(key).or_insert_with(|| {
+            commands.spawn((Name::new(format!("cell {key:?}")), Transform::default(), Visibility::default(), ChildOf(root))).id()
+        });
+        let content = commands.spawn((MapChunk, Name::new("streamed geometry"), Transform::default(), Visibility::default(), ChildOf(cell))).id();
+        current.contents.insert(key, content);
+        let cell = content;
+        let mut flat_cache = HashMap::new();
+        for &i in &placements {
+            let inst = &manifest.instances[i];
+            let Some(gltf) = gltfs.get(&current.models[&inst.m]) else { continue };
+            let flat = flat_cache.entry(inst.m).or_insert_with(|| flat_surfaces(gltf, &nodes, &meshes, &materials, &mesh_assets_mut, &asset_server));
+            let mesh_assets = &*mesh_assets_mut;
+            let at = Transform {
+                translation: game_to_bevy(inst.p),
+                rotation: Quat::from_xyzw(inst.r[0], inst.r[1], inst.r[2], inst.r[3]).normalize(),
+                scale: Vec3::from_array(inst.s),
+            };
+            match flat {
+                Some(surfaces) => {
+                    let inst_affine = at.compute_affine();
+                    for s in surfaces {
+                        let world = inst_affine * s.local;
+                        let size = s.size * at.scale.abs().max_element();
+                        let casts_shadow = !(s.no_shadow || size < MIN_SHADOW_CASTER);
+                        // Merged with its cell's like surfaces (crate::merge);
+                        // alone when its layout cannot be.
+                        let material = match &s.material {
+                            MapMaterial::Standard(h) => match std_materials.get(h) {
+                                Some(m) => {
+                                    let sig = material_signature(m);
+                                    MapMaterial::Standard(current.canonical.entry(sig).or_insert_with(|| h.clone()).clone())
                                 }
+                                None => s.material.clone(),
+                            },
+                            MapMaterial::Surface(h) => match surface_materials.get(h) {
+                                Some(m) => {
+                                    let e = &m.extension;
+                                    let t = |h: &Option<Handle<Image>>| h.as_ref().map(|h| format!("{:?}", h.id())).unwrap_or_default();
+                                    let sig = format!("{}|{:?}|{}|{}|{}", material_signature(&m.base), e.params, t(&e.cube), t(&e.layer), t(&e.mask));
+                                    MapMaterial::Surface(current.canonical_surfaces.entry(sig).or_insert_with(|| h.clone()).clone())
+                                }
+                                None => s.material.clone(),
+                            },
+                            MapMaterial::Refraction(h) => match refraction_materials.get(h) {
+                                Some(m) => {
+                                    let dudv = m.extension.dudv.as_ref().map(|h| format!("{:?}", h.id())).unwrap_or_default();
+                                    let sig = format!("{}|{:?}|{dudv}", material_signature(&m.base), m.extension.params);
+                                    MapMaterial::Refraction(current.canonical_refractions.entry(sig).or_insert_with(|| h.clone()).clone())
+                                }
+                                None => s.material.clone(),
+                            },
+                        };
+                        let merged = mesh_assets.get(&s.mesh).and_then(|mesh| {
+                            let layout = crate::merge::layout_of(mesh)?;
+                            let key = crate::merge::BatchKey { cell: key, material: material.id(), casts_shadow, layout };
+                            current.batches.batch(key, &material).push(mesh, &world, layout).then_some(())
+                        });
+                        if merged.is_none() {
+                            let tf = Transform::from_matrix(Mat4::from(world));
+                            let mut e = commands.spawn((Mesh3d(s.mesh.clone()), tf, ChildOf(cell)));
+                            s.material.insert(&mut e);
+                            if !casts_shadow {
+                                e.insert(bevy::light::NotShadowCaster);
                             }
-                        }
-                        None => {
-                            let scene = gltf.scenes.first().cloned().unwrap_or_default();
-                            commands.spawn((WorldAssetRoot(scene), at, ChildOf(cell)));
                         }
                     }
                 }
-                current.instances += placements.len();
+                None => {
+                    let scene = gltf.scenes.first().cloned().unwrap_or_default();
+                    commands.spawn((WorldAssetRoot(scene), at, ChildOf(cell)));
+                }
             }
-            Some(LoadState::Failed(_)) => {}
-            _ => still.push(m),
         }
+        built += 1;
+        if built >= 2 { break; }
     }
-    current.in_flight = still;
-
-    while current.in_flight.len() < MAX_MODELS_IN_FLIGHT && current.models.len() < manifest.models.len() {
-        let m = current.models.len();
-        let gltf: Handle<Gltf> = asset_server.load(model_path(&manifest.models[m]));
-        current.models.push(gltf);
-        current.in_flight.push(m);
+    let batches = std::mem::take(&mut current.batches);
+    for (key, batch) in batches.open.into_iter().chain(batches.ready) {
+        let Some(&cell) = current.contents.get(&key.cell) else { continue };
+        let material = batch.material.clone();
+        let Some(mesh) = batch.build() else { continue };
+        let mut e = commands.spawn((Mesh3d(mesh_assets_mut.add(mesh)), Transform::IDENTITY, ChildOf(cell)));
+        material.insert(&mut e);
+        if !key.casts_shadow { e.insert(bevy::light::NotShadowCaster); }
     }
-    if current.models.len() == manifest.models.len() && current.in_flight.is_empty() {
-        // Bake the merged surfaces into their cells.
-        let batches = std::mem::take(&mut current.batches);
-        let mut draws = 0;
-        for (key, batch) in batches.open.into_iter().chain(batches.ready) {
-            let Some(&cell) = current.cells.get(&key.cell) else { continue };
-            let material = batch.material.clone();
-            let Some(mesh) = batch.build() else { continue };
-            let mut e = commands.spawn((Mesh3d(mesh_assets_mut.add(mesh)), Transform::IDENTITY, ChildOf(cell)));
-            material.insert(&mut e);
-            if !key.casts_shadow {
-                e.insert(bevy::light::NotShadowCaster);
-            }
-            draws += 1;
-        }
-        info!("map {}: static surfaces merged into {draws} meshes", manifest.map);
-        current.spawned = true;
-        info!("map {}: all {} models placed", manifest.map, manifest.models.len());
+    let ready = current.wanted_cells.iter().all(|k| current.contents.contains_key(k));
+    if ready && !current.spawned {
+        info!("map {}: {} of {} cells resident, {} of {} models loaded", current.name, current.contents.len(), current.by_cell.len(), current.models.len(), manifest.models.len());
     }
+    current.spawned = ready;
+    current.instances = current.contents.keys().map(|k| current.by_cell[k].len()).sum();
 }
 
 /// Map surfaces smaller than this (largest extent, world units) cast no shadow.
@@ -422,6 +460,14 @@ pub const CELL: f32 = 24.0;
 ///   animations went off and on as a free camera looked around ("ca fait
 ///   clignoter les choses quand on regarde en camera libre").
 pub const CULL_DISTANCE: f32 = 50.0;
+/// Prefetch outside the drawn area; release farther out to avoid boundary churn.
+pub const LOAD_DISTANCE: f32 = 70.0;
+pub const UNLOAD_DISTANCE: f32 = 90.0;
+
+fn cell_distance((x, z): (i32, i32), focus: Vec3) -> f32 {
+    let min = Vec2::new(x as f32 * CELL, z as f32 * CELL);
+    focus.xz().distance(focus.xz().clamp(min, min + Vec2::splat(CELL)))
+}
 
 fn cell_of(p: Vec3) -> (i32, i32) {
     ((p.x / CELL).floor() as i32, (p.z / CELL).floor() as i32)
@@ -458,9 +504,7 @@ pub fn cull_cells(
     let ground = manifests.get(&current.manifest).map(|m| m.center[1]).unwrap_or(0.0);
     let focus = camera_focus(cam, players.iter().next().map(|p| p.translation()), ground);
     for (&(x, z), &e) in &current.cells {
-        let min = Vec2::new(x as f32 * CELL, z as f32 * CELL);
-        let nearest = Vec2::new(focus.x, focus.z).clamp(min, min + Vec2::splat(CELL));
-        let near = nearest.distance(Vec2::new(focus.x, focus.z)) <= CULL_DISTANCE;
+        let near = cell_distance((x, z), focus) <= CULL_DISTANCE;
         let Ok(mut v) = cells.get_mut(e) else { continue };
         let wanted = if near { Visibility::Inherited } else { Visibility::Hidden };
         if *v != wanted {

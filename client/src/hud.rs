@@ -4,6 +4,9 @@ use bevy::diagnostic::{DiagnosticsStore, EntityCountDiagnosticsPlugin, FrameTime
 use bevy::prelude::*;
 
 mod render_audit;
+mod frame_profile;
+mod shadow_profile;
+pub(crate) use frame_profile::FrameSpan;
 
 use crate::map::CurrentMap;
 
@@ -14,13 +17,17 @@ pub struct HudPlugin;
 
 impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
+        frame_profile::install(app);
+        if crate::flag("gpuprofile") { app.add_plugins(shadow_profile::ShadowProfilePlugin); }
         app.add_systems(Startup, spawn_hud)
             .add_systems(Update, update_hud)
             .add_systems(Last, render_audit::snapshot.run_if(|| crate::flag("renderaudit")))
             .add_systems(First, cpu_frame_start)
+            .add_systems(First, frame_profile::sample.run_if(|| crate::flag("frameprofile")))
             .add_systems(Last, cpu_main_end);
         if let Some(render) = app.get_sub_app_mut(bevy::render::RenderApp) {
             render.add_systems(bevy::render::Render, cpu_render_end.in_set(bevy::render::RenderSystems::Cleanup));
+            frame_profile::install_render(render);
         }
     }
 }
@@ -32,6 +39,7 @@ mod cpu {
     use std::sync::atomic::{AtomicU64, Ordering};
     static START: AtomicU64 = AtomicU64::new(0);
     pub static MAIN: AtomicU64 = AtomicU64::new(0);
+    pub static RAW_MAIN: AtomicU64 = AtomicU64::new(0);
     pub static TOTAL: AtomicU64 = AtomicU64::new(0);
     pub fn now() -> f64 {
         #[cfg(target_arch = "wasm32")]
@@ -65,6 +73,7 @@ fn cpu_frame_start() {
     cpu::start();
 }
 fn cpu_main_end() {
+    cpu::RAW_MAIN.store(cpu::since_start().to_bits(), std::sync::atomic::Ordering::Relaxed);
     cpu::store(&cpu::MAIN, cpu::since_start());
 }
 fn cpu_render_end() {
