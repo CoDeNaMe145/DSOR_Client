@@ -1146,7 +1146,11 @@ fn update_slots(
         commands.entity(e).despawn_related::<Children>();
         if let Some(id) = &want {
             let [l, t, r, b] = s.rect;
-            let inset = 4.0;
+            // The SlotButton (32 px) is its frame's size (Iconslots/SlotsMiddle):
+            // the icon fills it but for the frame's 1 px edge.
+            // FAILURE (2026-10-17): inset 4 px, the icons were 24 px in 32 px
+            // slots ("ils fit pas la case").
+            let inset = 1.0;
             let (l, t, r, b) = (l + inset, t + inset, r - inset, b - inset);
             let art = Art {
                 tex: None,
