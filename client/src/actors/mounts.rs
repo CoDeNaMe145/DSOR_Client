@@ -11,7 +11,7 @@
 //! Here: while a holder has a ride effect, its mount model (_Template_Mount
 //! Graphics with its CharacterSet, crate::actors::monsters::spawn_model) stands
 //! under it, playing its anim set's Idle or Run with the rider; the rider sits on
-//! the mount's `Saddle` joint and plays the same anim set -- its Idle / Run clips
+//! the mount's `mount` joint and plays the same anim set -- its Idle / Run clips
 //! have rider twins of the same name in the uniskel skeletons
 //! (mount_idle_polarbear_01-loop in both polarbear.glb and uniskel/__animations).
 //! The local player walks RUN_SPEED + the bonus (the server's speed: RunSpeed 5,
@@ -59,6 +59,10 @@ pub struct Riding {
     run_speed: f32,
 }
 
+/// A mount model, following its rider (follow_riders).
+#[derive(Component)]
+struct MountOf(Entity);
+
 /// Ride events not applied yet: their holder or the tables not in.
 #[derive(Default)]
 struct Pending(Vec<(u32, u16, u32, bool, f32)>);
@@ -73,6 +77,7 @@ impl Plugin for MountsPlugin {
                 commands.insert_resource(Data(assets.load("characters/mounts.json")));
             })
             .add_systems(Update, apply_rides)
+            .add_systems(PostUpdate, follow_riders.before(TransformSystems::Propagate))
             .add_systems(PostUpdate, seat_riders.after(TransformSystems::Propagate));
     }
 }
@@ -90,16 +95,35 @@ fn apply_rides(
     actors: Query<(Entity, Option<&LocalPlayer>, Option<&RemotePlayer>), With<Character>>,
     mut riders: Query<(&mut Character, Option<&Riding>)>,
     mut pending: Local<Pending>,
-    mut tested: Local<bool>,
+    mut tested: Local<(u8, f32)>,
 ) {
     let now = time.elapsed_secs();
     if let Some(mut net) = net {
-        // DSOR_TEST_MOUNT=<ride effect id>: the offline player rides it (screenshots).
-        if net.offline && !*tested {
+        // DSOR_TEST_MOUNT=<ride effect id>: the offline player gets the server's
+        // sequence (customization.py): the cast effect (cast_*, 2.4 s), then the
+        // ride, then the cast's removal (screenshots).
+        if net.offline && tested.0 < 2 {
             if let (Ok(ride), Some(table)) = (std::env::var("DSOR_TEST_MOUNT"), skills.as_ref().and_then(|s| statuses.get(s.status()))) {
-                if let (Some(index), Some(local)) = (table.0.iter().find(|(_, d)| d.id == ride).map(|(i, _)| *i), net.local_actor) {
-                    *tested = true;
-                    net.mount_events.push((local, index as u16, 1, true));
+                let find = |id: &str| table.0.iter().find(|(_, d)| d.id == id).map(|(i, _)| *i as u16);
+                let cast = ride.replacen("ride_", "cast_", 1);
+                if let (Some(ride_index), Some(local)) = (find(&ride), net.local_actor) {
+                    let event = |index: u16, instance: u32, seconds: f32| crate::network::net::StatusEvent { holder: local, index, instance, seconds, removed: false };
+                    if tested.0 == 0 && now > 3.0 {
+                        tested.0 = 1;
+                        tested.1 = now;
+                        if let Some(c) = find(&cast) {
+                            net.mount_events.push((local, c, 1, true));
+                            net.status_events.push(event(c, 1, 3.5));
+                        }
+                    } else if tested.0 == 1 && now - tested.1 >= 3.5 {
+                        tested.0 = 2;
+                        net.mount_events.push((local, ride_index, 2, true));
+                        net.status_events.push(event(ride_index, 2, 24840.0));
+                        if let Some(c) = find(&cast) {
+                            net.mount_events.push((local, c, 1, false));
+                            net.status_events.push(crate::network::net::StatusEvent { removed: true, ..event(c, 1, 3.5) });
+                        }
+                    }
                 }
             }
         }
@@ -135,7 +159,13 @@ fn apply_rides(
                 continue;
             };
             let model = spawn_model(&mut commands, &assets, &mount.graphics, &mount.set, &mount.anim_set, mount.dye);
-            commands.entity(model).insert((Name::new(format!("mount {}", def.mount)), ChildOf(entity)));
+            // CONTRACT: not a child of its rider. crate::actors::character binds
+            //   every skinned mesh under a character to the character's own
+            //   skeleton (keep_parts_bound): under the rider, the mount's skin was
+            //   rebound to dead joints and drawn nowhere, or where they had been.
+            // FAILURE (2026-10-16): "les montures sont invisibles", "le tigre est
+            //   coince a un point de la map".
+            commands.entity(model).insert((Name::new(format!("mount {}", def.mount)), MountOf(entity)));
             commands.entity(entity).try_insert(Riding { instance, bonus: def.movement_bonus, model, run_speed: mount.run_speed });
             character.riding = Some(mount.anim_set.clone());
             info!("{holder:#x} rides {} (+{} speed)", def.mount, def.movement_bonus);
@@ -150,6 +180,33 @@ fn apply_rides(
         }
     }
     pending.0 = keep;
+}
+
+/// Each mount where its rider stands, facing its way; gone with its rider.
+fn follow_riders(
+    mut commands: Commands,
+    riders: Query<(&Transform, Option<&ChildOf>, Option<&Riding>), Without<MountOf>>,
+    parents: Query<&GlobalTransform>,
+    mut mounts: Query<(Entity, &MountOf, &mut Transform)>,
+) {
+    for (e, of, mut tf) in &mut mounts {
+        let Ok((rider, parent, riding)) = riders.get(of.0) else {
+            commands.entity(e).try_despawn();
+            continue;
+        };
+        if riding.is_none_or(|r| r.model != e) {
+            commands.entity(e).try_despawn();
+            continue;
+        }
+        let at = match parent.and_then(|p| parents.get(p.parent()).ok()) {
+            Some(p) => Transform::from_matrix((p.affine() * rider.to_matrix()).into()),
+            None => *rider,
+        };
+        let at = at.with_scale(Vec3::ONE);
+        if *tf != at {
+            *tf = at;
+        }
+    }
 }
 
 /// The rider on the saddle, the mount running or standing with it.

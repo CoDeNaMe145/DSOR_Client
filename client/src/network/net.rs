@@ -250,6 +250,9 @@ pub struct StatusEvent {
     pub index: u16,
     pub instance: u32,
     pub seconds: f32,
+    /// An element without details: the instance's removal (DSOR_Server
+    /// local_mount_state.py: `has_details=bool(active)`), not a new start.
+    pub removed: bool,
 }
 
 /// A ground effect (NewLocationEffectCommand 64): it stays where it is placed.
@@ -1324,6 +1327,7 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
                     index: e.index,
                     instance: e.instance,
                     seconds: e.duration as f32 / 25.0,
+                    removed: e.tail.is_none(),
                 });
             }
         }

@@ -2122,7 +2122,7 @@ fn status_visuals(
     statuses: Res<Assets<StatusTable>>,
     seqs: Res<Assets<SequenceTable>>,
     actors: Query<(Entity, Option<&LocalPlayer>, Option<&RemotePlayer>, Option<&crate::actors::npc::Npc>)>,
-    mut visuals: Query<(Entity, &StatusVisual)>,
+    mut visuals: Query<(Entity, &mut StatusVisual)>,
     mut players: Query<&mut SequencePlayer>,
     mut by_name: Local<HashMap<String, u32>>,
     mut tested: Local<bool>,
@@ -2171,6 +2171,16 @@ fn status_visuals(
         named = std::mem::take(&mut net.named_status_events);
     }
     net_events.extend(pending_test.drain(..));
+    // A removal ends its instance's visual (its end sequence plays next frame,
+    // above). FAILURE (2026-10-16): read as a start, the mount cast's removal
+    // (sent twice with the ride) began the summoning effect again.
+    for ev in status_events.iter().filter(|e| e.removed) {
+        for (_, mut v) in visuals.iter_mut() {
+            if v.key == (ev.holder, ev.instance) {
+                v.ends = Some(now);
+            }
+        }
+    }
     let actor_entity = |id: u32| {
         actors.iter().find_map(|(e, l, r, n)| {
             (l.is_some_and(|l| l.actor == id) || r.is_some_and(|r| r.actor == id) || n.is_some_and(|n| n.actor == id)).then_some(e)
@@ -2218,6 +2228,7 @@ fn status_visuals(
         start(&mut commands, def, (holder, instance), Some(e), e, Some(seconds));
     }
     for ev in status_events {
+        if ev.removed { continue; }
         let Some(def) = table.0.get(&(ev.index as u32)) else { continue };
         let Some(holder) = actor_entity(ev.holder) else { continue };
         start(&mut commands, def, (ev.holder, ev.instance), Some(holder), holder, Some(ev.seconds));
