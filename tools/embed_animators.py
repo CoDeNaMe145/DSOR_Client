@@ -40,7 +40,8 @@ def string(d, i):
 
 
 def sprite_nodes(d):
-    """Names of transform nodes flagged as sprites (n3 tag "RPSS" = 1): Nebula turns
+    """Names of transform nodes flagged as sprites (n3 tag "RPSS" = 1) or billboards
+    ("BLBS" = 1): Nebula turns
     them to face the viewer. EVIDENCE: mage_frostnova auraSprite carries it, its
     plane child sits 4.7 units down its -Z; drawn unturned, the nova's aura stood
     beside the caster instead of over them."""
@@ -58,7 +59,13 @@ def sprite_nodes(d):
         end = d.find(b"DNM", i)
         end = len(d) if end < 0 else end
         j = d.find(b"RPSS", i, end)
-        if j >= 0 and d[j + 4] == 1:
+        # A billboard ("BLBS" = 1, SBLB read backwards) faces the viewer too.
+        # EVIDENCE: t000_general/exit_general_colors_01 pPlane2 carries it; its
+        # child is a 3.4 x 14 vertical glow (p_glow_4_blue), the light over an
+        # exit arrow -- drawn unturned it showed as a flat plate from the side
+        # ("y'a un genre de plane sur le FX").
+        k = d.find(b"BLBS", i, end)
+        if (j >= 0 and d[j + 4] == 1) or (k >= 0 and d[k + 4] == 1):
             out.add(name)
         at = i
 
