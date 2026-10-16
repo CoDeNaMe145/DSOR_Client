@@ -670,7 +670,10 @@ pub(super) fn keyboard(keys: Res<ButtonInput<KeyCode>>, mut windows: Windows, mu
             }
             return;
         }
-        let top = windows.iter().filter(|(_, w, _, v, _)| *v != Visibility::Hidden && is_menu(&w.0))
+        // The map overlay (Tab) stays: Escape is not its key.
+        // FAILURE (2026-10-17): "dans la mini map quand je fais echap ca la ferme
+        //   alors que ca devrait pas".
+        let top = windows.iter().filter(|(_, w, _, v, _)| *v != Visibility::Hidden && is_menu(&w.0) && w.0 != "locationmap")
             .max_by(|a, b| a.4.translation.z.total_cmp(&b.4.translation.z)).map(|(e, _, _, _, _)| e);
         if let Some(top) = top {
             if let Ok((_, _, _, mut v, _)) = windows.get_mut(top) { *v = Visibility::Hidden; }

@@ -44,7 +44,7 @@ mod local_map;
 mod selection;
 #[cfg(not(target_arch = "wasm32"))]
 mod replay;
-pub(crate) use local_map::{MapIcon, MapMarkers, MapSettings};
+pub(crate) use local_map::{MapIcon, MapLabel, MapMarkers, MapSettings};
 use controls::{Element, Gate, WindowControls};
 pub(crate) use controls::SkillClicks;
 

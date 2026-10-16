@@ -39,6 +39,9 @@ pub struct ExitRow {
     /// DirectX row-major 4x4 (the last row is the position): glam's column-major
     /// layout read as is, like the map's NPC placements.
     pub m: [f32; 16],
+    /// Its location-map symbol (_Instance_InteractExit LocationMapIcon).
+    #[serde(default)]
+    pub icon: String,
 }
 
 #[derive(Asset, TypePath, Deserialize, Debug)]
@@ -131,12 +134,16 @@ fn spawn_exits(
     for row in list.0.iter().filter(|r| r.event == -1) {
         let tf = Transform::from_matrix(Mat4::from_cols_array(&row.m));
         let scene = assets.load(GltfAssetLabel::Scene(0).from_asset(model_path(&row.graphics)));
+        let icon = if row.icon.is_empty() { "ui/icon_map_exit".to_owned() } else { row.icon.clone() };
         commands.spawn((
             Name::new(format!("exit {} -> {}", row.name, row.url)),
             Exit { row: row.clone(), at: tf.translation },
             WorldAssetRoot(scene),
             tf,
             ChildOf(root),
+            // On the location map: its door, named after where it leads.
+            crate::ui::MapIcon(icon),
+            crate::ui::MapLabel(row.url.clone()),
         ));
         drawn += 1;
     }

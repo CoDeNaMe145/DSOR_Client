@@ -26,7 +26,7 @@ import json, os, sqlite3, struct, sys
 
 export, assets = sys.argv[1], sys.argv[2]
 
-COLUMNS = ["Id", "Name", "ExitURL", "EntryName", "Graphics", "PickingRange", "EventSetRow", "Transform"]
+COLUMNS = ["Id", "Name", "ExitURL", "EntryName", "Graphics", "PickingRange", "EventSetRow", "Transform", "LocationMapIcon"]
 
 maps = 0
 exits = 0
@@ -39,7 +39,7 @@ for name in sorted(os.listdir(os.path.join(export, "maps"))):
     except sqlite3.Error:
         continue
     out = []
-    for rid, iname, url, entry, graphics, picking, event, transform in rows:
+    for rid, iname, url, entry, graphics, picking, event, transform, icon in rows:
         if not transform or len(transform) != 64 or not url or not graphics:
             continue
         out.append({
@@ -51,6 +51,8 @@ for name in sorted(os.listdir(os.path.join(export, "maps"))):
             "range": float(picking or 0.0),
             "event": int(event if event is not None else -1),
             "m": [round(v, 5) for v in struct.unpack("<16f", transform)],
+            # Its symbol on the location map (ui/icon_map_exit, a travel point's).
+            "icon": (icon or "").replace("\\", "/"),
         })
     if not out:
         continue

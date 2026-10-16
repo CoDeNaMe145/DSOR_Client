@@ -4,7 +4,7 @@ use super::*;
 use crate::world::nav::{CurrentNav, NavMesh};
 
 mod markers;
-pub(crate) use markers::{MapIcon, MapMarkers};
+pub(crate) use markers::{MapIcon, MapLabel, MapMarkers};
 pub(super) use markers::update as update_markers;
 
 #[derive(Resource, serde::Serialize, Deserialize)]

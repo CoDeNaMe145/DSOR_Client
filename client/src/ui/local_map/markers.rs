@@ -5,6 +5,11 @@ use dsor_proto::commands::{actors::NpcInfo, ServerCommand};
 #[derive(Component, Clone, Default)]
 pub(crate) struct MapIcon(pub String);
 
+/// A map id written under a source's symbol (an exit: where it leads), as the
+/// map's caption (interface/maps.names.json).
+#[derive(Component, Clone, Default)]
+pub(crate) struct MapLabel(pub String);
+
 #[derive(Clone, Copy, Default)]
 struct Faction { id: u32, pvp: bool }
 
@@ -274,6 +279,8 @@ pub(in crate::ui) fn update(
         Option<&crate::network::net::RemotePlayer>, Option<&crate::actors::monsters::Monster>, Has<crate::network::net::LocalPlayer>, Option<&crate::actors::character::CharacterAnim>),
         (Without<Marker>, Or<(With<MapIcon>, With<crate::network::net::RemotePlayer>, With<crate::network::net::LocalPlayer>)>)>,
     mut markers: Query<(Entity, &mut Marker, &mut Transform, &mut Mesh2d, &mut MeshMaterial2d<UiMaterial>)>,
+    labels: Query<&MapLabel>,
+    (loaded, names): (Option<Res<crate::ui::Loaded>>, Res<Assets<super::MapNames>>),
     net: Option<NonSend<crate::network::net::Net>>,
     assets: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -317,9 +324,24 @@ pub(in crate::ui) fn update(
             marker.style = style;
         }
     }
+    let names = loaded.as_ref().and_then(|l| names.get(&l.map_names));
     for (target, (style, transform)) in wanted {
+        let half = style.size as f32 * 0.5;
         let (mesh, mat) = art(&style);
-        commands.spawn((Marker { target, style }, Mesh2d(mesh), MeshMaterial2d(mat), transform,
-            Visibility::Inherited, RenderLayers::layer(LAYER), ChildOf(parent)));
+        let marker = commands.spawn((Marker { target, style }, Mesh2d(mesh), MeshMaterial2d(mat), transform,
+            Visibility::Inherited, RenderLayers::layer(LAYER), ChildOf(parent))).id();
+        // UNVERIFIED: the caption's font, size and place (under the symbol).
+        if let (Ok(label), Some(names)) = (labels.get(target), names) {
+            commands.spawn((
+                Text2d::new(names.caption(&label.0)),
+                TextFont { font: assets.load("fonts/tahoma.ttf").into(), font_size: bevy::text::FontSize::Px(13.0), ..default() },
+                TextColor(Color::WHITE),
+                // The marker layer is y-flipped (its art's y runs down): the text
+                // is flipped back, and +y is below the symbol.
+                Transform::from_xyz(0.0, half + 8.0, 0.1).with_scale(Vec3::new(1.0, -1.0, 1.0)),
+                RenderLayers::layer(LAYER),
+                ChildOf(marker),
+            ));
+        }
     }
 }
