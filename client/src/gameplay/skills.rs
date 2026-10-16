@@ -290,6 +290,14 @@ impl SkillData {
     }
 }
 
+/// An actor a sequence's hide track is hiding (a dead one for good). Distance
+/// culling (crate::actors::npc::cull_actors) leaves its visibility alone.
+/// FAILURE (2026-10-16): cull_actors showed the Bony Gnasher again the frame after
+///   its death sequence hid it (tick 75); hidden, its animation had been stopped,
+///   so its Death clip started over ("2x l'anim de mort").
+#[derive(Component)]
+pub struct SequenceHidden;
+
 /// One sequence playing: on an actor (its animation, effects that follow it) or on
 /// its own anchor entity (a bullet, a point on the ground).
 #[derive(Component)]
@@ -1611,6 +1619,9 @@ fn play_sequences(
                         if let Some(Ok(mut v)) = p.actor.map(|a| visibility.get_mut(a)) {
                             *v = Visibility::Hidden;
                         }
+                        if let Some(a) = p.actor {
+                            commands.entity(a).try_insert(SequenceHidden);
+                        }
                     }
                     Track::Phase { .. } | Track::Sound { .. } | Track::Anim { .. } | Track::Color { .. } | Track::Character { .. } => {}
                 }
@@ -1654,6 +1665,9 @@ fn play_sequences(
                         let dead = p.actor.and_then(|a| anims.get(a).ok()).is_some_and(|a| a.dead);
                         if let (false, Some(Ok(mut v))) = (dead, p.actor.map(|a| visibility.get_mut(a))) {
                             *v = Visibility::Inherited;
+                        }
+                        if let (false, Some(a)) = (dead, p.actor) {
+                            commands.entity(a).try_remove::<SequenceHidden>();
                         }
                     }
                     _ => {}

@@ -581,7 +581,7 @@ fn cull_actors(
     manifests: Res<Assets<crate::world::map::MapManifest>>,
     cameras: Query<&GlobalTransform, (With<Camera3d>, Without<crate::rendering::highlight::HighlightCamera>)>,
     players: Query<&GlobalTransform, With<crate::network::net::LocalPlayer>>,
-    mut actors: Query<(&GlobalTransform, &mut Visibility, Option<&NpcVisualPending>), Or<(With<Npc>, With<crate::network::net::RemotePlayer>)>>,
+    mut actors: Query<(&GlobalTransform, &mut Visibility, Option<&NpcVisualPending>), (Or<(With<Npc>, With<crate::network::net::RemotePlayer>)>, Without<crate::gameplay::skills::SequenceHidden>)>,
 ) {
     let Ok(cam) = cameras.single() else { return };
     let ground = current.as_ref().and_then(|c| manifests.get(&c.manifest)).map(|m| m.center[1]).unwrap_or(0.0);
