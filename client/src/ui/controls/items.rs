@@ -209,6 +209,19 @@ pub fn input(mut ui:ResMut<Interaction>,mut pointer:ResMut<Pointer>,mut windows:
     ui.split=None;pointer.item_command=None;
     let hovered=windows.iter().filter(|(_,n,_,v,_)|n.0=="inventory" && **v!=Visibility::Hidden)
         .find_map(|(e,_,c,_,_)|c.hovered.and_then(|b|match c.buttons[b].action {Action::Item(cell)=>Some((e,cell)),_=>None}));
+    // A right click uses the item under the cursor: a mount is called (or sent
+    // away), equipment is put on or taken off -- as a double click does.
+    if mouse.just_pressed(MouseButton::Right) && !busy {
+        if let Some((root,cell))=hovered {
+            let (_,_,c,_,_)=windows.get(root).unwrap();
+            let class=["warrior","mage","ranger","dwarf"][c.spells.class.min(3) as usize];
+            if let Some(id)=place(cell,c).and_then(|p|net.inventory.at(p)).map(|i|i.id) {
+                if let Some(cmd)=equip_toggle(&net.inventory,catalog,id,net.level.unwrap_or(1),class) {
+                    net.send(&cmd);ui.pending=Some((net.inventory.revision,time.elapsed_secs_f64()));
+                }
+            }
+        }
+    }
     if mouse.just_pressed(MouseButton::Left) {
         ui.drag=None;
         if let (false,Some((root,cell)),Some(p))=(busy,hovered,point) {

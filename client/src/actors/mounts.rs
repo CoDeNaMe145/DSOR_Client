@@ -16,7 +16,7 @@
 //! (mount_idle_polarbear_01-loop in both polarbear.glb and uniskel/__animations).
 //! The local player walks RUN_SPEED + the bonus (the server's speed: RunSpeed 5,
 //! then MovementBonus on top, gameplay/player_combat_stats.py).
-//! UNVERIFIED: the rider's attachment is taken as the Saddle joint's transform
+//! UNVERIFIED: the rider's attachment is taken as the `mount` joint's transform
 //!   (position and rotation) in the mount's frame; the client code that seats
 //!   the rider was not traced.
 
@@ -171,7 +171,11 @@ fn seat_riders(
         if (mount_anim.speed - speed).abs() > 1e-3 {
             mount_anim.speed = speed;
         }
-        let (Some(saddle), Some(skeleton)) = (bones.0.get("Saddle").and_then(|s| globals.get(*s).ok()), character.skeleton_root()) else { continue };
+        // Every mount skeleton has a `mount` joint (polarbear, horse, mount_tiger...);
+        // only some also have a Saddle. FAILURE (2026-10-16): seated on Saddle
+        // alone, a tiger or horse rider stayed at the root ("je suis dans le sol").
+        let seat = bones.0.get("mount").or_else(|| bones.0.get("Saddle")).and_then(|s| globals.get(*s).ok());
+        let (Some(saddle), Some(skeleton)) = (seat, character.skeleton_root()) else { continue };
         let local = root.affine().inverse() * saddle.affine();
         if let Ok(mut tf) = transforms.get_mut(skeleton) {
             let seat = Transform::from_matrix(local.into());
