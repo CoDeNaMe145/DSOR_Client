@@ -317,6 +317,14 @@ pub struct SequencePlayer {
     rate: f32,
 }
 
+impl SequencePlayer {
+    /// Stable actor/anchor roots whose resident rig this sequence may use.
+    /// Keep a resident rig until cleanup even when `stop` has just been set.
+    pub(crate) fn visual_actors(&self) -> impl Iterator<Item = Entity> {
+        self.actor.into_iter().chain(std::iter::once(self.anchor))
+    }
+}
+
 /// A bullet in flight.
 #[derive(Component)]
 /// EVIDENCE (2018 client, static): GameBulletSkill::ComputeStraightPosition 0x8EEB6E
@@ -453,7 +461,7 @@ impl Plugin for SkillsPlugin {
                 Update,
                 (index_skills, cast_input.run_if(crate::loading::gameplay_ready), remote_skills, status_visuals, hold_for_status, test_cast, run_pending, carry_casters, fly_bullets, play_sequences, start_fx_animations, retire_effects, shake_camera, test_shot, test_view, debug_fx_positions)
                     .chain()
-                    .after(crate::net::NetSystems),
+                    .after(crate::net::NetSystems).after(crate::npc::NpcVisualSystems),
             );
         #[cfg(not(target_arch = "wasm32"))]
         app.add_systems(Update, vfx_preview.before(play_sequences).after(crate::net::NetSystems));
@@ -1185,7 +1193,7 @@ fn play_sequences(
     time: Res<Time>,
     assets: Res<AssetServer>,
     mut players: Query<(Entity, &mut SequencePlayer)>,
-    exists: Query<()>,
+    (exists, pending_visuals): (Query<()>, Query<(), With<crate::npc::NpcVisualPending>>),
     characters: Query<&Character>,
     model_bones: Query<&crate::character::ModelBones>,
     mut anims: Query<&mut CharacterAnim>,
@@ -1226,6 +1234,10 @@ fn play_sequences(
                 || remotes.get(a).is_ok_and(|r| r.still_for <= 0.0)
         }) && p.t > 0.1;
         let anchor_alive = exists.contains(p.anchor) && !interrupted;
+        // Keep real sequence time while an NPC rig is absent/loading, but defer
+        // attachment. One-shot bursts must expire rather than replay much later
+        // on re-entry; active looping tracks bind when their rig becomes ready.
+        let waiting_for_visual = p.visual_actors().any(|a| pending_visuals.contains(a));
         p.t += time.delta_secs() * p.rate;
         let mut frame = p.t * FPS;
         let length = p.seq.length.max(1) as f32;
@@ -1240,6 +1252,7 @@ fn play_sequences(
             }
         }
         let done = p.stop || !anchor_alive || (!p.looping && frame > length);
+        if waiting_for_visual && !done { continue; }
         for i in 0..p.seq.tracks.len() {
             let track = p.seq.tracks[i].clone();
             let (start, end) = track.span();
@@ -2089,5 +2102,85 @@ fn hold_for_status(
             player.target = None;
             player.casting = player.casting.max(seconds);
         }
+    }
+}
+
+#[cfg(test)]
+mod npc_residency_tests {
+    use super::*;
+    use bevy::ecs::system::RunSystemOnce;
+    use std::time::Duration;
+
+    #[test]
+    fn status_sequence_waits_for_rig_then_attaches_to_joint_and_cleans_up() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default()))
+            .init_asset::<Gltf>().init_asset::<bevy::world_serialization::WorldAsset>()
+            .init_resource::<CameraShake>().init_resource::<crate::monsters::ShaderColors>()
+            .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(Duration::from_millis(100)))
+            .add_systems(Update, play_sequences);
+        let root = app.world_mut().spawn((Transform::default(), Visibility::Hidden, crate::npc::NpcVisualPending)).id();
+        let sequence = Sequence {
+            length: 100, repeat: true,
+            tracks: vec![Track::Fx { graphics: "tests/npc_residency_effect".into(), joint: "Hips".into(),
+                at: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0], start: 0, end: 100, curves: HashMap::new() }],
+        };
+        let player = app.world_mut().run_system_once(move |mut commands: Commands|
+            play_with(&mut commands, sequence.clone(), Some(root), root, true, true)).unwrap();
+        for _ in 0..3 { app.update(); }
+        let pending = app.world().get::<SequencePlayer>(player).unwrap();
+        assert!(pending.t > 0.0, "sequence deadlines must advance while attachment waits");
+        assert!(!pending.started[0] && pending.spawned[0].is_none());
+
+        let joint = app.world_mut().spawn((Transform::default(), ChildOf(root))).id();
+        app.world_mut().entity_mut(root).remove::<crate::npc::NpcVisualPending>()
+            .insert(crate::character::ModelBones([("Hips".into(), joint)].into_iter().collect()));
+        app.update();
+        let effect = app.world().get::<SequencePlayer>(player).unwrap().spawned[0].unwrap();
+        assert_eq!(app.world().get::<ChildOf>(effect).unwrap().parent(), joint,
+            "deferred attachment must use the real joint, not the actor-root fallback");
+
+        app.world_mut().entity_mut(root).insert(crate::npc::NpcVisualPending);
+        app.world_mut().get_mut::<SequencePlayer>(player).unwrap().stop = true;
+        app.update();
+        assert!(app.world().get_entity(player).is_err() && app.world().get_entity(effect).is_err(),
+            "status expiry must still clean up while visual readiness is pending");
+
+        // The status's separate end burst has no StatusVisual deadline owner.
+        // It must still end entirely while absent, without a deferred late FX.
+        let sequence = Sequence { length: 1, repeat: false,
+            tracks: vec![Track::Fx { graphics: "tests/npc_residency_status_end".into(), joint: "Hips".into(),
+                at: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0], start: 0, end: 1, curves: HashMap::new() }],
+        };
+        let expired = app.world_mut().run_system_once(move |mut commands: Commands|
+            play(&mut commands, sequence.clone(), Some(root), root, false)).unwrap();
+        app.update();
+        assert!(app.world().get_entity(expired).is_err(), "unloaded one-shot/end bursts must not replay on a later return");
+        assert_eq!(app.world_mut().query::<&FxModel>().iter(app.world()).count(), 0);
+
+        let sequence = Sequence { length: 100, repeat: true, tracks: Vec::new() };
+        let discarded = app.world_mut().run_system_once(move |mut commands: Commands|
+            play(&mut commands, sequence.clone(), Some(root), root, true)).unwrap();
+        app.world_mut().despawn(root);
+        app.update();
+        assert!(app.world().get_entity(discarded).is_err(), "discard must not leave a paused sequence behind");
+    }
+
+    #[test]
+    fn status_animation_received_without_a_rig_expires_before_reentry() {
+        let mut app = App::new();
+        app.insert_resource(Time::<()>::default()).init_resource::<StatusHolds>()
+            .add_systems(Update, hold_for_status);
+        let root = app.world_mut().spawn((CharacterAnim::default(), crate::npc::NpcVisualPending)).id();
+        app.world_mut().resource_mut::<StatusHolds>().0.push((root, "Stunned".into(), 1.0));
+        app.update();
+        assert_eq!(app.world().get::<CharacterAnim>(root).unwrap().state, AnimState::Named("Stunned".into()));
+        assert!(app.world().get::<Character>(root).is_none());
+        app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs(2));
+        app.update();
+        app.world_mut().run_system_once(move |mut commands: Commands|
+            crate::character::attach_character(&mut commands, root, crate::character::CharacterDesc::default())).unwrap();
+        assert_eq!(app.world().get::<CharacterAnim>(root).unwrap().state, AnimState::Idle,
+            "returning visuals must not replay an expired status");
     }
 }

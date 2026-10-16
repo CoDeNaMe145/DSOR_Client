@@ -423,6 +423,7 @@ fn simulate(
     cameras: Query<(&GlobalTransform, &bevy::camera::RenderTarget), (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
     mut emitters: Query<(&Emitter, &mut EmitterState, &GlobalTransform, &InheritedVisibility, Has<StopEmitting>)>,
 ) {
+    let _profile = crate::hud::FrameSpan::new("particles::simulate");
     let Some((cam, _)) = cameras.iter().find(|(_, target)| matches!(target, bevy::camera::RenderTarget::Window(_))) else { return };
     let eye = cam.translation();
     if crate::flag("noparticles") {
@@ -440,6 +441,7 @@ fn simulate(
             continue;
         }
         if !s.active {
+            let _warmup = crate::hud::FrameSpan::new("particles::warmup");
             // Entering range: start in the steady state, as precalc_time asks.
             s.active = true;
             s.time = 0.0;
@@ -479,6 +481,7 @@ fn draw(
     emitters: Query<(&Emitter, &EmitterState, &GlobalTransform, &InheritedVisibility)>,
     mut drawn: Local<Vec<bool>>,
 ) {
+    let _profile = crate::hud::FrameSpan::new("particles::draw");
     let Some((cam, _)) = cameras.iter().find(|(_, target)| matches!(target, bevy::camera::RenderTarget::Window(_))) else { return };
     let (right, up) = (cam.right().as_vec3(), cam.up().as_vec3());
     let mut buffers: Vec<Buffers> = (0..groups.list.len()).map(|_| Buffers::default()).collect();

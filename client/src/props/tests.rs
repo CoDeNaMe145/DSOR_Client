@@ -227,3 +227,12 @@ fn visual_states_choose_one_group_and_fall_back_for_missing_cooldown() {
     assert_eq!(selected_state("cooldown", &groups), "inactive");
     assert_eq!(selected_state("invalidstate", &groups), "invalidstate");
 }
+
+#[test]
+fn prop_residency_uses_a_buffer_and_ignores_height() {
+    assert!(prop_near(Vec3::new(69., 100., 0.), Vec3::ZERO, false));
+    assert!(!prop_near(Vec3::new(80., 0., 0.), Vec3::ZERO, false));
+    assert!(prop_near(Vec3::new(80., 0., 0.), Vec3::ZERO, true));
+    assert!(!prop_near(Vec3::new(91., 0., 0.), Vec3::ZERO, true));
+    assert!(prop_near(Vec3::new(91., 0., 0.), Vec3::new(40., 0., 0.), false));
+}

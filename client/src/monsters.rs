@@ -6,7 +6,7 @@
 //!   its CharacterSet an outfit (like the NPCs, crate::npc);
 //! - any other Graphics: a whole model holding every look of its rig (troll.glb:
 //!   troll, cyclops, gnob, golems...). Its CharacterSet is one of the model's skin
-//!   lists (`characters/<model>.sets.json`): only those skins are shown, with the
+//!   lists (`characters/<model>.sets.json`): only those skins are loaded, with the
 //!   set's body variation;
 //! - AnimSet: the rows of data/tables/anims.xml (`characters/monster_anims.json`),
 //!   looked up in the model's own clips.
@@ -35,7 +35,7 @@ use std::collections::HashMap;
 
 use bevy::animation::{AnimatedBy, AnimationTargetId};
 use bevy::asset::{io::Reader, AssetLoader, LoadContext};
-use bevy::gltf::{Gltf, GltfAssetLabel, GltfExtras};
+use bevy::gltf::{Gltf, GltfAssetLabel};
 use bevy::mesh::skinning::SkinnedMesh;
 use bevy::prelude::*;
 use bevy::world_serialization::WorldAssetRoot;
@@ -94,7 +94,7 @@ pub struct MonsterAnims(pub HashMap<String, HashMap<String, String>>);
 
 #[derive(Deserialize, Debug)]
 pub struct ModelSet {
-    pub skins: Vec<String>,
+    // Skin selection is applied by model_variant before glTF loading.
     #[serde(default)]
     pub variation: Vec<JointShape>,
 }
@@ -227,10 +227,6 @@ pub struct ShaderColors(pub Vec<(Entity, Vec4)>);
 /// Character): its dyes, and the HitColor its sequences flash.
 #[derive(Component, Default)]
 pub struct ActorMaterials(pub Vec<Handle<crate::surfaces::NebulaMaterial>>);
-
-/// Keeps the monster's model file loaded (see setup_models).
-#[derive(Component)]
-struct ModelFile(#[allow(dead_code)] Handle<Gltf>);
 
 /// A whole model waiting for its scene: skins, variation, animations.
 #[derive(Component)]
@@ -382,7 +378,7 @@ fn spawn_monsters(
             };
             spawn_character(&mut commands, desc, transform)
         } else {
-            let path = format!("{}.glb", t.graphics);
+            let path = crate::model_variant::path(&t.graphics, &t.set);
             let e = commands
                 .spawn((
                     transform,
@@ -455,7 +451,6 @@ fn setup_models(
     children: Query<&Children>,
     players: Query<(), With<AnimationPlayer>>,
     names: Query<&Name>,
-    extras: Query<&GltfExtras>,
     targets: Query<(), (With<AnimationTargetId>, Without<AnimatedBy>)>,
     skinned: Query<&SkinnedMesh>,
     joints: Query<(&Transform, Option<&ChildOf>)>,
@@ -484,16 +479,6 @@ fn setup_models(
         }
         let mut bones = HashMap::new();
         for d in children.iter_descendants(e) {
-            if let Some(set) = set {
-                let skin = extras
-                    .get(d)
-                    .ok()
-                    .and_then(|x| serde_json::from_str::<serde_json::Value>(&x.value).ok())
-                    .and_then(|v| v.get("dsor_skin").and_then(|s| s.as_str()).map(str::to_owned));
-                if skin.is_some_and(|s| !set.skins.contains(&s)) {
-                    commands.entity(d).insert(Visibility::Hidden);
-                }
-            }
             if let Ok(n) = names.get(d) {
                 bones.entry(n.as_str().to_owned()).or_insert(d);
             }
@@ -557,7 +542,7 @@ fn setup_models(
         // the next monster of its kind loaded it again, the reload replaced its
         // scene (AssetEvent::Modified), and bevy spawned every instance of it
         // anew, without its hidden skins.
-        commands.entity(e).insert((ModelBones(bones), ModelFile(setup.gltf.clone()))).remove::<ModelSetup>();
+        commands.entity(e).insert((ModelBones(bones), crate::model_variant::ResidentModel(setup.gltf.clone()))).remove::<ModelSetup>();
     }
 }
 

@@ -158,6 +158,7 @@ fn project_decals(
     mut settled: Local<u32>,
     parents: Query<&ChildOf>,
     map_roots: Query<(), With<crate::map::MapRoot>>,
+    chunks: Query<(), With<crate::map::MapChunk>>,
     mut plane: Local<Option<Handle<Mesh>>>,
     mut transforms: Query<&mut Transform>,
     globals: Query<&GlobalTransform>,
@@ -235,13 +236,14 @@ fn project_decals(
         }
     }
 
-    let mut batches: HashMap<Look, (Option<Handle<DecalMaterial>>, Option<Handle<StandardMaterial>>, Batch)> =
+    let mut batches: HashMap<(Look, Entity), (Option<Handle<DecalMaterial>>, Option<Handle<StandardMaterial>>, Batch)> =
         HashMap::new();
     for (entity, gt, volume, material) in &pending {
         if !parents.iter_ancestors(entity).any(|a| map_roots.contains(a)) {
             continue;
         }
         commands.entity(entity).insert(Projected);
+        let Some(parent) = parents.iter_ancestors(entity).find(|a| chunks.contains(*a)).or(current.root) else { continue };
         let to_world = gt.affine();
         let to_box = to_world.inverse();
         let (lo, hi) = world_aabb(&to_world, Vec3::splat(-0.5), Vec3::splat(0.5));
@@ -254,7 +256,7 @@ fn project_decals(
             None => (Look::Stretched(material.0.id()), None),
         };
         let batch = &mut batches
-            .entry(look)
+            .entry((look, parent))
             .or_insert_with(|| match &volume.tiling {
                 Some(t) => {
                     let alpha = std_materials.get(&material.0).map(|m| m.base_color.alpha()).unwrap_or(1.0);
@@ -341,9 +343,8 @@ fn project_decals(
         }
     }
 
-    let parent = current.root;
     let mut triangles = 0;
-    for (tiled, stretched, b) in batches.into_values() {
+    for ((_, parent), (tiled, stretched, b)) in batches {
         if b.indices.is_empty() {
             continue;
         }
@@ -367,9 +368,7 @@ fn project_decals(
             (None, Some(m)) => e.insert(MeshMaterial3d(m)),
             _ => continue,
         };
-        if let Some(p) = parent {
-            e.insert(ChildOf(p));
-        }
+        e.insert(ChildOf(parent));
     }
     info!("decals: {} boxes projected, {} triangles", pending.iter().count(), triangles);
 }

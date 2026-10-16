@@ -67,6 +67,20 @@ fn python_identity_encoding() {
         "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
     );
 }
+
+#[test]
+fn npc_sidecar_preserves_event_conditions_for_offline_population() {
+    let f = Fixture::new();
+    let db = rusqlite::Connection::open(&f.db).unwrap();
+    db.execute_batch("CREATE TABLE _Instance_EventSets(Id TEXT,EventFlags TEXT); INSERT INTO _Instance_EventSets VALUES('70','easter=False;'); UPDATE _Instance_NPC SET EventSetRow=70;").unwrap();
+    drop(db);
+    let s = f.open();
+    let documents = export::client_documents(&s).unwrap();
+    let npc = &documents["npcs.json"]["01010101010101010101010101010101"];
+    assert_eq!(npc["event"], 70);
+    assert_eq!(npc["event_flags"], "easter=False;");
+    assert_eq!(npc["id"], "guard");
+}
 #[test]
 fn rebuild_and_repeat_build_preserve_identity() {
     let f = Fixture::new();

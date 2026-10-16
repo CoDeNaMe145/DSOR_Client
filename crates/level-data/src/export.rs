@@ -38,7 +38,14 @@ pub fn client_documents(s: &Session) -> Result<Value> {
                 });
             }
             let guid = text(&row["Guid"]["$blob"]);
-            npcs[guid.to_uppercase()] = json!({"id":row["Id"],"m":m,"look":look});
+            let event = number(&row["EventSetRow"], -1.) as i32;
+            let mut npc = json!({"id":row["Id"],"m":m,"look":look,"event":event});
+            if let Some((_, set)) = object(&s.records["_Instance_EventSets"])
+                .find(|(_, set)| text(&set["Id"]).parse::<i32>().ok() == Some(event)
+                    || set["Id"].as_i64() == Some(event as i64)) {
+                npc["event_flags"] = json!(text(&set["EventFlags"]));
+            }
+            npcs[guid.to_uppercase()] = npc;
         }
         documents["npcs.json"] = npcs;
     }

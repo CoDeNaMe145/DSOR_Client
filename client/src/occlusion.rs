@@ -180,7 +180,8 @@ fn reveal_player(mut commands: Commands, ready: Res<ShadersReady>, time: Res<Tim
     mut occluded: Query<(Entity, &mut Occluded)>, mut raycast: MeshRayCast,
     standard: Res<Assets<StandardMaterial>>, surfaces: Res<Assets<NebulaMaterial>>,
     mut cutouts: ResMut<Assets<CutoutMaterial>>, mut surface_cutouts: ResMut<Assets<CutoutSurfaceMaterial>>) {
-    if !ready.0 { return; }
+    let _profile = crate::hud::FrameSpan::new("occlusion::reveal_player");
+    if !ready.0 || crate::flag("noocclusion") { return; }
     let view = players.single().ok().zip(cameras.single().ok().filter(|(cam, _)| cam.is_active))
         .map(|(player, (_, camera))| (player.translation(), camera.translation(), camera.right().as_vec3()));
     let mut hits = HashSet::new();

@@ -23,6 +23,8 @@ use bevy::asset::LoadContext;
 use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
 
+mod npc_shared;
+
 /// A Nebula decal: its mesh is the unit cube the texture is projected through
 /// (straight down its local Y) onto the ground inside it.
 ///
@@ -846,6 +848,7 @@ pub struct MaterialsPlugin;
 
 impl Plugin for MaterialsPlugin {
     fn build(&self, app: &mut App) {
+        npc_shared::install(app);
         // Scene components must be reflected to be instanced.
         app.register_type::<DecalVolume>().register_type::<DecalTiling>();
         app.register_type::<ShaderAnim>().register_type::<VarTrack>().register_type::<FacesViewer>();
