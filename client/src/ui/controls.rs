@@ -7,6 +7,7 @@ use bevy::input::keyboard::KeyboardInput;
 mod panels;
 pub(super) mod spells;
 pub(super) mod items;
+pub(super) mod sheet;
 
 /// Reference pixels, scaled by the same factor as the rest of the interface.
 const DRAG_HANDLE_HEIGHT: f32 = 32.0;

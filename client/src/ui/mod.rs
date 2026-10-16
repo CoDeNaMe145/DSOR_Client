@@ -485,7 +485,7 @@ impl Plugin for UiPlugin {
                 .before(bevy::sprite_render::check_entities_needing_specialization::<UiMaterial>))
             .add_systems(
                 Update,
-                ((dialogue::sync, spawn_windows, controls::sync_chat).chain(), controls::spells::sync, controls::items::sync, controls::keyboard, controls::interact, controls::spells::apply_drop, read_figures, controls::edit_text, controls::items::input, controls::order_windows, (update_fills, update_values, update_slots, (local_map::update, local_map::update_markers, local_map::appearance).chain()), controls::chat_rows, controls::paint, controls::items::render, (controls::spells::overlay, controls::items::overlay), show_hover_window, death_dialog).chain().before(crate::network::net::NetSystems).run_if(crate::screens::loading::gameplay_ready),
+                ((dialogue::sync, spawn_windows, controls::sync_chat).chain(), controls::spells::sync, controls::items::sync, controls::keyboard, controls::interact, controls::spells::apply_drop, read_figures, controls::edit_text, controls::items::input, controls::order_windows, (update_fills, update_values, update_slots, (local_map::update, local_map::update_markers, local_map::appearance).chain()), controls::chat_rows, controls::sheet::rows, controls::paint, controls::items::render, (controls::spells::overlay, controls::items::overlay), show_hover_window, death_dialog).chain().before(crate::network::net::NetSystems).run_if(crate::screens::loading::gameplay_ready),
             );
         #[cfg(not(target_arch = "wasm32"))]
         app.add_systems(PreUpdate, replay::run.after(bevy::input::InputSystems)

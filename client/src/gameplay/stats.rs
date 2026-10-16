@@ -116,6 +116,31 @@ impl AssetLoader for StatsLoader {
 #[derive(Resource, Default)]
 pub struct Sheet(pub HashMap<&'static str, String>);
 
+/// The character page's list (release261): its headlines, sub-headlines and
+/// attribute rows, in the client's order, with their texts as shown.
+/// EVIDENCE: dro_client64 (Ghidra dro_client64_2026) 0x1403c6574 fills the list:
+///   offensiveValuesHeadline, basedamage, attackspeedNew, criticalvalue (+ its
+///   attributePercentage), the class resource and its regeneration, movementSpeed
+///   (FUN_1405ce7c0(value, 1000): three decimals), finaldamageincreasevalue,
+///   elementDamageIncreaseSubHeadline + fire/ice/lightning/poison/light increases,
+///   defensiveValuesHeadline, healthPoints, hpRegen, blockvalue, riftforcevalue,
+///   resistenceAndAmorSubHeadline, armor, resistenceFire/Ice/Lightning/DarkMagic/
+///   Nature, otherValuesHeadline, xpgain, honordrop, andermant/coin/wisdom/materi
+///   drops; rows through 0x1403bdd30, headlines 0x1403bdf34.
+#[derive(Resource, Default, PartialEq, Clone)]
+pub struct SheetRows(pub Vec<SheetRow>);
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RowKind { Headline, SubHeadline, Attribute }
+
+#[derive(Clone, PartialEq, Debug)]
+pub struct SheetRow {
+    pub kind: RowKind,
+    pub label: String,
+    pub value: String,
+    pub right: String,
+}
+
 #[derive(Resource)]
 struct Data(Handle<StatsData>);
 
@@ -126,6 +151,7 @@ impl Plugin for StatsPlugin {
         app.init_asset::<StatsData>()
             .register_asset_loader(StatsLoader)
             .init_resource::<Sheet>()
+            .init_resource::<SheetRows>()
             .add_systems(Startup, |mut commands: Commands, assets: Res<AssetServer>| {
                 commands.insert_resource(Data(assets.load("characters/stats.json")));
             })
@@ -191,6 +217,8 @@ fn compute(
     time: Res<Time>,
     mut next: Local<f32>,
     mut sheet: ResMut<Sheet>,
+    mut rows_out: ResMut<SheetRows>,
+    riding: Query<&crate::actors::mounts::Riding, With<crate::network::net::LocalPlayer>>,
 ) {
     // Twice a second is plenty for a window of figures.
     *next -= time.delta_secs();
@@ -297,6 +325,54 @@ fn compute(
             _ => "DarkMagic_Percentage",
         };
         s.insert(key, pct((r / (curve.resistance_damage_reduction_value + r)).min(g("MaxResistanceDamageReduction"))));
+    }
+    // The release261 list (SheetRows).
+    // UNVERIFIED: the regenerations, damage increases, rift force and drop
+    //   bonuses read their attributes' initial values: worn items, talents and
+    //   buffs are not counted yet.
+    let mut rows = Vec::new();
+    let head = |rows: &mut Vec<SheetRow>, key: &str| rows.push(SheetRow { kind: RowKind::Headline, label: t(key), value: String::new(), right: String::new() });
+    let sub = |rows: &mut Vec<SheetRow>, key: &str| rows.push(SheetRow { kind: RowKind::SubHeadline, label: t(key), value: String::new(), right: String::new() });
+    let row = |rows: &mut Vec<SheetRow>, label: String, value: String, right: String| rows.push(SheetRow { kind: RowKind::Attribute, label, value, right });
+    let percent = |v: f32| fill(&t("percentageValue"), &[round(v).to_string()]);
+    let plus = |v: f32| fill(&t("percentageValuePlus"), &[round(v).to_string()]);
+    let rift = |v: f32| fill(&t("riftAttributePercentage"), &[fmt(v, 2)]);
+    let initial = |name: &str| d.attrs.get(name).map(|a| a[0]).unwrap_or(0.0);
+    head(&mut rows, "offensiveValuesHeadline");
+    row(&mut rows, t("basedamage"), s["BaseDamage"].clone(), String::new());
+    row(&mut rows, t("attackspeedNew"), fmt(speed.value(), 3), String::new());
+    row(&mut rows, t("criticalvalue"), s["CriticalHit"].clone(), s["CriticalHit_Percentage"].clone());
+    row(&mut rows, t(RESOURCE_KEYS[class]), round(max_resource.value()).to_string(), String::new());
+    let regen = ["rageRegen", "manaRegen", "concentrationRegen", "mechanicResourceRegen"][class];
+    row(&mut rows, t(regen), fmt(initial("SkillResourceRegeneration"), 2), String::new());
+    // RunSpeed 5 plus the MovementBonus of a ride (crate::actors::mounts).
+    let bonus = riding.iter().next().map_or(0.0, |r| r.bonus);
+    row(&mut rows, t("movementSpeed"), fmt(crate::network::net::RUN_SPEED + bonus, 3), String::new());
+    row(&mut rows, t("finaldamageincreasevalue"), rift(0.0), String::new());
+    sub(&mut rows, "elementDamageIncreaseSubHeadline");
+    for key in ["fireDamageIncrease", "iceDamageIncrease", "lightningDamageIncrease", "poisonDamageIncrease", "lightDamageIncrease"] {
+        row(&mut rows, t(key), rift(0.0), String::new());
+    }
+    head(&mut rows, "defensiveValuesHeadline");
+    row(&mut rows, t("healthPoints"), round(max_health.value()).to_string(), String::new());
+    row(&mut rows, t("hpRegen"), fmt(initial("HealthPointsRegeneration"), 2), String::new());
+    row(&mut rows, t("blockvalue"), s["BlockRating"].clone(), s["BlockRating_Percentage"].clone());
+    row(&mut rows, t("riftforcevalue"), rift(0.0), String::new());
+    sub(&mut rows, "resistenceAndAmorSubHeadline");
+    row(&mut rows, t("armor"), s["Armor"].clone(), s["Armor_Percentage"].clone());
+    for (label, widget) in [("resistenceFire", "Fire"), ("resistenceIce", "Ice"), ("resistenceLightning", "Lightning"),
+        ("resistenceDarkMagic", "DarkMagic"), ("resistenceNature", "Nature")] {
+        let pct_key: &str = match widget { "Fire" => "Fire_Percentage", "Ice" => "Ice_Percentage", "Lightning" => "Lightning_Percentage", "DarkMagic" => "DarkMagic_Percentage", _ => "Nature_Percentage" };
+        row(&mut rows, t(label), s[widget].clone(), s[pct_key].clone());
+    }
+    head(&mut rows, "otherValuesHeadline");
+    row(&mut rows, t("xpgain"), percent(initial("XPGain") * 100.0), String::new());
+    row(&mut rows, t("honordrop"), percent(initial("HonorGain") * 100.0), String::new());
+    for key in ["andermantdrop", "coindrop", "wisdomdrop", "materidrop"] {
+        row(&mut rows, t(key), plus(0.0), String::new());
+    }
+    if rows_out.0 != rows {
+        rows_out.0 = rows;
     }
     if sheet.0 != s {
         sheet.0 = s;
