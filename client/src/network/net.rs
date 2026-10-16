@@ -178,6 +178,10 @@ pub struct Net {
     /// MessageCommands (loot received, sudden death...), by actor; drained by
     /// crate::combat_text.
     pub messages: Vec<(u32, dsor_proto::commands::social::Message)>,
+    /// The notifications waiting in the column at the left of the screen
+    /// (NotificationCommand type 1), oldest first; answered ones leave
+    /// (crate::ui::controls::social).
+    pub notifications: Vec<dsor_proto::commands::social::NotificationEntry>,
     pub kills: Vec<(u32, dsor_proto::commands::combat::Kill)>,
     /// The same blows as (attacker, victim), for the attacker's bullet in flight to
     /// end on its victim (crate::gameplay::skills fly_bullets).
@@ -725,6 +729,7 @@ pub fn start_offline(world: &mut World, class: u8, gender: u8) {
         monster_health: Vec::new(),
         hits: Vec::new(),
         messages: Vec::new(),
+        notifications: Vec::new(),
         kills: Vec::new(),
         strikes: Vec::new(),
         death: default(),
@@ -948,6 +953,7 @@ pub(crate) fn start_session(world: &mut World, config: NetConfig) {
         monster_health: Vec::new(),
         hits: Vec::new(),
         messages: Vec::new(),
+        notifications: Vec::new(),
         kills: Vec::new(),
         strikes: Vec::new(),
         death: default(),
@@ -1420,6 +1426,14 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
                 }
                 net.player_deaths.push(a);
                 net.kills.push((a, k));
+            }
+        }
+        // Type 1 lists notifications to show; the same guid sent again replaces
+        // its entry (a reconnect resends what is still pending).
+        ServerCommand::Notification(n) if n.kind == 1 => {
+            for entry in n.entries {
+                net.notifications.retain(|e| e.guid != entry.guid);
+                net.notifications.push(entry);
             }
         }
         ServerCommand::ShowDeathDialog(_) => {

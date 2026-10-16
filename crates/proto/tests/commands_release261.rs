@@ -172,3 +172,24 @@ fn loot_received_message_decodes() {
     );
     assert_eq!(encode_single(&decoded[0].0, 1), (data, 304));
 }
+
+/// The answer to a notification, as DSOR_Server decode_notification_action reads
+/// it: 0x8B, id 136, type 2, the response, then the entry echoed (u8 kind, u16
+/// guid length + guid, three u32, the JSON, the timestamp).
+#[test]
+fn notification_response_matches_the_servers_decoder() {
+    use dsor_proto::commands::social::{Notification, NotificationEntry};
+    let entry = NotificationEntry {
+        note_type: 16, guid: (0..16).collect(), unknown_u32_0: 0, group_id: 0x06A7EB00, inviter_id: 0x06A7EB00,
+        params: "{}".into(), timestamp: "t".into(),
+    };
+    let (bytes, bits) = ClientCommand::Notification(Notification::response(1, entry)).encode();
+    let mut want = vec![0x8B, 136, 0, 2, 1, 16, 16, 0];
+    want.extend(0..16u8);
+    want.extend(0u32.to_le_bytes());
+    want.extend(0x06A7EB00u32.to_le_bytes());
+    want.extend(0x06A7EB00u32.to_le_bytes());
+    want.extend([2, 0, b'{', b'}', 1, 0, b't']);
+    assert_eq!(bytes, want);
+    assert_eq!(bits, want.len() * 8);
+}

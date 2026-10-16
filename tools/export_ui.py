@@ -382,6 +382,10 @@ print(f"skill icons: {len(icons)}")
 from pathlib import Path
 for source in sorted((Path(root) / "textures" / "ui").glob("icon_map_*.*")):
     tex.get("ui/" + source.stem)
+# The notification column's icons, chosen per NotificationType at run time
+# (UI::NotificationWidget, 2018 client 0x6CAE52).
+for source in sorted((Path(root) / "textures" / "ui").glob("icon_notifications_*.*")):
+    tex.get("ui/" + source.stem)
 for table in ("_Template_NPC", "_Template_StateObject"):
     for (brush,) in con.execute(f"SELECT DISTINCT LocationMapIcon FROM {table}"):
         if brush:

@@ -125,7 +125,12 @@ const INSTANT_RESPAWN_COST: u32 = 120;
 
 fn is_menu(name: &str) -> bool {
     MENU_WINDOWS.iter().any(|(n, _, _)| *n == name) || NAV_WINDOWS.contains(&name) || dialogue::WINDOWS.contains(&name) || name == "unstackwindow" || name == DEATH_WINDOW || name == CHAT_MENU
+        || SOCIAL_WINDOWS.iter().any(|(n, _)| *n == name)
 }
+
+/// The notification dialogs and the player menu (controls::social): closed until
+/// a notification or a middle click opens them; their depth.
+const SOCIAL_WINDOWS: [(&str, f32); 3] = [(controls::social::GROUP_DIALOG, 640.0), (controls::social::BOOKING_DIALOG, 630.0), (controls::social::CONTEXT_MENU, 660.0)];
 
 /// The chat window (crate::network::chat): full controls or a compact click-through
 /// preview, switched with V; and its
@@ -477,6 +482,7 @@ impl Plugin for UiPlugin {
             .init_resource::<Figures>()
             .init_resource::<controls::Pointer>()
             .init_resource::<SkillClicks>()
+            .init_resource::<controls::social::SocialUi>()
             .insert_resource(local_map::MapSettings::load())
             .add_systems(Startup, (setup, controls::items::setup, dialogue::setup))
             .add_systems(Update, (match_scene_camera, follow_screen).chain())
@@ -485,7 +491,7 @@ impl Plugin for UiPlugin {
                 .before(bevy::sprite_render::check_entities_needing_specialization::<UiMaterial>))
             .add_systems(
                 Update,
-                ((dialogue::sync, spawn_windows, controls::sync_chat).chain(), controls::spells::sync, controls::items::sync, controls::keyboard, controls::interact, controls::spells::apply_drop, read_figures, controls::edit_text, controls::items::input, controls::order_windows, (update_fills, update_values, update_slots, (local_map::update, local_map::update_markers, local_map::appearance).chain()), controls::chat_rows, controls::sheet::rows, controls::paint, controls::items::render, (controls::spells::overlay, controls::items::overlay), show_hover_window, death_dialog).chain().before(crate::network::net::NetSystems).run_if(crate::screens::loading::gameplay_ready),
+                ((dialogue::sync, spawn_windows, controls::sync_chat).chain(), controls::spells::sync, controls::items::sync, controls::keyboard, controls::interact, controls::spells::apply_drop, read_figures, controls::edit_text, controls::items::input, controls::order_windows, (update_fills, update_values, update_slots, (local_map::update, local_map::update_markers, local_map::appearance).chain()), controls::chat_rows, controls::sheet::rows, controls::paint, controls::items::render, (controls::spells::overlay, controls::items::overlay), show_hover_window, death_dialog, (controls::social::column, controls::social::context_menu, controls::social::answer, controls::social::dialogs).chain()).chain().before(crate::network::net::NetSystems).run_if(crate::screens::loading::gameplay_ready),
             );
         #[cfg(not(target_arch = "wasm32"))]
         app.add_systems(PreUpdate, replay::run.after(bevy::input::InputSystems)
@@ -535,6 +541,7 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>) {
     }
     loaded.layouts.push((assets.load(format!("interface/{DEATH_WINDOW}.ui.json")), 700.0, None));
     for name in dialogue::WINDOWS { loaded.layouts.push((assets.load(format!("interface/{name}.ui.json")), 380.0, None)); }
+    for (name, z) in SOCIAL_WINDOWS { loaded.layouts.push((assets.load(format!("interface/{name}.ui.json")), z, None)); }
     loaded.spawned = vec![false; loaded.layouts.len()];
     commands.insert_resource(loaded);
 }

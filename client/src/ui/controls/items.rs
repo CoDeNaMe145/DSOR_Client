@@ -64,7 +64,7 @@ impl AssetLoader for CatalogLoader {
     fn extensions(&self) -> &[&str] { &["items.json"] }
 }
 #[derive(Resource)]
-pub struct Data { catalog: Handle<Catalog>, tooltip: Handle<Layout> }
+pub struct Data { pub(in crate::ui) catalog: Handle<Catalog>, tooltip: Handle<Layout> }
 pub fn setup(mut commands: Commands, assets: Res<AssetServer>) {
     commands.insert_resource(Data { catalog: assets.load("interface/inventory.items.json"), tooltip: assets.load("interface/tooltip.ui.json") });
 }

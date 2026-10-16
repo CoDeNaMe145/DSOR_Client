@@ -129,30 +129,58 @@ impl NotificationEntry {
     }
 }
 
-/// NotificationCommand (145), server -> client: the invitee's popup.
+/// NotificationCommand (145; release261 136), both directions.
+/// Type 1, server -> client: the notifications to show (a u16 count, then entries).
+/// Type 2, client -> server: the answer to one of them -- a u8 response, then the
+///   entry echoed whole.
 /// EVIDENCE: reader 0xA1FB21: u8 type (1 carries notifications), then entries.
-///   SOURCE: dsor/groups.py encode_invite_notification, which writes type 1, a u16 1,
-///   then one entry.
-/// UNKNOWN: the u16 is read here as the entry count (the server only ever writes 1
-///   with one entry); the layout for types other than 1 is not established.
+///   Writer 0xA1FC71 (Commands::NotificationCommand::Encode): type 1 writes the u16
+///   count and the entries; type 2 the u8 at +0x14 then the one entry at +0x18.
+///   The response is Game::NotificationResponse::Code, passed through unchanged
+///   (0x564FC6 stores it at +0x14): the group-invite dialog 0x53E46E builds its
+///   confirm message with 1 and its cancel message with 2 (release261 0x14020C4F4
+///   the same, and 5 when already grouped).
+///   SOURCE: dsor/groups.py encode_invite_notification; DSOR_Server
+///   protocol/player_init_protocol.py _write_notification_body and
+///   protocol/reward_protocol.py decode_notification_action.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Notification {
     pub kind: u8,
+    /// Type 2 only: the answer (1 confirm, 2 cancel).
+    pub response: u8,
     pub entries: Vec<NotificationEntry>,
+}
+
+impl Notification {
+    /// The answer to one notification (type 2).
+    pub fn response(response: u8, entry: NotificationEntry) -> Self {
+        Self { kind: 2, response, entries: vec![entry] }
+    }
 }
 
 impl Body for Notification {
     fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
         let kind = r.u8()?;
+        if kind == 2 {
+            let response = r.u8()?;
+            return Ok(Self { kind, response, entries: vec![NotificationEntry::decode(r)?] });
+        }
         let n = r.u16()? as usize;
         let mut entries = Vec::with_capacity(n.min(64));
         for _ in 0..n {
             entries.push(NotificationEntry::decode(r)?);
         }
-        Ok(Self { kind, entries })
+        Ok(Self { kind, response: 0, entries })
     }
     fn encode(&self, w: &mut BitWriter) {
         w.u8(self.kind);
+        if self.kind == 2 {
+            w.u8(self.response);
+            if let Some(e) = self.entries.first() {
+                e.encode(w);
+            }
+            return;
+        }
         w.u16(self.entries.len() as u16);
         for e in &self.entries {
             e.encode(w);

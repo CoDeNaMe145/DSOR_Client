@@ -1,0 +1,438 @@
+//! Notifications, the group invitation, the booking receipt, and the menu a
+//! middle click opens on another player (release261).
+//!
+//! The column: UI::NotificationWidget (2018 client 0x6CAA6B Load) clones the
+//! notifications window's one button, Notification1, per pending notification and
+//! gives each the icon of its type (0x6CAE52: "ui/icon_notifications_<type>").
+//! A click opens the notification's own dialog: confirmgroupdialog's InviteDialog
+//! for a group invitation (ConfirmGroupDialog, its message built by 0x53E46E), the
+//! booking receipt (UI::BookingConfirmationWidget 0x620D1C) for items credited.
+//! Its answer goes back as NotificationCommand type 2 with the entry echoed.
+//! The menu: cmdmodecontextmenu's four buttons, handled by 0x64937A
+//! (ButtonInviteToParty -> ClientSocialManager::GroupInvitePlayer 0x56E982,
+//! ButtonWhisper -> the chat line "<whisper prefix> <name> ").
+//! UNVERIFIED: the column's spacing (one button height plus 5) and its order
+//!   (oldest at the top): the widget animates its buttons in (0x6CB7C3) and that
+//!   placement was not traced. The middle click as the menu's trigger is the
+//!   user's account of the game (2026-10-17), not traced.
+
+use super::*;
+use crate::network::chat::Kind;
+use dsor_proto::commands::social::{GroupInvitationResponse, GroupInvite, Notification, NotificationEntry};
+use dsor_proto::commands::ClientCommand;
+use bevy::text::Justify;
+
+pub(in crate::ui) const GROUP_DIALOG: &str = "confirmgroupdialog";
+pub(in crate::ui) const BOOKING_DIALOG: &str = "notificationbookingconfirmation";
+pub(in crate::ui) const CONTEXT_MENU: &str = "cmdmodecontextmenu";
+
+/// Notification1's rectangles (notifications.ui.json): drawn 40 wide, 45 under
+/// the cursor (its mouseover state), against the left edge.
+const BUTTON: [f32; 4] = [3.0, 293.0, 43.0, 332.0];
+const BUTTON_HOVER: [f32; 4] = [0.0, 290.0, 45.0, 335.0];
+const SPACING: f32 = 45.0;
+/// Over the HUD and the chat, under the menus (crate::ui depths).
+const COLUMN_Z: f32 = 50.0;
+/// Inside a dialog's band, over its artwork (crate::ui::WINDOW_ART_DEPTH).
+const CONTENT_Z: f32 = 7.5;
+/// NotificationType: groupinvite and its join-request twin, the guild's, the
+/// bookings (_Template_Notifications order; 0x6CAE52's switch).
+const GROUP_INVITE: [u8; 2] = [1, 2];
+const BOOKING: [u8; 2] = [16, 18];
+/// Game::NotificationResponse::Code (crate's Notification doc).
+const CONFIRM: u8 = 1;
+const CANCEL: u8 = 2;
+/// The CMS grants' guid prefix (DSOR_Server services/admin_live.py
+/// BOOKING_GUID_PREFIX): a moderator's credit, not a shop order.
+const CMS_GUID: &[u8] = b"DSOCMS01";
+/// A player's pick cylinder, metres: the character capsule's.
+const PICK_RADIUS: f32 = 0.6;
+const PICK_HEIGHT: f32 = 2.0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Social { Confirm, Cancel, Whisper, Befriend, InviteToParty, Ignore }
+
+#[derive(Resource, Default)]
+pub(crate) struct SocialUi {
+    pub(super) clicked: Option<Social>,
+    /// The notification the open dialog answers.
+    open: Option<NotificationEntry>,
+    /// The player the menu was opened on.
+    target: Option<String>,
+    pressed: Option<usize>,
+    hovered: Option<usize>,
+}
+
+/// The icon 0x6CAE52 gives a notification type.
+fn icon(kind: u8) -> &'static str {
+    match kind {
+        1 | 2 => "groupinvite",
+        3 => "guildinvite",
+        4 | 5 => "specialoffer",
+        6 => "loginreward",
+        7 | 8 => "event",
+        9 | 10 | 33 => "firstlogin",
+        11 => "talentup",
+        12 => "newskill",
+        13 => "inviteprompt",
+        14 => "invitationreward",
+        16 | 18 => "bookingconfirmation",
+        17 => "negativebooking",
+        19 | 20 => "dailyachievements",
+        22 => "addon",
+        24 => "achievements_title",
+        25..=27 => "crown",
+        28..=30 => "leaderboards",
+        32 => "claim1",
+        _ => "maprework",
+    }
+}
+
+pub(super) fn section(window: &str, parts: &[&str]) -> Option<Section> {
+    let leaf = *parts.last()?;
+    match window {
+        // The invitation, not the join request; its text is written by `dialogs`.
+        GROUP_DIALOG if parts.contains(&"JoinDialog") || leaf == "Invitetext" => Some(Section::Hidden),
+        BOOKING_DIALOG => {
+            // The other bookings' artwork and buttons (character edit, cinema,
+            // one-time event); the text list's row template and scroll buttons
+            // (its text is written by `dialogs`).
+            if parts.iter().any(|p| matches!(*p, "ArtworkCharStyleEdit" | "ArtworkCinema" | "ArtworkOneTimeNotification"
+                | "ConfirmCharStyleEditLabel" | "ConfirmCinemaLabel" | "TextList")) { return Some(Section::Hidden); }
+            // Decline only where the booking allows it (playerCanRejectItem).
+            if parts.contains(&"Deny") { return Some(Section::Page("booking_reject", 0b10)); }
+            // A slot per item credited.
+            let slot = parts.iter().find_map(|p| p.strip_prefix("ItemSlot").and_then(|n| n.parse::<u32>().ok()))?;
+            Some(Section::Page("booking_items", !((2u32 << slot) - 1)))
+        }
+        _ => None,
+    }
+}
+
+pub(super) fn action(window: &str, w: &Widget) -> Option<Action> {
+    let social = match (window, w.event.as_str()) {
+        (GROUP_DIALOG | BOOKING_DIALOG, "confirm") => Social::Confirm,
+        (GROUP_DIALOG, "cancel") | (BOOKING_DIALOG, "deny") => Social::Cancel,
+        (CONTEXT_MENU, "ButtonWhisper") => Social::Whisper,
+        (CONTEXT_MENU, "ButtonBefriend") => Social::Befriend,
+        (CONTEXT_MENU, "ButtonInviteToParty") => Social::InviteToParty,
+        (CONTEXT_MENU, "ButtonIgnore") => Social::Ignore,
+        (GROUP_DIALOG | BOOKING_DIALOG | CONTEXT_MENU, _) => return Some(Action::Unavailable),
+        _ => return None,
+    };
+    Some(Action::Social(social))
+}
+
+#[derive(Component)]
+pub(in crate::ui) struct Column;
+
+/// The column of notifications: an icon each, its own hit test, and a click
+/// opening its dialog.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub(in crate::ui) fn column(
+    mut commands: Commands,
+    mut net: Option<NonSendMut<crate::network::net::Net>>,
+    mut social: ResMut<SocialUi>,
+    mut windows: Windows,
+    primary: Query<&Window, With<PrimaryWindow>>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    screen: Res<Screen>,
+    assets: Res<AssetServer>,
+    columns: Query<Entity, With<Column>>,
+    mut last: Local<Option<(Vec<Vec<u8>>, Option<usize>, u32)>>,
+    mut test: Local<bool>,
+) {
+    // DSOR_TEST_NOTIFICATIONS=group|booking: a group invitation and a credited
+    // booking in the column, the named one open (screenshots, offline).
+    let test_open = (!*test).then(|| std::env::var("DSOR_TEST_NOTIFICATIONS").ok()).flatten();
+    *test = true;
+    if let (Some(open), Some(net)) = (&test_open, net.as_mut()) {
+        net.notifications.push(NotificationEntry { note_type: 1, guid: vec![1; 16], unknown_u32_0: 0, group_id: 7, inviter_id: 9,
+            params: r#"{"invitation":"group","playerName":"Simo","playerLevel":32,"playerClass":2,"groupName":"Simo's group"}"#.into(), timestamp: String::new() });
+        let mut guid = CMS_GUID.to_vec();
+        guid.extend([0, 0, 0, 0, 0, 0, 0, 3]);
+        net.notifications.push(NotificationEntry { note_type: 16, guid, unknown_u32_0: 0, group_id: 0x06A7EB00, inviter_id: 0x06A7EB00,
+            params: r#"{"ingameTransactionId":3,"templates":"epicmount_death_knight_horse","amounts":"1","rarities":"Epic","addItems":true,"playerCanRejectItem":false}"#.into(), timestamp: String::new() });
+        social.pressed = Some(if open == "booking" { 1 } else { 0 });
+    }
+    let notes: &[NotificationEntry] = net.as_ref().map_or(&[], |n| &n.notifications);
+    let rect = |i: usize, hover: bool| {
+        let [l, t, r, b] = if hover { BUTTON_HOVER } else { BUTTON };
+        let dy = i as f32 * SPACING;
+        [l, t + dy, r, b + dy]
+    };
+    let point = primary.single().ok().filter(|w| w.focused && w.height() > 0.0)
+        .and_then(|w| w.cursor_position().map(|p| p * (BASE_H / w.height())));
+    let over = point.and_then(|p| (0..notes.len()).find(|&i| {
+        let [l, t, r, b] = rect(i, false);
+        p.x >= l && p.x <= r && p.y >= t && p.y <= b
+    }));
+    if mouse.just_pressed(MouseButton::Left) { social.pressed = over; }
+    let clicked = if test_open.is_some() { social.pressed.take() }
+        else if mouse.just_released(MouseButton::Left) { social.pressed.take().filter(|i| Some(*i) == over) } else { None };
+    if social.hovered != over { social.hovered = over; }
+
+    let key = (notes.iter().map(|n| n.guid.clone()).collect::<Vec<_>>(), over, screen.width.to_bits());
+    if last.as_ref() != Some(&key) {
+        *last = Some(key);
+        for e in &columns { commands.entity(e).despawn(); }
+        let regions = (0..notes.len()).map(|i| (0.0, rect(i, false))).collect();
+        let root = commands.spawn((Column, Transform::from_xyz(0.0, 0.0, COLUMN_Z), Visibility::Inherited, crate::ui::input::UiRegions(regions))).id();
+        for (i, note) in notes.iter().enumerate() {
+            let [l, t, r, b] = rect(i, over == Some(i));
+            commands.spawn((
+                Sprite { image: assets.load(format!("textures/ui/icon_notifications_{}.png", icon(note.note_type))), custom_size: Some(Vec2::new(r - l, b - t)), ..default() },
+                Anchor::TOP_LEFT, Transform::from_translation(screen.world(0.0, l, t).extend(0.0)), RenderLayers::layer(LAYER), ChildOf(root),
+            ));
+        }
+    }
+
+    let Some(index) = clicked else { return };
+    let Some(note) = notes.get(index).cloned() else { return };
+    let dialog = if GROUP_INVITE.contains(&note.note_type) { GROUP_DIALOG } else if BOOKING.contains(&note.note_type) { BOOKING_DIALOG } else {
+        info!("notification type {} has no dialog here", note.note_type);
+        return;
+    };
+    for (_, w, mut c, mut v, _) in &mut windows {
+        if w.0 == GROUP_DIALOG || w.0 == BOOKING_DIALOG { *v = Visibility::Hidden; }
+        if w.0 == dialog {
+            if dialog == BOOKING_DIALOG {
+                let params = params(&note);
+                let items = split(&params, "templates").len().min(15) as u8;
+                c.pages.insert("booking_items", items);
+                c.pages.insert("booking_reject", u8::from(params["playerCanRejectItem"].as_bool().unwrap_or(false)));
+            }
+            *v = Visibility::Inherited;
+        }
+    }
+    social.open = Some(note);
+}
+
+fn params(note: &NotificationEntry) -> serde_json::Value {
+    serde_json::from_str(&note.params).unwrap_or(serde_json::Value::Null)
+}
+
+/// A booking's comma-separated list ("templates", "amounts", "rarities").
+fn split(params: &serde_json::Value, key: &str) -> Vec<String> {
+    match &params[key] {
+        serde_json::Value::String(s) => s.split(',').map(|p| p.trim().to_owned()).filter(|p| !p.is_empty()).collect(),
+        serde_json::Value::Array(a) => a.iter().map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_owned)).collect(),
+        serde_json::Value::Null => Vec::new(),
+        v => vec![v.to_string()],
+    }
+}
+
+#[derive(Component)]
+pub(in crate::ui) struct DialogContent;
+
+/// The open dialog's own text and items, inside its window.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub(in crate::ui) fn dialogs(
+    mut commands: Commands,
+    social: Res<SocialUi>,
+    windows: Query<(Entity, &Window2018, &WindowControls, &Visibility)>,
+    old: Query<Entity, With<DialogContent>>,
+    data: Res<items::Data>,
+    catalogs: Res<Assets<items::Catalog>>,
+    layouts: Res<Assets<Layout>>,
+    loaded: Res<crate::ui::Loaded>,
+    screen: Res<Screen>,
+    assets: Res<AssetServer>,
+    mut last: Local<Option<(Entity, Vec<u8>, u32, bool)>>,
+) {
+    let open = social.open.as_ref().and_then(|note| windows.iter()
+        .find(|(_, w, _, v)| **v != Visibility::Hidden && (w.0 == GROUP_DIALOG && GROUP_INVITE.contains(&note.note_type) || w.0 == BOOKING_DIALOG && BOOKING.contains(&note.note_type)))
+        .map(|(e, w, _, _)| (e, w.0.clone(), note)));
+    let catalog = catalogs.get(&data.catalog);
+    let key = open.as_ref().map(|(e, _, note)| (*e, note.guid.clone(), screen.scale.to_bits(), catalog.is_some()));
+    if *last == key { return; }
+    *last = key;
+    for e in &old { commands.entity(e).despawn(); }
+    let Some((root, window, note)) = open else { return };
+    let layout = loaded.layouts.iter().filter_map(|(h, _, _)| layouts.get(h)).find(|l| l.window == window);
+    let widget = |id: &str| layout.and_then(|l| l.widgets.iter().find(|w| w.id.ends_with(id)));
+    let group = commands.spawn((DialogContent, Transform::from_xyz(0.0, 0.0, CONTENT_Z), Visibility::Inherited, ChildOf(root))).id();
+    let p = params(note);
+    if window == GROUP_DIALOG {
+        // gui.window.grouping_confirmJoinGroup, its rank line empty (titleType 0).
+        let class = ["Warrior", "Mage", "Ranger", "Dwarf", "Niwalk"].get(p["playerClass"].as_u64().unwrap_or(9) as usize).copied().unwrap_or("");
+        let text = format!("{}\n({} Level: {})\nhas invited you to join their group:\n{}\n\nWould you like to join?",
+            p["playerName"].as_str().unwrap_or("?"), class, p["playerLevel"].as_u64().unwrap_or(1), p["groupName"].as_str().unwrap_or(""));
+        let Some(w) = widget("/InviteDialog/Invitetext") else { return };
+        let [l, t, r, _] = w.rect;
+        label(&mut commands, &assets, &screen, group, text, screen.world(w.k, l, t).extend(0.1), 12.0, Color::srgb(0.92, 0.87, 0.76), r - l, Justify::Center);
+        return;
+    }
+    // gui.window.booking: a moderator's credit or a shop order, then the items.
+    let cms = note.guid.starts_with(CMS_GUID);
+    let mut text = String::from(if cms { "A moderator has credited a pack to your account." } else { "We received an order." });
+    text.push_str("\n\n");
+    let (templates, amounts, rarities) = (split(&p, "templates"), split(&p, "amounts"), split(&p, "rarities"));
+    for (i, template) in templates.iter().enumerate() {
+        let name = catalog.and_then(|c| c.items.get(template)).map_or(template.as_str(), |d| d.name.as_str());
+        text.push_str(&format!("{} x {}\n", amounts.get(i).map_or("1", String::as_str), name));
+    }
+    if let Some(w) = widget("/ContentLabel/TextList") {
+        let [l, t, r, _] = w.rect;
+        label(&mut commands, &assets, &screen, group, text, screen.world(w.k, l, t + 4.0).extend(0.1), 12.0, Color::srgb(0.92, 0.87, 0.76), r - l - 20.0, Justify::Left);
+    }
+    let Some(catalog) = catalog else { return };
+    const RARITIES: [&str; 8] = ["Common", "Uncommon", "Magic", "Rare", "Epic", "Unique", "Set", "Mythic"];
+    for (i, template) in templates.iter().take(15).enumerate() {
+        let Some(slot) = widget(&format!("/ContentLabel/ItemSlot{i}")) else { continue };
+        let rarity = rarities.get(i).and_then(|r| RARITIES.iter().position(|n| n.eq_ignore_ascii_case(r))).unwrap_or(0);
+        let item = dsor_proto::commands::inventory::ItemInfo { kind: rarity as u8, ..default() };
+        let (icon, background, frame) = catalog.icon_parts(template, Some(&item));
+        let [l, t, r, b] = slot.rect;
+        let at = screen.world(slot.k, l + 2.5, t + 2.5);
+        let size = Vec2::new(r - l, b - t) - Vec2::splat(5.0);
+        for (z, image) in [(0.2, background), (0.3, icon), (0.4, frame)] {
+            let Some(image) = image else { continue };
+            commands.spawn((Sprite { image: assets.load(image.to_owned()), custom_size: Some(size), ..default() }, Anchor::TOP_LEFT,
+                Transform::from_translation(at.extend(z)), RenderLayers::layer(LAYER), ChildOf(group)));
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn label(commands: &mut Commands, assets: &AssetServer, screen: &Screen, parent: Entity, value: String, at: Vec3, size: f32, color: Color, width: f32, justify: Justify) {
+    commands.spawn((Text2d::new(value), TextFont { font: assets.load("fonts/tahoma.ttf").into(), font_size: bevy::text::FontSize::Px(size * FONT_SCALE * screen.scale), ..default() },
+        TextColor(color), bevy::text::TextLayout::justify(justify), Anchor::TOP_LEFT, bevy::text::TextBounds::new_horizontal(width * screen.scale),
+        Transform::from_translation(at).with_scale(Vec3::splat(1.0 / screen.scale)), RenderLayers::layer(LAYER), ChildOf(parent)));
+}
+
+/// The clicked dialog and menu buttons: the answers and the menu's actions.
+#[allow(clippy::too_many_arguments)]
+pub(in crate::ui) fn answer(
+    net: Option<NonSendMut<crate::network::net::Net>>,
+    mut social: ResMut<SocialUi>,
+    mut windows: Windows,
+    mut pointer: ResMut<Pointer>,
+    mut chat: ResMut<crate::network::chat::ChatLog>,
+) {
+    let Some(clicked) = social.clicked.take() else { return };
+    let Some(mut net) = net else { return };
+    let me = net.local_name.clone().unwrap_or_default();
+    match clicked {
+        Social::Confirm | Social::Cancel => {
+            let Some(note) = social.open.take() else { return };
+            let confirm = clicked == Social::Confirm;
+            if GROUP_INVITE.contains(&note.note_type) {
+                // AcceptGroupInvite 0x56BB3D: code 0, the inviter, the group;
+                // RefuseGroupInvite 0x574E80: code 1. The server checks the name
+                // against our own (DSOR_Server services/social.py
+                // _handle_invitation_response).
+                net.send(&ClientCommand::GroupInvitationResponse(GroupInvitationResponse {
+                    code: if confirm { 0 } else { 1 }, a: note.inviter_id, b: note.group_id, name: me,
+                }));
+            }
+            net.send(&ClientCommand::Notification(Notification::response(if confirm { CONFIRM } else { CANCEL }, note.clone())));
+            net.notifications.retain(|n| n.guid != note.guid);
+            for (_, w, _, mut v, _) in &mut windows {
+                if w.0 == GROUP_DIALOG || w.0 == BOOKING_DIALOG { *v = Visibility::Hidden; }
+            }
+        }
+        Social::InviteToParty | Social::Whisper | Social::Befriend | Social::Ignore => {
+            for (_, w, _, mut v, _) in &mut windows {
+                if w.0 == CONTEXT_MENU { *v = Visibility::Hidden; }
+            }
+            let Some(target) = social.target.take() else { return };
+            match clicked {
+                // GroupInvitePlayer 0x56E982: our name, theirs, then 0.
+                Social::InviteToParty => {
+                    net.send(&ClientCommand::GroupInvite(GroupInvite { inviter_name: me, invitee_name: target.clone(), unknown_u32_0: 0 }));
+                    chat.push(Kind::System, "Invitation was sent.".into());
+                }
+                // The chat line, ready to write to them.
+                Social::Whisper => {
+                    set_chat_compact(false, &mut windows, &mut pointer);
+                    if let Some((root, id)) = chat_entry(&windows) {
+                        if let Ok((_, _, mut c, _, _)) = windows.get_mut(root) {
+                            let text = format!("/w {target} ");
+                            c.entries.insert(id.clone(), TextEntry { cursor: text.len(), text, selected: false });
+                        }
+                        pointer.focus = Some((root, id));
+                    }
+                }
+                // BuddyListCommand / the ignore list: the server refuses every
+                // change to them (DSOR_Server services/social.py _handle_buddy_list).
+                _ => chat.push(Kind::Local, "The friend and ignore lists are not available on this server yet.".into()),
+            }
+        }
+    }
+}
+
+/// A middle click on another player opens the menu where the cursor is; any
+/// other click closes it.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub(in crate::ui) fn context_menu(
+    ui: Res<crate::ui::input::UiInput>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    primary: Query<&Window, With<PrimaryWindow>>,
+    cameras: Query<(&Camera, &GlobalTransform), (With<Camera3d>, Without<crate::rendering::highlight::HighlightCamera>)>,
+    players: Query<(&GlobalTransform, &crate::actors::nameplate::Nameplate, &InheritedVisibility),
+        (With<crate::network::net::RemotePlayer>, Without<crate::actors::monsters::Monster>)>,
+    mut social: ResMut<SocialUi>,
+    mut windows: Windows,
+    screen: Res<Screen>,
+    mut test: Local<bool>,
+) {
+    // DSOR_TEST_MENU=1: the menu opened on "Simo" at (400, 300) (screenshots).
+    let test_open = !*test && std::env::var_os("DSOR_TEST_MENU").is_some();
+    *test = true;
+    let open = windows.iter().any(|(_, w, _, v, _)| w.0 == CONTEXT_MENU && *v != Visibility::Hidden);
+    if open && (mouse.just_released(MouseButton::Left) || mouse.just_pressed(MouseButton::Right)) {
+        for (_, w, _, mut v, _) in &mut windows {
+            if w.0 == CONTEXT_MENU { *v = Visibility::Hidden; }
+        }
+    }
+    if !test_open && (!mouse.just_pressed(MouseButton::Middle) || ui.over_ui) { return; }
+    let Ok(window) = primary.single() else { return };
+    let scale = window.height().max(1.0) / BASE_H;
+    let picked = if test_open { Some(("Simo".to_owned(), Vec2::new(400.0, 300.0))) } else {
+        window.cursor_position().and_then(|cursor| pick(cursor, &cameras, &players).map(|name| (name, cursor / scale)))
+    };
+    let Some((name, p)) = picked else { return };
+    social.target = Some(name);
+    // The menu's top-left corner at the cursor, kept on the screen. Its Canvas:
+    // [512, 364, 730, 476], k 0.5 (cmdmodecontextmenu.ui.json).
+    let (w, h) = (730.0 - 512.0, 476.0 - 364.0);
+    let left = p.x.min(screen.width - w).max(0.0);
+    let top = p.y.min(BASE_H - h).max(0.0);
+    let anchor = 512.0 + 0.5 * (screen.width - BASE_W);
+    for (_, win, mut c, mut v, mut tf) in &mut windows {
+        if win.0 != CONTEXT_MENU { continue; }
+        tf.translation.x = left - anchor;
+        tf.translation.y = -(top - 364.0);
+        c.hovered = None;
+        c.pressed = None;
+        *v = Visibility::Inherited;
+    }
+}
+
+/// The nearest other player under the cursor: a ray against their upright pick
+/// cylinders (as crate::actors::monsters::hover does for a model without boxes).
+#[allow(clippy::type_complexity)]
+fn pick(
+    cursor: Vec2,
+    cameras: &Query<(&Camera, &GlobalTransform), (With<Camera3d>, Without<crate::rendering::highlight::HighlightCamera>)>,
+    players: &Query<(&GlobalTransform, &crate::actors::nameplate::Nameplate, &InheritedVisibility),
+        (With<crate::network::net::RemotePlayer>, Without<crate::actors::monsters::Monster>)>,
+) -> Option<String> {
+    let ray = cameras.single().ok().and_then(|(cam, at)| cam.viewport_to_world(at, cursor).ok())?;
+    let (o, d) = (ray.origin, *ray.direction);
+    let mut best: Option<(f32, &str)> = None;
+    for (at, plate, shown) in players {
+        if !shown.get() || plate.text.is_empty() { continue; }
+        let base = at.translation();
+        let (ox, oz) = (o.x - base.x, o.z - base.z);
+        let (a, b) = (d.x * d.x + d.z * d.z, ox * d.x + oz * d.z);
+        if a < 1e-6 { continue; }
+        let t = (-b / a).max(0.0);
+        let (px, pz) = (ox + d.x * t, oz + d.z * t);
+        let y = o.y + d.y * t - base.y;
+        if px * px + pz * pz > PICK_RADIUS * PICK_RADIUS || !(-0.2..=PICK_HEIGHT).contains(&y) { continue; }
+        if best.is_none_or(|(bt, _)| t < bt) { best = Some((t, &plate.text)); }
+    }
+    best.map(|(_, name)| name.to_owned())
+}

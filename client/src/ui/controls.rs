@@ -8,6 +8,7 @@ mod panels;
 pub(super) mod spells;
 pub(super) mod items;
 pub(super) mod sheet;
+pub(super) mod social;
 
 /// Reference pixels, scaled by the same factor as the rest of the interface.
 const DRAG_HANDLE_HEIGHT: f32 = 32.0;
@@ -135,6 +136,7 @@ fn section(window: &str, id: &str) -> Section {
     // sous menus", "les epees restent").
     if window == "charactersheet" && id.contains("/CharacterStatsArea/Template") { return Section::Hidden; }
     if let Some(section) = panels::section(window, &parts) { return section; }
+    if let Some(section) = social::section(window, &parts) { return section; }
     if window == "inventory" {
         if id.contains("/unten/Label_bg/Label_empty") { return Section::OverflowFooter; }
         if id.contains("/unten/Label_bg/icon_area/TemplateSlot#3_") { return Section::BagFourthRow; }
@@ -207,6 +209,8 @@ enum Action {
     Unavailable,
     /// The death dialog's choice: (at the nearest exit, on the spot).
     Respawn(bool, bool),
+    /// A notification dialog's or the player menu's button (social::answer).
+    Social(social::Social),
 }
 
 fn action(window: &str, w: &Widget) -> Action {
@@ -217,6 +221,7 @@ fn action(window: &str, w: &Widget) -> Action {
     if w.spell.is_some() { return Action::Spell; }
     if w.kind == "TextEntry" { return Action::Edit(w.id.clone()); }
     if w.event == "Close" { return Action::Close; }
+    if let Some(action) = social::action(window, w) { return action; }
     if window == "deathdialog" {
         // DontBuy: back in the last town, free; Buy: on the same map, at the
         // nearest exit (RespawnCost); Buy1: on the spot (InstantRespawnCost). The
@@ -606,7 +611,7 @@ fn raise(entity: Entity, windows: &mut Windows) {
 }
 
 fn stacked_window(name: &str) -> bool {
-    is_menu(name) && !matches!(name, "gamemenu" | "unstackwindow" | "locationmap")
+    is_menu(name) && !matches!(name, "gamemenu" | "unstackwindow" | "locationmap" | social::CONTEXT_MENU)
 }
 
 /// Also cover windows opened outside toggle(), including asynchronously loaded
@@ -785,6 +790,7 @@ pub(super) fn interact(
     mut chat: ResMut<crate::network::chat::ChatLog>,
     mut dialogue: ResMut<crate::gameplay::dialogue::Dialogue>,
     mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
+    mut social: ResMut<social::SocialUi>,
 ) {
     let Ok((primary, mut window, cursor)) = primary.single_mut() else { return };
     let blocked = panels.iter().any(|(cursor, visible)| visible.get() && cursor.cursor_over());
@@ -916,6 +922,7 @@ pub(super) fn interact(
             }
         }
         Action::Spell | Action::Unavailable => {}
+        Action::Social(clicked) => social.clicked = Some(clicked),
         Action::Respawn(at_exit, on_spot) => {
             respawn.0 = Some((at_exit, on_spot));
             *visibility = Visibility::Hidden;

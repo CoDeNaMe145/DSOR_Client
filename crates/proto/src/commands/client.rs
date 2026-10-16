@@ -107,6 +107,7 @@ client_commands! {
     280 => DeselectTalent(inventory::DeselectTalent),
     309 => UseStickerBookItem(inventory::UseStickerBookItem),
     // social.rs
+    136 => Notification(social::Notification),
     150 => GroupList(social::GroupList),
     154 => GroupInvite(social::GroupInvite),
     156 => GroupInvitationResponse(social::GroupInvitationResponse),
