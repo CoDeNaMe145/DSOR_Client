@@ -158,7 +158,7 @@ mod tests {
     fn marker_entities_follow_sources_and_disappear_with_them() {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
-            .init_asset::<Image>().init_asset::<Mesh>().init_asset::<UiMaterial>()
+            .init_asset::<Image>().init_asset::<Mesh>().init_asset::<UiMaterial>().init_asset::<super::super::MapNames>()
             .add_systems(Update, update);
         let map = app.world_mut().spawn(MapGeometry {
             source: Handle::<NavMesh>::default().id(), view: View::new(MapMode::Compact, BASE_W),
@@ -184,7 +184,7 @@ mod tests {
     fn overlapping_icons_keep_distinct_depths_through_style_changes_and_rebuilds() {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
-            .init_asset::<Image>().init_asset::<Mesh>().init_asset::<UiMaterial>()
+            .init_asset::<Image>().init_asset::<Mesh>().init_asset::<UiMaterial>().init_asset::<super::super::MapNames>()
             .add_systems(Update, update);
         let map = app.world_mut().spawn(MapGeometry {
             source: Handle::<NavMesh>::default().id(), view: View::new(MapMode::Compact, BASE_W),

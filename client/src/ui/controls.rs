@@ -1104,12 +1104,18 @@ mod tests {
             }
         }
         for root in roots.values() { *app.world_mut().get_mut::<Visibility>(*root).unwrap() = Visibility::Hidden; }
-        for (key, name) in [(KeyCode::KeyI, "inventory"), (KeyCode::KeyC, "charactersheet"), (KeyCode::Tab, "locationmap")] {
+        for (key, name) in [(KeyCode::KeyI, "inventory"), (KeyCode::KeyC, "charactersheet")] {
             press(&mut app, key);
             assert_eq!(*app.world().get::<Visibility>(roots[name]).unwrap(), Visibility::Inherited);
             press(&mut app, KeyCode::Escape);
             assert_eq!(*app.world().get::<Visibility>(roots[name]).unwrap(), Visibility::Hidden);
         }
+        // The map overlay is Tab's: Escape leaves it open.
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(*app.world().get::<Visibility>(roots["locationmap"]).unwrap(), Visibility::Inherited);
+        press(&mut app, KeyCode::Escape);
+        assert_eq!(*app.world().get::<Visibility>(roots["locationmap"]).unwrap(), Visibility::Inherited);
+        for root in roots.values() { *app.world_mut().get_mut::<Visibility>(*root).unwrap() = Visibility::Hidden; }
         app.world_mut().entity_mut(camera).remove::<crate::FreeCamera>();
         for (key, name) in [(KeyCode::KeyW, "collectorsalbum"), (KeyCode::KeyS, "skilltalentswindow")] {
             press(&mut app, key);
