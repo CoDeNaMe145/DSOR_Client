@@ -8,11 +8,40 @@ use dsor_proto::commands::inventory::ItemInfo;
 pub struct Definition {
     pub name: String, pub description: String, pub category: String, pub icon: String,
     pub max_stack: u32, pub required_level: u32, pub slots: Vec<i8>, pub class_name: String, pub rarity: String,
+    #[serde(default)] pub icon_config: String,
 }
+/// A rolled appearance's icon and icon configuration (_Template_ItemAppearance).
+#[derive(Deserialize)]
+pub struct Appearance { pub icon: String, pub config: String }
+/// _Template_IconConfig: the background follows the item's rarity, or is fixed.
+#[derive(Deserialize)]
+pub struct IconConfig { pub rarity: bool, pub background: String }
 #[derive(Deserialize)]
 pub struct Ingredient { pub template: String, pub tab: String, pub rarity: usize, pub slot: usize, pub class_name: String, pub unlock: u32 }
 #[derive(Asset, TypePath, Deserialize)]
-pub struct Catalog { pub items: HashMap<String, Definition>, pub ingredients: Vec<Ingredient>, pub colors: HashMap<String, [f32;4]> }
+pub struct Catalog { pub items: HashMap<String, Definition>, pub ingredients: Vec<Ingredient>, pub colors: HashMap<String, [f32;4]>,
+    #[serde(default)] pub appearances: HashMap<String, Appearance>, #[serde(default)] pub icon_configs: HashMap<String, IconConfig>,
+    #[serde(default)] pub rarity_backgrounds: Vec<String> }
+impl Catalog {
+    /// What a cell shows: the rolled appearance's icon (a generated item's look;
+    /// its template's icon is the base model's, the same for every roll), else the
+    /// template's; and the background its icon configuration gives it -- the
+    /// rarity's (icons_toolkit/bg_rarity_*) when RarityControlled.
+    /// SOURCE: tools/inventory_catalog.py (_Template_ItemAppearance, _Template_IconConfig).
+    /// FAILURE (2026-10-16): every glove showed warrior_gloves_01a, with no rarity
+    ///   background ("les icones des items sont tous les memes").
+    pub fn icon(&self, template: &str, item: Option<&ItemInfo>) -> (Option<&str>, Option<&str>) {
+        let def = self.items.get(template);
+        let look = item.and_then(|i| self.appearances.get(if i.fourth_name.is_empty() { &i.appearance } else { &i.fourth_name }));
+        let icon = look.map(|a| a.icon.as_str()).filter(|i| !i.is_empty()).or_else(|| def.map(|d| d.icon.as_str()).filter(|i| !i.is_empty()));
+        let config = look.map(|a| a.config.as_str()).filter(|c| !c.is_empty()).or_else(|| def.map(|d| d.icon_config.as_str()));
+        let background = config.and_then(|c| self.icon_configs.get(c)).and_then(|c| if c.rarity {
+            let rarity = item.map(|i| i.kind as usize).unwrap_or(0);
+            self.rarity_backgrounds.get(rarity).map(String::as_str)
+        } else { Some(c.background.as_str()) }).filter(|b| !b.is_empty());
+        (icon, background)
+    }
+}
 #[derive(Default, TypePath)]
 pub struct CatalogLoader;
 impl AssetLoader for CatalogLoader {
@@ -105,10 +134,28 @@ fn open_split(ui:&mut Interaction, windows:&mut Windows, state:&InventoryState, 
     }}
 }
 
+/// Two clicks on the same item within this many seconds.
+const DOUBLE_CLICK: f64 = 0.4;
+
+/// The move a double click makes: an item in the bags to its equipment slot (a
+/// free one of its slots, else the first, swapping), an equipped one to the
+/// first free bag cell. None when it cannot be worn (class, level) or go back.
+fn equip_toggle(state:&InventoryState, catalog:&Catalog, id:u32, level:u32, class:&str) -> Option<dsor_proto::commands::ClientCommand> {
+    let item=state.items.get(&id)?; let meta=catalog.items.get(&item.template)?;
+    if let Some(Place::Equipment(_))=state.location(id) {
+        let free=state.free_slot(Place::Bag(0))?;
+        return state.drop_on(id,free,meta.max_stack);
+    }
+    if meta.slots.is_empty() || meta.required_level>level || !(meta.class_name.is_empty() || meta.class_name=="any" || meta.class_name==class) {return None;}
+    let slot=meta.slots.iter().copied().find(|s|state.at(Place::Equipment(*s)).is_none()).unwrap_or(meta.slots[0]);
+    state.drop_on(id,Place::Equipment(slot),meta.max_stack)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn input(mut ui:ResMut<Interaction>,mut pointer:ResMut<Pointer>,mut windows:Windows,
     primary:Query<&Window,With<PrimaryWindow>>,mouse:Res<ButtonInput<MouseButton>>,keys:Res<ButtonInput<KeyCode>>,
-    net:Option<NonSendMut<crate::network::net::Net>>,data:Res<Data>,catalogs:Res<Assets<Catalog>>,time:Res<Time<Real>>) {
+    net:Option<NonSendMut<crate::network::net::Net>>,data:Res<Data>,catalogs:Res<Assets<Catalog>>,time:Res<Time<Real>>,
+    mut last_click:Local<Option<(u32,f64)>>) {
     let Some(mut net)=net else{return}; let Some(catalog)=catalogs.get(&data.catalog) else{return};
     let Ok(window)=primary.single() else{return};
     let point=window.cursor_position().map(|p|p*(BASE_H/window.height().max(1.0)));
@@ -146,8 +193,19 @@ pub fn input(mut ui:ResMut<Interaction>,mut pointer:ResMut<Pointer>,mut windows:
         if let (false,Some((root,cell)),Some(p))=(busy,hovered,point) {
             let (_,_,c,_,_)=windows.get(root).unwrap();
             if let Some(id)=place(cell,c).and_then(|p|net.inventory.at(p)).map(|i|i.id).filter(|id|net.inventory.movable(*id)) {
+                let now=time.elapsed_secs_f64();
+                let double=last_click.take().is_some_and(|(last,at)|last==id && now-at<=DOUBLE_CLICK);
                 if keys.any_pressed([KeyCode::ControlLeft,KeyCode::ControlRight]) {open_split(&mut ui,&mut windows,&net.inventory,id);pointer.down=None;}
-                else {ui.drag=Some(DragItem{id,revision:net.inventory.revision,origin:p,active:false,root});}
+                else if double {
+                    // A double click equips a piece from the bags, or takes an
+                    // equipped one off into the first free bag cell.
+                    let class=["warrior","mage","ranger","dwarf"][c.spells.class.min(3) as usize];
+                    if let Some(cmd)=equip_toggle(&net.inventory,catalog,id,net.level.unwrap_or(1),class) {
+                        net.send(&cmd);ui.pending=Some((net.inventory.revision,now));
+                    }
+                    pointer.down=None;
+                }
+                else {ui.drag=Some(DragItem{id,revision:net.inventory.revision,origin:p,active:false,root});*last_click=Some((id,now));}
             }
         }
     }
@@ -200,10 +258,14 @@ pub fn render(mut commands:Commands,windows:Query<(Entity,&Window2018,&WindowCon
         let locked=place(cell,c).is_some_and(|p|!matches!(p,Place::Equipment(_)) && p.cell()>=net.inventory.capacity(p));
         if locked {commands.spawn((Sprite::from_color(Color::srgba(0.01,0.01,0.01,0.8),size),Anchor::TOP_LEFT,Transform::from_translation(pos.extend(0.0)),RenderLayers::layer(LAYER),ChildOf(group)));continue;}
         let Some(d)=displayed(cell,c,&net.inventory,catalog) else{continue};
-        let meta=catalog.items.get(d.template);
         let tint=if d.amount==0 {Color::srgba(0.38,0.38,0.38,0.65)} else{Color::WHITE};
-        if let Some(m)=meta.filter(|m|!m.icon.is_empty()) {
-            commands.spawn((Sprite{image:assets.load(m.icon.clone()),custom_size:Some(size-Vec2::splat(5.0)),color:tint,..default()},Anchor::TOP_LEFT,
+        let (icon,background)=catalog.icon(d.template,d.item);
+        if let Some(bg)=background {
+            commands.spawn((Sprite{image:assets.load(bg.to_owned()),custom_size:Some(size-Vec2::splat(5.0)),color:tint,..default()},Anchor::TOP_LEFT,
+                Transform::from_xyz(pos.x+2.5,pos.y-2.5,0.05),RenderLayers::layer(LAYER),ChildOf(group)));
+        }
+        if let Some(icon)=icon {
+            commands.spawn((Sprite{image:assets.load(icon.to_owned()),custom_size:Some(size-Vec2::splat(5.0)),color:tint,..default()},Anchor::TOP_LEFT,
                 Transform::from_xyz(pos.x+2.5,pos.y-2.5,0.1),RenderLayers::layer(LAYER),ChildOf(group)));
         } else {text(&mut commands,&assets,&screen,group,"?".into(),pos.extend(0.2)+Vec3::new(15.0,-10.0,0.0),22.0,Color::WHITE,size.x);}
         if d.amount>1 || matches!(cell,Cell::Ingredient(_)) {
@@ -274,7 +336,9 @@ pub fn overlay(mut commands:Commands,ui:Res<Interaction>,windows:Query<(&Window2
     let (Some(d),Some(p))=(display,at) else{return};
     let root=commands.spawn((Overlay,Transform::from_translation(screen.world(0.0,p.x,p.y).extend(800.0)),Visibility::Inherited)).id();
     if dragged.is_some() {
-        if let Some(m)=catalog.items.get(d.template).filter(|m|!m.icon.is_empty()) {commands.spawn((Sprite{image:assets.load(m.icon.clone()),custom_size:Some(Vec2::splat(44.0)),..default()},Anchor::TOP_LEFT,RenderLayers::layer(LAYER),ChildOf(root)));}
+        let (icon,background)=catalog.icon(d.template,d.item);
+        if let Some(bg)=background {commands.spawn((Sprite{image:assets.load(bg.to_owned()),custom_size:Some(Vec2::splat(44.0)),..default()},Anchor::TOP_LEFT,Transform::from_xyz(0.0,0.0,-0.01),RenderLayers::layer(LAYER),ChildOf(root)));}
+        if let Some(icon)=icon {commands.spawn((Sprite{image:assets.load(icon.to_owned()),custom_size:Some(Vec2::splat(44.0)),..default()},Anchor::TOP_LEFT,RenderLayers::layer(LAYER),ChildOf(root)));}
         return;
     }
     commands.spawn((Sprite::from_color(Color::srgba(0.025,0.02,0.015,0.97),Vec2::new(330.0,h)),Anchor::TOP_LEFT,RenderLayers::layer(LAYER),ChildOf(root)));

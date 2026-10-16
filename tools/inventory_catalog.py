@@ -27,7 +27,7 @@ def export_inventory(db, textures, loca, assets):
             return re.sub(r'<[^>]*>', '', short[key])
         return fallback
 
-    result = dict(items={}, ingredients=[], colors={})
+    result = dict(items={}, ingredients=[], colors={}, appearances={}, icon_configs={}, rarity_backgrounds=[])
     cursor = db.execute('SELECT * FROM _Template_Item')
     columns = [c[0] for c in cursor.description]
     for values in cursor:
@@ -46,7 +46,22 @@ def export_inventory(db, textures, loca, assets):
             rarity=r.get('DefaultRarity') or 'Common',
             # The model it lies on the ground as (crate::drops), and the sequence
             # that replaces its rarity glow, if any.
-            graphics=r.get('Graphics') or '', drop_sequence=r.get('DropSequenceOverride') or '')
+            graphics=r.get('Graphics') or '', drop_sequence=r.get('DropSequenceOverride') or '',
+            icon_config=r.get('IconConfiguration') or '')
+    # A generated item shows its rolled appearance's icon (ItemInfo.appearance),
+    # not its template's: _Template_ItemAppearance.Icon, and its icon frame/background
+    # configuration (_Template_IconConfig).
+    def texture(brush):
+        brush = (brush or '').replace('\\', '/')
+        return 'textures/' + brush + '.png' if brush and textures.get(brush) else ''
+    for app_id, brush, config in db.execute('SELECT Id, Icon, IconConfiguration FROM _Template_ItemAppearance'):
+        result['appearances'][app_id] = dict(icon=texture(brush), config=config or '')
+    for cid, rarity, background in db.execute('SELECT Id, RarityControlled, BackgroundTexture FROM _Template_IconConfig'):
+        result['icon_configs'][cid] = dict(rarity=bool(rarity), background=texture(background))
+    # RarityControlled configurations take the background of the item's rarity
+    # (ItemInfo.kind: Common .. Mythic, icons_toolkit/bg_rarity_<name>).
+    result['rarity_backgrounds'] = [texture('icons_toolkit/bg_rarity_' + r) for r in
+        ('common', 'uncommon', 'magic', 'rare', 'epic', 'unique', 'set', 'mythic')]
     for row in db.execute('SELECT ItemTemplateId, IngredientBagTab, IngredientBagRarity, IngredientBagSlot, CharClass, UnlockLevel FROM _Template_IngredientBag WHERE IsLive=1 ORDER BY IngredientBagTab, IngredientBagRarity, IngredientBagSlot, Id'):
         item, tab, rarity, slot, cls, level = row
         if item not in result['items']:
