@@ -32,6 +32,17 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     c = c * in.color;
 #endif
     c.a *= 1.0 - material.flags.y;
+#ifdef VERTEX_COLORS
+    // A dark translucent shade (the character page's 90 % near-black panels):
+    // Nebula blends in gamma, bevy in linear, where the same alpha lets far more
+    // of a light background through. For a black shade, gamma blending's
+    // (1 - a) b equals linear blending with 1 - (1 - a)^2.2.
+    // FAILURE (2026-10-17): the panels showed brown, not near-black ("y'a pas le
+    // fond fonce"). UNVERIFIED: shades that are not near black blend between.
+    if max(in.color.r, max(in.color.g, in.color.b)) < 0.25 {
+        c.a = 1.0 - pow(1.0 - c.a, 2.2);
+    }
+#endif
 #ifndef SRGB_OUTPUT
     // A linear target: hand it linear values.
     c = vec4<f32>(srgb_to_linear(c.rgb), c.a);

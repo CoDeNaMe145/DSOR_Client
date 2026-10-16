@@ -33,6 +33,8 @@ pub(in crate::ui) fn rows(
     mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
     primary: Query<&Window, With<PrimaryWindow>>,
     mut state: Local<(Option<Entity>, usize, Option<usize>)>,
+    mut kept: Local<Option<(Entity, Entity)>>,
+    alive: Query<(), With<SheetGroup>>,
 ) {
     let notches: f32 = wheel.read().map(|w| w.y.signum()).sum();
     let Some((root, _, controls, visibility, tf)) = windows.iter().find(|(_, w, _, _, _)| w.0 == WINDOW) else { return };
@@ -66,13 +68,26 @@ pub(in crate::ui) fn rows(
     }
     let rebuild = rows.is_changed() || screen.is_changed() || state.0 != Some(root) || state.1 != scroll || state.2.is_none();
     if !rebuild { return; }
-    *state = (Some(root), scroll, Some(rows.0.len()));
-    for g in &groups { commands.entity(g).despawn(); }
-    let gate = controls.gate(WINDOW, area);
+    // The two groups stay; only their rows are made again. Spawned anew, they
+    // were hidden a frame until paint showed them: the rows flickered as they
+    // scrolled ("les epees flickers quand je scroll").
     let k = list.k;
-    let group = |commands: &mut Commands, flip: bool| commands.spawn((SheetGroup, Follows { k, flip }, follow_transform(&screen, k, flip), ChildOf(root),
-        Element { root, gate: gate.clone() }, Visibility::Hidden)).id();
-    let (art_parent, text_parent) = (group(&mut commands, true), group(&mut commands, false));
+    let (art_parent, text_parent) = match *kept {
+        Some((a, t)) if alive.contains(a) && alive.contains(t) && state.0 == Some(root) => {
+            commands.entity(a).despawn_related::<Children>();
+            commands.entity(t).despawn_related::<Children>();
+            (a, t)
+        }
+        _ => {
+            for g in &groups { commands.entity(g).despawn(); }
+            let gate = controls.gate(WINDOW, area);
+            let group = |commands: &mut Commands, flip: bool| commands.spawn((SheetGroup, Follows { k, flip }, follow_transform(&screen, k, flip), ChildOf(root),
+                Element { root, gate: gate.clone() }, Visibility::Hidden)).id();
+            (group(&mut commands, true), group(&mut commands, false))
+        }
+    };
+    *kept = Some((art_parent, text_parent));
+    *state = (Some(root), scroll, Some(rows.0.len()));
     let mut runs: HashMap<Option<String>, Run> = HashMap::new();
     let mut y = top;
     for r in rows.0.iter().skip(scroll) {
@@ -82,6 +97,8 @@ pub(in crate::ui) fn rows(
         let dy = y - template.rect[1];
         let prefix = format!("{}/", template.id);
         for w in layout.widgets.iter().filter(|w| w.id == template.id || w.id.starts_with(&prefix)) {
+            // The headline's Icon is not shown (the official page: none).
+            if w.id.ends_with("/Icon") { continue; }
             if let Some(art) = &w.art {
                 let mut a = art.clone();
                 for p in a.pos.chunks_exact_mut(2) { p[1] += dy; }
@@ -90,8 +107,11 @@ pub(in crate::ui) fn rows(
             let Some(label) = &w.text else { continue };
             let text = match (r.kind, w.id.rsplit('/').next().unwrap_or("")) {
                 (RowKind::Headline, "Headline") | (RowKind::SubHeadline, "Text") | (RowKind::Attribute, "Stat") => r.label.clone(),
-                (RowKind::Attribute, "Value") => r.value.clone(),
-                (RowKind::Attribute, "ValueRight") => r.right.clone(),
+                // A single figure stands in the right column, a pair in both
+                // (the official page: "Base Damage: 100" right, "Critical
+                // Value: 2 (0.09 %)").
+                (RowKind::Attribute, "Value") => if r.right.is_empty() { String::new() } else { r.value.clone() },
+                (RowKind::Attribute, "ValueRight") => if r.right.is_empty() { r.value.clone() } else { r.right.clone() },
                 _ => continue,
             };
             let [l, t, rr, b] = w.rect;
@@ -109,6 +129,18 @@ pub(in crate::ui) fn rows(
             ));
         }
         y += h + GAP;
+    }
+    // The scroll handle, along its boundaries as the list scrolls (the static
+    // one is hidden, crate::ui::controls::section).
+    if let (Some(bounds), Some(handle)) = (find("/OverviewList/ScrollBarBackground/ScrollBarBoundaries"), find("/OverviewList/ScrollBarBackground/ScrollBarBoundaries/ScrollHandle/normal")) {
+        if let Some(art) = &handle.art {
+            let h = height(handle);
+            let frac = if max_scroll > 0 { scroll as f32 / max_scroll as f32 } else { 0.0 };
+            let dy = bounds.rect[1] + frac * (bounds.rect[3] - bounds.rect[1] - h) - handle.rect[1];
+            let mut a = art.clone();
+            for p in a.pos.chunks_exact_mut(2) { p[1] += dy; }
+            runs.entry(a.tex.clone()).or_insert_with(|| Run { k, tex: a.tex.clone(), ..default() }).push(&a, ART_Z);
+        }
     }
     for (tex, run) in runs {
         if run.idx.is_empty() { continue; }

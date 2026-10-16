@@ -128,6 +128,8 @@ impl Gate {
 
 fn section(window: &str, id: &str) -> Section {
     let parts: Vec<_> = id.split('/').collect();
+    // The character list's scroll handle moves with the list: crate::ui::controls::sheet draws it.
+    if window == "charactersheet" && id.contains("/OverviewList/ScrollBarBackground/ScrollBarBoundaries/ScrollHandle") { return Section::Hidden; }
     if let Some(section) = panels::section(window, &parts) { return section; }
     if window == "inventory" {
         if id.contains("/unten/Label_bg/Label_empty") { return Section::OverflowFooter; }

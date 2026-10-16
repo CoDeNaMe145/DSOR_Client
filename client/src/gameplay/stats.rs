@@ -36,6 +36,14 @@ use serde::Deserialize;
 #[derive(Deserialize, Debug, Clone, Default)]
 #[serde(rename_all = "PascalCase")]
 pub struct PlayerRow {
+    #[serde(default)]
+    pub run_speed: f32,
+    #[serde(default)]
+    pub skill_resource_regeneration: f32,
+    #[serde(default)]
+    pub absolute_skill_resource_regeneration: f32,
+    #[serde(default)]
+    pub absolute_hit_points_regeneration: f32,
     pub skill_speed_min: f32,
     pub armor: f32,
     pub block_rating: f32,
@@ -336,7 +344,8 @@ fn compute(
     let row = |rows: &mut Vec<SheetRow>, label: String, value: String, right: String| rows.push(SheetRow { kind: RowKind::Attribute, label, value, right });
     let percent = |v: f32| fill(&t("percentageValue"), &[round(v).to_string()]);
     let plus = |v: f32| fill(&t("percentageValuePlus"), &[round(v).to_string()]);
-    let rift = |v: f32| fill(&t("riftAttributePercentage"), &[fmt(v, 2)]);
+    // The official page: "0.0%" (riftAttributePercentage "{0:s}%", one decimal).
+    let rift = |v: f32| fill(&t("riftAttributePercentage"), &[fmt(v, 1)]);
     let initial = |name: &str| d.attrs.get(name).map(|a| a[0]).unwrap_or(0.0);
     head(&mut rows, "offensiveValuesHeadline");
     row(&mut rows, t("basedamage"), s["BaseDamage"].clone(), String::new());
@@ -344,10 +353,14 @@ fn compute(
     row(&mut rows, t("criticalvalue"), s["CriticalHit"].clone(), s["CriticalHit_Percentage"].clone());
     row(&mut rows, t(RESOURCE_KEYS[class]), round(max_resource.value()).to_string(), String::new());
     let regen = ["rageRegen", "manaRegen", "concentrationRegen", "mechanicResourceRegen"][class];
-    row(&mut rows, t(regen), fmt(initial("SkillResourceRegeneration"), 2), String::new());
-    // RunSpeed 5 plus the MovementBonus of a ride (crate::actors::mounts).
+    // _Template_Player: relative x the resource + absolute (the official
+    // page: a level 10 mage's 12.00, AbsoluteSkillResourceRegeneration 12).
+    let regen_value = p.skill_resource_regeneration * max_resource.value() + p.absolute_skill_resource_regeneration;
+    row(&mut rows, t(regen), fmt(regen_value, 2), String::new());
+    // The class's RunSpeed plus the MovementBonus of a ride (crate::actors::mounts).
     let bonus = riding.iter().next().map_or(0.0, |r| r.bonus);
-    row(&mut rows, t("movementSpeed"), fmt(crate::network::net::RUN_SPEED + bonus, 3), String::new());
+    let run = if p.run_speed > 0.0 { p.run_speed } else { crate::network::net::RUN_SPEED };
+    row(&mut rows, t("movementSpeed"), fmt(run + bonus, 3), String::new());
     row(&mut rows, t("finaldamageincreasevalue"), rift(0.0), String::new());
     sub(&mut rows, "elementDamageIncreaseSubHeadline");
     for key in ["fireDamageIncrease", "iceDamageIncrease", "lightningDamageIncrease", "poisonDamageIncrease", "lightDamageIncrease"] {
@@ -355,15 +368,19 @@ fn compute(
     }
     head(&mut rows, "defensiveValuesHeadline");
     row(&mut rows, t("healthPoints"), round(max_health.value()).to_string(), String::new());
-    row(&mut rows, t("hpRegen"), fmt(initial("HealthPointsRegeneration"), 2), String::new());
+    // Its absolute part (the official page: 0.00 for a level 10 mage, whose
+    // relative HitPointsRegeneration is 0.0083).
+    row(&mut rows, t("hpRegen"), fmt(p.absolute_hit_points_regeneration, 2), String::new());
     row(&mut rows, t("blockvalue"), s["BlockRating"].clone(), s["BlockRating_Percentage"].clone());
     row(&mut rows, t("riftforcevalue"), rift(0.0), String::new());
     sub(&mut rows, "resistenceAndAmorSubHeadline");
-    row(&mut rows, t("armor"), s["Armor"].clone(), s["Armor_Percentage"].clone());
-    for (label, widget) in [("resistenceFire", "Fire"), ("resistenceIce", "Ice"), ("resistenceLightning", "Lightning"),
-        ("resistenceDarkMagic", "DarkMagic"), ("resistenceNature", "Nature")] {
-        let pct_key: &str = match widget { "Fire" => "Fire_Percentage", "Ice" => "Ice_Percentage", "Lightning" => "Lightning_Percentage", "DarkMagic" => "DarkMagic_Percentage", _ => "Nature_Percentage" };
-        row(&mut rows, t(label), s[widget].clone(), s[pct_key].clone());
+    // Armor and resistances read "1.27 %" (percentageValue), not "(1.27 %)".
+    let share = |v: f32| fill(&t("percentageValue"), &[fmt(v * 100.0, 2)]);
+    row(&mut rows, t("armor"), round(a).to_string(), share((a / (curve.armor_damage_reduction_value + a).max(1e-6)).min(g("MaxArmorDamageReduction"))));
+    for (label, name, i) in [("resistenceFire", "FireResistance", 1), ("resistenceIce", "IceResistance", 2), ("resistenceLightning", "LightningResistance", 3),
+        ("resistenceDarkMagic", "DarkMagicResistance", 4), ("resistenceNature", "PoisonResistance", 5)] {
+        let r = attr(name, Some(p.resist[i]), None).value();
+        row(&mut rows, t(label), round(r).to_string(), share((r / (curve.resistance_damage_reduction_value + r).max(1e-6)).min(g("MaxResistanceDamageReduction"))));
     }
     head(&mut rows, "otherValuesHeadline");
     row(&mut rows, t("xpgain"), percent(initial("XPGain") * 100.0), String::new());
