@@ -231,6 +231,29 @@ pub struct ShaderColors(pub Vec<(Entity, Vec4)>);
 pub struct ActorMaterials(pub Vec<Handle<crate::rendering::surfaces::NebulaMaterial>>);
 
 /// A whole model waiting for its scene: skins, variation, animations.
+/// A whole model with a character set and an anim set, set up as a monster's is
+/// (its set's skins, dyes, variation, its anim set's clips on a CharacterAnim):
+/// a mount (crate::actors::mounts). Returns the model's root entity.
+pub(crate) fn spawn_model(commands: &mut Commands, assets: &AssetServer, graphics: &str, set: &str, anim_set: &str, dye: [[f32; 4]; 2]) -> Entity {
+    let path = crate::rendering::model_variant::path(graphics, set);
+    let e = commands
+        .spawn((
+            Transform::default(),
+            Visibility::default(),
+            CharacterAnim::default(),
+            ModelSetup {
+                dye,
+                gltf: assets.load(path.clone()),
+                sets: assets.load(format!("{graphics}.sets.json")),
+                set: set.to_owned(),
+                anim_set: anim_set.to_owned(),
+            },
+        ))
+        .id();
+    commands.spawn((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(path))), ChildOf(e), Transform::default(), Visibility::default()));
+    e
+}
+
 #[derive(Component)]
 struct ModelSetup {
     dye: [[f32; 4]; 2],
@@ -486,7 +509,7 @@ const OFFLINE_SUMMONS: u32 = 0x6200_0000;
 #[allow(clippy::too_many_arguments)]
 fn setup_models(
     mut commands: Commands,
-    mut pending: Query<(Entity, &ModelSetup, &mut CharacterAnim, &mut Monster)>,
+    mut pending: Query<(Entity, &ModelSetup, &mut CharacterAnim, Option<&mut Monster>)>,
     children: Query<&Children>,
     players: Query<(), With<AnimationPlayer>>,
     names: Query<&Name>,
@@ -528,9 +551,11 @@ fn setup_models(
             }
         }
         if let Some(root) = set.and_then(|s| s.variation.iter().find(|j| j.bone == "Skeleton_Root")) {
-            let scale = root.s[0].max(root.s[2]);
-            monster.radius *= scale;
-            monster.height *= root.s[1];
+            if let Some(monster) = monster.as_mut() {
+                let scale = root.s[0].max(root.s[2]);
+                monster.radius *= scale;
+                monster.height *= root.s[1];
+            }
         }
         if let Some(set) = set.filter(|s| !s.variation.is_empty()) {
             let shape: Vec<(String, Vec3, Vec3)> = set.variation.iter().map(|j| (j.bone.clone(), Vec3::from(j.t), Vec3::from(j.s))).collect();

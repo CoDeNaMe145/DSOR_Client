@@ -363,7 +363,28 @@ for r in db.execute("select rowid, * from _Template_Skill order by rowid"):
 # sequences (or mappings) and the animation it plays on its holder. The server
 # applies them with StatusEffectCommand (82) and NewLocationEffectCommand (64).
 status = {}
+# Mounts: a ride effect's StartModifiers name the mount ("Mounted:Mount,<id>#~")
+# and its MovementBonus ("Speed:$mountspeed_wild_animals,absolute,MovementBonus",
+# the variable's _Template_ActorVariables InitialValue). SOURCE: DSOR_Server
+# gameplay/stickerbook_state.py _mount_definition_from_item and
+# gameplay/player_combat_stats.py (MovementBonus added after the capped speed).
+actor_variables = {r[0]: r[1] for r in db.execute("select Id, InitialValue from _Template_ActorVariables")}
+def ride_modifiers(text):
+    mount, bonus = "", 0.0
+    for part in (text or "").split(";"):
+        kind, _, args = part.partition(":")
+        args = args.split("#", 1)[0].split(",")
+        if kind == "Mounted" and len(args) >= 2 and args[0] == "Mount":
+            mount = args[1].strip()
+        elif kind == "Speed" and len(args) >= 3 and args[1] == "absolute" and args[2].strip() == "MovementBonus":
+            v = args[0].strip()
+            try:
+                bonus += float(actor_variables.get(v[1:], 0.0) if v.startswith("$") else v)
+            except ValueError:
+                pass
+    return mount, bonus
 for r in db.execute("select rowid, * from _Template_StatusEffect order by rowid"):
+    mount, bonus = ride_modifiers(r["StartModifiers"])
     status[r["rowid"] - 1] = {
         "id": r["Id"],
         "duration": r["StatusEffectDuration"] or 0.0,
@@ -374,11 +395,23 @@ for r in db.execute("select rowid, * from _Template_StatusEffect order by rowid"
         "animation": r["StartAnimation"] or "",
         "looped_animation": bool(r["LoopedStartAnimation"]),
         "stop_animation": r["StopAnimation"] or "",
+        "mount": mount,
+        "movement_bonus": bonus,
     }
 
 os.makedirs(os.path.join(assets, "skills"), exist_ok=True)
 with open(os.path.join(assets, "skills", "status_effects.json"), "w") as f:
     json.dump(status, f, separators=(",", ":"))
+# The mounts a ride effect names: model, character set, anim set (its Idle/Run
+# clips are also the rider's, on the uniskel skeletons) and the speed its run
+# clip was made for (AnimRunSpeed).
+def colour(blob):
+    return list(struct.unpack("<4f", blob[:16])) if blob and len(blob) >= 16 else [1.0, 1.0, 1.0, 0.0]
+mounts = {r["Id"]: {"graphics": r["Graphics"] or "", "set": r["CharacterSet"] or "", "anim_set": r["AnimSet"] or "",
+                    "run_speed": r["AnimRunSpeed"] or 0.0, "dye": [colour(r["PrimaryColor"]), colour(r["SecondaryColor"])]}
+          for r in db.execute("select * from _Template_Mount")}
+with open(os.path.join(assets, "characters", "mounts.json"), "w") as f:
+    json.dump(mounts, f, separators=(",", ":"))
 with open(os.path.join(assets, "skills", "sequences.json"), "w") as f:
     json.dump(sequences, f, separators=(",", ":"))
 with open(os.path.join(assets, "skills", "skills.json"), "w") as f:

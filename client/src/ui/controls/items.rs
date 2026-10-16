@@ -9,6 +9,8 @@ pub struct Definition {
     pub name: String, pub description: String, pub category: String, pub icon: String,
     pub max_stack: u32, pub required_level: u32, pub slots: Vec<i8>, pub class_name: String, pub rarity: String,
     #[serde(default)] pub icon_config: String,
+    /// The raw _Template_Item ItemCategory ("Mount", "Armor"...).
+    #[serde(default)] pub item_category: String,
 }
 /// A rolled appearance's icon and icon configuration (_Template_ItemAppearance).
 #[derive(Deserialize)]
@@ -156,6 +158,11 @@ const DOUBLE_CLICK: f64 = 0.4;
 /// first free bag cell. None when it cannot be worn (class, level) or go back.
 fn equip_toggle(state:&InventoryState, catalog:&Catalog, id:u32, level:u32, class:&str) -> Option<dsor_proto::commands::ClientCommand> {
     let item=state.items.get(&id)?; let meta=catalog.items.get(&item.template)?;
+    // A mount is used, not worn: InventoryItemAction 0x13 starts its cast, and
+    // again takes it away (DSOR_Server services/inventory_map.py, "use operation").
+    if meta.item_category=="Mount" {
+        return Some(crate::gameplay::inventory::command(id,dsor_proto::commands::inventory::Inventory::USE,vec![]));
+    }
     if let Some(Place::Equipment(_))=state.location(id) {
         let free=state.free_slot(Place::Bag(0))?;
         return state.drop_on(id,free,meta.max_stack);

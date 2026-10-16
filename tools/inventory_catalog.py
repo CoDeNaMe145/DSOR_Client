@@ -47,7 +47,10 @@ def export_inventory(db, textures, loca, assets):
             # The model it lies on the ground as (crate::drops), and the sequence
             # that replaces its rarity glow, if any.
             graphics=r.get('Graphics') or '', drop_sequence=r.get('DropSequenceOverride') or '',
-            icon_config=r.get('IconConfiguration') or '')
+            icon_config=r.get('IconConfiguration') or '',
+            # The raw category (the localized one is `category`): Mount items are
+            # used, not equipped (crate::ui::controls::items).
+            item_category=r.get('ItemCategory') or '')
     # A generated item shows its rolled appearance's icon (ItemInfo.appearance),
     # not its template's: _Template_ItemAppearance.Icon, and its icon frame/background
     # configuration (_Template_IconConfig).

@@ -220,6 +220,10 @@ pub struct Net {
     /// Status effects the server started on actors (82), and ground effects it
     /// placed (64) or removed (65), for crate::gameplay::skills.
     pub status_events: Vec<StatusEvent>,
+    /// Every StatusEffect element as (holder, wire index, instance, added):
+    /// crate::actors::mounts finds the ride effects among them (an element
+    /// without details is the removal).
+    pub mount_events: Vec<(u32, u16, u32, bool)>,
     pub location_events: Vec<LocationEvent>,
     /// Offline play: status effects by name (holder, status id, seconds), for
     /// crate::gameplay::skills (online they come by wire index in `status_events`).
@@ -730,6 +734,7 @@ pub fn start_offline(world: &mut World, class: u8, gender: u8) {
         skill_book: None,
         skill_events: Vec::new(),
         status_events: Vec::new(),
+        mount_events: Vec::new(),
         location_events: Vec::new(),
         named_status_events: Vec::new(),
         location_gone: Vec::new(),
@@ -952,6 +957,7 @@ pub(crate) fn start_session(world: &mut World, config: NetConfig) {
         skill_book: None,
         skill_events: Vec::new(),
         status_events: Vec::new(),
+        mount_events: Vec::new(),
         location_events: Vec::new(),
         named_status_events: Vec::new(),
         location_gone: Vec::new(),
@@ -1310,6 +1316,7 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
                 if actor.is_some() && actor == net.local_actor {
                     info!("status effect {} on us for {:.2} s (instance {})", e.index, e.duration as f32 / 25.0, e.instance);
                 }
+                net.mount_events.push((actor.unwrap_or(e.source), e.index, e.instance, e.tail.is_some()));
                 net.status_events.push(StatusEvent {
                     // release261: the holder is the command's actor (e.source is
                     // who caused it).
@@ -1738,12 +1745,12 @@ fn walk_local(
     time: Res<Time>,
     nav: Option<Res<CurrentNav>>,
     meshes: Res<Assets<NavMesh>>,
-    mut players: Query<(&mut Transform, &mut LocalPlayer, &mut CharacterAnim)>,
+    mut players: Query<(&mut Transform, &mut LocalPlayer, &mut CharacterAnim, Option<&crate::actors::mounts::Riding>)>,
     mut autowalked: Local<bool>,
 ) {
     let _profile = crate::diagnostics::hud::FrameSpan::new("net::walk_local");
     let mesh = nav.as_ref().and_then(|n| meshes.get(&n.0));
-    for (mut tf, mut player, mut anim) in &mut players {
+    for (mut tf, mut player, mut anim, riding) in &mut players {
         // On arrival, stand on the ground nearest where the server put us.
         if let (Some(mesh), false) = (mesh, player.snapped) {
             if let Some(p) = mesh.nearest(tf.translation, 4.0) {
@@ -1773,7 +1780,7 @@ fn walk_local(
             let here = tf.translation;
             let mut to = target - here;
             to.y = 0.0;
-            let step = RUN_SPEED * time.delta_secs();
+            let step = (RUN_SPEED + riding.map_or(0.0, |r| r.bonus)) * time.delta_secs();
             let dir = to.normalize_or_zero();
             let wish = if to.length() <= step { Vec3::new(target.x, here.y, target.z) } else { here + dir * step };
             let next = match mesh {

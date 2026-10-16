@@ -410,7 +410,7 @@ fn main() {
         .add_plugins(ui_input::UiInputPlugin)
         .add_plugins(loading::LoadingPlugin)
         .add_plugins(selection::SelectionPlugin)
-        .add_plugins((anim_cull::AnimCullPlugin, refraction::RefractionPlugin, surfaces::SurfacesPlugin, exits::ExitsPlugin, monsters::MonstersPlugin, combat_text::CombatTextPlugin, debug::DebugPlugin, stats::StatsPlugin, clamp::ClampPlugin, nebula_bloom::NebulaBloomPlugin, occlusion::OcclusionPlugin))
+        .add_plugins((anim_cull::AnimCullPlugin, refraction::RefractionPlugin, surfaces::SurfacesPlugin, exits::ExitsPlugin, monsters::MonstersPlugin, crate::actors::mounts::MountsPlugin, combat_text::CombatTextPlugin, debug::DebugPlugin, stats::StatsPlugin, clamp::ClampPlugin, nebula_bloom::NebulaBloomPlugin, occlusion::OcclusionPlugin))
         .add_plugins((highlight::HighlightPlugin, picking::PickingPlugin, chat::ChatPlugin, props::PropsPlugin, drops::DropsPlugin))
         .insert_resource(ClearColor(Color::srgb(0.05, 0.06, 0.08)))
         // The sun's one shadow cascade covers 60 units: 1 024 texels in the

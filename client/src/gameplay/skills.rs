@@ -258,6 +258,12 @@ pub struct StatusDef {
     pub tick: HashMap<String, String>,
     pub done: HashMap<String, String>,
     pub stop: HashMap<String, String>,
+    /// A ride effect's mount (_Template_Mount id; crate::actors::mounts).
+    #[serde(default)]
+    pub mount: String,
+    /// Its MovementBonus: added to the run speed while it lasts.
+    #[serde(default)]
+    pub movement_bonus: f32,
 }
 
 impl StatusDef {
@@ -287,6 +293,10 @@ impl SkillData {
     /// Every sequence of the sequencer's data (sequences.json).
     pub(crate) fn sequences(&self) -> &Handle<SequenceTable> {
         &self.sequences
+    }
+    /// The status effects by wire index (status_effects.json).
+    pub(crate) fn status(&self) -> &Handle<StatusTable> {
+        &self.status
     }
 }
 
