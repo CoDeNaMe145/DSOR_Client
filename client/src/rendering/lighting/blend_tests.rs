@@ -135,10 +135,52 @@ fn entering_exiting_and_retargeting_never_move_the_shadow_sun() {
 #[test]
 fn uniform_layout_matches_wgsl_and_remains_within_webgl_limits() {
     assert_eq!(GpuTerm::min_size().get(), 64);
-    assert_eq!(GpuAmbience::min_size().get(), 16 + 64 * MAX_TERMS as u64);
+    // counts, the terms, then the height fog colour and heights.
+    assert_eq!(GpuAmbience::min_size().get(), 16 + 64 * MAX_TERMS as u64 + 32);
     assert!(GpuAmbience::min_size().get() <= 16384);
     let disabled = GpuAmbience::default();
     assert_eq!(disabled.counts.x, 0);
     let active = LightBlend::from(&preset(Vec3::X, 1., 1.)).gpu(&Lighting::default());
     assert_eq!(active.counts, UVec4::new(1, 1, 0, 0));
+}
+
+#[test]
+fn height_fog_reaches_the_gpu_linear_and_only_once_enabled() {
+    // The inactive buffer (views without the level's look) is all zeros: no height fog.
+    assert_eq!(GpuAmbience::default().height_fog_color.w, 0.);
+    let wild = Bubble { height_fog_color: [0.2275, 0.6627, 0.6902, 1.], fog_near_height: -3., fog_far_height: -20., ..default() };
+    let gpu = LightBlend::from(&wild).gpu(&Lighting::default()).with_height_fog(&wild);
+    let c = Color::srgb(0.2275, 0.6627, 0.6902).to_linear();
+    near(gpu.height_fog_color.truncate(), Vec3::new(c.red, c.green, c.blue));
+    assert_eq!(gpu.height_fog_color.w, 1.);
+    assert_eq!(gpu.fog_heights, Vec4::new(-3., -20., 0., 0.));
+}
+
+#[test]
+fn pbr_patch_adds_height_fog_after_distance_fog_on_fogged_materials_only() {
+    let source = r#"
+        var light_contrib = lighting::directional_light(i, &lighting_input, enable_diffuse);
+        direct_light += light_contrib * shadow;
+        let transmitted_light_contrib =
+            lighting::directional_light(i, &transmissive_lighting_input, enable_diffuse);
+        transmitted_light += transmitted_light_contrib * transmitted_shadow;
+    if ((pbr_input.material.flags & pbr_types::STANDARD_MATERIAL_FLAGS_FOG_ENABLED_BIT) != 0u) {
+        output_color = apply_fog(
+            view_bindings::fog,
+            output_color,
+            pbr_input.world_position.xyz,
+            view_bindings::view.world_position.xyz,
+            pbr_input.frag_coord.xy,
+        );
+    }
+#endif  // DISTANCE_FOG
+"#;
+    let patched = blend_function(source).expect("anchors present");
+    let fog = patched.find("output_color = apply_fog(").unwrap();
+    let height = patched.find("output_color = apply_height_fog(output_color, pbr_input.world_position.xyz);").unwrap();
+    let fogged_block_end = patched.find("#endif  // DISTANCE_FOG").unwrap();
+    assert!(fog < height && height < fogged_block_end, "height fog follows distance fog inside its block");
+    assert!(patched.contains("#import dsor::ambience::{ambience, apply_ambience, apply_height_fog}"));
+    // A Bevy version without this fog block must fail loudly, never silently skip.
+    assert!(blend_function(&source.replace("#endif  // DISTANCE_FOG", "#endif")).is_none());
 }

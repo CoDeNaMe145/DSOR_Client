@@ -11,6 +11,10 @@ struct AmbienceTerm {
 struct Ambience {
     counts: vec4<u32>,
     terms: array<AmbienceTerm, 64>,
+    // rgb linear colour, w 1 when enabled.
+    height_fog_color: vec4<f32>,
+    // x FogNearHeight, y FogFarHeight.
+    fog_heights: vec4<f32>,
 }
 @group(1) @binding(0) var<uniform> ambience: Ambience;
 
@@ -29,4 +33,21 @@ fn apply_ambience(input: ptr<function, LightingInput>, enable_diffuse: bool, sha
         }
     }
     return result;
+}
+
+// Nebula's height fog, after distance fog. The 2018/261 vertex shaders compute
+// saturate((far - y) / (far - near)) from the world height (heightFogColor.w is
+// FogFarHeight, fogDistances.z FogNearHeight), and the pixel shaders lerp from
+// heightFogColor to the fogged colour by it: none above near, all of it past far.
+fn apply_height_fog(color: vec4<f32>, world_position: vec3<f32>) -> vec4<f32> {
+    let span = ambience.fog_heights.y - ambience.fog_heights.x;
+    if ambience.height_fog_color.w == 0.0 || abs(span) < 1e-4 {
+        return color;
+    }
+    let clear = saturate((ambience.fog_heights.y - world_position.y) / span);
+    // In gamma space, as the D3D9 shaders' lrp mixed non-sRGB colours: a linear
+    // mix washes partial fog out (about 1.8x brighter at 30% over dark ground).
+    let gamma = pow(max(color.rgb, vec3(0.0)), vec3(1.0 / 2.2));
+    let fog = pow(ambience.height_fog_color.rgb, vec3(1.0 / 2.2));
+    return vec4(pow(mix(fog, gamma, clear), vec3(2.2)), color.a);
 }
