@@ -21,6 +21,14 @@ codegen-units = 1
 
 # Bevy compiles slowly unoptimised and runs badly in debug; dependencies get
 # optimised even in dev builds, our own crates stay quick to rebuild.
+# Quick native builds for testing: release optimisations without LTO, in
+# parallel units, incremental (target/fast/dsor-client).
+[profile.fast]
+inherits = "release"
+lto = false
+codegen-units = 256
+incremental = true
+
 [profile.dev]
 opt-level = 1
 
