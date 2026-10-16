@@ -379,6 +379,16 @@ fn spawn_texts(
             ox += if heads(&mut seed) { -t.offset_x_var } else { t.offset_x_var };
         }
         let anim = table.labels.get(&t.label).cloned();
+        // Texts without a label clip (NameLabel: coins, Andermant, wisdom,
+        // experience) move by their velocity alone and last their table duration.
+        // EVIDENCE: the user's view of the game: "Coins received" rises a little
+        // and is gone in ~1.5 s. Read as world units per second over the table's
+        // 3.5 s it rose 3.5 units ("monte beaucoup trop et devrait disparaitre
+        // plus rapidement").
+        // UNVERIFIED: the velocity's unit and the lifetime the client uses
+        //   (0x58A8F8 hands both to the element; their consumer was not traced).
+        let (scale, lifetime) = if anim.is_none() && t.label == "NameLabel" { (0.25, 1.5) } else { (1.0, t.duration.max(0.1)) };
+        let (vx, vy) = (vx * scale, vy * scale);
         let vh = t.size * 96.0 / 72.0 / LAYOUT_HEIGHT * 100.0;
         commands.spawn((
             Floating {
@@ -395,8 +405,8 @@ fn spawn_texts(
                 // as the offsets.
                 velocity: Vec2::new(vx, vy),
                 age: 0.0,
-                duration: anim.as_ref().map(|a| a.duration()).unwrap_or(t.duration.max(0.1)),
-                fade: t.fade,
+                duration: anim.as_ref().map(|a| a.duration()).unwrap_or(lifetime),
+                fade: t.fade.min(lifetime),
                 color: t.color,
                 anim,
             },
