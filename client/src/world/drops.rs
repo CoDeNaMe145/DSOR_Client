@@ -94,12 +94,12 @@ pub struct GroundItem {
     pub id: u32,
     name: String,
     rarity: usize,
-    /// Its model's scene root (not its glow effects): what the hover outlines.
+    /// Its model's scene root (not its glow effects).
     model: Entity,
 }
 
-/// The ground item under the cursor: (its entity, its model's scene root).
-/// crate::rendering::highlight draws the white halo around the model.
+/// The ground item under the cursor: (its entity, its model's scene root). It
+/// shows its name; no outline (the game draws none: "y'a pas d'aura blanche").
 #[derive(Resource, Default)]
 pub struct ItemHover(pub Option<(Entity, Entity)>);
 

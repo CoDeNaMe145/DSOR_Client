@@ -6,7 +6,7 @@
 
 struct Params {
     color: vec4<f32>,
-    // xy: one pixel of the silhouette image, in uv; z: the ring spacing, pixels
+    // xy: one pixel of the silhouette image, in uv
     texel: vec4<f32>,
 }
 
@@ -31,7 +31,7 @@ fn fragment(in: UiVertexOutput) -> @location(0) vec4<f32> {
     var glow = 0.0;
     // Three rings, each weaker farther out.
     for (var ring = 1; ring <= 3; ring++) {
-        let r = f32(ring) * max(params.texel.z, 1.0);
+        let r = f32(ring) * 1.5;
         let w = 1.0 - (f32(ring) - 1.0) * 0.3;
         for (var i = 0; i < 12; i++) {
             let a = TAU * f32(i) / 12.0;
