@@ -737,7 +737,10 @@ pub(super) fn chat_rows(
     added: Query<(), Added<ChatRow>>,
     mut windows: Query<(&Window2018, &mut WindowControls)>,
 ) {
-    if !log.is_changed() && added.is_empty() { return; }
+    // The compact preview fades its lines out (ChatMessageLogHideTime): it is
+    // redrawn every frame while one of them is still shown.
+    let fading = log.lines.iter().any(|l| l.at.elapsed().as_secs_f32() < crate::network::chat::HIDE_AFTER + 0.1);
+    if !log.is_changed() && added.is_empty() && !fading { return; }
     let count = rows.iter().filter(|(row, _, _)| !row.compact).count();
     let compact_count = rows.iter().filter(|(row, _, _)| row.compact).count();
     let log = log.bypass_change_detection();
@@ -745,10 +748,14 @@ pub(super) fn chat_rows(
     let recent = log.recent_rows(compact_count, CHAT_ROW_WIDTH, CHAT_FONT_SIZE);
     let first = count - shown.len();
     for (row, mut text, mut colour) in &mut rows {
-        let (lines, first) = if row.compact { (&recent, compact_count - recent.len()) } else { (&shown, first) };
-        let (kind, line) = row.index.checked_sub(first).and_then(|i| lines.get(i)).cloned().unwrap_or_default();
+        let (kind, line, alpha) = if row.compact {
+            row.index.checked_sub(compact_count - recent.len()).and_then(|i| recent.get(i)).cloned().unwrap_or_default()
+        } else {
+            row.index.checked_sub(first).and_then(|i| shown.get(i)).cloned().map(|(k, l)| (k, l, 1.0)).unwrap_or_default()
+        };
         if text.0 != line { text.0 = line; }
-        if colour.0 != kind.colour() { colour.0 = kind.colour(); }
+        let c = kind.colour().with_alpha(alpha);
+        if colour.0 != c { colour.0 = c; }
     }
     let scrolled = u8::from(log.scroll > 0);
     for (w, mut c) in &mut windows {
@@ -945,7 +952,12 @@ pub(super) fn edit_text(
     }
     for (e, w, mut c, _, _) in &mut windows {
         if w.0 != CHAT_WINDOW { continue; }
-        let typing = u8::from(pointer.focus.as_ref().is_some_and(|(root, _)| *root == e));
+        // A started line keeps its text when the chat loses the focus; the hint
+        // ("Press enter to open the chat") only covers an empty entry.
+        // FAILURE (2026-10-17): clicking away while typing showed the hint over
+        // the half-written line.
+        let draft = c.entries.values().any(|t| !t.text.is_empty());
+        let typing = u8::from(pointer.focus.as_ref().is_some_and(|(root, _)| *root == e) || draft);
         if c.pages.get("chat_typing") != Some(&typing) { c.pages.insert("chat_typing", typing); }
     }
     input.typing = pointer.focus.is_some();

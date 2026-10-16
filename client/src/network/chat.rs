@@ -101,7 +101,15 @@ impl Kind {
 pub struct ChatLine {
     pub kind: Kind,
     pub text: String,
+    /// When it arrived: the compact preview hides it after HIDE_AFTER.
+    pub at: bevy::platform::time::Instant,
 }
+
+/// How long a line stays in the compact preview, seconds.
+/// EVIDENCE: static.db4 _Globals ChatMessageLogHideTime = 15.0.
+pub const HIDE_AFTER: f32 = 15.0;
+/// Its fade at the end. UNVERIFIED: the client's own fade was not traced.
+pub const HIDE_FADE: f32 = 1.0;
 
 /// What the window shows and what waits to be sent.
 #[derive(Resource, Default)]
@@ -129,7 +137,7 @@ impl ChatLog {
 
     pub fn push(&mut self, kind: Kind, text: String) {
         info!("chat: {text}");
-        self.lines.push_back(ChatLine { kind, text });
+        self.lines.push_back(ChatLine { kind, text, at: bevy::platform::time::Instant::now() });
         while self.lines.len() > KEPT {
             self.lines.pop_front();
         }
@@ -215,8 +223,21 @@ impl ChatLog {
     }
 
     /// Compact previews always show recent messages, independently of scrollback.
-    pub fn recent_rows(&self, rows: usize, width: f32, size: f32) -> Vec<(Kind, String)> {
-        self.display_rows(rows, &|row: &str| text_width(row, size) <= width, 0).0
+    /// Only the lines of the last HIDE_AFTER seconds, each with its opacity (1,
+    /// fading to 0 over its last HIDE_FADE).
+    pub fn recent_rows(&self, rows: usize, width: f32, size: f32) -> Vec<(Kind, String, f32)> {
+        let fits = |row: &str| text_width(row, size) <= width;
+        let mut all: Vec<(Kind, String, f32)> = Vec::new();
+        for line in &self.lines {
+            let age = line.at.elapsed().as_secs_f32();
+            if age >= HIDE_AFTER {
+                continue;
+            }
+            let alpha = ((HIDE_AFTER - age) / HIDE_FADE).clamp(0.0, 1.0);
+            all.extend(wrap_with(&line.text, &fits).into_iter().map(|row| (line.kind, row, alpha)));
+        }
+        let start = all.len().saturating_sub(rows);
+        all.split_off(start)
     }
 
     fn rows_by(&mut self, rows: usize, fits: &dyn Fn(&str) -> bool) -> Vec<(Kind, String)> {
