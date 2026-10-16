@@ -40,7 +40,14 @@ pub struct HighlightCamera;
 
 /// What is highlighted now, and in which colour.
 #[derive(Resource, Default, PartialEq, Clone, Copy)]
-struct Highlighted(Option<(Entity, [u32; 4])>);
+struct Highlighted(Option<(Entity, [u32; 4], u32)>);
+
+/// The outline's ring spacing, pixels: three rings, each this much farther out.
+const ACTOR_RING: f32 = 1.5;
+/// A hovered ground item's halo is wider and softer (the game's: a white bloom
+/// around the item -- the user's screenshots, 2026-10-16).
+/// UNVERIFIED: the 2018 client's own width; read from screenshots only.
+const ITEM_RING: f32 = 4.0;
 
 #[derive(Resource)]
 struct Target {
@@ -120,13 +127,16 @@ fn pick(
     hovered: Res<crate::actors::monsters::Hovered>,
     actors: Query<(Entity, &GlobalTransform, &InheritedVisibility, Option<&crate::actors::picking::PickBoxes>), Or<(With<crate::actors::npc::Npc>, (With<crate::network::net::RemotePlayer>, With<crate::actors::character::Character>, Without<crate::actors::monsters::Monster>))>>,
     joints: Query<&GlobalTransform>,
+    item: Res<crate::world::drops::ItemHover>,
     mut highlighted: ResMut<Highlighted>,
 ) {
     let colour = |c: Vec4| [c.x.to_bits(), c.y.to_bits(), c.z.to_bits(), c.w.to_bits()];
     let now = if ui.over_ui {
         None
     } else if let Some((e, _)) = hovered.0 {
-        Some((e, colour(ENEMY)))
+        Some((e, colour(ENEMY), ACTOR_RING.to_bits()))
+    } else if let Some((_, model)) = item.0 {
+        Some((model, colour(DEFAULT), ITEM_RING.to_bits()))
     } else {
         let ray = windows
             .single()
@@ -142,7 +152,7 @@ fn pick(
                     if best.is_none_or(|(bt, _)| t < bt) { best = Some((t, e)); }
                 }
             }
-            best.map(|(_, e)| (e, colour(DEFAULT)))
+            best.map(|(_, e)| (e, colour(DEFAULT), ACTOR_RING.to_bits()))
         })
     };
     if highlighted.0 != now {
@@ -164,7 +174,7 @@ fn relayer(
     target: Option<Res<Target>>,
     mut materials: ResMut<Assets<OutlineMaterial>>,
 ) {
-    let want = highlighted.0.map(|(e, _)| e);
+    let want = highlighted.0.map(|(e, _, _)| e);
     // Meshes spawned later (parts still loading) join on the next frames too.
     if want == *last && want.is_none() {
         return;
@@ -177,9 +187,10 @@ fn relayer(
         if let Ok(mut cam) = camera.single_mut() {
             cam.is_active = want.is_some();
         }
-        if let (Some(t), Some((_, c))) = (target.as_ref(), highlighted.0) {
+        if let (Some(t), Some((_, c, ring))) = (target.as_ref(), highlighted.0) {
             if let Some(mut m) = materials.get_mut(&t.material) {
                 m.color = Vec4::new(f32::from_bits(c[0]), f32::from_bits(c[1]), f32::from_bits(c[2]), f32::from_bits(c[3]));
+                m.texel.z = f32::from_bits(ring);
             }
         }
     }
@@ -234,6 +245,6 @@ fn fit_target(
     }
     if let Some(mut m) = materials.get_mut(&t.material) {
         m.mask = t.image.clone();
-        m.texel = Vec4::new(1.0 / size.x as f32, 1.0 / size.y as f32, 0.0, 0.0);
+        m.texel = Vec4::new(1.0 / size.x as f32, 1.0 / size.y as f32, m.texel.z, 0.0);
     }
 }

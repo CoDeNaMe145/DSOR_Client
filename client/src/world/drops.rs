@@ -94,7 +94,25 @@ pub struct GroundItem {
     pub id: u32,
     name: String,
     rarity: usize,
+    /// Its model's scene root (not its glow effects): what the hover outlines.
+    model: Entity,
 }
+
+/// The ground item under the cursor: (its entity, its model's scene root).
+/// crate::rendering::highlight draws the white halo around the model.
+#[derive(Resource, Default)]
+pub struct ItemHover(pub Option<(Entity, Entity)>);
+
+/// The item a click asked for: walked to, picked up once within reach.
+#[derive(Resource, Default)]
+struct PendingPickup(Option<Entity>);
+
+/// Within this flat distance the client sends PickupItem.
+/// SOURCE: DSOR_Server services/world.py _handle_pickup_item refuses beyond 4.0.
+const PICKUP_REACH: f32 = 2.5;
+/// The pickable sphere around an item: its centre this high over the ground.
+const PICK_HEIGHT: f32 = 0.3;
+const PICK_RADIUS: f32 = 0.6;
 
 /// Its model, until its clip is started.
 #[derive(Component)]
@@ -113,7 +131,9 @@ impl Plugin for DropsPlugin {
             .add_systems(Startup, |mut commands: Commands, assets: Res<AssetServer>| {
                 commands.insert_resource(Catalog(assets.load("interface/inventory.items.json")));
             })
-            .add_systems(Update, (spawn_drops, animate_drops, labels).chain());
+            .init_resource::<ItemHover>()
+            .init_resource::<PendingPickup>()
+            .add_systems(Update, (spawn_drops, animate_drops, hover_items, pick_up, labels).chain());
     }
 }
 
@@ -172,7 +192,6 @@ fn spawn_drops(
         let e = commands
             .spawn((
                 Name::new(format!("item {}", item.template)),
-                GroundItem { id: item.id, name, rarity },
                 ItemModel(gltf),
                 Transform::from_translation(at),
                 Visibility::default(),
@@ -181,12 +200,13 @@ fn spawn_drops(
         if let Some(root) = root {
             commands.entity(e).insert(ChildOf(root));
         }
-        commands.spawn((
+        let model = commands.spawn((
             bevy::world_serialization::WorldAssetRoot(assets.load(bevy::gltf::GltfAssetLabel::Scene(0).from_asset(path))),
             ChildOf(e),
             Transform::default(),
             Visibility::default(),
-        ));
+        )).id();
+        commands.entity(e).insert(GroundItem { id: item.id, name, rarity, model });
         // Its glow: the template's own sequence, else its rarity's.
         let glow = template.drop_sequence.rsplit('/').next().filter(|s| !s.is_empty()).map(str::to_owned)
             .unwrap_or_else(|| format!("drop_{}", rarity_name(rarity)));
@@ -226,8 +246,78 @@ fn animate_drops(
 }
 
 /// While Ctrl is held: each item's name over it, in its rarity's colour.
+/// The item under the cursor, unless the UI or a monster has it.
+fn hover_items(
+    ui: Res<crate::ui_input::UiInput>,
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    cameras: Query<(&Camera, &GlobalTransform), (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
+    monster: Option<Res<crate::monsters::Hovered>>,
+    items: Query<(Entity, &GroundItem, &GlobalTransform, &InheritedVisibility)>,
+    mut hover: ResMut<ItemHover>,
+) {
+    let ray = (!ui.over_ui && monster.is_none_or(|m| m.0.is_none()))
+        .then(|| windows.single().ok().and_then(|w| w.cursor_position()))
+        .flatten()
+        .zip(cameras.single().ok())
+        .and_then(|(c, (cam, at))| cam.viewport_to_world(at, c).ok());
+    let now = ray.and_then(|ray| {
+        let mut best: Option<(f32, Entity, Entity)> = None;
+        for (e, item, at, shown) in &items {
+            if !shown.get() {
+                continue;
+            }
+            let centre = at.translation() + Vec3::Y * PICK_HEIGHT;
+            let t = (centre - ray.origin).dot(*ray.direction);
+            if t <= 0.0 || ray.get_point(t).distance(centre) > PICK_RADIUS {
+                continue;
+            }
+            if best.is_none_or(|(bt, _, _)| t < bt) {
+                best = Some((t, e, item.model));
+            }
+        }
+        best.map(|(_, e, m)| (e, m))
+    });
+    if hover.0 != now {
+        hover.0 = now;
+    }
+}
+
+/// A click on an item walks to it; within reach, PickupItem (the server answers
+/// with the item's DiscardItem and the inventory or currency it went to).
+#[allow(clippy::too_many_arguments)]
+fn pick_up(
+    ui: Res<crate::ui_input::UiInput>,
+    buttons: Res<ButtonInput<MouseButton>>,
+    hover: Res<ItemHover>,
+    mut pending: ResMut<PendingPickup>,
+    items: Query<(&GroundItem, &GlobalTransform)>,
+    mut players: Query<(&Transform, &mut crate::net::LocalPlayer)>,
+    net: Option<NonSendMut<Net>>,
+) {
+    if !ui.blocks(MouseButton::Left) && buttons.just_pressed(MouseButton::Left) {
+        pending.0 = hover.0.map(|(e, _)| e);
+    }
+    let Some(e) = pending.0 else { return };
+    let (Ok((item, at)), Some(mut net)) = (items.get(e), net) else {
+        pending.0 = None;
+        return;
+    };
+    let Ok((tf, mut player)) = players.single_mut() else { return };
+    let goal = at.translation();
+    if Vec2::new(goal.x - tf.translation.x, goal.z - tf.translation.z).length() > PICKUP_REACH {
+        if !buttons.pressed(MouseButton::Left) {
+            player.target = Some(goal);
+        }
+        return;
+    }
+    pending.0 = None;
+    player.target = None;
+    net.send(&dsor_proto::commands::ClientCommand::PickupItem(dsor_proto::commands::actors::PickupItem { item: item.id }));
+}
+
 #[allow(clippy::too_many_arguments)]
 fn labels(
+    hover: Res<ItemHover>,
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
     ui: Res<crate::ui_input::UiInput>,
@@ -245,8 +335,9 @@ fn labels(
             commands.entity(label).despawn();
         }
     }
-    if held {
-        for (e, item, _, _) in &items {
+    let hovered = hover.0.map(|(e, _)| e);
+    for (e, item, _, _) in &items {
+        if held || hovered == Some(e) {
             if !labelled.contains_key(&e) {
                 commands.spawn((
                     ItemLabel(e),
@@ -267,7 +358,7 @@ fn labels(
     }
     let cam = cameras.single().ok();
     for (_, of, mut node, mut visibility, size) in &mut labels {
-        let screen = items.get(of.0).ok().filter(|(_, _, _, shown)| held && shown.get()).and_then(|(_, _, at, _)| {
+        let screen = items.get(of.0).ok().filter(|(e, _, _, shown)| (held || hovered == Some(*e)) && shown.get()).and_then(|(_, _, at, _)| {
             cam.and_then(|(c, ct)| c.world_to_viewport(ct, at.translation() + Vec3::Y * LABEL_HEIGHT).ok())
         });
         match screen {
