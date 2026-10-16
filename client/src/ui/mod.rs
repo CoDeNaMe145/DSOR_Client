@@ -80,6 +80,17 @@ fn hover_part(id: &str) -> bool {
         || id == "Canvas/Label_bg/ActorInfo/ActorInfo"
         || id.starts_with("Canvas/Label_bg/ActorInfo/ActorInfo/LevelLabel")
         || id.starts_with("Canvas/Label_bg/ActorInfo/ActorInfo/gothic_panel")
+        // release261 nests the frame and the level ring one level deeper
+        // (ActorInfo1/gothic_panel/LevelLabel/.../Levelcircle4/Level). Its shield
+        // icon, the rank circles and the shield-break sparks are other states'.
+        // FAILURE (2026-10-16): with the 2018 paths alone, a hovered monster showed
+        //   its bar and name, without its level ring or frame ("j'ai juste la barre
+        //   et le nom").
+        // UNVERIFIED: whether the rank circles (LabelBottom/Circle1..6) show for a
+        //   monster of rank > 1.
+        || (id == "Canvas/Label_bg/ActorInfo/ActorInfo/ActorInfo1"
+            || id.starts_with("Canvas/Label_bg/ActorInfo/ActorInfo/ActorInfo1/gothic_panel"))
+            && !["/Circle", "/shieldIcon", "/Spark", "/Boom", "/part", "/Anim_"].iter().any(|x| id.contains(x))
 }
 /// Windows the player opens: (window, key, depth).
 const MENU_WINDOWS: [(&str, KeyCode, f32); 5] = [

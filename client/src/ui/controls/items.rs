@@ -15,7 +15,7 @@ pub struct Definition {
 pub struct Appearance { pub icon: String, pub config: String }
 /// _Template_IconConfig: the background follows the item's rarity, or is fixed.
 #[derive(Deserialize)]
-pub struct IconConfig { pub rarity: bool, pub background: String }
+pub struct IconConfig { pub rarity: bool, pub background: String, #[serde(default)] pub frame: String }
 #[derive(Deserialize)]
 pub struct Ingredient { pub template: String, pub tab: String, pub rarity: usize, pub slot: usize, pub class_name: String, pub unlock: u32 }
 #[derive(Asset, TypePath, Deserialize)]
@@ -31,15 +31,25 @@ impl Catalog {
     /// FAILURE (2026-10-16): every glove showed warrior_gloves_01a, with no rarity
     ///   background ("les icones des items sont tous les memes").
     pub fn icon(&self, template: &str, item: Option<&ItemInfo>) -> (Option<&str>, Option<&str>) {
+        let (icon, background, _) = self.icon_parts(template, item);
+        (icon, background)
+    }
+    /// `icon`, and the frame drawn over it (_Template_IconConfig.FrameTexture:
+    /// icons_toolkit/frame_slim_basic, _unique, _set, _mythic).
+    /// FAILURE (2026-10-16): without it the icon covered the whole cell, border
+    ///   included ("les images sont pas bien dans les slots").
+    pub fn icon_parts(&self, template: &str, item: Option<&ItemInfo>) -> (Option<&str>, Option<&str>, Option<&str>) {
         let def = self.items.get(template);
         let look = item.and_then(|i| self.appearances.get(if i.fourth_name.is_empty() { &i.appearance } else { &i.fourth_name }));
         let icon = look.map(|a| a.icon.as_str()).filter(|i| !i.is_empty()).or_else(|| def.map(|d| d.icon.as_str()).filter(|i| !i.is_empty()));
         let config = look.map(|a| a.config.as_str()).filter(|c| !c.is_empty()).or_else(|| def.map(|d| d.icon_config.as_str()));
-        let background = config.and_then(|c| self.icon_configs.get(c)).and_then(|c| if c.rarity {
+        let config = config.and_then(|c| self.icon_configs.get(c));
+        let background = config.and_then(|c| if c.rarity {
             let rarity = item.map(|i| i.kind as usize).unwrap_or(0);
             self.rarity_backgrounds.get(rarity).map(String::as_str)
         } else { Some(c.background.as_str()) }).filter(|b| !b.is_empty());
-        (icon, background)
+        let frame = config.map(|c| c.frame.as_str()).filter(|f| !f.is_empty());
+        (icon, background, frame)
     }
 }
 #[derive(Default, TypePath)]
@@ -259,10 +269,14 @@ pub fn render(mut commands:Commands,windows:Query<(Entity,&Window2018,&WindowCon
         if locked {commands.spawn((Sprite::from_color(Color::srgba(0.01,0.01,0.01,0.8),size),Anchor::TOP_LEFT,Transform::from_translation(pos.extend(0.0)),RenderLayers::layer(LAYER),ChildOf(group)));continue;}
         let Some(d)=displayed(cell,c,&net.inventory,catalog) else{continue};
         let tint=if d.amount==0 {Color::srgba(0.38,0.38,0.38,0.65)} else{Color::WHITE};
-        let (icon,background)=catalog.icon(d.template,d.item);
+        let (icon,background,frame)=catalog.icon_parts(d.template,d.item);
         if let Some(bg)=background {
             commands.spawn((Sprite{image:assets.load(bg.to_owned()),custom_size:Some(size-Vec2::splat(5.0)),color:tint,..default()},Anchor::TOP_LEFT,
                 Transform::from_xyz(pos.x+2.5,pos.y-2.5,0.05),RenderLayers::layer(LAYER),ChildOf(group)));
+        }
+        if let Some(f)=frame {
+            commands.spawn((Sprite{image:assets.load(f.to_owned()),custom_size:Some(size-Vec2::splat(5.0)),color:tint,..default()},Anchor::TOP_LEFT,
+                Transform::from_xyz(pos.x+2.5,pos.y-2.5,0.15),RenderLayers::layer(LAYER),ChildOf(group)));
         }
         if let Some(icon)=icon {
             commands.spawn((Sprite{image:assets.load(icon.to_owned()),custom_size:Some(size-Vec2::splat(5.0)),color:tint,..default()},Anchor::TOP_LEFT,

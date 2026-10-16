@@ -56,8 +56,8 @@ def export_inventory(db, textures, loca, assets):
         return 'textures/' + brush + '.png' if brush and textures.get(brush) else ''
     for app_id, brush, config in db.execute('SELECT Id, Icon, IconConfiguration FROM _Template_ItemAppearance'):
         result['appearances'][app_id] = dict(icon=texture(brush), config=config or '')
-    for cid, rarity, background in db.execute('SELECT Id, RarityControlled, BackgroundTexture FROM _Template_IconConfig'):
-        result['icon_configs'][cid] = dict(rarity=bool(rarity), background=texture(background))
+    for cid, rarity, background, frame in db.execute('SELECT Id, RarityControlled, BackgroundTexture, FrameTexture FROM _Template_IconConfig'):
+        result['icon_configs'][cid] = dict(rarity=bool(rarity), background=texture(background), frame=texture(frame))
     # RarityControlled configurations take the background of the item's rarity
     # (ItemInfo.kind: Common .. Mythic, icons_toolkit/bg_rarity_<name>).
     result['rarity_backgrounds'] = [texture('icons_toolkit/bg_rarity_' + r) for r in
