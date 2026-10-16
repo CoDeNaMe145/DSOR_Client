@@ -40,6 +40,40 @@ impl InventoryState {
         // release261 replacement map is NEW -> OLD, not the reverse.
         for (_, old) in &update.map_158 { self.items.remove(old); }
         for item in update.items.drain(..) { self.items.insert(item.id, item); }
+        let a = &update;
+        let stored = !(a.placements.is_empty() && a.extra.is_empty() && a.bank.is_empty() && a.extra_bank.is_empty()
+            && a.overflow.is_empty() && a.invisible.is_empty());
+        if update.flag {
+            // CONTRACT: a pickup's first InventoryInfo (flag set) holds the new item's
+            //   place alone: it joins the storages, it does not replace them; the
+            //   equipment map is complete even here.
+            // SOURCE: DSOR_Server protocol/world_loot_protocol.py
+            //   add_world_drop_to_inventory (delta: field_1e0 = True, one storage entry).
+            // FAILURE (2026-10-16): replaced, the bag held the picked item alone, and
+            //   the closing packet emptied it ("rien n'apparait dans mon inventaire").
+            let old = std::mem::take(&mut self.allocation);
+            let moved: std::collections::HashSet<u32> = update.placements.iter().chain(&update.extra).chain(&update.bank)
+                .chain(&update.extra_bank).map(|(id, _)| *id).chain(update.overflow.iter().chain(&update.invisible).copied()).collect();
+            let keep = |v: Vec<(u32, u32)>| v.into_iter().filter(|(id, _)| !moved.contains(id));
+            update.placements = keep(old.placements).chain(update.placements).collect();
+            update.extra = keep(old.extra).chain(update.extra).collect();
+            update.bank = keep(old.bank).chain(update.bank).collect();
+            update.extra_bank = keep(old.extra_bank).chain(update.extra_bank).collect();
+            update.overflow = old.overflow.into_iter().filter(|id| !moved.contains(id)).chain(update.overflow).collect();
+            update.invisible = old.invisible.into_iter().filter(|id| !moved.contains(id)).chain(update.invisible).collect();
+        } else if !stored && update.items.is_empty() && !self.allocation.placements.is_empty() {
+            // The transaction's closing InventoryInfo carries no item and no storage
+            // entry (world_loot_protocol.py: `final`): the storages stand.
+            let old = std::mem::take(&mut self.allocation);
+            (update.placements, update.extra, update.bank, update.extra_bank, update.overflow, update.invisible) =
+                (old.placements, old.extra, old.bank, old.extra_bank, old.overflow, old.invisible);
+        }
+        for id in &update.removed {
+            update.placements.retain(|(i, _)| i != id);
+            update.extra.retain(|(i, _)| i != id);
+            update.bank.retain(|(i, _)| i != id);
+            update.extra_bank.retain(|(i, _)| i != id);
+        }
         self.allocation = update;
         self.ready = true;
         self.revision = self.revision.wrapping_add(1);
@@ -142,6 +176,16 @@ mod tests {
         assert_eq!(s.at(Place::Bag(0)).unwrap().third, 7);
         assert_eq!(s.at(Place::Bag(2)).unwrap().id, 4);
         assert_eq!(s.at(Place::Bag(1)).unwrap().third, 6);
+    }
+    #[test]
+    fn a_picked_item_joins_the_bag_and_the_closing_packet_keeps_it() {
+        let mut s = state();
+        let delta = InventoryInfo { items: vec![item(9, 1)], placements: vec![(9, 5)], storage_sizes: [0, 0, 21, 0, 0, 0], flag: true, ..Default::default() };
+        s.apply(delta);
+        s.apply(InventoryInfo { storage_sizes: [0, 0, 21, 0, 0, 0], ..Default::default() });
+        assert_eq!(s.at(Place::Bag(5)).unwrap().id, 9);
+        assert_eq!(s.at(Place::Bag(0)).unwrap().id, 1);
+        assert_eq!(s.at(Place::Bag(1)).unwrap().id, 2);
     }
     #[test]
     fn split_sends_amount_remaining_and_refuses_occupied_or_locked_slots() {

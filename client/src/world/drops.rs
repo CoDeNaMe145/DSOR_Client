@@ -253,13 +253,31 @@ fn hover_items(
     cameras: Query<(&Camera, &GlobalTransform), (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
     monster: Option<Res<crate::monsters::Hovered>>,
     items: Query<(Entity, &GroundItem, &GlobalTransform, &InheritedVisibility)>,
+    labels: Query<(&ItemLabel, &Node, &ComputedNode, &Visibility)>,
+    keys: Res<ButtonInput<KeyCode>>,
     mut hover: ResMut<ItemHover>,
 ) {
-    let ray = (!ui.over_ui && monster.is_none_or(|m| m.0.is_none()))
+    let cursor = (!ui.over_ui && monster.is_none_or(|m| m.0.is_none()))
         .then(|| windows.single().ok().and_then(|w| w.cursor_position()))
-        .flatten()
-        .zip(cameras.single().ok())
-        .and_then(|(c, (cam, at))| cam.viewport_to_world(at, c).ok());
+        .flatten();
+    // With Ctrl held the names show; the name under the cursor is its item too
+    // (the user's view of the game: Ctrl and a click on the name picks it up).
+    let held = !ui.typing && (keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight));
+    let named = cursor.filter(|_| held).and_then(|c| {
+        labels.iter().find_map(|(of, node, size, vis)| {
+            let (Val::Px(x), Val::Px(y)) = (node.left, node.top) else { return None };
+            let s = size.size() * size.inverse_scale_factor();
+            (*vis != Visibility::Hidden && c.x >= x && c.x <= x + s.x && c.y >= y && c.y <= y + s.y).then_some(of.0)
+        })
+    });
+    if let Some(e) = named {
+        let now = items.get(e).ok().map(|(e, item, _, _)| (e, item.model));
+        if hover.0 != now {
+            hover.0 = now;
+        }
+        return;
+    }
+    let ray = cursor.zip(cameras.single().ok()).and_then(|(c, (cam, at))| cam.viewport_to_world(at, c).ok());
     let now = ray.and_then(|ray| {
         let mut best: Option<(f32, Entity, Entity)> = None;
         for (e, item, at, shown) in &items {
@@ -305,9 +323,7 @@ fn pick_up(
     let Ok((tf, mut player)) = players.single_mut() else { return };
     let goal = at.translation();
     if Vec2::new(goal.x - tf.translation.x, goal.z - tf.translation.z).length() > PICKUP_REACH {
-        if !buttons.pressed(MouseButton::Left) {
-            player.target = Some(goal);
-        }
+        player.target = Some(goal);
         return;
     }
     pending.0 = None;

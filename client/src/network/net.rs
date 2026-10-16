@@ -1698,8 +1698,11 @@ fn click_to_move(
     net: Option<NonSend<Net>>,
     time: Res<Time>,
     dialogue: Option<Res<crate::gameplay::dialogue::Dialogue>>,
+    item: Option<Res<crate::world::drops::ItemHover>>,
 ) {
     if dialogue.is_some_and(|d| d.held) { return; }
+    // An item (or its name) under the cursor: crate::world::drops walks to it.
+    if item.is_some_and(|i| i.0.is_some()) { return; }
     if ui.blocks(MouseButton::Left) || !buttons.pressed(MouseButton::Left) || keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) {
         return;
     }
