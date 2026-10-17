@@ -176,7 +176,7 @@ fn equip_toggle(state:&InventoryState, catalog:&Catalog, id:u32, level:u32, clas
 pub fn input(mut ui:ResMut<Interaction>,mut pointer:ResMut<Pointer>,mut windows:Windows,
     primary:Query<&Window,With<PrimaryWindow>>,mouse:Res<ButtonInput<MouseButton>>,keys:Res<ButtonInput<KeyCode>>,
     net:Option<NonSendMut<crate::network::net::Net>>,data:Res<Data>,catalogs:Res<Assets<Catalog>>,time:Res<Time<Real>>,
-    mut last_click:Local<Option<(u32,f64)>>) {
+    mut last_click:Local<Option<(u32,f64)>>,mut trade:ResMut<super::trade::TradeUi>) {
     let Some(mut net)=net else{return}; let Some(catalog)=catalogs.get(&data.catalog) else{return};
     let Ok(window)=primary.single() else{return};
     let point=window.cursor_position().map(|p|p*(BASE_H/window.height().max(1.0)));
@@ -211,7 +211,14 @@ pub fn input(mut ui:ResMut<Interaction>,mut pointer:ResMut<Pointer>,mut windows:
         .find_map(|(e,_,c,_,_)|c.hovered.and_then(|b|match c.buttons[b].action {Action::Item(cell)=>Some((e,cell)),_=>None}));
     // A right click uses the item under the cursor: a mount is called (or sent
     // away), equipment is put on or taken off -- as a double click does.
-    if mouse.just_pressed(MouseButton::Right) && !busy {
+    // While trading, a right click offers the item instead (crate::ui::controls::trade).
+    let trading=windows.iter().any(|(_,n,_,v,_)|n.0==super::trade::WINDOW && *v!=Visibility::Hidden);
+    if mouse.just_pressed(MouseButton::Right) && !busy && trading {
+        if let Some((root,cell))=hovered {
+            let (_,_,c,_,_)=windows.get(root).unwrap();
+            if let Some(id)=place(cell,c).and_then(|p|net.inventory.at(p)).map(|i|i.id) {trade.add.push(id);}
+        }
+    } else if mouse.just_pressed(MouseButton::Right) && !busy {
         if let Some((root,cell))=hovered {
             let (_,_,c,_,_)=windows.get(root).unwrap();
             let class=["warrior","mage","ranger","dwarf"][c.spells.class.min(3) as usize];
@@ -246,6 +253,10 @@ pub fn input(mut ui:ResMut<Interaction>,mut pointer:ResMut<Pointer>,mut windows:
     if ui.drag.as_ref().is_some_and(|d|d.revision!=net.inventory.revision || !windows.get(d.root).is_ok_and(|(_,_,_,v,_)|*v!=Visibility::Hidden)) {ui.drag=None;}
     if let Some(d)=ui.drag.as_mut() {if point.is_some_and(|p|p.distance(d.origin)>=4.0) {d.active=true;}}
     if mouse.just_released(MouseButton::Left) {
+        // Dropped on our side of the trade window: offered.
+        let on_trade=windows.iter().filter(|(_,n,_,v,_)|n.0==super::trade::WINDOW && **v!=Visibility::Hidden)
+            .any(|(_,_,c,_,_)|c.hovered.is_some_and(|b|matches!(c.buttons[b].action,Action::Social(super::social::Social::TradeMine(_)))));
+        if on_trade {if let Some(d)=ui.drag.take().filter(|d|d.active) {trade.add.push(d.id);}}
         if let Some(d)=ui.drag.take().filter(|d|d.active && !busy) {
             if let Some((root,cell))=hovered {
                 let (_,_,c,_,_)=windows.get(root).unwrap();

@@ -130,7 +130,7 @@ fn is_menu(name: &str) -> bool {
 
 /// The notification dialogs and the player menu (controls::social): closed until
 /// a notification or a middle click opens them; their depth.
-const SOCIAL_WINDOWS: [(&str, f32); 4] = [(controls::social::GROUP_DIALOG, 640.0), (controls::social::BOOKING_DIALOG, 630.0), (controls::social::LOGIN_DIALOG, 620.0), (controls::social::CONTEXT_MENU, 660.0)];
+const SOCIAL_WINDOWS: [(&str, f32); 5] = [(controls::social::GROUP_DIALOG, 640.0), (controls::social::BOOKING_DIALOG, 630.0), (controls::social::LOGIN_DIALOG, 620.0), (controls::social::CONTEXT_MENU, 660.0), (controls::social::TRADE_WINDOW, 400.0)];
 
 /// The chat window (crate::network::chat): full controls or a compact click-through
 /// preview, switched with V; and its
@@ -483,6 +483,7 @@ impl Plugin for UiPlugin {
             .init_resource::<controls::Pointer>()
             .init_resource::<SkillClicks>()
             .init_resource::<controls::social::SocialUi>()
+            .init_resource::<controls::trade::TradeUi>()
             .insert_resource(local_map::MapSettings::load())
             .add_systems(Startup, (setup, controls::items::setup, dialogue::setup))
             .add_systems(Update, (match_scene_camera, follow_screen).chain())
@@ -491,7 +492,7 @@ impl Plugin for UiPlugin {
                 .before(bevy::sprite_render::check_entities_needing_specialization::<UiMaterial>))
             .add_systems(
                 Update,
-                ((dialogue::sync, spawn_windows, controls::sync_chat).chain(), controls::spells::sync, controls::items::sync, controls::keyboard, controls::interact, controls::spells::apply_drop, read_figures, controls::edit_text, controls::items::input, controls::order_windows, (update_fills, update_values, update_slots, (local_map::update, local_map::update_markers, local_map::appearance).chain()), controls::chat_rows, controls::sheet::rows, controls::paint, controls::items::render, (controls::spells::overlay, controls::items::overlay), show_hover_window, death_dialog, (controls::social::column, controls::social::context_menu, controls::social::answer, controls::social::dialogs).chain()).chain().before(crate::network::net::NetSystems).run_if(crate::screens::loading::gameplay_ready),
+                ((dialogue::sync, spawn_windows, controls::sync_chat).chain(), controls::spells::sync, controls::items::sync, controls::keyboard, controls::interact, controls::spells::apply_drop, read_figures, controls::edit_text, controls::items::input, controls::order_windows, (update_fills, update_values, update_slots, (local_map::update, local_map::update_markers, local_map::appearance).chain()), controls::chat_rows, controls::sheet::rows, controls::paint, controls::items::render, (controls::spells::overlay, controls::items::overlay), show_hover_window, death_dialog, (controls::trade::sync, controls::social::column, controls::social::context_menu, controls::social::answer, controls::social::dialogs, controls::trade::render).chain()).chain().before(crate::network::net::NetSystems).run_if(crate::screens::loading::gameplay_ready),
             );
         #[cfg(not(target_arch = "wasm32"))]
         app.add_systems(PreUpdate, replay::run.after(bevy::input::InputSystems)
@@ -707,6 +708,9 @@ fn spawn_windows(
             &prepared
         } else if matches!(layout.window.as_str(), CHAT_WINDOW | CHAT_MENU) {
             prepared = prepare_chat(layout);
+            &prepared
+        } else if layout.window == controls::social::CONTEXT_MENU {
+            prepared = controls::social::prepare_menu(layout);
             &prepared
         } else { layout };
         // DSOR_UI_OPEN=inventory,...: menus open from the start (screenshots).

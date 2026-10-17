@@ -28,6 +28,8 @@ pub(in crate::ui) const GROUP_DIALOG: &str = "confirmgroupdialog";
 pub(in crate::ui) const BOOKING_DIALOG: &str = "notificationbookingconfirmation";
 pub(in crate::ui) const LOGIN_DIALOG: &str = "loginreward2";
 pub(in crate::ui) const CONTEXT_MENU: &str = "cmdmodecontextmenu";
+/// The player trade window (tools/compose_trade_ui.py; crate::ui::controls::trade).
+pub(in crate::ui) const TRADE_WINDOW: &str = "tradewindow";
 const DIALOGS: [&str; 3] = [GROUP_DIALOG, BOOKING_DIALOG, LOGIN_DIALOG];
 
 /// Notification1's rectangles (notifications.ui.json): drawn 40 x 39, 45 x 45
@@ -70,9 +72,11 @@ const PICK_HEIGHT: f32 = 2.0;
 /// loginreward2's columns: Label5Columns (Label6Columns only when a
 /// "login_reward_special*" group is offered, 0x6BD219), days 0 to 4.
 const LOGIN_DAYS: usize = 5;
+/// One row of cmdmodecontextmenu (its buttons are 22.5 apart).
+const MENU_ROW: f32 = 22.5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Social { Confirm, Cancel, Whisper, Befriend, InviteToParty, Ignore }
+pub(super) enum Social { Confirm, Cancel, Whisper, Befriend, InviteToParty, Ignore, Trade, TradeMine(usize), TradeReady }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Motion { Waiting, Moving, Placed }
@@ -124,13 +128,14 @@ fn icon(kind: u8) -> &'static str {
         25..=27 => "crown",
         28..=30 => "leaderboards",
         32 => "claim1",
+        trade::TRADE_INVITE => "invitation",
         _ => "maprework",
     }
 }
 
 /// The dialog a notification type opens, if any.
 fn dialog(kind: u8) -> Option<&'static str> {
-    if GROUP_INVITE.contains(&kind) { Some(GROUP_DIALOG) }
+    if GROUP_INVITE.contains(&kind) || kind == trade::TRADE_INVITE { Some(GROUP_DIALOG) }
     else if BOOKING.contains(&kind) { Some(BOOKING_DIALOG) }
     else if kind == LOGIN_REWARD { Some(LOGIN_DIALOG) }
     else { None }
@@ -175,6 +180,7 @@ pub(super) fn action(window: &str, w: &Widget) -> Option<Action> {
         (CONTEXT_MENU, "ButtonBefriend") => Social::Befriend,
         (CONTEXT_MENU, "ButtonInviteToParty") => Social::InviteToParty,
         (CONTEXT_MENU, "ButtonIgnore") => Social::Ignore,
+        (CONTEXT_MENU, "ButtonTrade") => Social::Trade,
         (GROUP_DIALOG | BOOKING_DIALOG | LOGIN_DIALOG | CONTEXT_MENU, _) => return Some(Action::Unavailable),
         _ => return None,
     };
@@ -389,6 +395,13 @@ pub(in crate::ui) fn dialogs(
     let widget = |id: &str| layout.and_then(|l| l.widgets.iter().find(|w| w.id.ends_with(id)));
     let group = commands.spawn((DialogContent, Transform::from_xyz(0.0, 0.0, CONTENT_Z), Visibility::Inherited, ChildOf(root))).id();
     let p = params(note);
+    if window == GROUP_DIALOG && note.note_type == trade::TRADE_INVITE {
+        let text = format!("{}\nwants to trade with you.\n\nWould you like to trade?", p["playerName"].as_str().unwrap_or("?"));
+        let Some(w) = widget("/InviteDialog/Invitetext") else { return };
+        let [l, t, r, _] = w.rect;
+        label(&mut commands, &assets, &screen, group, text, screen.world(w.k, l, t).extend(0.1), 12.0, Color::srgb(0.92, 0.87, 0.76), r - l, Justify::Center);
+        return;
+    }
     if window == GROUP_DIALOG {
         // gui.window.grouping_confirmJoinGroup, its rank line empty (titleType 0).
         let class = ["Warrior", "Mage", "Ranger", "Dwarf", "Niwalk"].get(p["playerClass"].as_u64().unwrap_or(9) as usize).copied().unwrap_or("");
@@ -427,7 +440,7 @@ pub(in crate::ui) fn dialogs(
 
 /// An item's background, icon and frame in a slot rectangle, and its amount.
 #[allow(clippy::too_many_arguments)]
-fn item_icon(commands: &mut Commands, assets: &AssetServer, screen: &Screen, parent: Entity, catalog: &items::Catalog,
+pub(super) fn item_icon(commands: &mut Commands, assets: &AssetServer, screen: &Screen, parent: Entity, catalog: &items::Catalog,
     template: &str, rarity: u8, k: f32, [l, t, r, b]: [f32; 4], amount: Option<u32>) {
     let item = dsor_proto::commands::inventory::ItemInfo { kind: rarity, ..default() };
     let (icon, background, frame) = catalog.icon_parts(template, Some(&item));
@@ -486,7 +499,7 @@ fn login(commands: &mut Commands, assets: &AssetServer, screen: &Screen, group: 
 }
 
 #[allow(clippy::too_many_arguments)]
-fn label(commands: &mut Commands, assets: &AssetServer, screen: &Screen, parent: Entity, value: String, at: Vec3, size: f32, color: Color, width: f32, justify: Justify) {
+pub(super) fn label(commands: &mut Commands, assets: &AssetServer, screen: &Screen, parent: Entity, value: String, at: Vec3, size: f32, color: Color, width: f32, justify: Justify) {
     commands.spawn((Text2d::new(value), TextFont { font: assets.load("fonts/tahoma.ttf").into(), font_size: bevy::text::FontSize::Px(size * FONT_SCALE * screen.scale), ..default() },
         TextColor(color), bevy::text::TextLayout::justify(justify), Anchor::TOP_LEFT, bevy::text::TextBounds::new_horizontal(width * screen.scale),
         Transform::from_translation(at).with_scale(Vec3::splat(1.0 / screen.scale)), RenderLayers::layer(LAYER), ChildOf(parent)));
@@ -497,6 +510,7 @@ fn label(commands: &mut Commands, assets: &AssetServer, screen: &Screen, parent:
 pub(in crate::ui) fn answer(
     net: Option<NonSendMut<crate::network::net::Net>>,
     mut social: ResMut<SocialUi>,
+    mut trade: ResMut<trade::TradeUi>,
     mut windows: Windows,
     mut pointer: ResMut<Pointer>,
     mut chat: ResMut<crate::network::chat::ChatLog>,
@@ -517,9 +531,21 @@ pub(in crate::ui) fn answer(
     let Some(clicked) = social.clicked.take() else { return };
     let me = net.local_name.clone().unwrap_or_default();
     match clicked {
+        Social::TradeMine(n) => trade.remove = Some(n),
+        Social::TradeReady => trade.ready = true,
         Social::Confirm | Social::Cancel => {
             let Some(note) = social.open.take() else { return };
             let confirm = clicked == Social::Confirm;
+            if note.note_type == trade::TRADE_INVITE {
+                // The answer to a trade invitation goes to the trade, not to the
+                // notification system (the server never sent it as one).
+                net.send(&ClientCommand::TradeAnswer(dsor_proto::commands::trade::TradeAnswer { accept: confirm }));
+                net.notifications.retain(|n| n.guid != note.guid);
+                for (_, w, _, mut v, _) in &mut windows {
+                    if DIALOGS.contains(&w.0.as_str()) { *v = Visibility::Hidden; }
+                }
+                return;
+            }
             if GROUP_INVITE.contains(&note.note_type) {
                 // AcceptGroupInvite 0x56BB3D: code 0, the inviter, the group;
                 // RefuseGroupInvite 0x574E80: code 1. The server checks the name
@@ -535,7 +561,7 @@ pub(in crate::ui) fn answer(
                 if DIALOGS.contains(&w.0.as_str()) { *v = Visibility::Hidden; }
             }
         }
-        Social::InviteToParty | Social::Whisper | Social::Befriend | Social::Ignore => {
+        Social::InviteToParty | Social::Whisper | Social::Befriend | Social::Ignore | Social::Trade => {
             for (_, w, _, mut v, _) in &mut windows {
                 if w.0 == CONTEXT_MENU { *v = Visibility::Hidden; }
             }
@@ -546,6 +572,7 @@ pub(in crate::ui) fn answer(
                     net.send(&ClientCommand::GroupInvite(GroupInvite { inviter_name: me, invitee_name: target.clone(), unknown_u32_0: 0 }));
                     chat.push(Kind::System, "Invitation was sent.".into());
                 }
+                Social::Trade => net.send(&ClientCommand::TradeRequest(dsor_proto::commands::trade::TradeRequest { target: target.clone() })),
                 // The chat line, ready to write to them.
                 Social::Whisper => {
                     set_chat_compact(false, &mut windows, &mut pointer);
@@ -599,7 +626,7 @@ pub(in crate::ui) fn context_menu(
     social.target = Some(name);
     // The menu's top-left corner at the cursor, kept on the screen. Its Canvas:
     // [512, 364, 730, 476], k 0.5 (cmdmodecontextmenu.ui.json).
-    let (w, h) = (730.0 - 512.0, 476.0 - 364.0);
+    let (w, h) = (730.0 - 512.0, 476.0 + MENU_ROW - 364.0);
     let left = p.x.min(screen.width - w).max(0.0);
     let top = p.y.min(BASE_H - h).max(0.0);
     let anchor = 512.0 + 0.5 * (screen.width - BASE_W);
@@ -638,4 +665,34 @@ fn pick(
         if best.is_none_or(|(bt, _)| t < bt) { best = Some((t, &plate.text)); }
     }
     best.map(|(_, name)| name.to_owned())
+}
+
+/// cmdmodecontextmenu with a fifth row, Trade (a DSOR addition: the game has no
+/// trade): a copy of Ignore's button one row lower, and the menu's frame grown by
+/// one row through its middle (its points below the buttons' middle move down).
+pub(in crate::ui) fn prepare_menu(layout: &Layout) -> Layout {
+    let mut out = layout.clone();
+    const SPLIT: f32 = 430.0;
+    let stretch = |w: &mut Widget| {
+        if w.rect[3] > SPLIT { w.rect[3] += MENU_ROW; }
+        if w.rect[1] > SPLIT { w.rect[1] += MENU_ROW; }
+        if let Some(art) = &mut w.art {
+            for y in art.pos.iter_mut().skip(1).step_by(2) { if *y > SPLIT { *y += MENU_ROW; } }
+        }
+    };
+    for w in out.widgets.iter_mut().filter(|w| w.id == "Canvas" || w.id == "Canvas/LabelDropDownMenu") { stretch(w); }
+    const IGNORE: &str = "Canvas/LabelDropDownMenu/TextButtonIgnore";
+    let trade: Vec<Widget> = layout.widgets.iter().filter(|w| w.id == IGNORE || w.id.starts_with(&format!("{IGNORE}/"))).map(|w| {
+        let mut w = w.clone();
+        w.id = w.id.replacen("TextButtonIgnore", "TextButtonTrade", 1);
+        if let Some(b) = &mut w.button { *b = b.replacen("TextButtonIgnore", "TextButtonTrade", 1); }
+        if w.event == "ButtonIgnore" { w.event = "ButtonTrade".into(); }
+        w.rect[1] += MENU_ROW;
+        w.rect[3] += MENU_ROW;
+        if let Some(art) = &mut w.art { for y in art.pos.iter_mut().skip(1).step_by(2) { *y += MENU_ROW; } }
+        if let Some(t) = &mut w.text { t.text = "Trade".into(); t.key = "gui.window.cmdmode_buttonTrade".into(); }
+        w
+    }).collect();
+    out.widgets.extend(trade);
+    out
 }

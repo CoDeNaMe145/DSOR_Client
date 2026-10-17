@@ -28,6 +28,7 @@ pub mod names;
 pub mod player;
 pub mod props;
 pub mod social;
+pub mod trade;
 pub mod wire;
 
 use dsor_raknet::{BitReader, BitWriter, Overrun};
@@ -218,6 +219,8 @@ server_commands! {
     156 => GroupInvitationResponse(social::GroupInvitationResponse),
     159 => GroupKick(social::GroupKick),
     192 => PvpFlag(social::PvpFlag),
+    // trade.rs: a DSOR addition (no game client has it).
+    0x0F10 => TradeState(trade::TradeState),
 }
 
 impl ServerCommand {

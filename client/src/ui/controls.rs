@@ -9,6 +9,7 @@ pub(super) mod spells;
 pub(super) mod items;
 pub(super) mod sheet;
 pub(super) mod social;
+pub(super) mod trade;
 
 /// Reference pixels, scaled by the same factor as the rest of the interface.
 const DRAG_HANDLE_HEIGHT: f32 = 32.0;
@@ -222,6 +223,7 @@ fn action(window: &str, w: &Widget) -> Action {
     if w.kind == "TextEntry" { return Action::Edit(w.id.clone()); }
     if w.event == "Close" { return Action::Close; }
     if let Some(action) = social::action(window, w) { return action; }
+    if let Some(action) = trade::action(window, w) { return action; }
     if window == "deathdialog" {
         // DontBuy: back in the last town, free; Buy: on the same map, at the
         // nearest exit (RespawnCost); Buy1: on the spot (InstantRespawnCost). The

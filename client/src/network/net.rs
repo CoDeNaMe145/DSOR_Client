@@ -188,6 +188,10 @@ pub struct Net {
     /// The server's answers to our group invitations (GroupInvitationResponse:
     /// code, the other player's name), for the chat (crate::ui::controls::social).
     pub group_answers: Vec<(i8, String)>,
+    /// The trade as the server holds it (DSOR TradeStateCommand), and whether its
+    /// message is new (crate::ui::controls::trade).
+    pub trade: dsor_proto::commands::trade::TradeState,
+    pub trade_message_new: bool,
     pub kills: Vec<(u32, dsor_proto::commands::combat::Kill)>,
     /// The same blows as (attacker, victim), for the attacker's bullet in flight to
     /// end on its victim (crate::gameplay::skills fly_bullets).
@@ -738,6 +742,8 @@ pub fn start_offline(world: &mut World, class: u8, gender: u8) {
         notifications: Vec::new(),
         login_rewards: Vec::new(),
         group_answers: Vec::new(),
+        trade: default(),
+        trade_message_new: false,
         kills: Vec::new(),
         strikes: Vec::new(),
         death: default(),
@@ -964,6 +970,8 @@ pub(crate) fn start_session(world: &mut World, config: NetConfig) {
         notifications: Vec::new(),
         login_rewards: Vec::new(),
         group_answers: Vec::new(),
+        trade: default(),
+        trade_message_new: false,
         kills: Vec::new(),
         strikes: Vec::new(),
         death: default(),
@@ -1445,6 +1453,10 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
                 net.notifications.retain(|e| e.guid != entry.guid);
                 net.notifications.push(entry);
             }
+        }
+        ServerCommand::TradeState(t) => {
+            net.trade_message_new = !t.message.is_empty();
+            net.trade = t;
         }
         ServerCommand::GroupInvitationResponse(r) => {
             net.group_answers.push((r.code, r.name));

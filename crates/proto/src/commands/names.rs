@@ -367,6 +367,14 @@ pub const COMMANDS: &[(u16, &str, bool)] = &[
     (367, "GetBlackFridayTransactionsInfoResultCommand", true),
     (368, "ServerToClientMsgCommand", true),
     (1234, "Chat::BuiltinChatCommand", false),
+    // DSOR additions (crate::commands::trade), above every game id.
+    (0x0F00, "DSOR::TradeHelloCommand", false),
+    (0x0F01, "DSOR::TradeRequestCommand", false),
+    (0x0F02, "DSOR::TradeAnswerCommand", false),
+    (0x0F03, "DSOR::TradeOfferCommand", false),
+    (0x0F04, "DSOR::TradeReadyCommand", false),
+    (0x0F05, "DSOR::TradeCancelCommand", false),
+    (0x0F10, "DSOR::TradeStateCommand", false),
 ];
 
 /// The class name of command `id`, as the release261 client registers it.

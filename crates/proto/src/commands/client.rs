@@ -7,7 +7,7 @@
 use dsor_raknet::{BitReader, BitWriter};
 
 use super::wire::{Body, Raw};
-use super::{actors, combat, inventory, movement, player, social, DecodeError, CLIENT, PADDING_BITS};
+use super::{actors, combat, inventory, movement, player, social, trade, DecodeError, CLIENT, PADDING_BITS};
 
 macro_rules! client_commands {
     ($($id:literal => $var:ident($ty:ty),)*) => {
@@ -118,6 +118,13 @@ client_commands! {
     182 => GroupQuery(social::GroupQuery),
     192 => PvpFlag(social::PvpFlag),
     206 => JoinMatchQueue(social::JoinMatchQueue),
+    // trade.rs
+    0x0F00 => TradeHello(trade::TradeHello),
+    0x0F01 => TradeRequest(trade::TradeRequest),
+    0x0F02 => TradeAnswer(trade::TradeAnswer),
+    0x0F03 => TradeOffer(trade::TradeOffer),
+    0x0F04 => TradeReady(trade::TradeReady),
+    0x0F05 => TradeCancel(trade::TradeCancel),
 }
 
 impl ClientCommand {
