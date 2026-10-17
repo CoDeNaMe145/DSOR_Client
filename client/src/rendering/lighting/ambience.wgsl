@@ -1,6 +1,7 @@
 #define_import_path dsor::ambience
 
 #import bevy_pbr::lighting::{LightingInput, ambience_directional_light, LAYER_BASE}
+#import bevy_pbr::view_transformations::position_world_to_view
 
 struct AmbienceTerm {
     direction: vec4<f32>,
@@ -19,10 +20,46 @@ struct Ambience {
     rim_color: vec4<f32>,
     // View-space direction (xyz), exponent (w).
     rim_dir_spec: vec4<f32>,
+    // Gamma rgb FogColor; w 1 enables Nebula's distance fog.
+    fog_color: vec4<f32>,
+    // x FogNearDist, y FogFarDist (camera depth), z the most fog (FogIntensity).
+    fog_dist: vec4<f32>,
+    // x 1 = sum the light in gamma space; y the terms' unit (PI x UNIT).
+    gamma_light: vec4<f32>,
+    // The ambient light in that gamma sum (gamma rgb).
+    ambient_gamma: vec4<f32>,
 }
 @group(1) @binding(0) var<uniform> ambience: Ambience;
 
+// The 2018/261 sun pass sums its light in gamma space (D3D9, no sRGB):
+// sun x sat(N.L) + ambient + back x sat(BLF - N.L), and the materials multiply
+// the albedo by that sum. In linear terms that is albedo x (gamma sum)^2.2.
+// The fades and shadows stay the blend's; the sun's specular stays Bevy's.
+fn apply_ambience_gamma(input: ptr<function, LightingInput>, enable_diffuse: bool, shadow: f32) -> vec3<f32> {
+    let unit = ambience.gamma_light.y;
+    let n = (*input).layers[LAYER_BASE].N;
+    var light = ambience.ambient_gamma.rgb;
+    var specular = vec3(0.0);
+    for (var i = 0u; i < ambience.counts.y; i += 1u) {
+        let term = ambience.terms[i];
+        let front = max(vec3(0.0), term.front.rgb - term.shadowed.rgb * (1.0 - shadow));
+        let n_dot_l = dot(n, term.direction.xyz);
+        light += pow(front / unit, vec3(1.0 / 2.2)) * saturate(n_dot_l);
+        light += pow(max(term.back.rgb, vec3(0.0)) / unit, vec3(1.0 / 2.2)) * saturate(term.back.w - n_dot_l);
+        if any(front > vec3(0.0)) {
+            specular += ambience_directional_light(term.direction.xyz, front, input, false);
+        }
+    }
+    if !enable_diffuse {
+        return specular;
+    }
+    return (*input).diffuse_color * pow(light, vec3(2.2)) * (unit * 0.31830988618) + specular;
+}
+
 fn apply_ambience(input: ptr<function, LightingInput>, enable_diffuse: bool, shadow: f32) -> vec3<f32> {
+    if ambience.gamma_light.x != 0.0 {
+        return apply_ambience_gamma(input, enable_diffuse, shadow);
+    }
     var result = vec3(0.0);
     for (var i = 0u; i < ambience.counts.y; i += 1u) {
         let term = ambience.terms[i];
@@ -42,6 +79,17 @@ fn apply_ambience(input: ptr<function, LightingInput>, enable_diffuse: bool, sha
         }
     }
     return result;
+}
+
+// Nebula's distance fog: clear = clamp((far - depth) / (far - near), 1 - most, 1)
+// with depth along the camera's view (the 2018/261 vertex shaders pass the
+// view-space position), the fog colour mixed in gamma space like their lrp.
+fn apply_nebula_fog(color: vec4<f32>, world_position: vec3<f32>) -> vec4<f32> {
+    let depth = -position_world_to_view(world_position).z;
+    let span = max(ambience.fog_dist.y - ambience.fog_dist.x, 1e-4);
+    let clear = clamp((ambience.fog_dist.y - depth) / span, 1.0 - ambience.fog_dist.z, 1.0);
+    let gamma = pow(max(color.rgb, vec3(0.0)), vec3(1.0 / 2.2));
+    return vec4(pow(mix(ambience.fog_color.rgb, gamma, clear), vec3(2.2)), color.a);
 }
 
 // Nebula's height fog, after distance fog. The 2018/261 vertex shaders compute

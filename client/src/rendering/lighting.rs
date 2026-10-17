@@ -521,20 +521,24 @@ pub struct Lighting {
     pub ambient: f32,
     pub lights: f32,
     pub fog: f32,
-    /// Scale the authored fog distances beyond the camera's focus.
+    /// Scale the authored fog distances (measured from the camera).
     pub fog_range: f32,
     pub shadows: bool,
 }
 
+/// Neutral: the original has no such multipliers. The earlier tuned values
+/// (back 0.9 / 0.35, lights 1.75 / 1.05, fog 0.55, fog range 0.5) compensated
+/// the back light scaled by LightIntensity and the fog started behind the player;
+/// both now follow the running client's values (crate::rendering::lighting::blend).
 impl Default for Lighting {
     fn default() -> Self {
         Self {
             sun: 1.0,
-            back: 0.9,
-            ambient: 0.9,
-            lights: 1.75,
-            fog: 0.55,
-            fog_range: 0.5,
+            back: 1.0,
+            ambient: 1.0,
+            lights: 1.0,
+            fog: 1.0,
+            fog_range: 1.0,
             shadows: true,
         }
     }
@@ -755,7 +759,12 @@ fn apply_look(
     fresh.extend(cameras.iter());
     let (l, b) = (&*lighting, &level.bubble);
     let rgb = |c: [f32; 4]| [c[0], c[1], c[2]];
-    *gpu_ambience = level.blend.gpu(l).with_height_fog(b).with_rim_light(b);
+    let a = linear(rgb(b.light_ambient), 1.0);
+    // The ambient joins the gamma-space sum in the ambience shader instead of
+    // Bevy's ambient light (DSOR_FLAGS=gammalight while it is being compared).
+    let gamma_light = crate::flag("gammalight");
+    *gpu_ambience = level.blend.gpu(l).with_height_fog(b).with_rim_light(b).with_fog(b, l)
+        .with_gamma_light(gamma_light, Vec3::new(a.red, a.green, a.blue) * l.ambient);
     let toward = level.shadow_dir.normalize_or(blend::direction(None));
     for (mut sun, mut tf, mut global_tf) in &mut suns {
         // The single real sun supplies the fixed shadow map. The fragment
@@ -768,9 +777,9 @@ fn apply_look(
         // This unparented light must reach cascade construction this frame.
         *global_tf = GlobalTransform::from(*tf);
     }
-    let a = linear(rgb(b.light_ambient), 1.0);
     ambient.color = Color::LinearRgba(a);
-    ambient.brightness = UNIT / AMBIENT_BRDF * l.ambient;
+    // In the gamma sum the ambient is the ambience shader's; Bevy's would add it twice.
+    ambient.brightness = if gamma_light { 0.0 } else { UNIT / AMBIENT_BRDF * l.ambient };
 
     // Fog: Nebula's factor is clamp((far - z) / (far - near), FogColor.w, 1).
     // UNVERIFIED: FogIntensity as the fog's opacity.
@@ -961,28 +970,23 @@ fn refresh_values(lighting: Res<Lighting>, mut texts: Query<(&ValueText, &mut Te
     }
 }
 
-/// Bevy measures fog from the camera. Start the map's authored range beyond
-/// its focus so the camera-to-player distance does not consume the clear range.
-/// Previously `zoom - CAM_HEIGHT_MAX` left only 2 clear units behind the
-/// player in Kingshill (near 27, camera distance 25), washing out the upper
-/// half of the top-down view. Use the actual transform for both play and the
-/// free-camera map viewer, after camera/player transforms have propagated.
+/// Bevy's fog (what particles and glows read, and the fallback without the
+/// level's look) uses the authored range from the camera, as Nebula's does.
+/// Earlier the range started beyond the camera's focus (the camera-to-player
+/// distance added) because the fog "washed out the upper half of the view";
+/// the original does measure from the camera (shaders_sm30's view-space fog
+/// depth, fogDistances = FogNearDist/FogFarDist as the running client sends
+/// them): Kingshill's teal haze over the far half of the view is its fog.
+/// Nebula's own fog (crate::rendering::lighting::blend `with_fog`) draws it.
 fn shift_fog(
     level: Res<Level>,
     lighting: Res<Lighting>,
-    current: Option<Res<CurrentMap>>,
-    manifests: Res<Assets<crate::world::map::MapManifest>>,
-    players: Query<&GlobalTransform, With<crate::network::net::LocalPlayer>>,
-    mut fogs: Query<(&GlobalTransform, &mut DistanceFog), (With<Camera3d>, Without<crate::rendering::highlight::HighlightCamera>, Without<NoLevelLook>)>,
+    mut fogs: Query<&mut DistanceFog, (With<Camera3d>, Without<crate::rendering::highlight::HighlightCamera>, Without<NoLevelLook>)>,
 ) {
     let b = &level.bubble;
-    let ground = current.as_ref().and_then(|m| manifests.get(&m.manifest)).map(|m| m.center[1]).unwrap_or(0.0);
-    let player = players.iter().next().map(|p| p.translation());
-    for (camera, mut fog) in &mut fogs {
-        let focus = crate::world::map::camera_focus(camera, player, ground);
-        let shift = camera.translation().distance(focus);
-        let start = shift + b.fog_near_dist.max(0.0) * lighting.fog_range;
-        let end = (shift + b.fog_far_dist * lighting.fog_range).max(start + 0.1);
+    for mut fog in &mut fogs {
+        let start = b.fog_near_dist.max(0.0) * lighting.fog_range;
+        let end = (b.fog_far_dist * lighting.fog_range).max(start + 0.1);
         if let FogFalloff::Linear { start: s, end: e } = fog.falloff {
             if (s - start).abs() > 1e-3 || (e - end).abs() > 1e-3 {
                 fog.falloff = FogFalloff::Linear { start, end };

@@ -135,8 +135,8 @@ fn entering_exiting_and_retargeting_never_move_the_shadow_sun() {
 #[test]
 fn uniform_layout_matches_wgsl_and_remains_within_webgl_limits() {
     assert_eq!(GpuTerm::min_size().get(), 64);
-    // counts, the terms, the height fog colour and heights, the rim colour and direction.
-    assert_eq!(GpuAmbience::min_size().get(), 16 + 64 * MAX_TERMS as u64 + 32 + 32);
+    // counts, the terms, height fog colour and heights, rim colour and direction, fog colour and distances, gamma light and ambient.
+    assert_eq!(GpuAmbience::min_size().get(), 16 + 64 * MAX_TERMS as u64 + 32 + 32 + 32 + 32);
     assert!(GpuAmbience::min_size().get() <= 16384);
     let disabled = GpuAmbience::default();
     assert_eq!(disabled.counts.x, 0);
@@ -199,7 +199,12 @@ fn pbr_patch_adds_height_fog_after_distance_fog_on_fogged_materials_only() {
     let height = patched.find("output_color = apply_height_fog(output_color, pbr_input.world_position.xyz);").unwrap();
     let fogged_block_end = patched.find("#endif  // DISTANCE_FOG").unwrap();
     assert!(fog < height && height < fogged_block_end, "height fog follows distance fog inside its block");
-    assert!(patched.contains("#import dsor::ambience::{ambience, apply_ambience, apply_height_fog}"));
+    assert!(patched.contains("#import dsor::ambience::{ambience, apply_ambience, apply_height_fog, apply_nebula_fog}"));
+    // Nebula's distance fog replaces Bevy's where the level's look is active;
+    // Bevy's stays for the inactive buffer and without DSOR_AMBIENCE.
+    let nebula = patched.find("output_color = apply_nebula_fog(output_color, pbr_input.world_position.xyz);").unwrap();
+    assert!(nebula < fog && fog < height, "Nebula fog first, Bevy's as the fallback, then height fog");
+    assert_eq!(patched.matches("output_color = apply_fog(").count(), 2, "fallback under the ambience and without it");
     // A Bevy version without this fog block must fail loudly, never silently skip.
     assert!(blend_function(&source.replace("#endif  // DISTANCE_FOG", "#endif")).is_none());
 }
@@ -219,4 +224,47 @@ fn rim_light_reaches_the_gpu_in_gamma_with_the_engine_direction() {
     assert_eq!(gpu.rim_dir_spec.w, 4.);
     let off = GpuAmbience::default().with_rim_light(&Bubble { rim_light_intensity: 0., ..wild });
     assert_eq!(off.rim_color, Vec4::ZERO);
+}
+
+#[test]
+fn the_back_light_is_not_scaled_by_the_sun_intensity() {
+    // As the running client sends globalBackLightColor: LightOppositeColor as is,
+    // while the sun's colour is scaled by LightIntensity (Kingshill 1.4).
+    let at = |intensity: f32| LightBlend::from(&Bubble { light_intensity: intensity, light_opposite_color: [0.298, 0.3373, 0.3647, 1.], ..preset(Vec3::Y, intensity, 1.) });
+    near(at(1.4).0[0].back, at(0.25).0[0].back);
+    let c = Color::srgb(0.298, 0.3373, 0.3647).to_linear();
+    near(at(1.4).0[0].back, Vec3::new(c.red, c.green, c.blue));
+    assert!(at(1.4).0[0].front.x > at(0.25).0[0].front.x);
+}
+
+#[test]
+fn uniform_fields_follow_the_wgsl_order() {
+    // The GPU reads the uniform by position: GpuAmbience's Rust field order must
+    // be the WGSL struct's. FAILURE (2026-10-17): the fog fields were added before
+    // rim_dir_spec in Rust and after it in WGSL; the fog read its enable flag
+    // from fog_dist.w (0) and the rim its direction from the fog colour.
+    let rust = include_str!("blend.rs");
+    let wgsl = include_str!("ambience.wgsl");
+    let fields = |src: &str, start: &str, sep: &str| -> Vec<String> {
+        let body = &src[src.find(start).unwrap() + start.len()..];
+        let body = &body[..body.find('}').unwrap()];
+        body.lines().map(str::trim).filter(|l| !l.starts_with("//") && l.contains(sep))
+            .map(|l| l.split(sep).next().unwrap().trim().to_string()).collect()
+    };
+    assert_eq!(fields(rust, "pub(super) struct GpuAmbience {", ":"), fields(wgsl, "struct Ambience {", ":"));
+}
+
+#[test]
+fn nebula_fog_takes_the_zones_distances_from_the_camera_and_intensity_as_its_most() {
+    // Kingshill's gate zone: FogIntensity 0.8, the running client sends fogColor.w
+    // = 0.2 (the clear floor) and fogDistances 25 / 75, unshifted.
+    let gate = Bubble { fog_color: [0.749, 0.9059, 1.0, 1.0], fog_intensity: 0.8, fog_near_dist: 25.0, fog_far_dist: 75.0, ..default() };
+    let gpu = GpuAmbience::default().with_fog(&gate, &Lighting::default());
+    assert_eq!(gpu.fog_color, Vec4::new(0.749, 0.9059, 1.0, 1.0));
+    near(gpu.fog_dist.truncate(), Vec3::new(25.0, 75.0, 0.8));
+    // The panel's Fog x scales the most fog, Fog range x the distances.
+    let half = GpuAmbience::default().with_fog(&gate, &Lighting { fog: 0.5, fog_range: 2.0, ..default() });
+    near(half.fog_dist.truncate(), Vec3::new(50.0, 150.0, 0.4));
+    // The inactive buffer keeps Bevy's fog.
+    assert_eq!(GpuAmbience::default().fog_color.w, 0.0);
 }
