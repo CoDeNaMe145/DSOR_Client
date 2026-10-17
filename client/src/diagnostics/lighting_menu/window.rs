@@ -360,7 +360,7 @@ fn update_menu_window(
 }
 
 
-fn menu_text(
+pub(super) fn menu_text(
     text: impl Into<String>,
     size: f32,
     color: Color,
@@ -1073,11 +1073,17 @@ fn spawn_menu(commands: &mut Commands, starts_open: bool) {
 
 
 
-/// Until a page's controls are ported: its title and a note.
+/// A page's contents. Pages whose controls are not ported yet: a title and a note.
 fn page_placeholder(page: &mut ChildSpawnerCommands, page_id: MenuPage) {
     let title = match page_id {
         MenuPage::Overview => return,
-        MenuPage::Lighting => "Lighting",
+        MenuPage::Lighting => {
+            page.spawn(menu_text("Lighting", 25.0, Color::srgb(0.94, 0.95, 0.97)));
+            page.spawn(menu_text("Global renderer controls and ambience light settings.", 13.0, Color::srgb(0.64, 0.70, 0.79)));
+            super::global::spawn(page);
+            page.spawn(menu_text("Zone ambience fields are not ported yet (they come with Regions).", 12.0, Color::srgb(0.64, 0.70, 0.79)));
+            return;
+        }
         MenuPage::Regions => "Regions",
         MenuPage::Atmosphere => "Atmosphere",
         MenuPage::Presets => "Presets",

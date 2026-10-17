@@ -32,6 +32,9 @@ impl UiRegions {
 pub struct UiInput {
     pub over_ui: bool,
     pub typing: bool,
+    /// A tool window (crate::diagnostics::lighting_menu) is taking text: kept
+    /// in `typing` until it lets go, whatever the chat's focus.
+    pub hold_keys: bool,
     captured: HashSet<MouseButton>,
     /// A world-origin left hold keeps moving even when the cursor crosses UI.
     world_left: bool,

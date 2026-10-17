@@ -5,6 +5,7 @@
 //! through the working overrides (presets::resolve_bubble) before fading to it.
 //! With the menu on, F2 opens it instead of the lighting panel.
 
+mod global;
 pub(crate) mod presets;
 mod window;
 
@@ -25,7 +26,7 @@ impl Plugin for LightingMenuPlugin {
             return;
         }
         app.insert_resource(presets::LightingMenuStore::load())
-            .add_plugins(window::WindowPlugin)
+            .add_plugins((window::WindowPlugin, global::GlobalControlsPlugin))
             .add_systems(Update, (toggle, keep_cursor).chain());
     }
 }

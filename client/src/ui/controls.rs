@@ -970,7 +970,7 @@ pub(super) fn edit_text(
         let typing = u8::from(pointer.focus.as_ref().is_some_and(|(root, _)| *root == e) || draft);
         if c.pages.get("chat_typing") != Some(&typing) { c.pages.insert("chat_typing", typing); }
     }
-    input.typing = pointer.focus.is_some();
+    input.typing = pointer.focus.is_some() || input.hold_keys;
 }
 
 pub(super) fn paint(

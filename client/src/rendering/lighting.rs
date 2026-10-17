@@ -539,15 +539,15 @@ impl Default for Lighting {
     }
 }
 
-/// One tunable line: label, step, read, write.
-struct Field {
-    label: &'static str,
-    step: f32,
-    get: fn(&Lighting) -> f32,
-    set: fn(&mut Lighting, f32),
+/// One tunable line: label, step, read, write. Shared with the Lighting Menu.
+pub(crate) struct Field {
+    pub(crate) label: &'static str,
+    pub(crate) step: f32,
+    pub(crate) get: fn(&Lighting) -> f32,
+    pub(crate) set: fn(&mut Lighting, f32),
 }
 
-const FIELDS: &[Field] = &[
+pub(crate) const FIELDS: &[Field] = &[
     Field { label: "Sun x", step: 0.05, get: |l| l.sun, set: |l, v| l.sun = v.max(0.0) },
     Field { label: "Back light x", step: 0.05, get: |l| l.back, set: |l, v| l.back = v.max(0.0) },
     Field { label: "Ambient x", step: 0.05, get: |l| l.ambient, set: |l, v| l.ambient = v.max(0.0) },
@@ -577,7 +577,7 @@ fn load_saved() -> Option<Lighting> {
     }
 }
 
-fn save(l: &Lighting) {
+pub(crate) fn save(l: &Lighting) {
     let Ok(raw) = serde_json::to_string(l) else { return };
     #[cfg(target_arch = "wasm32")]
     if let Some(Ok(Some(store))) = web_sys::window().map(|w| w.local_storage()) {
