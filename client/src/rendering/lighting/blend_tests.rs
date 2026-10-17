@@ -268,3 +268,14 @@ fn nebula_fog_takes_the_zones_distances_from_the_camera_and_intensity_as_its_mos
     // The inactive buffer keeps Bevy's fog.
     assert_eq!(GpuAmbience::default().fog_color.w, 0.0);
 }
+
+#[test]
+fn full_shadow_keeps_half_the_light_as_the_blurred_shadow_buffer_does() {
+    // Shadow pass 0, then two blurs of 1 - 0.8 x 0.883 x (1 - x): 1 - 0.7063^2.
+    assert!((super::shadow_floor(1.0) - 0.5011).abs() < 1e-3);
+    // Beyond 1 the darkening cannot go below the pass's 0.
+    assert_eq!(super::shadow_floor(3.0), super::shadow_floor(1.0));
+    // Softer shadows for lower intensities (mapping UNVERIFIED), none at 0.
+    assert!(super::shadow_floor(0.25) > super::shadow_floor(0.5));
+    assert_eq!(super::shadow_floor(0.0), 1.0);
+}

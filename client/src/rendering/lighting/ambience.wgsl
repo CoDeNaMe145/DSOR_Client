@@ -24,7 +24,8 @@ struct Ambience {
     fog_color: vec4<f32>,
     // x FogNearDist, y FogFarDist (camera depth), z the most fog (FogIntensity).
     fog_dist: vec4<f32>,
-    // x 1 = sum the light in gamma space; y the terms' unit (PI x UNIT).
+    // x 1 = sum the light in gamma space; y the terms' unit (PI x UNIT);
+    // z the share of the whole light kept in full shadow; w 1 applies it.
     gamma_light: vec4<f32>,
     // The ambient light in that gamma sum (gamma rgb).
     ambient_gamma: vec4<f32>,
@@ -48,18 +49,34 @@ fn apply_ambience_gamma(input: ptr<function, LightingInput>, enable_diffuse: boo
     let n = (*input).layers[LAYER_BASE].N;
     var light = ambience.ambient_gamma.rgb;
     var specular = vec3(0.0);
+    var sun_shadowed = vec3(0.0);
     for (var i = 0u; i < ambience.counts.y; i += 1u) {
         let term = ambience.terms[i];
-        let front = max(vec3(0.0), term.front.rgb - term.shadowed.rgb * (1.0 - shadow));
         let n_dot_l = dot(n, term.direction.xyz);
-        light += pow(front / unit, vec3(1.0 / 2.2)) * saturate(n_dot_l);
+        let sun = pow(max(term.front.rgb, vec3(0.0)) / unit, vec3(1.0 / 2.2)) * saturate(n_dot_l);
+        light += sun;
+        // The share shadow takes away when the floor is off (S's shadowed term).
+        sun_shadowed += sun - pow(max(term.front.rgb - term.shadowed.rgb, vec3(0.0)) / unit, vec3(1.0 / 2.2)) * saturate(n_dot_l);
         light += pow(max(term.back.rgb, vec3(0.0)) / unit, vec3(1.0 / 2.2)) * saturate(term.back.w - n_dot_l);
+        // The highlight goes with the sun: none in shadow.
+        let front = max(vec3(0.0), term.front.rgb - term.shadowed.rgb * (1.0 - shadow));
         if any(front > vec3(0.0)) {
             specular += ambience_directional_light(term.direction.xyz, front, input, false);
         }
     }
     if !enable_diffuse {
         return specular;
+    }
+    // The sun pass multiplies the whole sum by the blurred shadow value: full
+    // shadow keeps gamma_light.z of it (crate::rendering::lighting::blend::shadow_floor).
+    // Only with DSOR_FLAGS=shadowfloor (gamma_light.w 1) while interiors differ:
+    // Bevy's sun shadow covers church and gate interiors the original leaves
+    // unshadowed, and halving their light there made them too dark (Kingshill
+    // church 17.9 vs 22.1). Without it shadow removes the sun's share only.
+    if ambience.gamma_light.w != 0.0 {
+        light *= mix(ambience.gamma_light.z, 1.0, shadow);
+    } else {
+        light -= sun_shadowed * (1.0 - shadow);
     }
     light *= occlusion * occlusion;
     return (*input).diffuse_color * pow(light, vec3(2.2)) * (unit * 0.31830988618) + specular;

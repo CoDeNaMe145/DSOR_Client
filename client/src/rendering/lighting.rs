@@ -765,7 +765,7 @@ fn apply_look(
     // DSOR_FLAGS=linearlight: the earlier linear sum, for comparisons.
     let gamma_light = !crate::flag("linearlight");
     *gpu_ambience = level.blend.gpu(l).with_height_fog(b).with_rim_light(b).with_fog(b, l)
-        .with_gamma_light(gamma_light, Vec3::new(a.red, a.green, a.blue) * l.ambient);
+        .with_gamma_light(gamma_light, Vec3::new(a.red, a.green, a.blue) * l.ambient, b.light_shadow_intensity);
     let toward = level.shadow_dir.normalize_or(blend::direction(None));
     for (mut sun, mut tf, mut global_tf) in &mut suns {
         // The single real sun supplies the fixed shadow map. The fragment

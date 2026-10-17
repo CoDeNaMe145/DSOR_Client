@@ -118,6 +118,25 @@ impl LightBlend {
     }
 }
 
+/// The share of the whole light (sun, ambient and back light) the original
+/// keeps in full shadow: its sun pass multiplies the sum by the screen-space
+/// shadow buffer's x. The shadow pass writes shadowDarkeningFactor there where
+/// shadowed (the running client sends 0 at LightShadowIntensity 1), and the two
+/// blur passes (pe_blurshadowhori / vert) each output 1 - 0.8 x the kernel's
+/// 0.242 + 0.399 + 0.242 x (1 - x): a fully shadowed 0 becomes
+/// 1 - 0.7063^2 = 0.501.
+/// EVIDENCE: shaders_sm30 shadow pass (cmp oC0.x, ..., shadowDarkeningFactor,
+///   shadowMap), FilterKernel ps (c8 = (1, 0.8), add oC0, -r0, 1) and the
+///   captured FilterKernel weights; the sun pass `mul r0.xyz, r0, r2.x`.
+///   Kingshill's garden, same stone: shadow / sunlit 0.57 in the original.
+/// UNVERIFIED: how LightShadowIntensity other than 1 (0.25..3 in the data) maps
+///   to shadowDarkeningFactor; taken as 1 - intensity, clamped.
+pub(super) fn shadow_floor(shadow_intensity: f32) -> f32 {
+    const BLURRED: f32 = 0.8 * (0.242 + 0.3989 + 0.242);
+    let darkening = (1.0 - shadow_intensity).clamp(0.0, 1.0);
+    1.0 - BLURRED * BLURRED * (1.0 - darkening)
+}
+
 #[derive(Clone, Copy, Default, ShaderType)]
 struct GpuTerm { direction: Vec4, front: Vec4, shadowed: Vec4, back: Vec4 }
 
@@ -140,7 +159,8 @@ pub(super) struct GpuAmbience {
     /// x FogNearDist, y FogFarDist (camera depth), z the most fog (FogIntensity).
     fog_dist: Vec4,
     /// x 1 sums the sun, back light and ambient in gamma space as the 2018/261
-    /// sun pass does; y the terms' unit (PI x UNIT).
+    /// sun pass does; y the terms' unit (PI x UNIT); z the share of the whole
+    /// light kept in full shadow; w 1 applies it (DSOR_FLAGS=shadowfloor).
     gamma_light: Vec4,
     /// The ambient light in that gamma sum (gamma rgb).
     ambient_gamma: Vec4,
@@ -195,8 +215,9 @@ impl GpuAmbience {
     ///   zone's values, lighting-work/captures/kingshill-*.txt); a linear sum of
     ///   the same colours over-saturates tinted ambients (the church's
     ///   (0.18, 0.25, 0.35): blue 4x red in linear, 2x in gamma).
-    pub(super) fn with_gamma_light(mut self, enabled: bool, ambient: Vec3) -> Self {
-        self.gamma_light = Vec4::new(if enabled { 1.0 } else { 0.0 }, std::f32::consts::PI * UNIT, 0.0, 0.0);
+    pub(super) fn with_gamma_light(mut self, enabled: bool, ambient: Vec3, shadow_intensity: f32) -> Self {
+        let floor = if crate::flag("shadowfloor") { 1.0 } else { 0.0 };
+        self.gamma_light = Vec4::new(if enabled { 1.0 } else { 0.0 }, std::f32::consts::PI * UNIT, shadow_floor(shadow_intensity), floor);
         self.ambient_gamma = ambient.max(Vec3::ZERO).powf(1.0 / 2.2).extend(0.0);
         self
     }
