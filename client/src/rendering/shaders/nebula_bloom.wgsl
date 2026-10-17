@@ -39,7 +39,9 @@ fn shown(c: vec3<f32>) -> vec3<f32> {
 fn fs_bright(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     // The 2x2 average (pe_downsample2x2) by the bilinear sampler between texels.
     let s = shown(textureSample(source, source_sampler, in.uv).rgb);
-    let threshold = params.p.x * 0.5;
+    // pe_brightpassfilter: max(2c - hdrBrightPassThreshold, 0) with 2c the shown
+    // colour (`mad r1.xyz, r0, 2, -c0.x`): the full threshold, not half.
+    let threshold = params.p.x;
     let over = max(s - vec3<f32>(threshold), vec3<f32>(0.0));
     return vec4<f32>(s * params.color.rgb * dot(over, LUM), 1.0);
 }
@@ -77,7 +79,10 @@ fn fs_compose(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let scene = textureSample(source, source_sampler, in.uv);
     var display = linear_to_srgb(max(scene.rgb, vec3<f32>(0.0)));
     if params.p.y > 0.0 {
-        display += textureSample(bloom, source_sampler, in.uv).rgb * params.p.y * 2.0;
+        // pe_compose: 2 x scene + bloom x hdrBloomScale (`add r0, r2, r2`,
+        // `mad r0.xyz, r1, c0.x, r0`): the scene's x 2 undoes its 8-bit encoding;
+        // the bloom texture is added as stored, without a second x 2.
+        display += textureSample(bloom, source_sampler, in.uv).rgb * params.p.y;
     }
     // pe_compose grades the combined scene and bloom in display space. Balance
     // is an RGB multiplier, not Bevy's temperature/tint white-balance control.
