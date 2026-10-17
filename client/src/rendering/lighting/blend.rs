@@ -332,13 +332,13 @@ fn blend_function(source: &str) -> Option<String> {
     let end_anchor = "        direct_light += light_contrib * shadow;";
     let end = source[start..].find(end_anchor)? + start + end_anchor.len();
     let original = &source[start..end];
-    let mut patched = source.replace(original, &format!("#ifdef DSOR_AMBIENCE\n        if ambience.counts.x != 0u && i == 0u {{\n            direct_light += apply_ambience(&lighting_input, enable_diffuse, shadow);\n        }} else {{\n{original}\n        }}\n#else\n{original}\n#endif"));
+    let mut patched = source.replace(original, &format!("#ifdef DSOR_AMBIENCE\n        if ambience.counts.x != 0u && i == 0u {{\n            direct_light += apply_ambience(&lighting_input, enable_diffuse, shadow, diffuse_occlusion);\n        }} else {{\n{original}\n        }}\n#else\n{original}\n#endif"));
     // Transmission uses the same radiance blend on the opposite material lobe.
     let start = patched.find("        let transmitted_light_contrib =\n            lighting::directional_light(")?;
     let anchor = "        transmitted_light += transmitted_light_contrib * transmitted_shadow;";
     let end = patched[start..].find(anchor)? + start + anchor.len();
     let original = patched[start..end].to_owned();
-    patched = patched.replace(&original, &format!("#ifdef DSOR_AMBIENCE\n        if ambience.counts.x != 0u && i == 0u {{\n            transmitted_light += apply_ambience(&transmissive_lighting_input, enable_diffuse, transmitted_shadow);\n        }} else {{\n{original}\n        }}\n#else\n{original}\n#endif"));
+    patched = patched.replace(&original, &format!("#ifdef DSOR_AMBIENCE\n        if ambience.counts.x != 0u && i == 0u {{\n            transmitted_light += apply_ambience(&transmissive_lighting_input, enable_diffuse, transmitted_shadow, diffuse_occlusion);\n        }} else {{\n{original}\n        }}\n#else\n{original}\n#endif"));
     // Nebula's distance fog replaces Bevy's on views with the level's look.
     let fog_call = "        output_color = apply_fog(\n            view_bindings::fog,\n            output_color,\n            pbr_input.world_position.xyz,\n            view_bindings::view.world_position.xyz,\n            pbr_input.frag_coord.xy,\n        );";
     if !patched.contains(fog_call) { return None; }

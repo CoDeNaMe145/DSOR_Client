@@ -35,7 +35,10 @@ struct Ambience {
 // sun x sat(N.L) + ambient + back x sat(BLF - N.L), and the materials multiply
 // the albedo by that sum. In linear terms that is albedo x (gamma sum)^2.2.
 // The fades and shadows stay the blend's; the sun's specular stays Bevy's.
-fn apply_ambience_gamma(input: ptr<function, LightingInput>, enable_diffuse: bool, shadow: f32) -> vec3<f32> {
+// The whole sum is darkened by the ambient occlusion squared, as the sun pass
+// multiplies it by globalShadowSampler.y^2 (pe_ssao writes that channel);
+// Bevy's screen-space AO stands in for it.
+fn apply_ambience_gamma(input: ptr<function, LightingInput>, enable_diffuse: bool, shadow: f32, occlusion: vec3<f32>) -> vec3<f32> {
     let unit = ambience.gamma_light.y;
     let n = (*input).layers[LAYER_BASE].N;
     var light = ambience.ambient_gamma.rgb;
@@ -53,12 +56,13 @@ fn apply_ambience_gamma(input: ptr<function, LightingInput>, enable_diffuse: boo
     if !enable_diffuse {
         return specular;
     }
+    light *= occlusion * occlusion;
     return (*input).diffuse_color * pow(light, vec3(2.2)) * (unit * 0.31830988618) + specular;
 }
 
-fn apply_ambience(input: ptr<function, LightingInput>, enable_diffuse: bool, shadow: f32) -> vec3<f32> {
+fn apply_ambience(input: ptr<function, LightingInput>, enable_diffuse: bool, shadow: f32, occlusion: vec3<f32>) -> vec3<f32> {
     if ambience.gamma_light.x != 0.0 {
-        return apply_ambience_gamma(input, enable_diffuse, shadow);
+        return apply_ambience_gamma(input, enable_diffuse, shadow, occlusion);
     }
     var result = vec3(0.0);
     for (var i = 0u; i < ambience.counts.y; i += 1u) {
