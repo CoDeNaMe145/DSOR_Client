@@ -1,6 +1,6 @@
 #define_import_path dsor::ambience
 
-#import bevy_pbr::lighting::{LightingInput, ambience_directional_light}
+#import bevy_pbr::lighting::{LightingInput, ambience_directional_light, LAYER_BASE}
 
 struct AmbienceTerm {
     direction: vec4<f32>,
@@ -28,8 +28,13 @@ fn apply_ambience(input: ptr<function, LightingInput>, enable_diffuse: bool, sha
         if any(front > vec3(0.0)) {
             result += ambience_directional_light(term.direction.xyz, front, input, enable_diffuse);
         }
-        if any(term.back.rgb > vec3(0.0)) {
-            result += ambience_directional_light(-term.direction.xyz, term.back.rgb, input, enable_diffuse);
+        // The back light, as the 2018/261 sun shader adds it: LightOppositeColor
+        // x sat(BackLightFactor - N.L), diffuse only. It also reaches the faces
+        // still turned a little towards the light (Wild Forest's orange rims).
+        // Scaled as Bevy's diffuse is (albedo / pi), like the front light.
+        let back_weight = saturate(term.back.w - dot((*input).layers[LAYER_BASE].N, term.direction.xyz));
+        if enable_diffuse && back_weight > 0.0 && any(term.back.rgb > vec3(0.0)) {
+            result += (*input).diffuse_color * term.back.rgb * (back_weight * 0.31830988618);
         }
     }
     return result;

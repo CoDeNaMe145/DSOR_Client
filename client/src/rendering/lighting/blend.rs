@@ -28,6 +28,9 @@ struct LightTerm {
     front: Vec3,
     shadowed: Vec3,
     back: Vec3,
+    /// BackLightFactor: the back light covers sat(offset - N.L), not only the
+    /// surfaces facing away from the light.
+    back_offset: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -57,7 +60,7 @@ impl LightBlend {
             * (b.sun_luminance() / reference.max(1e-6)).clamp(0., 1.);
         Self(vec![LightTerm { dir: direction(b.dir), front,
             shadowed: front * strength,
-            back: color(b.light_opposite_color) }], reference)
+            back: color(b.light_opposite_color), back_offset: b.back_light_factor }], reference)
     }
     pub(super) fn mix(&self, to: &Bubble, t: f32) -> Self {
         if t <= 0. { return self.clone(); }
@@ -75,9 +78,10 @@ impl LightBlend {
             term.front += target.front * t;
             term.shadowed += target.shadowed * t;
             term.back += target.back * t;
+            term.back_offset += (target.back_offset - term.back_offset) * t;
         } else {
             result.0.push(LightTerm { dir: target.dir, front: target.front * t,
-                shadowed: target.shadowed * t, back: target.back * t });
+                shadowed: target.shadowed * t, back: target.back * t, back_offset: target.back_offset });
         }
         // Discard only sub-visible residue after many interrupted transitions.
         result.0.retain(|term| term.front.max_element().max(term.back.max_element()) > 1e-7);
@@ -101,7 +105,7 @@ impl LightBlend {
             *out = GpuTerm { direction: term.dir.extend(0.),
                 front: (term.front * unit * factors.sun).extend(0.),
                 shadowed: (term.shadowed * unit * factors.sun).extend(0.),
-                back: (term.back * unit * factors.back).extend(0.) };
+                back: (term.back * unit * factors.back).extend(term.back_offset) };
         }
         value
     }

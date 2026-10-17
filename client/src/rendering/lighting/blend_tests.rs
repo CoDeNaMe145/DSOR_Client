@@ -9,7 +9,7 @@ fn preset(dir: Vec3, intensity: f32, shadows: f32) -> Bubble {
 fn sample(blend: &LightBlend, normal: Vec3, shadow: f32) -> Vec3 {
     blend.0.iter().map(|term| {
         (term.front - term.shadowed * (1. - shadow)) * normal.dot(term.dir).max(0.)
-            + term.back * normal.dot(-term.dir).max(0.)
+            + term.back * (term.back_offset - normal.dot(term.dir)).clamp(0., 1.)
     }).sum()
 }
 
@@ -154,6 +154,25 @@ fn height_fog_reaches_the_gpu_linear_and_only_once_enabled() {
     near(gpu.height_fog_color.truncate(), Vec3::new(c.red, c.green, c.blue));
     assert_eq!(gpu.height_fog_color.w, 1.);
     assert_eq!(gpu.fog_heights, Vec4::new(-3., -20., 0., 0.));
+}
+
+#[test]
+fn back_light_factor_reaches_the_gpu_and_fades_with_the_zone() {
+    // a0302_wildforest: BackLightFactor 0.3, an orange LightOppositeColor.
+    let wild = Bubble { back_light_factor: 0.3, light_opposite_color: [1., 0.349, 0., 1.], ..preset(Vec3::Y, 0.25, 1.) };
+    let blend = LightBlend::from(&wild);
+    assert_eq!(blend.0[0].back_offset, 0.3);
+    assert_eq!(blend.gpu(&Lighting::default()).terms[0].back.w, 0.3);
+    // The original's sat(BackLightFactor - N.L): a face turned slightly towards
+    // the light (N.L 0.1) still gets two tenths of it, one facing it gets none.
+    let side = Vec3::new(0.995, 0.1, 0.).normalize();
+    near(sample(&blend, side, 1.), blend.0[0].front * side.dot(Vec3::Y) + blend.0[0].back * (0.3 - side.dot(Vec3::Y)));
+    near(sample(&blend, Vec3::Y, 1.) - blend.0[0].front, Vec3::ZERO);
+    // Fading to a zone of the same light direction blends the offset too.
+    let indoor = Bubble { back_light_factor: 0.0, ..wild.clone() };
+    let half = blend.mix(&indoor, 0.5);
+    assert_eq!(half.0.len(), 1);
+    assert!((half.0[0].back_offset - 0.15).abs() < 1e-6);
 }
 
 #[test]
