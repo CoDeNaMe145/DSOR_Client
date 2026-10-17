@@ -162,7 +162,8 @@ pub(super) struct GpuAmbience {
     /// sun pass does; y the terms' unit (PI x UNIT); z the share of the whole
     /// light kept in full shadow; w 1 applies it (DSOR_FLAGS=shadowfloor).
     gamma_light: Vec4,
-    /// The ambient light in that gamma sum (gamma rgb).
+    /// The ambient light in that gamma sum (gamma rgb); w 1 squares the
+    /// ambient occlusion in gamma (DSOR_FLAGS=aogamma), 0 applies it once in linear.
     ambient_gamma: Vec4,
 }
 // CONTRACT: the field order above is ambience.wgsl's `Ambience` struct order
@@ -218,7 +219,7 @@ impl GpuAmbience {
     pub(super) fn with_gamma_light(mut self, enabled: bool, ambient: Vec3, shadow_intensity: f32) -> Self {
         let floor = if crate::flag("shadowfloor") { 1.0 } else { 0.0 };
         self.gamma_light = Vec4::new(if enabled { 1.0 } else { 0.0 }, std::f32::consts::PI * UNIT, shadow_floor(shadow_intensity), floor);
-        self.ambient_gamma = ambient.max(Vec3::ZERO).powf(1.0 / 2.2).extend(0.0);
+        self.ambient_gamma = ambient.max(Vec3::ZERO).powf(1.0 / 2.2).extend(if crate::flag("aogamma") { 1.0 } else { 0.0 });
         self
     }
 
@@ -353,13 +354,24 @@ fn blend_function(source: &str) -> Option<String> {
     let end_anchor = "        direct_light += light_contrib * shadow;";
     let end = source[start..].find(end_anchor)? + start + end_anchor.len();
     let original = &source[start..end];
-    let mut patched = source.replace(original, &format!("#ifdef DSOR_AMBIENCE\n        if ambience.counts.x != 0u && i == 0u {{\n            direct_light += apply_ambience(&lighting_input, enable_diffuse, shadow, diffuse_occlusion);\n        }} else {{\n{original}\n        }}\n#else\n{original}\n#endif"));
+    let mut patched = source.replace(original, &format!("#ifdef DSOR_AMBIENCE\n        if ambience.counts.x != 0u && i == 0u {{\n            direct_light += apply_ambience(&lighting_input, enable_diffuse, shadow, diffuse_occlusion, dsor_point_gamma);\n        }} else {{\n{original}\n        }}\n#else\n{original}\n#endif"));
     // Transmission uses the same radiance blend on the opposite material lobe.
     let start = patched.find("        let transmitted_light_contrib =\n            lighting::directional_light(")?;
     let anchor = "        transmitted_light += transmitted_light_contrib * transmitted_shadow;";
     let end = patched[start..].find(anchor)? + start + anchor.len();
     let original = patched[start..end].to_owned();
-    patched = patched.replace(&original, &format!("#ifdef DSOR_AMBIENCE\n        if ambience.counts.x != 0u && i == 0u {{\n            transmitted_light += apply_ambience(&transmissive_lighting_input, enable_diffuse, transmitted_shadow, diffuse_occlusion);\n        }} else {{\n{original}\n        }}\n#else\n{original}\n#endif"));
+    patched = patched.replace(&original, &format!("#ifdef DSOR_AMBIENCE\n        if ambience.counts.x != 0u && i == 0u {{\n            transmitted_light += apply_ambience(&transmissive_lighting_input, enable_diffuse, transmitted_shadow, diffuse_occlusion, vec3(0.0));\n        }} else {{\n{original}\n        }}\n#else\n{original}\n#endif"));
+    // With the gamma light sum, point lights join it as the original's point
+    // light pass adds into its light buffer (ambience.wgsl nebula_point_light).
+    let points = "    // Point lights (direct)\n";
+    if !patched.contains(points) { return None; }
+    patched = patched.replace(points, &format!("#ifdef DSOR_AMBIENCE\n    var dsor_point_gamma = vec3<f32>(0.0);\n#endif\n{points}"));
+    let point = "        let light_contrib = lighting::point_light(light_id, &lighting_input, enable_diffuse, true);\n        direct_light += light_contrib * shadow;";
+    if patched.matches(point).count() != 1 { return None; }
+    patched = patched.replace(point, &format!("#ifdef DSOR_AMBIENCE\n        if ambience.gamma_light.x != 0.0 {{\n            if enable_diffuse {{ dsor_point_gamma += nebula_point_light(light_id, &lighting_input); }}\n        }} else {{\n{point}\n        }}\n#else\n{point}\n#endif"));
+    let directional = "    // directional lights (direct)\n    let n_directional_lights = view_bindings::lights.n_directional_lights;\n";
+    if patched.matches(directional).count() != 1 { return None; }
+    patched = patched.replace(directional, &format!("{directional}#ifdef DSOR_AMBIENCE\n    if ambience.gamma_light.x != 0.0 && (ambience.counts.x == 0u || n_directional_lights == 0u) {{\n        direct_light += apply_points_gamma(&lighting_input, dsor_point_gamma);\n    }}\n#endif\n"));
     // Nebula's distance fog replaces Bevy's on views with the level's look.
     let fog_call = "        output_color = apply_fog(\n            view_bindings::fog,\n            output_color,\n            pbr_input.world_position.xyz,\n            view_bindings::view.world_position.xyz,\n            pbr_input.frag_coord.xy,\n        );";
     if !patched.contains(fog_call) { return None; }
@@ -369,7 +381,7 @@ fn blend_function(source: &str) -> Option<String> {
     let fog_end = "            pbr_input.frag_coord.xy,\n        );\n        }\n#else\n        output_color = apply_fog(\n            view_bindings::fog,\n            output_color,\n            pbr_input.world_position.xyz,\n            view_bindings::view.world_position.xyz,\n            pbr_input.frag_coord.xy,\n        );\n#endif\n    }\n#endif  // DISTANCE_FOG";
     if !patched.contains(fog_end) { return None; }
     patched = patched.replace(fog_end, &format!("{fog_end_body}\n#ifdef DSOR_AMBIENCE\n        output_color = apply_height_fog(output_color, pbr_input.world_position.xyz);\n#endif\n    }}\n#endif  // DISTANCE_FOG", fog_end_body = &fog_end[..fog_end.len() - "\n    }\n#endif  // DISTANCE_FOG".len()]));
-    Some(format!("#ifdef DSOR_AMBIENCE\n#import dsor::ambience::{{ambience, apply_ambience, apply_height_fog, apply_nebula_fog}}\n#endif\n{patched}"))
+    Some(format!("#ifdef DSOR_AMBIENCE\n#import dsor::ambience::{{ambience, apply_ambience, apply_height_fog, apply_nebula_fog, apply_points_gamma, nebula_point_light}}\n#endif\n{patched}"))
 }
 
 fn prepare_shaders(mut shaders: ResMut<Assets<Shader>>, mut done: Local<bool>) {

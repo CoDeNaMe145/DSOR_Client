@@ -2,6 +2,7 @@
 
 #import bevy_pbr::lighting::{LightingInput, ambience_directional_light, LAYER_BASE}
 #import bevy_pbr::view_transformations::position_world_to_view
+#import bevy_pbr::mesh_view_bindings as view_bindings
 
 struct AmbienceTerm {
     direction: vec4<f32>,
@@ -27,7 +28,8 @@ struct Ambience {
     // x 1 = sum the light in gamma space; y the terms' unit (PI x UNIT);
     // z the share of the whole light kept in full shadow; w 1 applies it.
     gamma_light: vec4<f32>,
-    // The ambient light in that gamma sum (gamma rgb).
+    // The ambient light in that gamma sum (gamma rgb); w 1 squares the AO in
+    // gamma (DSOR_FLAGS=aogamma), 0 applies it once in linear.
     ambient_gamma: vec4<f32>,
 }
 @group(1) @binding(0) var<uniform> ambience: Ambience;
@@ -36,15 +38,23 @@ struct Ambience {
 // sun x sat(N.L) + ambient + back x sat(BLF - N.L), and the materials multiply
 // the albedo by that sum. In linear terms that is albedo x (gamma sum)^2.2.
 // The fades and shadows stay the blend's; the sun's specular stays Bevy's.
-// The whole sum is darkened by the ambient occlusion squared, as the sun pass
-// multiplies it by globalShadowSampler.y^2 (pe_ssao writes that channel: the
-// average visibility of 16 samples x occlusionConstants.w 1.3); Bevy's
-// screen-space AO stands in for it as is.
+// The sun pass multiplies the whole sum by globalShadowSampler.y^2 (pe_ssao
+// writes that channel: the average visibility of 16 samples x
+// occlusionConstants.w 1.3). Bevy's screen-space AO is a different, stronger
+// quantity, so it darkens the whole lit colour once, in linear, as Bevy
+// applies its own AO (ambient_gamma.w 0). Squared in gamma (DSOR_FLAGS=aogamma,
+// ambient_gamma.w 1) it is AO^4.4 in linear and crushed the dark scenes.
+// MEASURED (2026-10-17, mean luminance vs the original, 34 deg crops):
+//   Kingshill garden / market / church / gate and the Wild Forest entrance
+//   AO^2 in gamma:  -10% / -4% / +4% / -16% / -21% (WF p10 4 vs 11)
+//   AO in linear:    +3% / +7% / +22% / +6% / -11% (WF p10 7)
+//   no AO:           +6% / +11% / +30% / +13% / -5%
+//   (the throne room's framing differs too much to count).
 // FAILURE (2026-10-17): Bevy's AO x 1.3 clamped to 1 almost everywhere (its
 // visibility is already near 1 on open ground, a different quantity than
 // pe_ssao's average) and brought back the sunlit overshoot (Kingshill garden
 // p90 228 vs the original's 184; AO^2 as is: 189).
-fn apply_ambience_gamma(input: ptr<function, LightingInput>, enable_diffuse: bool, shadow: f32, occlusion: vec3<f32>) -> vec3<f32> {
+fn apply_ambience_gamma(input: ptr<function, LightingInput>, enable_diffuse: bool, shadow: f32, occlusion: vec3<f32>, points: vec3<f32>) -> vec3<f32> {
     let unit = ambience.gamma_light.y;
     let n = (*input).layers[LAYER_BASE].N;
     var light = ambience.ambient_gamma.rgb;
@@ -78,13 +88,43 @@ fn apply_ambience_gamma(input: ptr<function, LightingInput>, enable_diffuse: boo
     } else {
         light -= sun_shadowed * (1.0 - shadow);
     }
-    light *= occlusion * occlusion;
-    return (*input).diffuse_color * pow(light, vec3(2.2)) * (unit * 0.31830988618) + specular;
+    if ambience.ambient_gamma.w != 0.0 {
+        light *= occlusion * occlusion;
+    }
+    // The point lights add into the same gamma light buffer, after the sun pass
+    // and so without its shadow and occlusion.
+    light += points;
+    var lit = (*input).diffuse_color * pow(light, vec3(2.2)) * (unit * 0.31830988618);
+    if ambience.ambient_gamma.w == 0.0 {
+        lit *= occlusion;
+    }
+    return lit + specular;
 }
 
-fn apply_ambience(input: ptr<function, LightingInput>, enable_diffuse: bool, shadow: f32, occlusion: vec3<f32>) -> vec3<f32> {
+// One point light's share of that gamma sum, as the 2018/261 point light pass
+// writes it: lightColor x sat(N.L) x sat(1 - d / range), diffuse only (its
+// alpha, the specular, is 0) and unshadowed. The light's Bevy colour is the
+// gamma colour x intensity made linear (lighting::point_light), x PI x UNIT.
+// EVIDENCE: shaders_sm30 lightPosRange ps (`mad_sat r0.w, r0.w, -c3.w, 1`,
+//   `dp3_sat r0.x, r0, r2`, `mul r0.xyz, r0.x, c4`, `mov oC0.w, 0`).
+fn nebula_point_light(light_id: u32, input: ptr<function, LightingInput>) -> vec3<f32> {
+    let light = &view_bindings::clustered_lights.data[light_id];
+    let to_light = (*light).position_radius.xyz - (*input).P;
+    let d = length(to_light);
+    let n_dot_l = saturate(dot((*input).layers[LAYER_BASE].N, to_light / max(d, 1e-4)));
+    let falloff = saturate(1.0 - d * sqrt((*light).color_inverse_square_range.w));
+    let color = max((*light).color_inverse_square_range.rgb, vec3(0.0)) / ambience.gamma_light.y;
+    return pow(color, vec3(1.0 / 2.2)) * (n_dot_l * falloff);
+}
+
+// The point lights alone, where no sun term takes them into its sum.
+fn apply_points_gamma(input: ptr<function, LightingInput>, points: vec3<f32>) -> vec3<f32> {
+    return (*input).diffuse_color * pow(points, vec3(2.2)) * (ambience.gamma_light.y * 0.31830988618);
+}
+
+fn apply_ambience(input: ptr<function, LightingInput>, enable_diffuse: bool, shadow: f32, occlusion: vec3<f32>, points: vec3<f32>) -> vec3<f32> {
     if ambience.gamma_light.x != 0.0 {
-        return apply_ambience_gamma(input, enable_diffuse, shadow, occlusion);
+        return apply_ambience_gamma(input, enable_diffuse, shadow, occlusion, points);
     }
     var result = vec3(0.0);
     for (var i = 0u; i < ambience.counts.y; i += 1u) {

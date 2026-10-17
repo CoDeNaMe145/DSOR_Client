@@ -283,7 +283,8 @@ pub(crate) fn asset_root() -> String {
 /// Diagnostic switches: the web page's `flag=a,b` or DSOR_FLAGS=a,b natively.
 /// noanim (no character animation), noshadows, nonpcs-shadow, noparticles, norim,
 /// linearlight (the light summed in linear space instead of the original's gamma sum),
-/// shadowfloor (full shadow keeps half the whole light, as the original's blurred shadow buffer).
+/// shadowfloor (full shadow keeps half the whole light, as the original's blurred shadow buffer),
+/// aogamma (the ambient occlusion squared in gamma space instead of once in linear).
 pub static FLAGS: std::sync::OnceLock<std::collections::HashSet<String>> = std::sync::OnceLock::new();
 
 pub fn flag(name: &str) -> bool {
