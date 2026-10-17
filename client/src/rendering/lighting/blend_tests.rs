@@ -135,8 +135,8 @@ fn entering_exiting_and_retargeting_never_move_the_shadow_sun() {
 #[test]
 fn uniform_layout_matches_wgsl_and_remains_within_webgl_limits() {
     assert_eq!(GpuTerm::min_size().get(), 64);
-    // counts, the terms, then the height fog colour and heights.
-    assert_eq!(GpuAmbience::min_size().get(), 16 + 64 * MAX_TERMS as u64 + 32);
+    // counts, the terms, the height fog colour and heights, the rim colour and direction.
+    assert_eq!(GpuAmbience::min_size().get(), 16 + 64 * MAX_TERMS as u64 + 32 + 32);
     assert!(GpuAmbience::min_size().get() <= 16384);
     let disabled = GpuAmbience::default();
     assert_eq!(disabled.counts.x, 0);
@@ -202,4 +202,21 @@ fn pbr_patch_adds_height_fog_after_distance_fog_on_fogged_materials_only() {
     assert!(patched.contains("#import dsor::ambience::{ambience, apply_ambience, apply_height_fog}"));
     // A Bevy version without this fog block must fail loudly, never silently skip.
     assert!(blend_function(&source.replace("#endif  // DISTANCE_FOG", "#endif")).is_none());
+}
+
+#[test]
+fn rim_light_reaches_the_gpu_in_gamma_with_the_engine_direction() {
+    // The inactive buffer is all zeros: no rim.
+    assert_eq!(GpuAmbience::default().rim_color, Vec4::ZERO);
+    // a0302_wildforest, as the running release261_192 client sends it: c8 =
+    // RimLightColor x RimLightIntensity, c9 = (0.6963, 0.6963, 0.1741, 4).
+    let wild = Bubble { rim_light_color: [0.2275, 0.6627, 0.6902, 1.], rim_light_intensity: 0.5, ..default() };
+    let gpu = GpuAmbience::default().with_rim_light(&wild);
+    near(gpu.rim_color.truncate(), Vec3::new(0.2275, 0.6627, 0.6902) * 0.5);
+    assert!(gpu.rim_color.truncate().distance(Vec3::new(0.1137, 0.3314, 0.3451)) < 1e-3);
+    assert_eq!(gpu.rim_color.w, 0.5);
+    assert!(gpu.rim_dir_spec.truncate().distance(Vec3::new(0.6963, 0.6963, 0.1741)) < 1e-3);
+    assert_eq!(gpu.rim_dir_spec.w, 4.);
+    let off = GpuAmbience::default().with_rim_light(&Bubble { rim_light_intensity: 0., ..wild });
+    assert_eq!(off.rim_color, Vec4::ZERO);
 }

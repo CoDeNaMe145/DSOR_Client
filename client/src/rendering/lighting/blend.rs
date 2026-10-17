@@ -122,11 +122,17 @@ pub(super) struct GpuAmbience {
     height_fog_color: Vec4,
     /// x FogNearHeight, y FogFarHeight.
     fog_heights: Vec4,
+    /// Gamma rgb: RimLightColor x RimLightIntensity, Nebula's rimLightColor
+    /// (0 in the inactive buffer: no rim).
+    rim_color: Vec4,
+    /// View-space direction (xyz) and exponent (w), Nebula's rimLightDirAndSpec.
+    rim_dir_spec: Vec4,
 }
 
 impl Default for GpuAmbience {
     fn default() -> Self {
-        Self { counts: UVec4::ZERO, terms: [GpuTerm::default(); MAX_TERMS], height_fog_color: Vec4::ZERO, fog_heights: Vec4::ZERO }
+        Self { counts: UVec4::ZERO, terms: [GpuTerm::default(); MAX_TERMS], height_fog_color: Vec4::ZERO, fog_heights: Vec4::ZERO,
+            rim_color: Vec4::ZERO, rim_dir_spec: Vec4::ZERO }
     }
 }
 
@@ -137,6 +143,23 @@ impl GpuAmbience {
         let c = linear([b.height_fog_color[0], b.height_fog_color[1], b.height_fog_color[2]], 1.0);
         self.height_fog_color = Vec4::new(c.red, c.green, c.blue, 1.0);
         self.fog_heights = Vec4::new(b.fog_near_height, b.fog_far_height, 0.0, 0.0);
+        self
+    }
+
+    /// The characters' rim light. The colour is the bubble's; the engine sets the
+    /// direction and exponent itself, the same in every map.
+    /// EVIDENCE: the "character" and "characterfalloff" ps_3_0 (shaders_sm30) add
+    ///   rimLightColor (c8) x pow(max(dot(n_view, c9.xyz), 0), c9.w) to the lit
+    ///   colour, before the hit colour and the fogs. Read from the running
+    ///   release261_192 client (D3D9 SetPixelShaderConstantF, Wild Forest):
+    ///   c8 = (0.1137, 0.3314, 0.3451, 0.5), its RimLightColor x RimLightIntensity
+    ///   0.5; c9 = (0.6963, 0.6963, 0.1741, 4), (4, 4, 1) normalised.
+    pub(super) fn with_rim_light(mut self, b: &Bubble) -> Self {
+        let c = b.rim_light_color;
+        // DSOR_FLAGS=norim leaves it out, for comparisons.
+        let scale = if crate::flag("norim") { 0.0 } else { 1.0 };
+        self.rim_color = Vec4::new(c[0], c[1], c[2], 1.0) * b.rim_light_intensity * scale;
+        self.rim_dir_spec = Vec3::new(4.0, 4.0, 1.0).normalize().extend(4.0);
         self
     }
 }

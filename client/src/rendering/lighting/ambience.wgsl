@@ -15,6 +15,10 @@ struct Ambience {
     height_fog_color: vec4<f32>,
     // x FogNearHeight, y FogFarHeight.
     fog_heights: vec4<f32>,
+    // Gamma rgb: RimLightColor x RimLightIntensity (0: no rim).
+    rim_color: vec4<f32>,
+    // View-space direction (xyz), exponent (w).
+    rim_dir_spec: vec4<f32>,
 }
 @group(1) @binding(0) var<uniform> ambience: Ambience;
 
@@ -55,4 +59,18 @@ fn apply_height_fog(color: vec4<f32>, world_position: vec3<f32>) -> vec4<f32> {
     let gamma = pow(max(color.rgb, vec3(0.0)), vec3(1.0 / 2.2));
     let fog = pow(ambience.height_fog_color.rgb, vec3(1.0 / 2.2));
     return vec4(pow(mix(fog, gamma, clear), vec3(2.2)), color.a);
+}
+
+// The characters' rim light, in gamma space, to add to their lit colour: the
+// 2018/261 "character" and "characterfalloff" pixel shaders add
+// rimLightColor x pow(max(dot(n_view, rimLightDirAndSpec.xyz), 0), .w) before the
+// hit colour and the fogs. Their view-space normals face the camera with +z
+// (the normal buffer's decode spans z -0.52..1), as Bevy's view space does.
+fn rim_light(world_normal: vec3<f32>, view_from_world: mat4x4<f32>) -> vec3<f32> {
+    if ambience.rim_color.w <= 0.0 {
+        return vec3(0.0);
+    }
+    let n = normalize((view_from_world * vec4(world_normal, 0.0)).xyz);
+    let rim = pow(max(dot(n, ambience.rim_dir_spec.xyz), 0.0), ambience.rim_dir_spec.w);
+    return ambience.rim_color.rgb * rim;
 }
