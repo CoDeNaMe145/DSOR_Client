@@ -7,6 +7,7 @@
 
 mod global;
 pub(crate) mod presets;
+mod presets_page;
 mod window;
 mod zones;
 
@@ -29,8 +30,8 @@ impl Plugin for LightingMenuPlugin {
         }
         app.insert_resource(presets::LightingMenuStore::load())
             .init_resource::<global::NumericEditor>()
-            .add_plugins((window::WindowPlugin, zones::ZonesPlugin))
-            .add_systems(Update, (toggle, keep_cursor, blur_editors, global::systems(), zones::systems(), hold_keys).chain());
+            .add_plugins((window::WindowPlugin, zones::ZonesPlugin, presets_page::PresetsPagePlugin))
+            .add_systems(Update, (toggle, keep_cursor, blur_editors, global::systems(), zones::systems(), presets_page::systems(), hold_keys).chain());
     }
 }
 
@@ -55,10 +56,16 @@ fn keep_cursor(roots: Query<&Visibility, With<window::MenuRoot>>, mut cursors: Q
 
 /// A press on any button ends the value being typed; a value's own press then
 /// starts it again.
-fn blur_editors(buttons: Query<&Interaction, (Changed<Interaction>, With<Button>)>, mut global: ResMut<global::NumericEditor>, mut zones: ResMut<zones::ZoneEditor>) {
+fn blur_editors(
+    buttons: Query<&Interaction, (Changed<Interaction>, With<Button>)>,
+    mut global: ResMut<global::NumericEditor>,
+    mut zones: ResMut<zones::ZoneEditor>,
+    mut name: ResMut<presets_page::NameEditor>,
+) {
     if buttons.iter().any(|i| *i == Interaction::Pressed) {
         if global.typing() { global.cancel(); }
         if zones.typing() { zones.cancel(); }
+        if name.typing() { name.cancel(); }
     }
 }
 
@@ -69,12 +76,13 @@ fn blur_editors(buttons: Query<&Interaction, (Changed<Interaction>, With<Button>
 fn hold_keys(
     global: Res<global::NumericEditor>,
     zones: Res<zones::ZoneEditor>,
+    name: Res<presets_page::NameEditor>,
     mut input: ResMut<crate::ui::input::UiInput>,
     mut saved_enabled: Local<Option<bool>>,
     mut was_typing: Local<bool>,
     mut cameras: Query<&mut FreeCameraState>,
 ) {
-    let editing = global.typing() || zones.typing();
+    let editing = global.typing() || zones.typing() || name.typing();
     let typing = editing || *was_typing;
     *was_typing = editing;
     if input.hold_keys != typing {

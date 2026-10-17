@@ -962,7 +962,7 @@ fn spawn_menu(commands: &mut Commands, starts_open: bool) {
                     RelativeCursorPosition::default(),
                     ))
                     .with_children(|page| {
-                        page_placeholder(page, page_id);
+                        page_contents(page, page_id);
                     });
                 }
 
@@ -1073,12 +1073,12 @@ fn spawn_menu(commands: &mut Commands, starts_open: bool) {
 
 
 
-/// A page's contents. Pages whose controls are not ported yet: a title and a note.
-fn page_placeholder(page: &mut ChildSpawnerCommands, page_id: MenuPage) {
-    let title = match page_id {
-        MenuPage::Overview => return,
+/// A page's contents (the Overview is built with the window).
+fn page_contents(page: &mut ChildSpawnerCommands, page_id: MenuPage) {
+    use super::zones::Group;
+    match page_id {
+        MenuPage::Overview => {}
         MenuPage::Lighting => {
-            use super::zones::Group;
             page.spawn(menu_text("Lighting", 25.0, Color::srgb(0.94, 0.95, 0.97)));
             page.spawn(menu_text("Global renderer controls and ambience light settings.", 13.0, Color::srgb(0.64, 0.70, 0.79)));
             super::global::spawn(page);
@@ -1089,21 +1089,16 @@ fn page_placeholder(page: &mut ChildSpawnerCommands, page_id: MenuPage) {
                 Color::srgb(0.64, 0.70, 0.79),
             ));
             super::zones::spawn_groups(page, &[Group::Lighting, Group::Colors, Group::Rim, Group::PlayerLight]);
-            return;
         }
-        MenuPage::Regions => return super::zones::spawn_regions(page),
+        MenuPage::Regions => super::zones::spawn_regions(page),
         MenuPage::Atmosphere => {
-            use super::zones::Group;
             page.spawn(menu_text("Atmosphere", 25.0, Color::srgb(0.94, 0.95, 0.97)));
             page.spawn(menu_text("Fog and post-processing overrides for the target selected on Regions.", 13.0, Color::srgb(0.64, 0.70, 0.79)));
             page.spawn(menu_text("Click a value, type the new number, and press Enter to apply. Esc cancels.", 12.0, Color::srgb(0.64, 0.70, 0.79)));
             super::zones::spawn_groups(page, &[Group::Fog, Group::PostProcessing]);
-            return;
         }
-        MenuPage::Presets => "Presets",
-    };
-    page.spawn(menu_text(title, 25.0, Color::srgb(0.94, 0.95, 0.97)));
-    page.spawn(menu_text("Controls for this page are not ported yet.", 13.0, Color::srgb(0.64, 0.70, 0.79)));
+        MenuPage::Presets => super::presets_page::spawn(page),
+    }
 }
 
 /// Startup: the window, hidden unless DSOR_PANEL is set (for screenshots).
