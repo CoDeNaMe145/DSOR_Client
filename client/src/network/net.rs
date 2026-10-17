@@ -185,6 +185,9 @@ pub struct Net {
     /// The daily login bonus's day columns (SpecialOfferCommand's first offer
     /// group list), for crate::ui::controls::social's loginreward2.
     pub login_rewards: Vec<dsor_proto::commands::player::OfferGroup>,
+    /// The server's answers to our group invitations (GroupInvitationResponse:
+    /// code, the other player's name), for the chat (crate::ui::controls::social).
+    pub group_answers: Vec<(i8, String)>,
     pub kills: Vec<(u32, dsor_proto::commands::combat::Kill)>,
     /// The same blows as (attacker, victim), for the attacker's bullet in flight to
     /// end on its victim (crate::gameplay::skills fly_bullets).
@@ -734,6 +737,7 @@ pub fn start_offline(world: &mut World, class: u8, gender: u8) {
         messages: Vec::new(),
         notifications: Vec::new(),
         login_rewards: Vec::new(),
+        group_answers: Vec::new(),
         kills: Vec::new(),
         strikes: Vec::new(),
         death: default(),
@@ -959,6 +963,7 @@ pub(crate) fn start_session(world: &mut World, config: NetConfig) {
         messages: Vec::new(),
         notifications: Vec::new(),
         login_rewards: Vec::new(),
+        group_answers: Vec::new(),
         kills: Vec::new(),
         strikes: Vec::new(),
         death: default(),
@@ -1440,6 +1445,9 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
                 net.notifications.retain(|e| e.guid != entry.guid);
                 net.notifications.push(entry);
             }
+        }
+        ServerCommand::GroupInvitationResponse(r) => {
+            net.group_answers.push((r.code, r.name));
         }
         ServerCommand::SpecialOffer(o) if !o.login_rewards.is_empty() => {
             net.login_rewards = o.login_rewards;

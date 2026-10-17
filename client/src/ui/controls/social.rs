@@ -501,8 +501,20 @@ pub(in crate::ui) fn answer(
     mut pointer: ResMut<Pointer>,
     mut chat: ResMut<crate::network::chat::ChatLog>,
 ) {
-    let Some(clicked) = social.clicked.take() else { return };
     let Some(mut net) = net else { return };
+    // The inviter's answer (handler 0x5709BB, gui.window.grouping texts).
+    for (code, name) in std::mem::take(&mut net.group_answers) {
+        chat.push(Kind::System, match code {
+            0 => format!("{name} has joined your group."),
+            1 => format!("{name} did not join your group."),
+            2 => format!("{name} is already in a group."),
+            3 => format!("{name} is not currently logged in."),
+            4 => format!("{name} could not be found."),
+            5 => "Only the group leader may use this command.".to_owned(),
+            c => format!("{name}: group invitation answer {c}."),
+        });
+    }
+    let Some(clicked) = social.clicked.take() else { return };
     let me = net.local_name.clone().unwrap_or_default();
     match clicked {
         Social::Confirm | Social::Cancel => {
