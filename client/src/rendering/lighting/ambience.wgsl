@@ -88,17 +88,17 @@ fn apply_ambience_gamma(input: ptr<function, LightingInput>, enable_diffuse: boo
     } else {
         light -= sun_shadowed * (1.0 - shadow);
     }
+    // The occlusion darkens the sun pass's sum only: once in linear is its
+    // 1/2.2 power here.
     if ambience.ambient_gamma.w != 0.0 {
         light *= occlusion * occlusion;
+    } else {
+        light *= pow(occlusion, vec3(1.0 / 2.2));
     }
     // The point lights add into the same gamma light buffer, after the sun pass
     // and so without its shadow and occlusion.
     light += points;
-    var lit = (*input).diffuse_color * pow(light, vec3(2.2)) * (unit * 0.31830988618);
-    if ambience.ambient_gamma.w == 0.0 {
-        lit *= occlusion;
-    }
-    return lit + specular;
+    return (*input).diffuse_color * pow(light, vec3(2.2)) * (unit * 0.31830988618) + specular;
 }
 
 // One point light's share of that gamma sum, as the 2018/261 point light pass
