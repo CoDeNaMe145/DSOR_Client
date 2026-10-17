@@ -717,7 +717,14 @@ fn follow_level(
         // offsets, zoom, and whether a camera is available during map handoff.
         // A free camera must enter the volume too: its ground focus moves when
         // looking around and can cross a doorway while the camera is outside.
-        let position = observer_position(players.single().ok().map(|p| p.translation()), cameras.iter());
+        let mut position = observer_position(players.single().ok().map(|p| p.translation()), cameras.iter());
+        // DSOR_FLAGS=camfocus (offline comparisons only): without a player, the
+        // zone where the game camera's player would stand, 25 m ahead of it.
+        if players.is_empty() && crate::flag("camfocus") {
+            if let Some((_, at)) = cameras.iter().find(|(c, _)| c.is_active) {
+                position = Some(at.translation() + at.forward() * 25.0);
+            }
+        }
         let inside = match preview {
             Some(target) => target.filter(|&i| i < ambience.bubbles.len()),
             None => position.and_then(|p| ambience.bubble_at(p)),
