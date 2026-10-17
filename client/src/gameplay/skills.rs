@@ -108,6 +108,7 @@ pub struct SkillDef {
     pub class: String,
     #[serde(default)]
     pub resource_cost: f32,
+    #[serde(default)] pub ammo_cost: u32,
     pub execute: HashMap<String, String>,
     pub impact: String,
     /// Shifted skills: the sequence drawn on the aimed point (SkillBulletId).
@@ -771,12 +772,13 @@ fn cast_input(
     time: Res<Time<Real>>,
     mut players: Query<(Entity, &mut Transform, &mut LocalPlayer, &Character)>,
     mut cooldowns: Local<HashMap<String, f64>>,
-    (hovered, monsters, mut debug_monsters, ui, mut ui_skills): (
+    (hovered, monsters, mut debug_monsters, ui, mut ui_skills, settings): (
         Res<crate::actors::monsters::Hovered>,
         Query<(&GlobalTransform, &crate::actors::monsters::Monster, &CharacterAnim)>,
         ResMut<crate::actors::monsters::DebugMonsters>,
         Res<crate::ui::input::UiInput>,
         ResMut<crate::ui::SkillClicks>,
+        Res<crate::ui::Settings>,
     ),
     // A target skill aimed at a monster out of reach: (slot, monster), cast once
     // the walk brings it in reach.
@@ -797,15 +799,12 @@ fn cast_input(
     // as in the game, paced by the cast, the cooldown and the resource: Shift or a
     // monster under the cursor with the left button, the right button anywhere
     // ("je peux pas rester appuye sur clique droit pour lancer un sort").
-    let slot = if !ui.blocks(MouseButton::Left) && (shift || hovered.0.is_some()) && buttons.pressed(MouseButton::Left) {
+    let slot = if !ui.blocks(MouseButton::Left) && (shift || (settings.current.attack_hovered && hovered.0.is_some())) && buttons.pressed(MouseButton::Left) {
         Some(0)
     } else if !ui.blocks(MouseButton::Right) && buttons.pressed(MouseButton::Right) {
         Some(1)
     } else {
-        [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5]
-            .iter()
-            .position(|k| keys.just_pressed(*k))
-            .map(|i| i + 2)
+        settings.current.slot_pressed(&keys)
     };
     // DSOR_TEST_SLOT=<slot>: that quick slot pressed all the time (testing online
     // without a keyboard; the cooldowns pace it).
@@ -1819,7 +1818,8 @@ fn start_fx_animations(
 }
 
 /// Camera shake, decaying, on top of where the follow camera put it this frame.
-fn shake_camera(time: Res<Time>, mut shake: ResMut<CameraShake>, mut cameras: Query<&mut Transform, (With<Camera3d>, Without<crate::rendering::highlight::HighlightCamera>, Without<NotShadowCaster>)>) {
+fn shake_camera(time: Res<Time>, settings: Res<crate::ui::Settings>, mut shake: ResMut<CameraShake>, mut cameras: Query<&mut Transform, (With<Camera3d>, Without<crate::rendering::highlight::HighlightCamera>, Without<NotShadowCaster>)>) {
+    if !settings.current.camera_shake { shake.trauma = 0.0; return; }
     if shake.trauma <= 0.0 {
         return;
     }

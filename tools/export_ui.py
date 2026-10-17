@@ -397,11 +397,12 @@ for lang in ("fr", "en"):
         json.dump({k: table[k] for k in sorted(used_keys) if k in table}, f, ensure_ascii=False, indent=0)
 if tex.missing:
     print("missing textures:", sorted(tex.missing))
-if "inventory" in only:
+if "inventory" in only or "tradingscreen" in only:
     from inventory_catalog import export_inventory
-    from equipment_visuals import export_equipment
     print("inventory catalog (items, collection entries):", export_inventory(catalog, tex, loca, assets))
+if "inventory" in only:
+    from equipment_visuals import export_equipment
     export_equipment(catalog, assets)
-if "npcscreen" in only:
+if "npcscreen" in only or "tradingscreen" in only:
     from dialogue_catalog import export_dialogue
     print("NPC dialogue:", export_dialogue(catalog, tex, loca, assets))

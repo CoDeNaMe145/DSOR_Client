@@ -10,6 +10,10 @@ pub(super) mod items;
 pub(super) mod sheet;
 pub(super) mod social;
 pub(super) mod trade;
+pub(crate) mod settings;
+pub(super) mod hotbar;
+mod tooltips;
+pub(super) use tooltips::overlay as tooltips;
 
 /// Reference pixels, scaled by the same factor as the rest of the interface.
 const DRAG_HANDLE_HEIGHT: f32 = 32.0;
@@ -72,6 +76,7 @@ fn translated([l, t, r, b]: [f32; 4], offset: Vec2) -> [f32; 4] {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Section {
+    SettingsRow(usize),
     #[default]
     Always,
     Inventory(u8),
@@ -129,6 +134,10 @@ impl Gate {
 }
 
 fn section(window: &str, id: &str) -> Section {
+    if window == settings::WINDOW {
+        let leaf = id.rsplit('/').next().unwrap_or("");
+        if let Some(row) = leaf.strip_prefix("row").or_else(|| leaf.strip_prefix("label")).and_then(|s| s.parse().ok()) { return Section::SettingsRow(row); }
+    }
     let parts: Vec<_> = id.split('/').collect();
     // The character list's scroll handle moves with the list: crate::ui::controls::sheet draws it.
     if window == "charactersheet" && id.contains("/OverviewList/ScrollBarBackground/ScrollBarBoundaries/ScrollHandle") { return Section::Hidden; }
@@ -181,6 +190,9 @@ fn section(window: &str, id: &str) -> Section {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Action {
+    Settings(String),
+    Bar(i32),
+    Essence,
     NpcChoice(usize),
     Close,
     Window(&'static str),
@@ -215,6 +227,8 @@ enum Action {
 }
 
 fn action(window: &str, w: &Widget) -> Action {
+    if window == settings::WINDOW { return Action::Settings(w.event.clone()); }
+    if window == "gamemenu" && w.event == "Options" { return Action::Settings("open".into()); }
     if dialogue::WINDOWS.contains(&window) {
         if let Some(index) = w.event.strip_prefix("NpcChoice:").and_then(|s| s.parse().ok()) { return Action::NpcChoice(index); }
     }
@@ -324,7 +338,11 @@ fn action(window: &str, w: &Widget) -> Action {
         };
     }
     if window == "bottombar" {
+        if w.event == "EssenceToggle" { return Action::Essence; }
+        if w.event == "PreviousQuickbar" { return Action::Bar(-1); }
+        if w.event == "NextQuickbar" { return Action::Bar(1); }
         if w.event == "Lock" { return Action::Lock; }
+        if let Some(slot) = hotbar::slot_leaf(leaf) { return Action::Skill(slot); }
         if leaf == "LMB" { return Action::Skill(0); }
         if leaf == "RMB" { return Action::Skill(1); }
         if let Some(slot) = leaf.strip_prefix("QuickSlot").and_then(|s| s.parse::<usize>().ok()) {
@@ -430,6 +448,7 @@ impl WindowControls {
     fn section_visible(&self, section: Section) -> bool {
         match section {
             Section::Always => true,
+            Section::SettingsRow(row) => row < self.pages.get("settings_rows").copied().unwrap_or(7) as usize,
             Section::Inventory(page) => self.inventory == page,
             Section::InventoryReturn => self.inventory != 0,
             Section::OverflowFooter => self.bag == items::OVERFLOW,
@@ -464,6 +483,8 @@ impl WindowControls {
 
     fn selected(&self, action: &Action) -> bool {
         match action {
+            Action::Settings(event) => ["general", "graphics", "audio", "controls", "cursor", "combatSettings"].iter().position(|t| *t == event)
+                .is_some_and(|i| self.pages.get("settings").copied().unwrap_or(0) == i as u8),
             Action::Window(name) => self.open_windows.iter().any(|n| n == name),
             Action::Tab(group, page) => self.pages.get(group).copied().unwrap_or(0) == *page,
             Action::Toggle(id) => self.toggles.contains(id),
@@ -613,7 +634,7 @@ fn raise(entity: Entity, windows: &mut Windows) {
 }
 
 fn stacked_window(name: &str) -> bool {
-    is_menu(name) && !matches!(name, "gamemenu" | "unstackwindow" | "locationmap" | social::CONTEXT_MENU)
+    is_menu(name) && !matches!(name, "gamemenu" | "unstackwindow" | "locationmap" | settings::WINDOW | social::CONTEXT_MENU)
 }
 
 /// Also cover windows opened outside toggle(), including asynchronously loaded
@@ -659,7 +680,9 @@ fn toggle(name: &str, windows: &mut Windows) {
 }
 
 pub(super) fn keyboard(keys: Res<ButtonInput<KeyCode>>, mut windows: Windows, mut pointer: ResMut<Pointer>, mut items: ResMut<items::Interaction>,
-    cameras: Query<(), With<crate::FreeCamera>>, mut players: Query<&mut crate::network::net::LocalPlayer>, mut dialogue: ResMut<crate::gameplay::dialogue::Dialogue>) {
+    cameras: Query<(), With<crate::FreeCamera>>, mut players: Query<&mut crate::network::net::LocalPlayer>, mut dialogue: ResMut<crate::gameplay::dialogue::Dialogue>,
+    mut settings: ResMut<settings::Settings>) {
+    if settings.keyboard(&keys) { return; }
     if keys.just_pressed(KeyCode::Escape) && items.cancel_drag() { pointer.down = None; return; }
     if keys.just_pressed(KeyCode::Escape) && pointer.spell_drag.take().is_some() {
         pointer.down = None;
@@ -697,13 +720,14 @@ pub(super) fn keyboard(keys: Res<ButtonInput<KeyCode>>, mut windows: Windows, mu
     // The map viewer owns WASD until a playable character has spawned. Keep
     // the raw keys available to the camera and other UI shortcuts working.
     let free_fly = !cameras.is_empty() && players.is_empty();
-    for (name, key, _) in MENU_WINDOWS {
-        if free_fly && matches!(key, KeyCode::KeyW | KeyCode::KeyA | KeyCode::KeyS | KeyCode::KeyD) { continue; }
-        if key != KeyCode::Escape && keys.just_pressed(key) { toggle(name, &mut windows); }
+    for name in MENU_WINDOWS.iter().map(|w| w.0).chain(NAV_WINDOWS) {
+        if name == "gamemenu" || name == "locationmap" { continue; }
+        if free_fly && settings.current.bindings.get(name).is_some_and(|k| matches!(k.as_str(), "KeyW" | "KeyA" | "KeyS" | "KeyD")) { continue; }
+        if settings.current.pressed(name, &keys) { toggle(name, &mut windows); }
     }
-    if keys.just_pressed(KeyCode::Tab) { toggle("locationmap", &mut windows); }
+    if settings.current.pressed("locationmap", &keys) { toggle("locationmap", &mut windows); }
     // V switches between the expanded controls and a click-through preview.
-    if keys.just_pressed(KeyCode::KeyV) {
+    if settings.current.pressed("chat", &keys) {
         let compact = windows.iter().any(|(_, w, c, _, _)| w.0 == CHAT_WINDOW && !c.chat_compact);
         set_chat_compact(compact, &mut windows, &mut pointer);
     }
@@ -793,13 +817,15 @@ pub(super) fn interact(
     mut dialogue: ResMut<crate::gameplay::dialogue::Dialogue>,
     mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
     mut social: ResMut<social::SocialUi>,
+    mut settings: ResMut<settings::Settings>,
+    mut hotbar: ResMut<hotbar::Hotbar>,
 ) {
     let Ok((primary, mut window, cursor)) = primary.single_mut() else { return };
     let blocked = panels.iter().any(|(cursor, visible)| visible.get() && cursor.cursor_over());
     let point = window.cursor_position().filter(|_| window.focused && window.height() > 0.0)
         .map(|p| p * (BASE_H / window.height()));
     let width = BASE_H * window.width() / window.height().max(1.0);
-    let modal = windows.iter().filter(|(_, w, _, v, _)| matches!(w.0.as_str(), "gamemenu" | "unstackwindow") && *v != Visibility::Hidden)
+    let modal = windows.iter().filter(|(_, w, _, v, _)| matches!(w.0.as_str(), "gamemenu" | "unstackwindow" | settings::WINDOW) && *v != Visibility::Hidden)
         .max_by(|a, b| a.4.translation.z.total_cmp(&b.4.translation.z)).map(|(e, _, _, _, _)| e);
     if !window.focused || mouse.just_pressed(MouseButton::Left) { pointer.focus = None; }
 
@@ -886,6 +912,15 @@ pub(super) fn interact(
     let action = controls.buttons[index].action.clone();
     info!("ui {}: {} ({action:?})", name.0, controls.buttons[index].id);
     match action {
+        Action::Settings(event) => {
+            if event == "open" {
+                settings.begin();
+                *visibility = Visibility::Hidden;
+                toggle(settings::WINDOW, &mut windows);
+            } else { settings.action(&event); }
+        }
+        Action::Bar(delta) => hotbar.change = delta,
+        Action::Essence => hotbar.swap_essence = true,
         Action::NpcChoice(index) => dialogue.choice = Some(index),
         Action::Item(_) | Action::SplitSlider => {},
         Action::Split(delta) => pointer.item_command = Some(delta),
@@ -903,9 +938,12 @@ pub(super) fn interact(
         Action::Ingredient(page) => controls.ingredient = page,
         Action::Rarity(rarity) => controls.rarity = rarity,
         Action::Page(delta) => controls.overflow_page = (controls.overflow_page as i32 + delta).clamp(0, controls.overflow_pages.saturating_sub(1) as i32) as usize,
-        Action::Lock => controls.locked = !controls.locked,
+        Action::Lock => { controls.locked = !controls.locked; settings.current.lock_bar = controls.locked; }
         Action::Skill(slot) => skill_clicks.0 = Some(slot),
-        Action::Fullscreen => window.mode = if window.mode == WindowMode::Windowed { WindowMode::BorderlessFullscreen(MonitorSelection::Current) } else { WindowMode::Windowed },
+        Action::Fullscreen => {
+            settings.current.fullscreen = window.mode == WindowMode::Windowed;
+            window.mode = if settings.current.fullscreen { WindowMode::BorderlessFullscreen(MonitorSelection::Current) } else { WindowMode::Windowed };
+        },
         Action::Window(target) => toggle(target, &mut windows),
         Action::Membership => {
             for (_, w, mut c, mut v, _) in &mut windows {
@@ -1090,6 +1128,8 @@ mod tests {
         let mut app = App::new();
         app.init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<Pointer>()
+            .init_resource::<settings::Settings>()
+            .init_resource::<hotbar::Hotbar>()
             .init_resource::<items::Interaction>()
             .init_resource::<crate::gameplay::dialogue::Dialogue>()
             .add_systems(Update, keyboard);
@@ -1183,6 +1223,8 @@ mod tests {
             .init_resource::<ButtonInput<MouseButton>>()
             .init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<Pointer>()
+            .init_resource::<settings::Settings>()
+            .init_resource::<hotbar::Hotbar>()
             .init_resource::<items::Interaction>()
             .init_resource::<SkillClicks>()
             .init_resource::<crate::network::chat::ChatLog>()
@@ -1283,8 +1325,10 @@ mod tests {
         let buttons: Vec<_> = controls.buttons.iter().filter(|b| controls.section_visible(b.section)).collect();
         assert_eq!(buttons.len(), 1);
         assert_eq!(buttons[0].action, Action::ChatCompact(false));
+        let expand = buttons[0].rect;
+        let expand_center = Vec2::new((expand[0]+expand[2])*0.5, (expand[1]+expand[3])*0.5);
         for width in [800.0, 1024.0, 1920.0, 2560.0] {
-            assert!(controls.hit(Vec2::new(15.0, 555.0), width).is_some(), "expand stays at screen left");
+            assert!(controls.hit(expand_center, width).is_some(), "expand stays at screen left");
             assert!(!controls.covers(Vec2::new(100.0, 550.0), width), "recent text is click-through");
             assert!(!controls.covers(Vec2::new(100.0, 610.0), width), "compact has no entry bar");
         }
@@ -1414,10 +1458,14 @@ mod tests {
             press(&mut app, KeyCode::Tab);
             assert_eq!(*app.world().get::<Visibility>(root).unwrap(), Visibility::Hidden);
         }
-        // Escape resets the next opening to compact, even from the large map.
+        // Escape opens/closes the game menu without dismissing the map.
         press(&mut app, KeyCode::Tab);
         press(&mut app, KeyCode::Tab);
         press(&mut app, KeyCode::Escape);
+        assert_eq!(*app.world().get::<Visibility>(root).unwrap(), Visibility::Inherited);
+        assert_eq!(app.world().get::<WindowControls>(root).unwrap().map_mode, local_map::MapMode::Expanded);
+        press(&mut app, KeyCode::Escape);
+        press(&mut app, KeyCode::Tab);
         assert_eq!(*app.world().get::<Visibility>(root).unwrap(), Visibility::Hidden);
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.world().get::<WindowControls>(root).unwrap().map_mode, local_map::MapMode::Compact);
@@ -1534,9 +1582,11 @@ mod tests {
             let panel = app.world().get::<WindowControls>(roots[window]).unwrap();
             if window == "locationmap" {
                 assert!(panel.drag_handle.is_none());
-                app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::Escape);
-                app.update();
-                app.world_mut().resource_mut::<ButtonInput<KeyCode>>().reset(KeyCode::Escape);
+                for _ in 0..2 {
+                    app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::Tab);
+                    app.update();
+                    app.world_mut().resource_mut::<ButtonInput<KeyCode>>().reset(KeyCode::Tab);
+                }
             } else {
                 assert!(panel.drag_handle.is_some(), "{window} must be draggable");
                 let close = panel.buttons.iter().find(|b| b.action == Action::Close).unwrap().id.clone();

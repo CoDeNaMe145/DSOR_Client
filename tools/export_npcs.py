@@ -19,17 +19,16 @@ import json, os, re, sqlite3, struct, sys
 
 export, assets = sys.argv[1], sys.argv[2]
 
-titles = {}
 xml = open(os.path.join(export, "language", "en", "db.npc.xml"), encoding="utf-8-sig").read()
-for name, text in re.findall(r'<item name="([^"]+)Title"><!\[CDATA\[(.*?)\]\]></item>', xml, re.S):
-    titles[name] = text
+labels = dict(re.findall(r'<item name="([^"]+)"><!\[CDATA\[(.*?)\]\]></item>', xml, re.S))
+titles = {name[:-5]: text for name, text in labels.items() if name.endswith("Title")}
 
 COLUMNS = ["Id", "Graphics", "CharacterSet", "AnimSet", "StartAnimationState", "LoopStartAnimation", "LocationMapIcon",
-           "Portrait", "NoTalk", "ShopId", "Profession"]
+           "Portrait", "NoTalk", "ShopId", "Profession", "OverHeadIconOffset", "ProfessionLocaId"]
 
 
 def look(row):
-    rid, graphics, outfit, anim_set, state, loop, map_icon, portrait, no_talk, shop, profession = row
+    rid, graphics, outfit, anim_set, state, loop, map_icon, portrait, no_talk, shop, profession, offset, profession_key = row
     return {
         "graphics": graphics or "",
         "outfit": outfit or "",
@@ -42,6 +41,8 @@ def look(row):
         "no_talk": bool(no_talk),
         "shop": shop or "",
         "profession": profession or "",
+        "profession_title": labels.get(profession_key, labels.get(rid + "Profession", "")),
+        "overhead_offset": list(struct.unpack("<4f", offset)[:3]) if offset and len(offset) == 16 else [0, 0, 0],
     }
 
 

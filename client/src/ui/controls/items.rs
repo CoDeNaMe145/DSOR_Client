@@ -64,7 +64,7 @@ impl AssetLoader for CatalogLoader {
     fn extensions(&self) -> &[&str] { &["items.json"] }
 }
 #[derive(Resource)]
-pub struct Data { pub(in crate::ui) catalog: Handle<Catalog>, tooltip: Handle<Layout> }
+pub struct Data { pub(in crate::ui) catalog: Handle<Catalog>, pub(super) tooltip: Handle<Layout> }
 pub fn setup(mut commands: Commands, assets: Res<AssetServer>) {
     commands.insert_resource(Data { catalog: assets.load("interface/inventory.items.json"), tooltip: assets.load("interface/tooltip.ui.json") });
 }
@@ -277,7 +277,7 @@ pub fn input(mut ui:ResMut<Interaction>,mut pointer:ResMut<Pointer>,mut windows:
 
 #[derive(Component)] pub struct Contents;
 #[derive(Component)] pub struct Overlay;
-fn text(commands:&mut Commands,assets:&AssetServer,screen:&Screen,parent:Entity,value:String,at:Vec3,size:f32,color:Color,width:f32) {
+pub(super) fn text(commands:&mut Commands,assets:&AssetServer,screen:&Screen,parent:Entity,value:String,at:Vec3,size:f32,color:Color,width:f32) {
     commands.spawn((Text2d::new(value),TextFont{font:assets.load("fonts/tahoma.ttf").into(),font_size:bevy::text::FontSize::Px(size*TEXT_SCALE*screen.scale),..default()},
         TextColor(color),Anchor::TOP_LEFT,bevy::text::TextBounds::new_horizontal(width*screen.scale),
         Transform::from_translation(at).with_scale(Vec3::splat(1.0/screen.scale)),RenderLayers::layer(LAYER),ChildOf(parent)));
@@ -356,7 +356,7 @@ fn description(d:&DisplayItem,catalog:&Catalog)->(String,String) {
 }
 
 /// Original tooltip corner/edge meshes keep their border thickness as content grows.
-fn frame(commands:&mut Commands,assets:&AssetServer,meshes:&mut Assets<Mesh>,materials:&mut Assets<UiMaterial>,root:Entity,layout:&Layout,w:f32,h:f32) {
+pub(super) fn frame(commands:&mut Commands,assets:&AssetServer,meshes:&mut Assets<Mesh>,materials:&mut Assets<UiMaterial>,root:Entity,layout:&Layout,w:f32,h:f32) {
     for widget in &layout.widgets {
         if !widget.id.starts_with("Canvas/BGLabel/") {continue;}
         let leaf=widget.id.rsplit('/').next().unwrap_or("");
@@ -376,13 +376,13 @@ fn frame(commands:&mut Commands,assets:&AssetServer,meshes:&mut Assets<Mesh>,mat
 pub fn overlay(mut commands:Commands,ui:Res<Interaction>,windows:Query<(&Window2018,&WindowControls,&Visibility)>,primary:Query<&Window,With<PrimaryWindow>>,
     net:Option<NonSend<crate::network::net::Net>>,data:Res<Data>,catalogs:Res<Assets<Catalog>>,layouts:Res<Assets<Layout>>,assets:Res<AssetServer>,screen:Res<Screen>,
     old:Query<Entity,With<Overlay>>,mut transforms:Query<&mut Transform,With<Overlay>>,mut meshes:ResMut<Assets<Mesh>>,mut materials:ResMut<Assets<UiMaterial>>,
-    mut last:Local<Option<(String,u64,bool,u32)>>) {
+    mut last:Local<Option<(String,u64,bool,u32)>>, settings:Res<settings::Settings>) {
     let Some(net)=net else{return};let Some(catalog)=catalogs.get(&data.catalog) else{return};
     let point=primary.single().ok().filter(|w|w.focused).and_then(|w|w.cursor_position().map(|p|p*(BASE_H/w.height().max(1.0))));
     let dragged=ui.drag.as_ref().filter(|d|d.active).and_then(|d|net.inventory.items.get(&d.id));
     let display=dragged.map(|i|DisplayItem{item:Some(i),template:&i.template,amount:i.third,unlock:0,read_only:false,waiting:false}).or_else(||windows.iter().filter(|(n,_,v)|n.0=="inventory" && **v!=Visibility::Hidden)
         .find_map(|(_,c,_)|c.hovered.and_then(|n|match c.buttons[n].action {Action::Item(cell)=>displayed(cell,c,&net.inventory,catalog),_=>None})));
-    let key=display.as_ref().filter(|_|point.is_some() && ui.split.is_none()).map(|d|(format!("{}:{}:{}",d.template,d.item.map_or(0,|i|i.id),d.amount),net.inventory.revision,dragged.is_some(),screen.scale.to_bits()));
+    let key=display.as_ref().filter(|_|point.is_some() && ui.split.is_none() && (settings.current.tooltips || dragged.is_some())).map(|d|(format!("{}:{}:{}",d.template,d.item.map_or(0,|i|i.id),d.amount),net.inventory.revision,dragged.is_some(),screen.scale.to_bits()));
     let (title,body)=display.as_ref().map(|d|description(d,catalog)).unwrap_or_default();
     let h=(60.0+body.lines().map(|l|1+l.chars().count()/42).sum::<usize>() as f32*17.0).min(BASE_H-20.0);
     let at=point.map(|p|if dragged.is_some(){p-Vec2::splat(22.0)}else{Vec2::new((p.x+18.0).min(screen.width-330.0).max(0.0),(p.y+18.0).min(BASE_H-h).max(0.0))});
@@ -415,6 +415,9 @@ mod tests {
             .init_asset::<Layout>().init_asset::<Mesh>().init_asset::<UiMaterial>()
             .init_asset::<Image>().init_asset::<Font>().init_asset::<Catalog>()
             .init_resource::<Loaded>().init_resource::<Screen>().init_resource::<Figures>()
+            .init_resource::<settings::Settings>().init_resource::<hotbar::Hotbar>()
+            .init_resource::<dialogue::Presentation>().init_asset::<dialogue::Catalog>()
+            .init_resource::<crate::gameplay::dialogue::Dialogue>()
             .init_resource::<crate::gameplay::stats::Sheet>().init_resource::<crate::actors::monsters::HoverInfo>()
             .init_resource::<Pointer>().init_resource::<Interaction>().init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<bevy::sprite_render::EntitiesNeedingSpecialization<UiMaterial>>()

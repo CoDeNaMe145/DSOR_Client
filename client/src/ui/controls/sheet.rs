@@ -119,6 +119,12 @@ pub(in crate::ui) fn rows(
             if w.id.ends_with("/Icon") { continue; }
             if let Some(art) = &w.art {
                 let mut a = art.clone();
+                // The row/subheading templates are invisible authoring samples.
+                // Their atlas already contains the dark fill and dividers;
+                // runtime copies must show it without the sample's zero-alpha tint.
+                if w.id == template.id && matches!(r.kind, RowKind::Attribute | RowKind::SubHeadline) {
+                    a.color.fill(1.0);
+                }
                 for p in a.pos.chunks_exact_mut(2) { p[1] += dy; }
                 runs.entry(a.tex.clone()).or_insert_with(|| Run { k, tex: a.tex.clone(), ..default() }).push(&a, ART_Z);
             }

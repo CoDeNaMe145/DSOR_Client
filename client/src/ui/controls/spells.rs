@@ -4,7 +4,7 @@ use super::*;
 use dsor_proto::commands::{inventory::{QuickSlot as Slot, QuickSlots, SkillBookEntry}, ClientCommand};
 
 const BAR_SIZE: usize = 17;
-const VISIBLE_SLOTS: usize = 7;
+const VISIBLE_SLOTS: usize = 8;
 
 #[derive(Clone, Deserialize, Debug)]
 pub(in crate::ui) struct Spell {
@@ -14,6 +14,8 @@ pub(in crate::ui) struct Spell {
     pub unlock: u32,
     pub name: String,
     pub icon: String,
+    #[serde(default)] pub description: String,
+    #[serde(default)] pub target: String,
 }
 
 #[derive(Clone)]
@@ -21,13 +23,14 @@ pub(super) struct Model {
     pub class: u8,
     pub offline: bool,
     pub ready: bool,
+    pub active: usize,
     pub book: HashMap<u32, SkillBookEntry>,
     pub bar: Vec<Option<String>>,
 }
 
 impl Default for Model {
     fn default() -> Self {
-        Self { class: 1, offline: true, ready: true, book: default(), bar: crate::network::net::default_bar(1) }
+        Self { class: 1, offline: true, ready: true, active: 0, book: default(), bar: crate::network::net::default_bar(1) }
     }
 }
 
@@ -42,12 +45,13 @@ pub(in crate::ui) fn sync(
     net: Option<NonSend<crate::network::net::Net>>,
     players: Query<&crate::actors::character::Character, With<crate::network::net::LocalPlayer>>,
     mut windows: Query<&mut WindowControls>,
+    hotbar: Res<hotbar::Hotbar>,
 ) {
     let class = players.iter().next().map(|c| c.desc.class)
         .or_else(|| net.as_ref().and_then(|n| n.offline_pending.as_ref().map(|c| c.class))).unwrap_or(1);
     let model = if let Some(net) = net {
-        Model { class, offline: net.offline,
-            ready: net.offline || net.quickbars.bars.first().is_some_and(|b| b.len() == BAR_SIZE),
+        Model { class, offline: net.offline, active: hotbar.active,
+            ready: net.offline || net.quickbars.bars.get(hotbar.active).is_some_and(|b| b.len() == BAR_SIZE),
             book: net.skill_book.as_ref().map(|b| b.entries.iter().map(|e| (e.skill, *e)).collect()).unwrap_or_default(),
             bar: net.bar.clone() }
     } else { Model { class, ..default() } };
@@ -61,11 +65,13 @@ pub(super) struct DragSpell {
     pub active: bool,
     spell: Spell,
     source: Option<usize>,
+    bar: usize,
 }
 
 pub(super) struct DropSpell {
     spell: Spell,
     source: Option<usize>,
+    bar: usize,
     target: usize,
 }
 
@@ -91,7 +97,7 @@ pub(super) fn drag(pointer: &mut Pointer, windows: &Windows, mouse: &ButtonInput
                     _ => (None, None),
                 };
                 if let Some(spell) = spell {
-                    pointer.spell_drag = Some(DragSpell { root, button, origin: point, active: false, spell, source });
+                    pointer.spell_drag = Some(DragSpell { root, button, origin: point, active: false, spell, source, bar: c.spells.active });
                 }
             }
         }
@@ -111,7 +117,7 @@ pub(super) fn drag(pointer: &mut Pointer, windows: &Windows, mouse: &ButtonInput
                     let (_, name, c, _, _) = windows.get(root).unwrap();
                     if name.0 == "bottombar" && editable {
                         if let Action::Skill(target) = c.buttons[button].action {
-                            pointer.spell_drop = Some(DropSpell { spell: d.spell, source: d.source, target });
+                            pointer.spell_drop = Some(DropSpell { spell: d.spell, source: d.source, target, bar: d.bar });
                         }
                     }
                 }
@@ -150,10 +156,10 @@ pub(in crate::ui) fn apply_drop(mut pointer: ResMut<Pointer>, net: Option<NonSen
         }).collect();
         net.quickbars.bars.push(bar);
     }
-    let Some(slots) = net.quickbars.bars.first().and_then(|bar| edited_bar(bar, &drop)) else { return };
+    let Some(slots) = net.quickbars.bars.get(drop.bar).and_then(|bar| edited_bar(bar, &drop)) else { return };
     net.bar = slots.iter().map(|s| if s.kind == 0 { s.id.clone() } else { None }).collect();
-    net.quickbars.bars[0] = slots.clone();
-    net.send(&ClientCommand::QuickSlots(QuickSlots { slots, bar: 0 }));
+    net.quickbars.bars[drop.bar] = slots.clone();
+    net.send(&ClientCommand::QuickSlots(QuickSlots { slots, bar: drop.bar as u32 }));
 }
 
 #[derive(Component)]
@@ -162,7 +168,7 @@ pub(in crate::ui) struct SpellOverlay;
 /// This layer has no input region. It follows the cursor in reference pixels,
 /// including while a window is moved or the viewport changes size.
 pub(in crate::ui) fn overlay(
-    mut commands: Commands, pointer: Res<Pointer>, windows: Query<(&WindowControls, &Visibility)>,
+    mut commands: Commands, pointer: Res<Pointer>,
     primary: Query<&Window, With<PrimaryWindow>>, screen: Res<Screen>, assets: Res<AssetServer>,
     old: Query<Entity, With<SpellOverlay>>, mut last: Local<Option<(String, bool, u32)>>,
     mut transforms: Query<&mut Transform, With<SpellOverlay>>,
@@ -171,9 +177,7 @@ pub(in crate::ui) fn overlay(
     let point = window.filter(|w| w.focused && w.height() > 0.0)
         .and_then(|w| w.cursor_position().map(|p| p * (BASE_H / w.height())));
     let dragged = pointer.spell_drag.as_ref().filter(|d| d.active).map(|d| &d.spell);
-    let hovered = windows.iter().filter(|(_, v)| **v != Visibility::Hidden).find_map(|(c, _)|
-        c.hovered.and_then(|i| c.buttons[i].spell.as_ref().map(|s| (s, c.spells.available(s)))));
-    let description = dragged.map(|s| (s, true)).or(hovered);
+    let description = dragged.map(|s| (s, true));
     let key = description.map(|(s, available)| (format!("{}:{}", s.id, available), dragged.is_some(), screen.scale.to_bits()));
     let position = point.map(|p| if dragged.is_some() { p } else { Vec2::new((p.x + 20.0).min(screen.width - 265.0).max(0.0), (p.y + 20.0).min(BASE_H - 75.0)) });
     if *last != key || point.is_none() {
@@ -204,7 +208,7 @@ pub(in crate::ui) fn overlay(
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn spell() -> Spell { Spell { id: "magicmissile".into(), wire: Some(42), class_id: 1, unlock: 1, name: "Magic missile".into(), icon: String::new() } }
+    fn spell() -> Spell { Spell { id: "magicmissile".into(), wire: Some(42), class_id: 1, unlock: 1, name: "Magic missile".into(), icon: String::new(), description: String::new(), target: String::new() } }
 
     #[test]
     fn availability_uses_the_server_book_and_class_not_just_level() {
@@ -225,7 +229,7 @@ mod tests {
         slots[0] = Slot { kind: 0, id: Some("magicmissile".into()) };
         slots[2] = Slot { kind: 1, id: Some("healing_potion".into()) };
         slots[16] = Slot { kind: 2, id: Some("essence".into()) };
-        let drop = DropSpell { spell: spell(), source: None, target: 3 };
+        let drop = DropSpell { bar: 0, spell: spell(), source: None, target: 3 };
         let edited = edited_bar(&slots, &drop).unwrap();
         assert_eq!(edited[3], slots[0]);
         for i in 0..BAR_SIZE { if i != 3 { assert_eq!(edited[i], slots[i]); } }
@@ -247,7 +251,7 @@ mod tests {
         slots[16] = Slot { kind: 2, id: Some("essence".into()) };
         let other = vec![Slot { kind: 1, id: Some("item".into()) }; BAR_SIZE];
         app.world_mut().non_send_resource_mut::<crate::network::net::Net>().quickbars.bars = vec![slots.clone(), other.clone()];
-        app.world_mut().resource_mut::<Pointer>().spell_drop = Some(DropSpell { spell: spell(), source: None, target: 3 });
+        app.world_mut().resource_mut::<Pointer>().spell_drop = Some(DropSpell { bar: 0, spell: spell(), source: None, target: 3 });
         app.update();
         let net = app.world().non_send_resource::<crate::network::net::Net>();
         assert_eq!(net.bar[3].as_deref(), Some("magicmissile"));

@@ -39,7 +39,7 @@ pub struct UiInput {
 
 impl UiInput {
     pub fn blocks(&self, button: MouseButton) -> bool {
-        self.captured.contains(&button) || (self.over_ui && !(button == MouseButton::Left && self.world_left))
+        self.typing || self.captured.contains(&button) || (self.over_ui && !(button == MouseButton::Left && self.world_left))
     }
 
     fn update(&mut self, over_ui: bool, buttons: &ButtonInput<MouseButton>) {

@@ -329,6 +329,7 @@ fn heads(seed: &mut u32) -> bool {
 #[allow(clippy::too_many_arguments)]
 fn spawn_texts(
     mut commands: Commands,
+    settings: Res<crate::ui::Settings>,
     mut queue: ResMut<CombatTexts>,
     table: Res<Table>,
     tables: Res<Assets<CombatTextTable>>,
@@ -337,6 +338,7 @@ fn spawn_texts(
     mut font: Local<Option<Handle<Font>>>,
     mut seed: Local<u32>,
 ) {
+    if !settings.current.combat_text { queue.0.clear(); return; }
     if queue.0.is_empty() {
         return;
     }

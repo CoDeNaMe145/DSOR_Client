@@ -74,7 +74,7 @@ impl MapMarkers {
         }
     }
 
-    fn npc_style(&self, actor: u32, icon: &str) -> Option<Style> {
+    pub(crate) fn npc_style(&self, actor: u32, icon: &str) -> Option<Style> {
         let Some(info) = self.npcs.get(&actor) else { return Style::authored(icon) };
         if !info.enabled { return None; }
         // Turn-ins and active task targets take priority over new offers.
@@ -84,7 +84,7 @@ impl MapMarkers {
             let priority = match (i.kind, state) {
                 (_, Some(2)) => return None, // closed
                 (0, Some(1)) => 3, // ready to turn in
-                (0..=3, Some(0)) | (1..=3, _) => 2, // active encounter/talk/delivery
+                (1..=3, _) => 2, // active encounter/talk/delivery target
                 (0, None | Some(3)) => 1, // offered (or offered again after cancel)
                 _ => return None,
             };
@@ -234,7 +234,7 @@ mod tests {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
-struct Style { icon: String, color: [u8; 3], size: u8 }
+pub(crate) struct Style { pub(crate) icon: String, pub(crate) color: [u8; 3], size: u8 }
 
 impl Style {
     fn authored(icon: &str) -> Option<Self> {

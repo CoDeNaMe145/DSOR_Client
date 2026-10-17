@@ -6,13 +6,16 @@ use dsor_proto::commands::{actors, inventory, ClientCommand};
 pub(super) const WINDOWS: [&str; 3] = ["npcscreen", "questscreen2", "tradingscreen"];
 pub(super) const CLOSE: usize = usize::MAX;
 const PAGE_SIZE: usize = 4;
-const OFFER_PAGE_SIZE: usize = 12;
+mod merchant;
+use merchant::MerchantView;
 
 #[derive(Asset, TypePath, Deserialize, Default)]
 pub(super) struct Catalog {
     portraits: HashMap<String, String>,
     icons: HashMap<String, String>,
     texts: HashMap<String, String>,
+    #[serde(default)]
+    trading: merchant::Catalog,
 }
 #[derive(Default, TypePath)]
 pub(super) struct CatalogLoader;
@@ -51,6 +54,7 @@ fn readable(id: &str) -> String {
 enum Action {
     Quest(String), Talk(String, String), Shop(String),
     Accept(String, u8), ContinueTalk(String), Back, Previous, Next, Close,
+    Category(u16), Buyback(bool), Usable(bool),
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Choice { label: String, icon: String, action: Action }
@@ -59,10 +63,6 @@ impl Choice {
 }
 #[derive(Clone, PartialEq, Eq)]
 struct Detail { action: Action, page: usize }
-#[derive(Clone, PartialEq, Eq)]
-struct MerchantItem { name: String, icon: String, amount: u32, price: String }
-#[derive(Clone, PartialEq, Eq)]
-struct MerchantView { items: Vec<MerchantItem>, page: usize, pages: usize }
 #[derive(Clone, PartialEq, Eq)]
 pub(super) struct View {
     name: String,
@@ -79,14 +79,22 @@ pub(super) struct Presentation {
     generation: u64,
     page: usize,
     detail: Option<Detail>,
+    merchant: merchant::Selection,
     view: Option<View>,
+}
+
+impl Presentation {
+    pub(super) fn choice_label(&self, index: usize) -> Option<&str> {
+        if index == CLOSE { Some("Close") }
+        else { self.view.as_ref()?.options.get(index).map(|choice| choice.label.as_str()) }
+    }
 }
 
 pub(super) fn setup(mut commands: Commands, assets: Res<AssetServer>) {
     commands.insert_resource(Presentation {
         catalog: assets.load("interface/dialogue.catalog.json"),
         items: assets.load("interface/inventory.items.json"),
-        generation: 0, page: 0, detail: None, view: None,
+        generation: 0, page: 0, detail: None, merchant: default(), view: None,
     });
 }
 
@@ -142,11 +150,13 @@ pub(super) fn sync(
     mut loaded: ResMut<Loaded>,
     layouts: Res<Assets<Layout>>,
     windows: Query<(Entity, &Window2018)>,
+    players: Query<&crate::actors::character::Character, With<crate::network::net::LocalPlayer>>,
 ) {
     if presentation.generation != dialogue.generation {
         presentation.generation = dialogue.generation;
         presentation.page = 0;
         presentation.detail = None;
+        presentation.merchant = default();
         presentation.view = None;
         // Old buttons belong to the old NPC, even if their release arrives now.
         dialogue.choice = None;
@@ -164,6 +174,18 @@ pub(super) fn sync(
             match action {
                 Some(Action::Close) => dialogue.close(),
                 Some(Action::Back) => presentation.detail = None,
+                Some(Action::Category(category)) => {
+                    presentation.merchant.category = Some(category);
+                    if let Some(detail) = &mut presentation.detail { detail.page = 0; }
+                }
+                Some(Action::Buyback(buyback)) => {
+                    presentation.merchant.buyback = buyback;
+                    if let Some(detail) = &mut presentation.detail { detail.page = 0; }
+                }
+                Some(Action::Usable(usable)) => {
+                    presentation.merchant.usable = usable;
+                    if let Some(detail) = &mut presentation.detail { detail.page = 0; }
+                }
                 Some(Action::Previous) => {
                     if let Some(detail) = &mut presentation.detail { detail.page = detail.page.saturating_sub(1); }
                 }
@@ -176,6 +198,7 @@ pub(super) fn sync(
                         if !net.offline { net.npc_dialogue.offers.remove(shop); }
                         net.send(&ClientCommand::RequestOffer(inventory::RequestOffer { actor: target.actor, by_name: false, shop: String::new() }));
                     }
+                    presentation.merchant = default();
                     presentation.detail = Some(Detail { action, page: 0 });
                 }
                 Some(Action::Accept(id, operation)) if available.iter().any(|c| c.action == Action::Quest(id.clone())) => {
@@ -223,39 +246,21 @@ pub(super) fn sync(
                         catalog.dialog(id, false)
                     }
                     Action::Shop(shop) => {
-                        view.title = view.name.clone();
                         let offers = net.as_ref().and_then(|n| n.npc_dialogue.offers.get(shop));
-                        let all: Vec<_> = offers.into_iter().flat_map(|o| o.offers.iter().flatten()).collect();
-                        let pages = all.len().div_ceil(OFFER_PAGE_SIZE).max(1);
-                        let page = detail.page.min(pages - 1);
-                        let items = item_catalogs.get(&presentation.items);
-                        let cards = all.into_iter().skip(page * OFFER_PAGE_SIZE).take(OFFER_PAGE_SIZE).map(|o| {
-                            let definition = items.and_then(|c| c.items.get(&o.item));
-                            let mut prices = Vec::new();
-                            if o.price_vc > 0 {
-                                let (gold, silver, copper) = (o.price_vc / 10000, o.price_vc / 100 % 100, o.price_vc % 100);
-                                if gold > 0 { prices.push(format!("{gold} gold")); }
-                                if silver > 0 { prices.push(format!("{silver} silver")); }
-                                if copper > 0 { prices.push(format!("{copper} copper")); }
-                            }
-                            for (amount, currency) in [(o.price_rc, "Andermant"), (o.price_arena, "Badges of Honor"), (o.price_gc, "Glyphs"), (o.price_ec, "Draken"), (o.price_uc, "tokens"), (o.price_ic, "tokens")] {
-                                if amount > 0 { prices.push(format!("{amount} {currency}")); }
-                            }
-                            MerchantItem {
-                                name: definition.map(|d| d.name.clone()).unwrap_or_else(|| readable(&o.item)),
-                                icon: definition.map(|d| d.icon.clone()).unwrap_or_default(), amount: o.amount,
-                                price: if prices.is_empty() { "Free".into() } else { prices.join(", ") },
-                            }
-                        }).collect();
-                        view.merchant = Some(MerchantView { items: cards, page, pages });
-                        if page > 0 { view.options.push(Choice::new("Previous page", "talk", Action::Previous)); }
-                        if page + 1 < pages { view.options.push(Choice::new("Next page", "talk", Action::Next)); }
-                        match offers {
-                            None if net.as_ref().is_some_and(|n| n.offline) => "The merchant's selection is available when playing online.".into(),
-                            None => "Loading selection...".into(),
-                            Some(o) if o.offers.iter().flatten().next().is_none() => "There are no offers available.".into(),
-                            Some(_) => String::new(),
-                        }
+                        let class = players.iter().next().map(|c| c.desc.class);
+                        let level = net.as_ref().and_then(|n| n.level);
+                        let merchant = merchant::build(offers, &presentation.merchant, detail.page,
+                            item_catalogs.get(&presentation.items), &catalog.trading, class, level);
+                        merchant.choices(&mut view.options);
+                        let body = if offers.is_none() {
+                            if net.as_ref().is_some_and(|n| n.offline) { "The merchant's selection is available when playing online." }
+                            else { "Loading selection..." }
+                        } else if merchant.items.is_empty() {
+                            if merchant.buyback { "There are no items to buy back." }
+                            else { "There are no offers matching this selection." }
+                        } else { "" };
+                        view.merchant = Some(merchant);
+                        body.to_owned()
                     }
                     _ => String::new(),
                 };
@@ -275,6 +280,7 @@ pub(super) fn sync(
                 if pages > 1 { view.options.push(Choice::new(format!("More ({}/{pages})", page + 1), "talk", Action::Next)); }
                 view.options.push(Choice::new("Close", "close", Action::Close));
             }
+            if let (Some(merchant), Some(detail)) = (&view.merchant, &mut presentation.detail) { detail.page = merchant.page; }
             next = Some(view);
         }
     }
@@ -360,7 +366,7 @@ pub(super) fn prepare(source: &Layout, presentation: &Presentation, catalogs: &A
         if view.body.is_none() || view.merchant.is_some() { return layout; }
         conversation(source, view, &mut layout);
     } else if source.window == "tradingscreen" {
-        if let Some(merchant) = &view.merchant { merchant_layout(source, view, merchant, &mut layout); }
+        if let Some(merchant) = &view.merchant { merchant::prepare(source, view, merchant, &mut layout); }
     }
     layout
 }
@@ -418,80 +424,6 @@ fn conversation(source: &Layout, view: &View, layout: &mut Layout) {
     }
 }
 
-fn merchant_layout(source: &Layout, view: &View, merchant: &MerchantView, layout: &mut Layout) {
-    let root = "Canvas/Label_blur/Label_texture";
-    let list = format!("{root}/ListBackground/List");
-    // Keep the current trading frame and list controls. Authored product,
-    // currency, sale and buyback templates are instantiated from actual offers.
-    for widget in &source.widgets {
-        let id = &widget.id;
-        if ["/PremiumBtn", "/RestoreEntry", "/Tabs", "/TraderName", "/switchbuy_bg"].iter().any(|p| id.contains(p)) { continue; }
-        if id.starts_with(&format!("{root}/ListBackground/")) && !id.starts_with(&(list.clone() + "/")) { continue; }
-        if id.contains("/Template") || id.contains("/showuse_bg") { continue; }
-        let mut w = widget.clone();
-        if w.event == "Close" { w.event = format!("NpcChoice:{CLOSE}"); }
-        if w.id.ends_with("/WindowTitle") { set_text(&mut w, &view.name); }
-        if w.id.ends_with("/PageNumText") { set_text(&mut w, &format!("{} / {}", merchant.page + 1, merchant.pages)); }
-        for (event, action) in [("PrevPage", Action::Previous), ("NextPage", Action::Next)] {
-            if w.event == event {
-                if let Some(index) = view.options.iter().position(|c| c.action == action) { w.event = format!("NpcChoice:{index}"); }
-                else { w.enabled = false; }
-            }
-        }
-        layout.widgets.push(w);
-    }
-    let entry = format!("{list}/TemplateListEntry/TemplateItemEntry1");
-    for (index, item) in merchant.items.iter().enumerate() {
-        for widget in source.widgets.iter().filter(|w| w.id == entry || w.id.starts_with(&(entry.clone() + "/"))) {
-            if ["/MoneyDisplay", "/FlagDiscount", "/LabelDiscount"].iter().any(|p| widget.id.contains(p)) { continue; }
-            let mut w = widget.clone();
-            w.id = w.id.replacen(&entry, &format!("{list}/Offer{index}"), 1);
-            w.hidden = false;
-            if w.id.ends_with("/ItemDescription") { set_text(&mut w, &item.name); }
-            if w.id.ends_with("/ItemSlot/Icon") {
-                w.art = (!item.icon.is_empty()).then(|| image_art(w.rect, item.icon.clone()));
-                set_text(&mut w, &if item.amount > 1 { item.amount.to_string() } else { String::new() });
-            }
-            map_widget(&mut w, |x| x + (index % 2) as f32 * 235.46, |y| y + (index / 2) as f32 * 64.0);
-            layout.widgets.push(w);
-        }
-        if let Some(template) = source.widgets.iter().find(|w| w.id == format!("{entry}/MoneyDisplay/RealCurrency/andermant_display")) {
-            let mut price = template.clone();
-            price.id = format!("{list}/Offer{index}/Price");
-            price.rect = [71.56, 199.5, 236.0, 222.5];
-            set_text(&mut price, &item.price);
-            if let Some(label) = &mut price.text { label.size = 8.0; label.color = [0.9, 0.78, 0.54, 1.0]; label.word_break = true; }
-            map_widget(&mut price, |x| x + (index % 2) as f32 * 235.46, |y| y + (index / 2) as f32 * 64.0);
-            layout.widgets.push(price);
-        }
-    }
-    if let Some(template) = source.widgets.iter().find(|w| w.id == format!("{entry}/Label_empty/ItemDescription")) {
-        let mut caption = template.clone();
-        caption.id = format!("{root}/SelectionCaption");
-        caption.rect = [18.0, 94.0, 465.0, 145.0];
-        let text = if merchant.items.is_empty() { view.body.as_deref().unwrap_or("") } else { "View selection" };
-        set_text(&mut caption, text);
-        if let Some(label) = &mut caption.text { label.size = 11.0; }
-        layout.widgets.push(caption);
-    }
-    // The trading screen uses its own modern title bar and close control; a
-    // source button at the foot returns to the NPC's choice menu.
-    if let Some(index) = view.options.iter().position(|c| c.action == Action::Back) {
-        let prefix = format!("{root}/switchbuy_bg/BuyTabBtn");
-        for widget in source.widgets.iter().filter(|w| w.id == prefix || w.id.starts_with(&(prefix.clone() + "/"))) {
-            if widget.id.ends_with("/Label_icon") { continue; }
-            let mut w = widget.clone();
-            w.id = w.id.replacen(&prefix, &format!("{root}/BackButton"), 1);
-            w.button = w.button.map(|b| b.replacen(&prefix, &format!("{root}/BackButton"), 1));
-            if widget.id == prefix { w.event = format!("NpcChoice:{index}"); }
-            set_text(&mut w, "Back");
-            if let Some(label) = &mut w.text { label.color = [1.0, 0.83, 0.52, 1.0]; }
-            map_widget(&mut w, |x| x + 12.0, |y| y + 528.0);
-            layout.widgets.push(w);
-        }
-    }
-    for w in &mut layout.widgets { map_widget(w, |x| x + 12.0, |y| y + 12.0); w.k = 0.0; }
-}
 
 #[cfg(test)]
 mod tests {

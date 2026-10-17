@@ -11,6 +11,7 @@ def plain_text(value):
 
 
 def export_dialogue(database, textures, localization, assets):
+    from trading_catalog import export_trading
     portraits = set()
     for (portrait,) in database.execute("SELECT DISTINCT Portrait FROM _Template_NPC"):
         if portrait:
@@ -27,5 +28,6 @@ def export_dialogue(database, textures, localization, assets):
     texts = {k.lower(): plain_text(v) for k, v in localization.get("en", {}).items()
              if k.startswith(("quest.", "db.npc", "gui.npc", "gui.quest", "gui.dialog"))}
     with open(os.path.join(assets, "interface", "dialogue.catalog.json"), "w", encoding="utf-8") as f:
-        json.dump({"portraits": available, "icons": icons, "texts": texts}, f, ensure_ascii=False, separators=(",", ":"))
+        json.dump({"portraits": available, "icons": icons, "texts": texts,
+                   "trading": export_trading(database, textures)}, f, ensure_ascii=False, separators=(",", ":"))
     return {"portraits": len(available), "texts": len(texts)}
