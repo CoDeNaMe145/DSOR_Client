@@ -626,7 +626,8 @@ impl Plugin for LightingPlugin {
             .init_resource::<Level>()
             .insert_resource(load_saved().unwrap_or_default())
             .add_systems(Update, nebula_falloff)
-            .add_systems(Startup, spawn_panel)
+            // The Lighting Menu replaces this panel when it is on (crate::diagnostics::lighting_menu).
+            .add_systems(Startup, spawn_panel.run_if(|| !crate::diagnostics::lighting_menu::enabled()))
             .add_systems(
                 Update,
                 (
