@@ -36,8 +36,13 @@ struct Ambience {
 // the albedo by that sum. In linear terms that is albedo x (gamma sum)^2.2.
 // The fades and shadows stay the blend's; the sun's specular stays Bevy's.
 // The whole sum is darkened by the ambient occlusion squared, as the sun pass
-// multiplies it by globalShadowSampler.y^2 (pe_ssao writes that channel);
-// Bevy's screen-space AO stands in for it.
+// multiplies it by globalShadowSampler.y^2 (pe_ssao writes that channel: the
+// average visibility of 16 samples x occlusionConstants.w 1.3); Bevy's
+// screen-space AO stands in for it as is.
+// FAILURE (2026-10-17): Bevy's AO x 1.3 clamped to 1 almost everywhere (its
+// visibility is already near 1 on open ground, a different quantity than
+// pe_ssao's average) and brought back the sunlit overshoot (Kingshill garden
+// p90 228 vs the original's 184; AO^2 as is: 189).
 fn apply_ambience_gamma(input: ptr<function, LightingInput>, enable_diffuse: bool, shadow: f32, occlusion: vec3<f32>) -> vec3<f32> {
     let unit = ambience.gamma_light.y;
     let n = (*input).layers[LAYER_BASE].N;

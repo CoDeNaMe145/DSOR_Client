@@ -760,9 +760,10 @@ fn apply_look(
     let (l, b) = (&*lighting, &level.bubble);
     let rgb = |c: [f32; 4]| [c[0], c[1], c[2]];
     let a = linear(rgb(b.light_ambient), 1.0);
-    // The ambient joins the gamma-space sum in the ambience shader instead of
-    // Bevy's ambient light (DSOR_FLAGS=gammalight while it is being compared).
-    let gamma_light = crate::flag("gammalight");
+    // The light is summed in gamma space as the original's sun pass does, the
+    // ambient joining that sum instead of Bevy's ambient light.
+    // DSOR_FLAGS=linearlight: the earlier linear sum, for comparisons.
+    let gamma_light = !crate::flag("linearlight");
     *gpu_ambience = level.blend.gpu(l).with_height_fog(b).with_rim_light(b).with_fog(b, l)
         .with_gamma_light(gamma_light, Vec3::new(a.red, a.green, a.blue) * l.ambient);
     let toward = level.shadow_dir.normalize_or(blend::direction(None));
