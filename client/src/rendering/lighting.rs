@@ -126,6 +126,9 @@ pub struct Bubble {
     pub rim_light_intensity: f32,
     pub local_light_color: [f32; 4],
     pub local_light_intensity: f32,
+    /// The player light's reach. Not in the level data (always PLAYER_LIGHT_RANGE
+    /// there); the Lighting Menu can override it.
+    pub local_light_range: f32,
     pub vignette_intensity: f32,
     pub vignette_size: f32,
     pub vignette_color: [f32; 4],
@@ -176,6 +179,7 @@ impl Bubble {
             rim_light_intensity: f(self.rim_light_intensity, to.rim_light_intensity),
             local_light_color: mix4(self.local_light_color, to.local_light_color, t),
             local_light_intensity: f(self.local_light_intensity, to.local_light_intensity),
+            local_light_range: f(self.local_light_range, to.local_light_range),
             vignette_intensity: f(self.vignette_intensity, to.vignette_intensity),
             vignette_size: f(self.vignette_size, to.vignette_size),
             vignette_color: mix4(self.vignette_color, to.vignette_color, t),
@@ -391,6 +395,7 @@ impl Default for Bubble {
             rim_light_intensity: 0.5,
             local_light_color: [1.0, 0.71, 0.502, 1.0],
             local_light_intensity: 0.25,
+            local_light_range: PLAYER_LIGHT_RANGE,
             vignette_intensity: 1.0,
             vignette_size: 2.0,
             vignette_color: [0.0, 0.0, 0.0, 1.0],
@@ -656,6 +661,7 @@ fn follow_level(
     time: Res<Time>,
     cameras: Query<(&Camera, &GlobalTransform), (With<Camera3d>, Without<crate::rendering::highlight::HighlightCamera>, Without<NoLevelLook>)>,
     players: Query<&GlobalTransform, With<crate::network::net::LocalPlayer>>,
+    menu: Option<Res<crate::diagnostics::lighting_menu::presets::LightingMenuStore>>,
 ) {
     let Some(current) = current else { return };
     if level.map != current.name {
@@ -670,7 +676,21 @@ fn follow_level(
         level.lights_placed = false;
     }
     let Some(ambience) = ambiences.get(&level.ambience) else { return };
-    let global = ambience.global.clone().unwrap_or_default();
+    // The Lighting Menu's working overrides (none without DSOR_STUDIO_PREVIEW):
+    // each bubble is resolved through them before it is faded to.
+    use crate::diagnostics::lighting_menu::presets::resolve_bubble;
+    let edits = menu.as_deref().and_then(|s| s.working_map_overrides.get(&level.map));
+    let global = resolve_bubble(&ambience.global.clone().unwrap_or_default(), edits, None);
+    let resolve = |i: usize| resolve_bubble(&ambience.bubbles[i].look, edits, Some((i, &ambience.bubbles[i])));
+    if menu.as_ref().is_some_and(|s| s.is_changed() && !s.is_added()) && level.bubble_loaded {
+        // A live edit: show it at once, without a fade.
+        let mut now = level.inside.map(resolve).unwrap_or_else(|| global.clone());
+        now.dir = global.dir;
+        level.blend = LightBlend::from(&now);
+        level.bubble = now;
+        level.shadow_dir = blend::direction(ambience.shadow.or(global.dir));
+        level.fade = None;
+    }
     if !level.bubble_loaded {
         level.bubble = global.clone();
         level.blend = LightBlend::from(&global);
@@ -690,7 +710,7 @@ fn follow_level(
             // light. FAILURE: its z axis (horizontal, ~173 deg from the level's sun
             // on a0007_pastures_pve) was faded to at every border, swinging the sun
             // over the zenith ("le soleil fait des allers-retours").
-            let mut to = inside.map(|i| ambience.bubbles[i].look.clone()).unwrap_or_else(|| global.clone());
+            let mut to = inside.map(resolve).unwrap_or_else(|| global.clone());
             to.dir = global.dir;
             let from = level.bubble.clone();
             level.fade = Some((from, to, level.blend.clone(), 0.0));
@@ -836,7 +856,7 @@ fn player_light(
 ) {
     let b = &level.bubble;
     let make = || {
-        let mut l = point_light([b.local_light_color[0], b.local_light_color[1], b.local_light_color[2]], b.local_light_intensity, PLAYER_LIGHT_RANGE);
+        let mut l = point_light([b.local_light_color[0], b.local_light_color[1], b.local_light_color[2]], b.local_light_intensity, b.local_light_range);
         l.intensity *= lighting.lights;
         l
     };

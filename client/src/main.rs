@@ -406,6 +406,7 @@ fn main() {
             hud::HudPlugin,
         ))
         .add_plugins((dump::DumpPlugin, shadow_views::ShadowViewsPlugin, draw_mode::DrawModePlugin::default()))
+        .add_plugins(diagnostics::lighting_menu::LightingMenuPlugin)
         .add_plugins(ui::UiPlugin)
         .add_plugins(ui_input::UiInputPlugin)
         .add_plugins(loading::LoadingPlugin)

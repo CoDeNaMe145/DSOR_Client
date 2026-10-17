@@ -139,3 +139,40 @@ fn death_and_revival_preserve_the_bubble_and_update_new_cameras() {
     assert_eq!(app.world().get::<NebulaPostProcess>(camera).unwrap().death_fade, 0.);
     assert_eq!(app.world().get::<NebulaPostProcess>(camera).unwrap().saturation, 0.8);
 }
+
+#[test]
+fn lighting_menu_edits_resolve_bubbles_at_once_and_keep_zone_fades() {
+    use crate::diagnostics::lighting_menu::presets::{AreaLightingOverride, BubbleOverrides, LightingMenuStore, MapLightingOverrides};
+    let mut app = app();
+    app.add_systems(Update, (follow_level, apply_look).chain());
+    let global = Bubble { saturation: 1., fade_time: 1., ..look() };
+    let local = Bubble { saturation: 0., fade_time: 1., ..look() };
+    let m = Some(Mat4::from_scale(Vec3::splat(8.)).to_cols_array());
+    let handle = app.world_mut().resource_mut::<Assets<Ambience>>().add(Ambience {
+        global: Some(global.clone()),
+        bubbles: vec![LocalBubble { look: local.clone(), m, priority: 1, event: -1, shape: "Box".into(), enabled: true }], ..default()
+    });
+    app.insert_resource(CurrentMap::new("test".into(), Handle::default()))
+        .insert_resource(Level { map: "test".into(), ambience: handle, ..default() })
+        .insert_resource(LightingMenuStore::default());
+    let outside = GlobalTransform::from_translation(Vec3::new(0., 0., 10.));
+    let camera = app.world_mut().spawn((Camera3d::default(), outside)).id();
+    app.update();
+    // No overrides: the level's own look.
+    assert_look(&app, camera, &global);
+    // A map-wide edit shows at once, without a fade.
+    app.world_mut().resource_mut::<LightingMenuStore>().working_map_overrides.insert("test".into(), MapLightingOverrides {
+        global: BubbleOverrides { saturation: Some(0.5), ..default() },
+        areas: vec![AreaLightingOverride { bubble_index: 0, event: -1, priority: 1, shape: "Box".into(), transform: m,
+            values: BubbleOverrides { saturation: Some(0.25), ..default() } }],
+    });
+    app.update();
+    assert_look(&app, camera, &Bubble { saturation: 0.5, ..global.clone() });
+    // Entering the zone still fades, to its edited look.
+    app.world_mut().entity_mut(camera).insert(GlobalTransform::IDENTITY);
+    for _ in 0..4 { app.update(); }
+    let halfway = app.world().get::<NebulaPostProcess>(camera).unwrap().saturation;
+    assert!(halfway > 0.25 && halfway < 0.5, "{halfway}");
+    for _ in 0..12 { app.update(); }
+    assert_eq!(app.world().get::<NebulaPostProcess>(camera).unwrap().saturation, 0.25);
+}
