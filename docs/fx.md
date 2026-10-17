@@ -71,8 +71,13 @@ none above `FogNearHeight`, all of `HeightFogColor` past `FogFarHeight`, linear
 in world height between, mixed in gamma space like their `lrp`. It fades with the
 other bubble values.
 
-Not yet: the characters' rim light (`RimLightColor`, `RimLightIntensity`),
-`LightSpecularIntensity`, projected spot lights
+The characters' rim light (`shd:character` and `characterfalloff` only, not
+monsters) adds `RimLightColor x RimLightIntensity x pow(max(dot(n_view, dir), 0), 4)`
+to their lit colour in gamma space, before the hit colour and the fogs. The
+engine's direction is fixed, (4, 4, 1) normalised in view space (from the upper
+right), read from the running release261 client. `DSOR_FLAGS=norim` leaves it out.
+
+Not yet: `LightSpecularIntensity`, projected spot lights
 (`LightType` 1, 329 rows: they need `LightTexture` and shadows), event bubbles
 (`EventSetRow` other than -1).
 
