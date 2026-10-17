@@ -130,7 +130,7 @@ fn is_menu(name: &str) -> bool {
 
 /// The notification dialogs and the player menu (controls::social): closed until
 /// a notification or a middle click opens them; their depth.
-const SOCIAL_WINDOWS: [(&str, f32); 3] = [(controls::social::GROUP_DIALOG, 640.0), (controls::social::BOOKING_DIALOG, 630.0), (controls::social::CONTEXT_MENU, 660.0)];
+const SOCIAL_WINDOWS: [(&str, f32); 4] = [(controls::social::GROUP_DIALOG, 640.0), (controls::social::BOOKING_DIALOG, 630.0), (controls::social::LOGIN_DIALOG, 620.0), (controls::social::CONTEXT_MENU, 660.0)];
 
 /// The chat window (crate::network::chat): full controls or a compact click-through
 /// preview, switched with V; and its

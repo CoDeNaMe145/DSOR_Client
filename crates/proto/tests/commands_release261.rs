@@ -193,3 +193,22 @@ fn notification_response_matches_the_servers_decoder() {
     assert_eq!(bytes, want);
     assert_eq!(bits, want.len() * 8);
 }
+
+/// SpecialOfferCommand as DSOR_Server sends it at login: daily_login_offers for a
+/// warrior from its static database (tests/data/special_offer_release261.hex,
+/// written by encode_server_command_batch). Six regular and six premium columns.
+#[test]
+fn special_offer_carries_the_daily_login_columns() {
+    let data = hex(include_str!("data/special_offer_release261.hex").trim());
+    let got = decode_message(&data, 26276).unwrap();
+    let ServerCommand::SpecialOffer(offer) = &got[0].0 else { panic!("{:?}", got[0].0) };
+    let ids: Vec<_> = offer.login_rewards.iter().map(|g| g.resource_id.as_str()).collect();
+    assert_eq!(ids, ["login_reward_01_warrior_01", "login_reward_02_warrior_01", "login_reward_03_warrior_01",
+        "login_reward_04_warrior_01", "login_reward_05_warrior_01", "login_reward_05_warrior_01"]);
+    assert_eq!(offer.premium_login_rewards.len(), 6);
+    assert_eq!(offer.login_rewards[0].offers[0].0.item, "dailylogin_lootbox_day_01");
+    assert_eq!(offer.login_rewards[0].offers[0].0.amount, 1);
+    let chain: Vec<_> = got.iter().map(|(c, a)| (c.clone(), a.unwrap_or(0))).collect();
+    let (bytes, bits) = encode_chain(&chain);
+    assert_eq!((bytes, bits), (data, 26276));
+}

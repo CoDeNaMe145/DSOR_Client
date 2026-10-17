@@ -1,20 +1,22 @@
-//! Notifications, the group invitation, the booking receipt, and the menu a
-//! middle click opens on another player (release261).
+//! Notifications, the group invitation, the booking receipt, the daily login
+//! bonus, and the menu a middle click opens on another player (release261).
 //!
 //! The column: UI::NotificationWidget (2018 client 0x6CAA6B Load) clones the
 //! notifications window's one button, Notification1, per pending notification and
 //! gives each the icon of its type (0x6CAE52: "ui/icon_notifications_<type>").
+//! Each button falls in from above the screen (`animate`, traced below) and stacks
+//! upwards from Notification1's place.
 //! A click opens the notification's own dialog: confirmgroupdialog's InviteDialog
 //! for a group invitation (ConfirmGroupDialog, its message built by 0x53E46E), the
-//! booking receipt (UI::BookingConfirmationWidget 0x620D1C) for items credited.
+//! booking receipt (UI::BookingConfirmationWidget 0x620D1C) for items credited,
+//! loginreward2 for the daily login bonus (UI::LoginRewardDialogWidget::SetupDialog
+//! 0x6BD219, opened by 0x53D683 with dailyLoginCount and rewardIndex).
 //! Its answer goes back as NotificationCommand type 2 with the entry echoed.
 //! The menu: cmdmodecontextmenu's four buttons, handled by 0x64937A
 //! (ButtonInviteToParty -> ClientSocialManager::GroupInvitePlayer 0x56E982,
 //! ButtonWhisper -> the chat line "<whisper prefix> <name> ").
-//! UNVERIFIED: the column's spacing (one button height plus 5) and its order
-//!   (oldest at the top): the widget animates its buttons in (0x6CB7C3) and that
-//!   placement was not traced. The middle click as the menu's trigger is the
-//!   user's account of the game (2026-10-17), not traced.
+//! UNVERIFIED: the middle click as the menu's trigger is the user's account of the
+//!   game (2026-10-17), not traced.
 
 use super::*;
 use crate::network::chat::Kind;
@@ -24,20 +26,37 @@ use bevy::text::Justify;
 
 pub(in crate::ui) const GROUP_DIALOG: &str = "confirmgroupdialog";
 pub(in crate::ui) const BOOKING_DIALOG: &str = "notificationbookingconfirmation";
+pub(in crate::ui) const LOGIN_DIALOG: &str = "loginreward2";
 pub(in crate::ui) const CONTEXT_MENU: &str = "cmdmodecontextmenu";
+const DIALOGS: [&str; 3] = [GROUP_DIALOG, BOOKING_DIALOG, LOGIN_DIALOG];
 
-/// Notification1's rectangles (notifications.ui.json): drawn 40 wide, 45 under
-/// the cursor (its mouseover state), against the left edge.
+/// Notification1's rectangles (notifications.ui.json): drawn 40 x 39, 45 x 45
+/// under the cursor (its mouseover state), against the left edge.
 const BUTTON: [f32; 4] = [3.0, 293.0, 43.0, 332.0];
 const BUTTON_HOVER: [f32; 4] = [0.0, 290.0, 45.0, 335.0];
-const SPACING: f32 = 45.0;
+/// The column's motion (UI::NotificationWidget, 2018 client):
+/// - a new button starts with its centre one button width above the screen
+///   (0x6CADDC: y = -(right - left));
+/// - moving (state 1, 0x6CB66E), its target is Notification1's centre less one
+///   button height per place, so later ones stack upwards; its start time is kept;
+/// - each frame (0x6CA4C4) y += (now - start) x 2.5 (0xE4B588) x frame time,
+///   in screen heights;
+/// - it stops on its place once there (0x6CB7C3: state 2);
+/// - the next waiting button starts 0.15 s (0xE79928) after the last one did;
+/// - nothing moves until 10 s (0xD79C60) after the widget loaded (0x6CAD14);
+/// - when one is answered, the ones after it wait again and fall to their new
+///   places (0x6CA7E5).
+const ACCELERATION: f32 = 2.5 * BASE_H;
+const START_GAP: f64 = 0.15;
+const LOAD_DELAY: f64 = 10.0;
 /// Over the HUD and the chat, under the menus (crate::ui depths).
 const COLUMN_Z: f32 = 50.0;
 /// Inside a dialog's band, over its artwork (crate::ui::WINDOW_ART_DEPTH).
 const CONTENT_Z: f32 = 7.5;
-/// NotificationType: groupinvite and its join-request twin, the guild's, the
+/// NotificationType: groupinvite and its join-request twin, the login reward, the
 /// bookings (_Template_Notifications order; 0x6CAE52's switch).
 const GROUP_INVITE: [u8; 2] = [1, 2];
+const LOGIN_REWARD: u8 = 6;
 const BOOKING: [u8; 2] = [16, 18];
 /// Game::NotificationResponse::Code (crate's Notification doc).
 const CONFIRM: u8 = 1;
@@ -48,9 +67,28 @@ const CMS_GUID: &[u8] = b"DSOCMS01";
 /// A player's pick cylinder, metres: the character capsule's.
 const PICK_RADIUS: f32 = 0.6;
 const PICK_HEIGHT: f32 = 2.0;
+/// loginreward2's columns: Label5Columns (Label6Columns only when a
+/// "login_reward_special*" group is offered, 0x6BD219), days 0 to 4.
+const LOGIN_DAYS: usize = 5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Social { Confirm, Cancel, Whisper, Befriend, InviteToParty, Ignore }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Motion { Waiting, Moving, Placed }
+
+/// One button of the column.
+struct Slot {
+    guid: Vec<u8>,
+    kind: u8,
+    motion: Motion,
+    /// Its centre, reference pixels from the top.
+    y: f32,
+    /// When it started moving, seconds.
+    start: f64,
+    entity: Option<Entity>,
+    hovered: bool,
+}
 
 #[derive(Resource, Default)]
 pub(crate) struct SocialUi {
@@ -60,7 +98,9 @@ pub(crate) struct SocialUi {
     /// The player the menu was opened on.
     target: Option<String>,
     pressed: Option<usize>,
-    hovered: Option<usize>,
+    slots: Vec<Slot>,
+    /// When the column loaded (the first frame in the game), seconds.
+    loaded: Option<f64>,
 }
 
 /// The icon 0x6CAE52 gives a notification type.
@@ -88,6 +128,14 @@ fn icon(kind: u8) -> &'static str {
     }
 }
 
+/// The dialog a notification type opens, if any.
+fn dialog(kind: u8) -> Option<&'static str> {
+    if GROUP_INVITE.contains(&kind) { Some(GROUP_DIALOG) }
+    else if BOOKING.contains(&kind) { Some(BOOKING_DIALOG) }
+    else if kind == LOGIN_REWARD { Some(LOGIN_DIALOG) }
+    else { None }
+}
+
 pub(super) fn section(window: &str, parts: &[&str]) -> Option<Section> {
     let leaf = *parts.last()?;
     match window {
@@ -105,19 +153,29 @@ pub(super) fn section(window: &str, parts: &[&str]) -> Option<Section> {
             let slot = parts.iter().find_map(|p| p.strip_prefix("ItemSlot").and_then(|n| n.parse::<u32>().ok()))?;
             Some(Section::Page("booking_items", !((2u32 << slot) - 1)))
         }
+        LOGIN_DIALOG => {
+            // The six-column variant, the icon set templates (drawn per day by
+            // `dialogs`) and the description (written by `dialogs`).
+            if parts.iter().any(|p| matches!(*p, "Label6Columns" | "IconSets")) || leaf == "Textlabel" { return Some(Section::Hidden); }
+            // A day up to today is active and checked; a later one is locked.
+            let day = parts.iter().find_map(|p| p.strip_prefix("LabelDay").and_then(|n| n.parse::<u32>().ok()))?;
+            if parts.iter().any(|p| matches!(*p, "LabelActive" | "Check")) { return Some(Section::Page("login_day", !((1u32 << day) - 1))); }
+            if parts.iter().any(|p| p.starts_with("Lock")) { return Some(Section::Page("login_day", (1u32 << day) - 1)); }
+            None
+        }
         _ => None,
     }
 }
 
 pub(super) fn action(window: &str, w: &Widget) -> Option<Action> {
     let social = match (window, w.event.as_str()) {
-        (GROUP_DIALOG | BOOKING_DIALOG, "confirm") => Social::Confirm,
+        (GROUP_DIALOG | BOOKING_DIALOG | LOGIN_DIALOG, "confirm") => Social::Confirm,
         (GROUP_DIALOG, "cancel") | (BOOKING_DIALOG, "deny") => Social::Cancel,
         (CONTEXT_MENU, "ButtonWhisper") => Social::Whisper,
         (CONTEXT_MENU, "ButtonBefriend") => Social::Befriend,
         (CONTEXT_MENU, "ButtonInviteToParty") => Social::InviteToParty,
         (CONTEXT_MENU, "ButtonIgnore") => Social::Ignore,
-        (GROUP_DIALOG | BOOKING_DIALOG | CONTEXT_MENU, _) => return Some(Action::Unavailable),
+        (GROUP_DIALOG | BOOKING_DIALOG | LOGIN_DIALOG | CONTEXT_MENU, _) => return Some(Action::Unavailable),
         _ => return None,
     };
     Some(Action::Social(social))
@@ -126,8 +184,45 @@ pub(super) fn action(window: &str, w: &Widget) -> Option<Action> {
 #[derive(Component)]
 pub(in crate::ui) struct Column;
 
-/// The column of notifications: an icon each, its own hit test, and a click
-/// opening its dialog.
+/// Notification1's centre, and its rectangle around a centre at `y`.
+fn centre() -> Vec2 {
+    Vec2::new((BUTTON[0] + BUTTON[2]) * 0.5, (BUTTON[1] + BUTTON[3]) * 0.5)
+}
+
+fn rect_at(y: f32, hover: bool) -> [f32; 4] {
+    let [l, t, r, b] = if hover { BUTTON_HOVER } else { BUTTON };
+    let dy = y - centre().y;
+    [l, t + dy, r, b + dy]
+}
+
+/// The place of the button at `index`: Notification1's centre, one button height
+/// higher per button before it.
+fn target(index: usize) -> f32 {
+    centre().y - (BUTTON[3] - BUTTON[1]) * index as f32
+}
+
+/// The column follows Net::notifications: buttons arrive, fall into place, and
+/// leave when answered.
+fn animate(slots: &mut [Slot], now: f64, dt: f32) {
+    for (i, slot) in slots.iter_mut().enumerate() {
+        if slot.motion != Motion::Moving { continue; }
+        slot.y += (now - slot.start) as f32 * ACCELERATION * dt;
+        if slot.y >= target(i) {
+            slot.y = target(i);
+            slot.motion = Motion::Placed;
+        }
+    }
+    if let Some(next) = slots.iter().position(|s| s.motion == Motion::Waiting) {
+        let last = slots.iter().filter(|s| s.motion == Motion::Moving).map(|s| s.start).next_back().unwrap_or(0.0);
+        if now - last > START_GAP {
+            slots[next].motion = Motion::Moving;
+            slots[next].start = now;
+        }
+    }
+}
+
+/// The column of notifications: an icon each, falling into place, its own hit
+/// test, and a click opening its dialog.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(in crate::ui) fn column(
     mut commands: Commands,
@@ -136,14 +231,17 @@ pub(in crate::ui) fn column(
     mut windows: Windows,
     primary: Query<&Window, With<PrimaryWindow>>,
     mouse: Res<ButtonInput<MouseButton>>,
+    time: Res<Time>,
     screen: Res<Screen>,
     assets: Res<AssetServer>,
-    columns: Query<Entity, With<Column>>,
-    mut last: Local<Option<(Vec<Vec<u8>>, Option<usize>, u32)>>,
+    mut columns: Query<(Entity, &mut crate::ui::input::UiRegions), With<Column>>,
+    mut sprites: Query<(&mut Sprite, &mut Transform), (Without<Column>, Without<Window2018>)>,
     mut test: Local<bool>,
 ) {
-    // DSOR_TEST_NOTIFICATIONS=group|booking: a group invitation and a credited
-    // booking in the column, the named one open (screenshots, offline).
+    let now = time.elapsed_secs_f64();
+    // DSOR_TEST_NOTIFICATIONS=group|booking|login: a group invitation, a credited
+    // booking and the daily login bonus in the column, the named one open
+    // (screenshots, offline; the column moves at once).
     let test_open = (!*test).then(|| std::env::var("DSOR_TEST_NOTIFICATIONS").ok()).flatten();
     *test = true;
     if let (Some(open), Some(net)) = (&test_open, net.as_mut()) {
@@ -153,54 +251,91 @@ pub(in crate::ui) fn column(
         guid.extend([0, 0, 0, 0, 0, 0, 0, 3]);
         net.notifications.push(NotificationEntry { note_type: 16, guid, unknown_u32_0: 0, group_id: 0x06A7EB00, inviter_id: 0x06A7EB00,
             params: r#"{"ingameTransactionId":3,"templates":"epicmount_death_knight_horse","amounts":"1","rarities":"Epic","addItems":true,"playerCanRejectItem":false}"#.into(), timestamp: String::new() });
-        social.pressed = Some(if open == "booking" { 1 } else { 0 });
+        net.notifications.push(NotificationEntry { note_type: 6, guid: vec![6; 16], unknown_u32_0: 0x0DB05EC2, group_id: 0, inviter_id: 0,
+            params: r#"{"reward":"login_reward_03_warrior_01","dailyLoginCount":3,"rewardIndex":2,"premiumReward":"premium_login_reward_03_warrior_01"}"#.into(), timestamp: String::new() });
+        if net.login_rewards.is_empty() {
+            net.login_rewards = (1..=6).map(|d| dsor_proto::commands::player::OfferGroup {
+                resource_id: format!("login_reward_{:02}_warrior_01", d.min(5)), price_rc: 0,
+                offers: vec![(dsor_proto::commands::player::OfferDetails { item: format!("dailylogin_lootbox_day_{:02}", d.min(5)), amount: 1, ..default() }, 1)],
+            }).collect();
+        }
+        social.loaded = Some(now - LOAD_DELAY);
+        social.pressed = Some(match open.as_str() { "booking" => 1, "login" => 2, _ => 0 });
     }
+    let loaded = *social.loaded.get_or_insert(now);
     let notes: &[NotificationEntry] = net.as_ref().map_or(&[], |n| &n.notifications);
-    let rect = |i: usize, hover: bool| {
-        let [l, t, r, b] = if hover { BUTTON_HOVER } else { BUTTON };
-        let dy = i as f32 * SPACING;
-        [l, t + dy, r, b + dy]
-    };
+
+    // Answered ones leave; the ones after them fall again (0x6CA7E5). New ones
+    // join at the end, above the screen (0x6CADDC).
+    let SocialUi { slots, .. } = &mut *social;
+    if let Some(gone) = slots.iter().position(|s| !notes.iter().any(|n| n.guid == s.guid)) {
+        if let Some(e) = slots[gone].entity { commands.entity(e).despawn(); }
+        slots.remove(gone);
+        for s in &mut slots[gone..] { s.motion = Motion::Waiting; }
+    }
+    for note in notes {
+        if !slots.iter().any(|s| s.guid == note.guid) {
+            slots.push(Slot { guid: note.guid.clone(), kind: note.note_type, motion: Motion::Waiting, y: -(BUTTON[2] - BUTTON[0]), start: 0.0, entity: None, hovered: false });
+        }
+    }
+    if now - loaded > LOAD_DELAY { animate(slots, now, time.delta_secs()); }
+
     let point = primary.single().ok().filter(|w| w.focused && w.height() > 0.0)
         .and_then(|w| w.cursor_position().map(|p| p * (BASE_H / w.height())));
-    let over = point.and_then(|p| (0..notes.len()).find(|&i| {
-        let [l, t, r, b] = rect(i, false);
+    let over = point.and_then(|p| slots.iter().position(|s| {
+        let [l, t, r, b] = rect_at(s.y, false);
         p.x >= l && p.x <= r && p.y >= t && p.y <= b
     }));
-    if mouse.just_pressed(MouseButton::Left) { social.pressed = over; }
-    let clicked = if test_open.is_some() { social.pressed.take() }
-        else if mouse.just_released(MouseButton::Left) { social.pressed.take().filter(|i| Some(*i) == over) } else { None };
-    if social.hovered != over { social.hovered = over; }
 
-    let key = (notes.iter().map(|n| n.guid.clone()).collect::<Vec<_>>(), over, screen.width.to_bits());
-    if last.as_ref() != Some(&key) {
-        *last = Some(key);
-        for e in &columns { commands.entity(e).despawn(); }
-        let regions = (0..notes.len()).map(|i| (0.0, rect(i, false))).collect();
-        let root = commands.spawn((Column, Transform::from_xyz(0.0, 0.0, COLUMN_Z), Visibility::Inherited, crate::ui::input::UiRegions(regions))).id();
-        for (i, note) in notes.iter().enumerate() {
-            let [l, t, r, b] = rect(i, over == Some(i));
-            commands.spawn((
-                Sprite { image: assets.load(format!("textures/ui/icon_notifications_{}.png", icon(note.note_type))), custom_size: Some(Vec2::new(r - l, b - t)), ..default() },
-                Anchor::TOP_LEFT, Transform::from_translation(screen.world(0.0, l, t).extend(0.0)), RenderLayers::layer(LAYER), ChildOf(root),
-            ));
+    // Draw: one sprite per button, moved every frame.
+    let root = match columns.iter_mut().next() {
+        Some((e, mut regions)) => {
+            regions.0 = slots.iter().map(|s| (0.0, rect_at(s.y, false))).collect();
+            e
+        }
+        None => commands.spawn((Column, Transform::from_xyz(0.0, 0.0, COLUMN_Z), Visibility::Inherited, crate::ui::input::UiRegions::default())).id(),
+    };
+    for (i, slot) in slots.iter_mut().enumerate() {
+        slot.hovered = over == Some(i);
+        let [l, t, r, b] = rect_at(slot.y, slot.hovered);
+        let size = Vec2::new(r - l, b - t);
+        let at = screen.world(0.0, l, t).extend(0.0);
+        match slot.entity.and_then(|e| sprites.get_mut(e).ok()) {
+            Some((mut sprite, mut tf)) => {
+                if sprite.custom_size != Some(size) { sprite.custom_size = Some(size); }
+                if tf.translation != at { tf.translation = at; }
+            }
+            None if slot.entity.is_none() => {
+                slot.entity = Some(commands.spawn((
+                    Sprite { image: assets.load(format!("textures/ui/icon_notifications_{}.png", icon(slot.kind))), custom_size: Some(size), ..default() },
+                    Anchor::TOP_LEFT, Transform::from_translation(at), RenderLayers::layer(LAYER), ChildOf(root),
+                )).id());
+            }
+            None => {}
         }
     }
 
+    if mouse.just_pressed(MouseButton::Left) && test_open.is_none() { social.pressed = over; }
+    let clicked = if test_open.is_some() { social.pressed.take() }
+        else if mouse.just_released(MouseButton::Left) { social.pressed.take().filter(|i| Some(*i) == over) } else { None };
     let Some(index) = clicked else { return };
-    let Some(note) = notes.get(index).cloned() else { return };
-    let dialog = if GROUP_INVITE.contains(&note.note_type) { GROUP_DIALOG } else if BOOKING.contains(&note.note_type) { BOOKING_DIALOG } else {
+    let Some(guid) = social.slots.get(index).map(|s| s.guid.clone()) else { return };
+    let Some(note) = notes.iter().find(|n| n.guid == guid).cloned() else { return };
+    let Some(dialog) = dialog(note.note_type) else {
         info!("notification type {} has no dialog here", note.note_type);
         return;
     };
+    let p = params(&note);
     for (_, w, mut c, mut v, _) in &mut windows {
-        if w.0 == GROUP_DIALOG || w.0 == BOOKING_DIALOG { *v = Visibility::Hidden; }
+        if DIALOGS.contains(&w.0.as_str()) { *v = Visibility::Hidden; }
         if w.0 == dialog {
             if dialog == BOOKING_DIALOG {
-                let params = params(&note);
-                let items = split(&params, "templates").len().min(15) as u8;
+                let items = split(&p, "templates").len().min(15) as u8;
                 c.pages.insert("booking_items", items);
-                c.pages.insert("booking_reject", u8::from(params["playerCanRejectItem"].as_bool().unwrap_or(false)));
+                c.pages.insert("booking_reject", u8::from(p["playerCanRejectItem"].as_bool().unwrap_or(false)));
+            }
+            if dialog == LOGIN_DIALOG {
+                c.pages.insert("login_day", p["rewardIndex"].as_u64().unwrap_or(0).min(LOGIN_DAYS as u64 - 1) as u8);
             }
             *v = Visibility::Inherited;
         }
@@ -238,10 +373,11 @@ pub(in crate::ui) fn dialogs(
     loaded: Res<crate::ui::Loaded>,
     screen: Res<Screen>,
     assets: Res<AssetServer>,
+    net: Option<NonSend<crate::network::net::Net>>,
     mut last: Local<Option<(Entity, Vec<u8>, u32, bool)>>,
 ) {
     let open = social.open.as_ref().and_then(|note| windows.iter()
-        .find(|(_, w, _, v)| **v != Visibility::Hidden && (w.0 == GROUP_DIALOG && GROUP_INVITE.contains(&note.note_type) || w.0 == BOOKING_DIALOG && BOOKING.contains(&note.note_type)))
+        .find(|(_, w, _, v)| **v != Visibility::Hidden && Some(w.0.as_str()) == dialog(note.note_type))
         .map(|(e, w, _, _)| (e, w.0.clone(), note)));
     let catalog = catalogs.get(&data.catalog);
     let key = open.as_ref().map(|(e, _, note)| (*e, note.guid.clone(), screen.scale.to_bits(), catalog.is_some()));
@@ -263,6 +399,10 @@ pub(in crate::ui) fn dialogs(
         label(&mut commands, &assets, &screen, group, text, screen.world(w.k, l, t).extend(0.1), 12.0, Color::srgb(0.92, 0.87, 0.76), r - l, Justify::Center);
         return;
     }
+    if window == LOGIN_DIALOG {
+        login(&mut commands, &assets, &screen, group, &p, layout, catalog, net.as_ref().map_or(&[], |n| &n.login_rewards));
+        return;
+    }
     // gui.window.booking: a moderator's credit or a shop order, then the items.
     let cms = note.guid.starts_with(CMS_GUID);
     let mut text = String::from(if cms { "A moderator has credited a pack to your account." } else { "We received an order." });
@@ -281,15 +421,66 @@ pub(in crate::ui) fn dialogs(
     for (i, template) in templates.iter().take(15).enumerate() {
         let Some(slot) = widget(&format!("/ContentLabel/ItemSlot{i}")) else { continue };
         let rarity = rarities.get(i).and_then(|r| RARITIES.iter().position(|n| n.eq_ignore_ascii_case(r))).unwrap_or(0);
-        let item = dsor_proto::commands::inventory::ItemInfo { kind: rarity as u8, ..default() };
-        let (icon, background, frame) = catalog.icon_parts(template, Some(&item));
-        let [l, t, r, b] = slot.rect;
-        let at = screen.world(slot.k, l + 2.5, t + 2.5);
-        let size = Vec2::new(r - l, b - t) - Vec2::splat(5.0);
-        for (z, image) in [(0.2, background), (0.3, icon), (0.4, frame)] {
-            let Some(image) = image else { continue };
-            commands.spawn((Sprite { image: assets.load(image.to_owned()), custom_size: Some(size), ..default() }, Anchor::TOP_LEFT,
-                Transform::from_translation(at.extend(z)), RenderLayers::layer(LAYER), ChildOf(group)));
+        item_icon(&mut commands, &assets, &screen, group, catalog, template, rarity as u8, slot.k, slot.rect, None);
+    }
+}
+
+/// An item's background, icon and frame in a slot rectangle, and its amount.
+#[allow(clippy::too_many_arguments)]
+fn item_icon(commands: &mut Commands, assets: &AssetServer, screen: &Screen, parent: Entity, catalog: &items::Catalog,
+    template: &str, rarity: u8, k: f32, [l, t, r, b]: [f32; 4], amount: Option<u32>) {
+    let item = dsor_proto::commands::inventory::ItemInfo { kind: rarity, ..default() };
+    let (icon, background, frame) = catalog.icon_parts(template, Some(&item));
+    let at = screen.world(k, l + 2.5, t + 2.5);
+    let size = Vec2::new(r - l, b - t) - Vec2::splat(5.0);
+    for (z, image) in [(0.2, background), (0.3, icon), (0.4, frame)] {
+        let Some(image) = image else { continue };
+        commands.spawn((Sprite { image: assets.load(image.to_owned()), custom_size: Some(size), ..default() }, Anchor::TOP_LEFT,
+            Transform::from_translation(at.extend(z)), RenderLayers::layer(LAYER), ChildOf(parent)));
+    }
+    if let Some(n) = amount.filter(|n| *n > 1) {
+        label(commands, assets, screen, parent, n.to_string(), screen.world(k, l, b - 16.0).extend(0.5), 10.0, Color::WHITE, r - l - 6.0, Justify::Right);
+    }
+}
+
+/// loginreward2 (UI::LoginRewardDialogWidget::SetupDialog 0x6BD219): the
+/// description with the days in a row, and per day column the items of that
+/// day's offer group, laid out as IconSet<n-1> (n: up to 3 items) centred on the
+/// column. The groups are SpecialOfferCommand's (Net::login_rewards).
+/// UNVERIFIED: the premium row (ItemSlot%iPremiumFull, shown with a membership)
+///   is not drawn; the future days' half-transparent bars (0x6BD219 sets their
+///   colour alpha to 0.5) are drawn opaque.
+#[allow(clippy::too_many_arguments)]
+fn login(commands: &mut Commands, assets: &AssetServer, screen: &Screen, group: Entity, p: &serde_json::Value,
+    layout: Option<&Layout>, catalog: Option<&items::Catalog>, rewards: &[dsor_proto::commands::player::OfferGroup]) {
+    let Some(layout) = layout else { return };
+    let widget = |id: &str| layout.widgets.iter().find(|w| w.id.ends_with(id));
+    const COLUMNS: &str = "Canvas/LabelBlur/Label5Columns/BackGroundDarkLabel/ArtworkLabel";
+    // gui.window.loginreward_descriptionLabel / descriptionLabelSingular.
+    let count = p["dailyLoginCount"].as_u64().unwrap_or(1);
+    let text = if count > 1 {
+        format!("Congratulations, you were online {count} days in a row.\nCome back tomorrow to collect the next reward.\nThe first time you log in 5 days in a row, you will receive a unique reward!")
+    } else {
+        "Congratulations, you successfully logged in today!\nCome back tomorrow to collect the next reward.\nThe first time you log in 5 days in a row, you will receive a one-time reward!".to_owned()
+    };
+    if let Some(w) = widget(&format!("{COLUMNS}/TextlabelHeadline/Textlabel")) {
+        let [l, t, r, _] = w.rect;
+        label(commands, assets, screen, group, text, screen.world(w.k, l, t).extend(0.1), 11.0, Color::srgb(0.92, 0.87, 0.76), r - l, Justify::Center);
+    }
+    let Some(catalog) = catalog else { return };
+    for (day, reward) in rewards.iter().take(LOGIN_DAYS).enumerate() {
+        let Some(column) = widget(&format!("{COLUMNS}/LabelDay{day}")) else { continue };
+        let n = reward.offers.len().min(3);
+        if n == 0 { continue; }
+        let set = format!("Canvas/LabelBlur/IconSets/IconSet{}", n - 1);
+        let Some(set_rect) = layout.widgets.iter().find(|w| w.id == set).map(|w| w.rect) else { continue };
+        let [cl, ct, cr, cb] = column.rect;
+        let offset = Vec2::new((cl + cr - set_rect[0] - set_rect[2]) * 0.5, (ct + cb - set_rect[1] - set_rect[3]) * 0.5);
+        for (i, (offer, amount)) in reward.offers.iter().take(n).enumerate() {
+            let Some(slot) = layout.widgets.iter().find(|w| w.id == format!("{set}/ItemSlot{i}")) else { continue };
+            let [l, t, r, b] = slot.rect;
+            let rect = [l + offset.x, t + offset.y, r + offset.x, b + offset.y];
+            item_icon(commands, assets, screen, group, catalog, &offer.item, offer.rarity as u8, column.k, rect, Some(offer.amount * amount));
         }
     }
 }
@@ -329,7 +520,7 @@ pub(in crate::ui) fn answer(
             net.send(&ClientCommand::Notification(Notification::response(if confirm { CONFIRM } else { CANCEL }, note.clone())));
             net.notifications.retain(|n| n.guid != note.guid);
             for (_, w, _, mut v, _) in &mut windows {
-                if w.0 == GROUP_DIALOG || w.0 == BOOKING_DIALOG { *v = Visibility::Hidden; }
+                if DIALOGS.contains(&w.0.as_str()) { *v = Visibility::Hidden; }
             }
         }
         Social::InviteToParty | Social::Whisper | Social::Befriend | Social::Ignore => {

@@ -182,6 +182,9 @@ pub struct Net {
     /// (NotificationCommand type 1), oldest first; answered ones leave
     /// (crate::ui::controls::social).
     pub notifications: Vec<dsor_proto::commands::social::NotificationEntry>,
+    /// The daily login bonus's day columns (SpecialOfferCommand's first offer
+    /// group list), for crate::ui::controls::social's loginreward2.
+    pub login_rewards: Vec<dsor_proto::commands::player::OfferGroup>,
     pub kills: Vec<(u32, dsor_proto::commands::combat::Kill)>,
     /// The same blows as (attacker, victim), for the attacker's bullet in flight to
     /// end on its victim (crate::gameplay::skills fly_bullets).
@@ -730,6 +733,7 @@ pub fn start_offline(world: &mut World, class: u8, gender: u8) {
         hits: Vec::new(),
         messages: Vec::new(),
         notifications: Vec::new(),
+        login_rewards: Vec::new(),
         kills: Vec::new(),
         strikes: Vec::new(),
         death: default(),
@@ -954,6 +958,7 @@ pub(crate) fn start_session(world: &mut World, config: NetConfig) {
         hits: Vec::new(),
         messages: Vec::new(),
         notifications: Vec::new(),
+        login_rewards: Vec::new(),
         kills: Vec::new(),
         strikes: Vec::new(),
         death: default(),
@@ -1435,6 +1440,9 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
                 net.notifications.retain(|e| e.guid != entry.guid);
                 net.notifications.push(entry);
             }
+        }
+        ServerCommand::SpecialOffer(o) if !o.login_rewards.is_empty() => {
+            net.login_rewards = o.login_rewards;
         }
         ServerCommand::ShowDeathDialog(_) => {
             if net.death.dead {

@@ -197,38 +197,158 @@ impl Body for GuildStatus {
     }
 }
 
-/// SpecialOfferCommand (141): three bits each followed by a struct only when set
-/// (always clear here; struct layouts not established), a bit, a string, four u32
-/// counts (always 0; entry layouts not established).
-/// SOURCE: dsor/mapentry2018.py special_offer; reader sub_A1DB44 (vtable 0x102E214).
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// One offer of an offer group (_Template_Offer): its id, prices, the item and
+/// amount, rarity and category, two (id, value) lists, icon, icon configuration,
+/// level range and two flags.
+/// SOURCE: DSOR_Server protocol/player_init_protocol.py _write_offer_details;
+///   field names are that server's where meaning is not established.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct OfferDetails {
+    pub resource_id: String,
+    pub price_rc: u32,
+    pub price_vc: u32,
+    /// The item template given.
+    pub item: String,
+    pub amount: u32,
+    pub difficulty: u32,
+    pub rarity: u32,
+    pub category: u16,
+    pub values_168: Vec<(String, f32)>,
+    pub values_190: Vec<(String, f32)>,
+    pub icon_brush: String,
+    pub icon_config: String,
+    pub min_level: u32,
+    pub max_level: u32,
+    pub recommended: bool,
+    pub auto_identify: bool,
+}
+
+fn floats(r: &mut BitReader<'_>) -> Result<Vec<(String, f32)>, DecodeError> {
+    counted(r, MOST, "offer value count", |r| Ok((r.string()?, r.f32()?)))
+}
+
+fn write_floats(w: &mut BitWriter, v: &[(String, f32)]) {
+    w.u32(v.len() as u32);
+    for (id, value) in v {
+        w.string(id);
+        w.f32(*value);
+    }
+}
+
+impl Body for OfferDetails {
+    fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            resource_id: r.string()?, price_rc: r.u32()?, price_vc: r.u32()?, item: r.string()?, amount: r.u32()?,
+            difficulty: r.u32()?, rarity: r.u32()?, category: r.u16()?, values_168: floats(r)?, values_190: floats(r)?,
+            icon_brush: r.string()?, icon_config: r.string()?, min_level: r.u32()?, max_level: r.u32()?,
+            recommended: r.bit()?, auto_identify: r.bit()?,
+        })
+    }
+    fn encode(&self, w: &mut BitWriter) {
+        w.string(&self.resource_id);
+        w.u32(self.price_rc);
+        w.u32(self.price_vc);
+        w.string(&self.item);
+        w.u32(self.amount);
+        w.u32(self.difficulty);
+        w.u32(self.rarity);
+        w.u16(self.category);
+        write_floats(w, &self.values_168);
+        write_floats(w, &self.values_190);
+        w.string(&self.icon_brush);
+        w.string(&self.icon_config);
+        w.u32(self.min_level);
+        w.u32(self.max_level);
+        w.bit(self.recommended);
+        w.bit(self.auto_identify);
+    }
+}
+
+/// An offer group (_Template_Offergroup): its id, a u32, and (offer, amount) pairs.
+/// SOURCE: DSOR_Server _write_offer_group.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct OfferGroup {
+    pub resource_id: String,
+    pub price_rc: u32,
+    pub offers: Vec<(OfferDetails, u32)>,
+}
+
+impl Body for OfferGroup {
+    fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
+        let resource_id = r.string()?;
+        let price_rc = r.u32()?;
+        let offers = counted(r, MOST, "offer group size", |r| Ok((OfferDetails::decode(r)?, r.u32()?)))?;
+        Ok(Self { resource_id, price_rc, offers })
+    }
+    fn encode(&self, w: &mut BitWriter) {
+        w.string(&self.resource_id);
+        w.u32(self.price_rc);
+        w.u32(self.offers.len() as u32);
+        for (offer, amount) in &self.offers {
+            offer.encode(w);
+            w.u32(*amount);
+        }
+    }
+}
+
+fn groups(r: &mut BitReader<'_>) -> Result<Vec<OfferGroup>, DecodeError> {
+    counted(r, MOST, "offer group count", OfferGroup::decode)
+}
+
+fn write_groups(w: &mut BitWriter, v: &[OfferGroup]) {
+    w.u32(v.len() as u32);
+    for g in v {
+        g.encode(w);
+    }
+}
+
+/// SpecialOfferCommand (141; release261 132): three optional structs (an offer, an
+/// offer, an offer group), a bit, a string, then four lists of offer groups. The
+/// first two lists carry the daily login columns, regular then premium (six each,
+/// the sixth repeating day five), which UI::LoginRewardDialogWidget shows.
+/// SOURCE: DSOR_Server protocol/player_init_protocol.py _write_special_offer_body,
+///   protocol/reward_protocol.py daily_login_offers; reader sub_A1DB44 (vtable
+///   0x102E214).
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct SpecialOffer {
+    pub primary: Option<OfferDetails>,
+    pub secondary: Option<OfferDetails>,
+    pub featured: Option<OfferGroup>,
     pub unknown_flag_3: bool,
     pub text: String,
+    pub login_rewards: Vec<OfferGroup>,
+    pub premium_login_rewards: Vec<OfferGroup>,
+    pub groups_80: Vec<OfferGroup>,
+    pub groups_a0: Vec<OfferGroup>,
 }
 
 impl Body for SpecialOffer {
     fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
-        for _ in 0..3 {
-            if r.bit()? {
-                return Err(invalid("special offer present (struct layout unknown)", 1));
-            }
-        }
-        let v = Self { unknown_flag_3: r.bit()?, text: r.string()? };
-        for _ in 0..4 {
-            empty_list(r, "special offer count (entry layout unknown)")?;
-        }
-        Ok(v)
+        Ok(Self {
+            primary: if r.bit()? { Some(OfferDetails::decode(r)?) } else { None },
+            secondary: if r.bit()? { Some(OfferDetails::decode(r)?) } else { None },
+            featured: if r.bit()? { Some(OfferGroup::decode(r)?) } else { None },
+            unknown_flag_3: r.bit()?,
+            text: r.string()?,
+            login_rewards: groups(r)?,
+            premium_login_rewards: groups(r)?,
+            groups_80: groups(r)?,
+            groups_a0: groups(r)?,
+        })
     }
     fn encode(&self, w: &mut BitWriter) {
-        for _ in 0..3 {
-            w.bit(false);
-        }
+        w.bit(self.primary.is_some());
+        if let Some(o) = &self.primary { o.encode(w); }
+        w.bit(self.secondary.is_some());
+        if let Some(o) = &self.secondary { o.encode(w); }
+        w.bit(self.featured.is_some());
+        if let Some(g) = &self.featured { g.encode(w); }
         w.bit(self.unknown_flag_3);
         w.string(&self.text);
-        for _ in 0..4 {
-            w.u32(0);
-        }
+        write_groups(w, &self.login_rewards);
+        write_groups(w, &self.premium_login_rewards);
+        write_groups(w, &self.groups_80);
+        write_groups(w, &self.groups_a0);
     }
 }
 
