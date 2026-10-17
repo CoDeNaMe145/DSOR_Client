@@ -19,7 +19,7 @@ use dsor_proto::commands::ClientCommand;
 
 pub(in crate::ui) const WINDOW: &str = social::TRADE_WINDOW;
 /// The handshake notification a trade invitation shows in the column (a client
-/// type, never sent to the server; icon_notifications_invitation).
+/// type, never sent to the server; icon_notifications_invitationreward).
 pub(in crate::ui) const TRADE_INVITE: u8 = 250;
 const TRADE_GUID: &[u8] = b"DSOR-TRADE";
 /// Over the window's art (crate::ui::WINDOW_ART_DEPTH).

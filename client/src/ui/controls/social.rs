@@ -128,7 +128,7 @@ fn icon(kind: u8) -> &'static str {
         25..=27 => "crown",
         28..=30 => "leaderboards",
         32 => "claim1",
-        trade::TRADE_INVITE => "invitation",
+        trade::TRADE_INVITE => "invitationreward",
         _ => "maprework",
     }
 }
