@@ -36,17 +36,24 @@ client draws it. Every claim about the 2018 client comes from its files:
 applies it, converting Nebula's gamma-space light units to bevy's (`UNIT`, the
 inverse of the camera's exposure: what Nebula shows as `v`, bevy shows as `v`):
 
-- global light: `sat(N.L) x LightColor x LightIntensity` from the bubble's z axis,
-  plus `LightOppositeColor x LightIntensity` from the other side (a second
-  directional light, approximating `sat(BackLightFactor - N.L)`), plus
-  `LightAmbient` (bevy's ambient divided by its 0.452 diffuse BRDF factor);
-- fog: linear between `FogNearDist` and `FogFarDist` (25 and 50 in Kingshill: the
-  game camera sits 25 units from the player, so the fog starts at the player),
-  `FogColor`, opacity `FogIntensity` (UNVERIFIED mapping);
-- bloom (threshold `BrightPassThreshold / 2` in gamma, intensity x `BloomScale`,
-  tint `BloomColor`), saturation, RGB `Balance`, and vignette colour/intensity/size;
-- the light that follows the player (`LocalLightColor x LocalLightIntensity` at
-  `PlayerLightOffset`; UNVERIFIED range);
+- global light, summed in gamma space as the original's sun pass does (D3D9, no
+  sRGB): `LightColor x LightIntensity x sat(N.L)` from the bubble's z axis, plus
+  `LightAmbient`, plus `LightOppositeColor x sat(BackLightFactor - N.L)` (not
+  scaled by the intensity); the albedo is multiplied by that sum, so in linear
+  terms by its 2.2 power. Point lights add `colour x sat(N.L) x sat(1 - d/range)`
+  into the same sum, diffuse only. Bevy's AO darkens the result once, in linear.
+  `DSOR_FLAGS=linearlight` sums in linear instead (the old look), `aogamma`
+  squares the AO in gamma, `shadowfloor` keeps half the whole light in full
+  shadow as the original's blurred shadow buffer does (not default: interiors
+  differ);
+- fog: Nebula's own, depth measured from the camera along its view, clear share
+  `clamp((FogFarDist - depth) / (FogFarDist - FogNearDist), 1 - FogIntensity, 1)`,
+  `FogColor` mixed in gamma space (from the shaders and the running client's
+  `fogColor.w = 1 - FogIntensity`);
+- bloom (pe_brightpassfilter: `2c x BloomColor x lum(max(2c - BrightPassThreshold, 0))`,
+  added x `BloomScale`), saturation, RGB `Balance`, and vignette colour/intensity/size;
+- the light that follows the player (`LocalLightColor x LocalLightIntensity`),
+  4 m above the player with a 6 m range, as the running client draws it;
 - the other bubbles (714 permanent ones in 149 levels: caves, interiors): inside
   one (box or sphere through its transform), the highest priority's look fades in
   over its `PEFadeTime`;

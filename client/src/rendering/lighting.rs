@@ -42,11 +42,17 @@ const UNIT: f32 = 1.2 * 831.746; // 1.2 x 2^9.7
 /// Bevy's diffuse ambient is `EnvBRDFApprox(albedo, F_AB(1, NdotV))` x ambient:
 /// 0.452 x albedo at roughness 1 (Karis' fit); Nebula's is albedo x ambient.
 const AMBIENT_BRDF: f32 = 0.452;
-/// The light that follows the player (LocalLightColor x LocalLightIntensity):
-/// `_Template_RemotePlayer.PlayerLightOffset` (1, 1, -0.5) from the player.
-/// UNVERIFIED: its range (the data has none).
-const PLAYER_LIGHT_OFFSET: Vec3 = Vec3::new(1.0, 1.0, -0.5);
-const PLAYER_LIGHT_RANGE: f32 = 8.0;
+/// The light that follows the player (LocalLightColor x LocalLightIntensity),
+/// 4 m above the player with a range of 6 m.
+/// EVIDENCE: the running release261_192 client's point light pass
+///   (lighting-work/captures/kingshill-*.txt, all four spots): lightPosRange
+///   view (0.0..0.1, 2.5..2.75, -22.05) with w 0.1667 (1 / range), against the
+///   player at (0, 0, -25) on the camera's centre ray; with the garden's invView
+///   that is world (103.0, 14.99, -126.16) over ground at y 11.0. lightColor
+///   = (0.25, 0.238, 0.212), the zone's LocalLightColor x 0.25.
+///   `_Template_RemotePlayer.PlayerLightOffset` (1, 1, -0.5) is not what it draws.
+const PLAYER_LIGHT_OFFSET: Vec3 = Vec3::new(0.0, 4.0, 0.0);
+const PLAYER_LIGHT_RANGE: f32 = 6.0;
 
 /// Gamma value -> linear, per channel (the sRGB curve, also above 1).
 fn linear(c: [f32; 3], k: f32) -> LinearRgba {
