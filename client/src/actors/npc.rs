@@ -42,6 +42,14 @@ pub struct NpcTemplate {
     pub no_talk: bool,
     #[serde(default)]
     pub shop: String,
+    #[serde(default)]
+    pub profession: String,
+    /// Display label from ProfessionLocaId (not the internal profession id).
+    #[serde(default)]
+    pub profession_title: String,
+    /// Authored adjustment to the status model's built-in overhead height.
+    #[serde(default)]
+    pub overhead_offset: [f32; 3],
 }
 
 #[derive(Asset, TypePath, Deserialize, Debug)]
@@ -275,7 +283,8 @@ pub struct NpcPlugin;
 
 impl Plugin for NpcPlugin {
     fn build(&self, app: &mut App) {
-        app.init_asset::<NpcTemplates>()
+        app.add_plugins(super::npc_markers::NpcMarkersPlugin)
+            .init_asset::<NpcTemplates>()
             .init_asset::<NpcPlacements>()
             .init_asset::<Outfits>()
             .init_asset::<Variations>()

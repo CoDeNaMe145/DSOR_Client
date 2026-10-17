@@ -7,7 +7,8 @@
 struct UiMaterial {
     // World-space rectangle kept: min x, min y, max x, max y.
     clip: vec4<f32>,
-    // x: 1 when textured; y: additional transparency (0 for ordinary UI).
+    // x: 1 when textured; y: additional transparency (0 for ordinary UI);
+    // z: preserve authored alpha over a window's textured backing.
     flags: vec4<f32>,
 }
 
@@ -33,13 +34,13 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
 #endif
     c.a *= 1.0 - material.flags.y;
 #ifdef VERTEX_COLORS
-    // A dark translucent shade (the character page's 90 % near-black panels):
+    // A dark translucent shade over the scene:
     // Nebula blends in gamma, bevy in linear, where the same alpha lets far more
     // of a light background through. For a black shade, gamma blending's
     // (1 - a) b equals linear blending with 1 - (1 - a)^2.2.
-    // FAILURE (2026-10-17): the panels showed brown, not near-black ("y'a pas le
-    // fond fonce"). UNVERIFIED: shades that are not near black blend between.
-    if max(in.color.r, max(in.color.g, in.color.b)) < 0.25 {
+    // Windows shading their own textured backing opt out: this approximation
+    // otherwise makes that backing almost opaque black.
+    if material.flags.z < 0.5 && max(in.color.r, max(in.color.g, in.color.b)) < 0.25 {
         c.a = 1.0 - pow(1.0 - c.a, 2.2);
     }
 #endif

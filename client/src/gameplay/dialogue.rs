@@ -20,7 +20,11 @@ impl NetworkDialogue {
     pub fn reset_map(&mut self) { self.infos.clear(); self.offers.clear(); }
     pub fn receive(&mut self, command: &ServerCommand, actor: Option<u32>) {
         match command {
-            ServerCommand::Offer(offer) if !offer.keep_shop => { self.offers.insert(offer.shop.clone(), offer.clone()); }
+            ServerCommand::Offer(offer) => {
+                if offer.keep_shop {
+                    if let Some(shop) = self.offers.get_mut(&offer.shop) { shop.items.clone_from(&offer.items); }
+                } else { self.offers.insert(offer.shop.clone(), offer.clone()); }
+            }
             ServerCommand::NpcInfo(info) => {
                 if let Some(actor) = actor { self.infos.insert(actor, info.clone()); }
             }

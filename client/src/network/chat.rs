@@ -272,7 +272,7 @@ pub fn text_width(text: &str, size: f32) -> f32 {
 }
 
 /// Word wrap: each row as long as `fits` allows (the log rows are one Text2d each).
-fn wrap_with(text: &str, fits: &dyn Fn(&str) -> bool) -> Vec<String> {
+pub(crate) fn wrap_with(text: &str, fits: &dyn Fn(&str) -> bool) -> Vec<String> {
     let mut rows = Vec::new();
     let mut row = String::new();
     for word in text.split(' ') {

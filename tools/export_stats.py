@@ -90,6 +90,22 @@ for cat in root.iter("category"):
     if cat.get("name") in ("gui.window.charsheet", "gui.window.general"):
         for item in cat.iter("item"):
             texts[item.get("name")] = item.text or ""
+# The current character-page code uses these keys, but even the August 2026
+# English language pack lacks them. Prefer the client's captions when present;
+# older packs still need labels and a percentage format instead of blank rows.
+for key, fallback in {
+    "finaldamageincreasevalue": "Final Damage Increase:",
+    "elementDamageIncreaseSubHeadline": "Elemental Damage Increase:",
+    "fireDamageIncrease": "Fire:",
+    "iceDamageIncrease": "Ice:",
+    "lightningDamageIncrease": "Lightning:",
+    "poisonDamageIncrease": "Poison:",
+    "lightDamageIncrease": "Andermagic:",
+    "riftforcevalue": "Final Damage Reduction:",
+    "riftAttributePercentage": "{0:s}%",
+}.items():
+    if not texts.get(key):
+        texts[key] = fallback
 out["texts"] = texts
 
 out["items"] = {r["Id"]: {k: r[k] for k in ("ItemCategory", "SlotType", "CharClass", "RequiredLevel", "ItemLevelScalingType",

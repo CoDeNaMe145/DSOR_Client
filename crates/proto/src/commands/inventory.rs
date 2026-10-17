@@ -51,16 +51,6 @@ fn write_pair_list(w: &mut BitWriter, v: &[(u32, u32)]) {
     }
 }
 
-/// A list the server always sends empty and whose element layout is not established:
-/// a u32 count that must be zero.
-fn empty_list(r: &mut BitReader<'_>, what: &'static str) -> Result<(), DecodeError> {
-    let n = r.u32()?;
-    if n != 0 {
-        return Err(DecodeError::Invalid { what, value: n as i64 });
-    }
-    Ok(())
-}
-
 // ── the item record ─────────────────────────────────────────────────────────
 
 /// One enchantment line of an item.
@@ -493,7 +483,7 @@ impl Body for SkillBookInfo {
 
 // ── 92 RequestOffer / 93 Offer / 94 Transaction / 90 CurrencyConversion ─────
 
-/// RequestOfferCommand (92), client -> server: open a shop, by NPC (by_name false,
+/// RequestOfferCommand (89), client -> server: open a shop, by NPC (by_name false,
 /// the NPC's actor) or by shop name (by_name true, actor 0).
 /// EVIDENCE: reader 0x9A9D5D; senders 0x4E3DE1, 0x57BBA6 (dsor/trading.py decode_request).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -514,11 +504,9 @@ impl Body for RequestOffer {
     }
 }
 
-/// One Game::Offer (reader sub_A260E1, writer sub_A26554; columns from
-/// TradingManager::LoadOffers 0x9C5012). The two maps and two lists at the end are
-/// always sent empty and their element layout is not established, so a non-zero
-/// count is refused.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// One release 261 Offer. SOURCE: protocol/shop_protocol.py _write_shop_offer,
+/// including nonempty discount, privilege, quest and conversion metadata.
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct ShopOffer {
     pub id: String,
     pub price_rc: u32,
@@ -539,16 +527,23 @@ pub struct ShopOffer {
     pub auto_identify: bool,
     pub is_new: bool,
     pub is_recommended: bool,
+    pub once_per_character: bool,
+    pub event_timed: bool,
     pub hide_not_suitable: bool,
-    /// Rarity code (reader sub_9D59DC refuses 6 or more).
+    /// Release 261 ItemRarity (Common through Mythic).
     pub rarity: u8,
-    /// Game::OfferCategory::Code (reader sub_A166F6 refuses 43 or more).
+    /// Release 261 OfferCategory (0..48).
     pub category: u16,
     pub icon: String,
+    pub icon_config: String,
     /// The item template sold.
     pub item: String,
-    /// Offer +224, never loaded from the database.
-    pub unknown_string_0: String,
+    pub discount_events: Vec<(String, f32)>,
+    pub privilege_discounts: Vec<(String, f32)>,
+    pub disabled_events: Vec<String>,
+    pub completed_quests: Vec<String>,
+    pub conversion_stories: Vec<(String, f32)>,
+    pub veteran_discounts: Vec<(String, f32)>,
 }
 
 impl ShopOffer {
@@ -570,28 +565,34 @@ impl ShopOffer {
             max_player_level: r.i32()?,
             ..Default::default()
         };
-        o.scale_to_player_level = r.bit()?;
-        o.dynamic_price = r.bit()?;
-        o.timed_offer = r.bit()?;
-        o.auto_identify = r.bit()?;
-        o.is_new = r.bit()?;
+        // Release 261 protocol/shop_protocol.py _write_shop_offer: eight flags,
+        // icon configuration before the item, six lists, then timed_offer.
         o.is_recommended = r.bit()?;
+        o.dynamic_price = r.bit()?;
+        o.is_new = r.bit()?;
+        o.auto_identify = r.bit()?;
+        o.once_per_character = r.bit()?;
+        o.scale_to_player_level = r.bit()?;
         o.hide_not_suitable = r.bit()?;
+        o.event_timed = r.bit()?;
         o.rarity = r.u8()?;
-        if o.rarity >= 6 {
+        if o.rarity >= 8 {
             return Err(DecodeError::Invalid { what: "offer rarity", value: o.rarity as i64 });
         }
         o.category = r.u16()?;
-        if o.category >= 43 {
+        if o.category >= 48 {
             return Err(DecodeError::Invalid { what: "offer category", value: o.category as i64 });
         }
         o.icon = r.string()?;
+        o.icon_config = r.string()?;
         o.item = r.string()?;
-        o.unknown_string_0 = r.string()?;
-        empty_list(r, "offer discount events")?;
-        empty_list(r, "offer conversion stories")?;
-        empty_list(r, "offer event ids")?;
-        empty_list(r, "offer disabled-for events")?;
+        o.discount_events = offer_modifiers(r)?;
+        o.privilege_discounts = offer_modifiers(r)?;
+        o.disabled_events = counted(r, MOST, "offer disabled events", |r| r.string())?;
+        o.completed_quests = counted(r, MOST, "offer quests", |r| r.string())?;
+        o.conversion_stories = offer_modifiers(r)?;
+        o.veteran_discounts = offer_modifiers(r)?;
+        o.timed_offer = r.bit()?;
         Ok(o)
     }
 
@@ -614,42 +615,58 @@ impl ShopOffer {
         w.i32(self.min_player_level);
         w.i32(self.max_player_level);
         for b in [
-            self.scale_to_player_level,
-            self.dynamic_price,
-            self.timed_offer,
-            self.auto_identify,
-            self.is_new,
             self.is_recommended,
+            self.dynamic_price,
+            self.is_new,
+            self.auto_identify,
+            self.once_per_character,
+            self.scale_to_player_level,
             self.hide_not_suitable,
+            self.event_timed,
         ] {
             w.bit(b);
         }
         w.u8(self.rarity);
         w.u16(self.category);
         w.string(&self.icon);
+        w.string(&self.icon_config);
         w.string(&self.item);
-        w.string(&self.unknown_string_0);
-        for _ in 0..4 {
-            w.u32(0);
+        write_offer_modifiers(w, &self.discount_events);
+        write_offer_modifiers(w, &self.privilege_discounts);
+        for strings in [&self.disabled_events, &self.completed_quests] {
+            w.count(strings.len());
+            for s in strings { w.string(s); }
         }
+        write_offer_modifiers(w, &self.conversion_stories);
+        write_offer_modifiers(w, &self.veteran_discounts);
+        w.bit(self.timed_offer);
     }
 }
 
-/// OfferCommand (93): a shop's offers, or (keep_shop true) only the buyback items.
-/// string shop, bit keep_shop (+80), bit can_sell (+81), u32-counted Ptr<Offer> (a
-/// presence bit each), u32-counted offer groups (always empty, layout UNKNOWN),
-/// u32-counted u16 category codes (the tabs), u32-counted item records (0x980AFC).
-/// EVIDENCE: reader 0x9A9172 / writer 0x9ACEF3; HandleOfferCommand 0x579949
-///   (dsor/trading.py _encode_shop, encode_buyback).
+fn offer_modifiers(r: &mut BitReader<'_>) -> Result<Vec<(String, f32)>, DecodeError> {
+    counted(r, MOST, "offer modifiers", |r| Ok((r.string()?, r.f32()?)))
+}
+fn write_offer_modifiers(w: &mut BitWriter, values: &[(String, f32)]) {
+    w.count(values.len());
+    for (name, value) in values { w.string(name); w.f32(*value); }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaymentItem { pub id: String, pub payment_item: u32 }
+
+/// OfferCommand (90): a shop's offers, or (keep_shop true) only its buyback list.
+/// Release 261 protocol/shop_protocol.py write_offer_command_body: nullable
+/// offers, nullable payment items, u16 category codes, then sold item records.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Offer {
     pub shop: String,
     /// True: keep the current shop and only replace its buyback list.
     pub keep_shop: bool,
-    /// _Template_Shop.PlayerCanSell (HYPOTHESIS in the server).
+    /// _Template_Shop.PlayerCanSell.
     pub can_sell: bool,
     /// None for a null Ptr<Offer> (presence bit clear).
     pub offers: Vec<Option<ShopOffer>>,
+    pub payment_items: Vec<Option<PaymentItem>>,
     pub categories: Vec<u16>,
     /// The buyback list.
     pub items: Vec<ItemInfo>,
@@ -667,10 +684,12 @@ impl Body for Offer {
                 Ok(None)
             }
         })?;
-        empty_list(r, "offer groups")?;
+        let payment_items = counted(r, MOST, "shop payment items", |r| {
+            Ok(if r.bit()? { Some(PaymentItem { id: r.string()?, payment_item: r.u32()? }) } else { None })
+        })?;
         let categories = counted(r, MOST, "offer category count", |r| r.u16())?;
         let items = counted(r, MOST, "buyback item count", ItemInfo::decode)?;
-        Ok(Self { shop, keep_shop, can_sell, offers, categories, items })
+        Ok(Self { shop, keep_shop, can_sell, offers, payment_items, categories, items })
     }
     fn encode(&self, w: &mut BitWriter) {
         w.string(&self.shop);
@@ -683,7 +702,11 @@ impl Body for Offer {
                 o.encode(w);
             }
         }
-        w.u32(0);
+        w.count(self.payment_items.len());
+        for item in &self.payment_items {
+            w.bit(item.is_some());
+            if let Some(item) = item { w.string(&item.id); w.u32(item.payment_item); }
+        }
         w.count(self.categories.len());
         for &c in &self.categories {
             w.u16(c);

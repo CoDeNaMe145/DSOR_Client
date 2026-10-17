@@ -40,7 +40,7 @@ pub struct HighlightCamera;
 
 /// What is highlighted now, and in which colour.
 #[derive(Resource, Default, PartialEq, Clone, Copy)]
-struct Highlighted(Option<(Entity, [u32; 4])>);
+pub(crate) struct Highlighted(pub(crate) Option<(Entity, [u32; 4])>);
 
 #[derive(Resource)]
 struct Target {
@@ -113,7 +113,7 @@ fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>, mut material
 /// The actor under the cursor: a monster first (crate::actors::monsters::Hovered), else
 /// an NPC or another player, nearest along the ray.
 #[allow(clippy::type_complexity)]
-fn pick(
+pub(crate) fn pick(
     ui: Res<crate::ui::input::UiInput>,
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), (With<Camera3d>, Without<HighlightCamera>)>,
@@ -150,6 +150,10 @@ fn pick(
     }
 }
 
+/// Exclude a visual subtree (such as an overhead icon) from actor outlines.
+#[derive(Component)]
+pub(crate) struct NoHighlight;
+
 /// The highlighted actor's meshes on the highlight layer too; the camera on only
 /// while something is highlighted.
 #[allow(clippy::type_complexity)]
@@ -158,6 +162,8 @@ fn relayer(
     highlighted: Res<Highlighted>,
     mut last: Local<Option<Entity>>,
     children: Query<&Children>,
+    parents: Query<&ChildOf>,
+    excluded: Query<(), With<NoHighlight>>,
     meshes: Query<(), With<Mesh3d>>,
     on_layer: Query<Entity, With<OnHighlightLayer>>,
     mut camera: Query<&mut Camera, With<HighlightCamera>>,
@@ -185,7 +191,8 @@ fn relayer(
     }
     if let Some(root) = want {
         for d in children.iter_descendants(root) {
-            if meshes.contains(d) && !on_layer.contains(d) {
+            if meshes.contains(d) && !on_layer.contains(d)
+                && !excluded.contains(d) && !parents.iter_ancestors(d).any(|p| excluded.contains(p)) {
                 commands.entity(d).try_insert((RenderLayers::from_layers(&[0, LAYER]), OnHighlightLayer));
             }
         }

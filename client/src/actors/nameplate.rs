@@ -56,6 +56,8 @@ fn place(
     owners: Query<&LabelOf>,
     assets: Res<AssetServer>,
     mut font: Local<Option<Handle<Font>>>,
+    settings: Res<crate::ui::Settings>,
+    local: Query<(), With<crate::network::net::LocalPlayer>>,
 ) {
     // EVIDENCE: ui/overheadtext.bxml NameLabel: font "tahoma"; drawn thin by the
     // 2018 client (recorded), so Wine's regular Tahoma (assets/fonts/tahoma.ttf,
@@ -91,7 +93,8 @@ fn place(
         };
         let Ok((_, mut style, mut vis, mut color, mut text)) = labels.get_mut(*node) else { continue };
         let head = at.translation() + Vec3::Y * HEAD;
-        let shown = visible.get()
+        let shown = (if local.contains(entity) { settings.current.own_name } else { settings.current.other_names })
+            && visible.get()
             && head.distance(cam_at.translation()) < MAX_DISTANCE
             && !plate.text.is_empty();
         let screen = shown.then(|| camera.world_to_viewport(cam_at, head).ok()).flatten();

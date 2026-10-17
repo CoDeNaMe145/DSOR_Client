@@ -6,4 +6,5 @@ pub(crate) mod monsters;
 pub(crate) mod mounts;
 pub(crate) mod nameplate;
 pub(crate) mod npc;
+mod npc_markers;
 pub(crate) mod picking;

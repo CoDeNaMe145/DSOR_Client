@@ -59,7 +59,9 @@ def spell_grid(widgets, db, textures, loca):
         caption = localized(loca, f"db.skill2.table_{sid}Title", localized(loca, f"db.skill.table_{name}_defaultTitle", sid)) if active else localized(loca, f"db.skilltalent2.table_{tid}Title", tid)
         meta = dict(id=sid if active else tid, wire=wire-1 if active else None, class_id=class_id,
                     unlock=max(1, (skill_unlock if active else unlock) or 1), name=caption,
-                    icon=f"textures/{brush}.png", column=column, row=row)
+                    icon=f"textures/{brush}.png", column=column, row=row,
+                    target=localized(loca, f"db.skill2.table_{sid}SkillTarget", "") if active else "",
+                    description=localized(loca, f"db.skill2.table_{sid}Description", localized(loca, f"db.skill.table_{name}_defaultDesc", "")) if active else localized(loca, f"db.skilltalent2.table_{tid}Description", ""))
         for w in copies:
             leaf = w["id"].rsplit("/", 1)[-1]
             if "glow" in w["id"].lower() and not w.get("state"):

@@ -23,6 +23,8 @@ dsor-dump*.json
 /client-auth.json
 /client-auth.json.tmp
 /map-settings.json
+/game-settings.json
+/game-settings.json.tmp
 /.level-editor/
 /.vfx-editor/
 *.glb.orig
