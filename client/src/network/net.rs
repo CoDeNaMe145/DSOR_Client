@@ -752,7 +752,7 @@ pub fn start_offline(world: &mut World, class: u8, gender: u8) {
             Some(commands) => {
                 let mut net = world.non_send_mut::<Net>();
                 for (command, actor) in commands {
-                    if matches!(command, ServerCommand::InventoryInfo(_) | ServerCommand::MembershipUpdate(_) | ServerCommand::ItemUpdate(_)) {
+                    if matches!(command, ServerCommand::InventoryInfo(_) | ServerCommand::MembershipUpdate(_) | ServerCommand::ItemUpdate(_) | ServerCommand::QuickSlotsInfo(_)) {
                         on_command(&mut net, command, Some(OFFLINE_ACTOR));
                     } else if matches!(command, ServerCommand::NewRemotePlayer(_) | ServerCommand::RemotePlayerInfo(_)) {
                         on_command(&mut net, command, actor);

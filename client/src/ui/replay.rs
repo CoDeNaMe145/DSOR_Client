@@ -14,7 +14,10 @@ struct Step {
     /// Offline-only fixture placement and quest offer; never sent to a server.
     player: Option<[f32; 3]>,
     npc_quest: Option<String>,
+    npc_quest_state: Option<u8>,
     npc_offers: Option<Vec<String>>,
+    /// Replay a server Offer packet through the real decoder, offline only.
+    npc_offer_packet: Option<String>,
     key: Option<String>,
     left: Option<bool>,
     capture: Option<String>,
@@ -57,7 +60,7 @@ pub(super) fn run(mut commands: Commands, mut replay: Local<Replay>,
     while replay.steps.front().is_some_and(|s| s.frame <= replay.frame) {
         let step = replay.steps.pop_front().unwrap();
         if let Some(name) = step.key.as_deref() {
-            if let Some(key) = match name { "Escape" => Some(KeyCode::Escape), "V" => Some(KeyCode::KeyV), "I" => Some(KeyCode::KeyI), _ => None } {
+            if let Some(key) = match name { "Escape" => Some(KeyCode::Escape), "F1" => Some(KeyCode::F1), "V" => Some(KeyCode::KeyV), "I" => Some(KeyCode::KeyI), "9" => Some(KeyCode::Digit9), "S" => Some(KeyCode::KeyS), "Delete" => Some(KeyCode::Delete), _ => None } {
                 keys.press(key);
                 replay.key = Some(key);
             }
@@ -70,10 +73,20 @@ pub(super) fn run(mut commands: Commands, mut replay: Local<Replay>,
         if let Some(template) = &step.npc {
             if let Some((npc, at)) = npcs.iter().find(|(n, _)| &n.template == template) {
                 if let (Some(quest), Some(net)) = (&step.npc_quest, net.as_mut().filter(|n| n.offline)) {
-                    net.npc_dialogue.infos.insert(npc.actor, dsor_proto::commands::actors::NpcInfo {
+                    let info = dsor_proto::commands::actors::NpcInfo {
                         name: npc.profile.shop.clone(), enabled: true,
                         interactions: vec![dsor_proto::commands::actors::NpcInteraction { name: quest.clone(), quest: quest.clone(), kind: 0, state: 10 }], ..default()
-                    });
+                    };
+                    let command = dsor_proto::commands::ServerCommand::NpcInfo(info.clone());
+                    net.map_markers.receive(&command, Some(npc.actor));
+                    net.npc_dialogue.infos.insert(npc.actor, info);
+                    if let Some(state) = step.npc_quest_state {
+                        let command = dsor_proto::commands::ServerCommand::QuestUpdate(dsor_proto::commands::actors::QuestUpdate {
+                            kind: 2, ints: vec![(2, state as u32)], strings: vec![(0, quest.clone())],
+                        });
+                        net.map_markers.receive(&command, None);
+                        net.npc_dialogue.quests.insert(quest.to_lowercase(), state);
+                    }
                 }
                 if let (Some(items), Some(net)) = (&step.npc_offers, net.as_mut().filter(|n| n.offline)) {
                     use dsor_proto::commands::inventory::{Offer, ShopOffer};
@@ -84,6 +97,13 @@ pub(super) fn run(mut commands: Commands, mut replay: Local<Replay>,
                             price_vc: (i as u32 + 1) * 125, ..default()
                         })).collect(), ..default()
                     });
+                }
+                if let (Some(path), Some(net)) = (&step.npc_offer_packet, net.as_mut().filter(|n| n.offline)) {
+                    match std::fs::read(path).map_err(|e| e.to_string()).and_then(|bytes|
+                        dsor_proto::commands::decode_message(&bytes, bytes.len() * 8).map_err(|e| e.to_string())) {
+                        Ok(commands) => for (command, actor) in commands { net.npc_dialogue.receive(&command, actor); },
+                        Err(e) => error!("NPC shop replay: {e}"),
+                    }
                 }
                 if let Ok((camera, transform)) = cameras.single() {
                     if let Ok(point) = camera.world_to_viewport(transform, at.translation() + Vec3::Y * 1.1) {

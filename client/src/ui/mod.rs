@@ -41,12 +41,14 @@ mod dialogue;
 /// The item catalog (names by template), for crate::ui::combat_text's loot texts.
 pub(crate) use controls::items::Catalog;
 mod local_map;
+mod npc_hover;
 mod selection;
 #[cfg(not(target_arch = "wasm32"))]
 mod replay;
 pub(crate) use local_map::{MapIcon, MapLabel, MapMarkers, MapSettings};
 use controls::{Element, Gate, WindowControls};
 pub(crate) use controls::SkillClicks;
+pub(crate) use controls::settings::Settings;
 
 /// The reference screen the 2018 interface was laid out on.
 const BASE_W: f32 = 1024.0;
@@ -124,7 +126,7 @@ const RESPAWN_COST: u32 = 40;
 const INSTANT_RESPAWN_COST: u32 = 120;
 
 fn is_menu(name: &str) -> bool {
-    MENU_WINDOWS.iter().any(|(n, _, _)| *n == name) || NAV_WINDOWS.contains(&name) || dialogue::WINDOWS.contains(&name) || name == "unstackwindow" || name == DEATH_WINDOW || name == CHAT_MENU
+    MENU_WINDOWS.iter().any(|(n, _, _)| *n == name) || NAV_WINDOWS.contains(&name) || dialogue::WINDOWS.contains(&name) || name == "unstackwindow" || name == DEATH_WINDOW || name == CHAT_MENU || name == controls::settings::WINDOW
 }
 
 /// The chat window (crate::network::chat): full controls or a compact click-through
@@ -386,6 +388,9 @@ struct Value(ValueKind);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ValueKind {
+    Hotkey(usize),
+    EssenceKey,
+    BarNumber,
     /// A fixed figure: the death dialog's respawn prices ("{0:i}"), the
     /// static database's _Globals RespawnCost / InstantRespawnCost.
     /// UNVERIFIED: the server's own price (a membership makes them free).
@@ -425,7 +430,7 @@ struct QuickSlot {
     slot: usize,
     k: f32,
     rect: [f32; 4],
-    shown: Option<String>,
+    shown: Option<(String, u32)>,
 }
 
 /// The figures the interface shows (from the server when online).
@@ -477,15 +482,20 @@ impl Plugin for UiPlugin {
             .init_resource::<Figures>()
             .init_resource::<controls::Pointer>()
             .init_resource::<SkillClicks>()
+            .init_resource::<Settings>()
+            .init_resource::<controls::hotbar::Hotbar>()
             .insert_resource(local_map::MapSettings::load())
             .add_systems(Startup, (setup, controls::items::setup, dialogue::setup))
             .add_systems(Update, (match_scene_camera, follow_screen).chain())
+            .add_systems(PostUpdate, npc_hover::show
+                .after(crate::rendering::highlight::pick)
+                .before(TransformSystems::Propagate))
             .add_systems(PostUpdate, refresh_mesh_order
                 .after(TransformSystems::Propagate)
                 .before(bevy::sprite_render::check_entities_needing_specialization::<UiMaterial>))
             .add_systems(
                 Update,
-                ((dialogue::sync, spawn_windows, controls::sync_chat).chain(), controls::spells::sync, controls::items::sync, controls::keyboard, controls::interact, controls::spells::apply_drop, read_figures, controls::edit_text, controls::items::input, controls::order_windows, (update_fills, update_values, update_slots, (local_map::update, local_map::update_markers, local_map::appearance).chain()), controls::chat_rows, controls::sheet::rows, controls::paint, controls::items::render, (controls::spells::overlay, controls::items::overlay), show_hover_window, death_dialog).chain().before(crate::network::net::NetSystems).run_if(crate::screens::loading::gameplay_ready),
+                ((dialogue::sync, spawn_windows, controls::sync_chat).chain(), controls::spells::sync, controls::items::sync, controls::keyboard, controls::interact, (controls::settings::sync, controls::hotbar::input, controls::spells::apply_drop).chain(), read_figures, controls::edit_text, controls::items::input, controls::order_windows, (update_fills, update_values, update_slots, (local_map::update, local_map::update_markers, local_map::appearance).chain()), controls::chat_rows, controls::sheet::rows, controls::paint, controls::items::render, (controls::spells::overlay, controls::items::overlay, controls::tooltips), show_hover_window, death_dialog).chain().before(crate::network::net::NetSystems).run_if(crate::screens::loading::gameplay_ready),
             );
         #[cfg(not(target_arch = "wasm32"))]
         app.add_systems(PreUpdate, replay::run.after(bevy::input::InputSystems)
@@ -521,6 +531,7 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>) {
     ));
     let mut loaded = Loaded { icons: assets.load("interface/skills.icons.json"), map_names: assets.load("interface/maps.names.json"), ..default() };
     loaded.layouts.push((assets.load("interface/unstackwindow.ui.json"), 600.0, None));
+    loaded.layouts.push((assets.load("interface/settingswindow2.ui.json"), 550.0, None));
     loaded.layouts.push((assets.load(format!("interface/{CHAT_WINDOW}.ui.json")), CHAT_DEPTH, None));
     loaded.layouts.push((assets.load(format!("interface/{CHAT_MENU}.ui.json")), CHAT_DEPTH + 3.0, None));
     for (name, z) in HUD_WINDOWS {
@@ -572,6 +583,9 @@ fn resource_bar(class: u8) -> &'static str {
 
 fn value_of(id: &str) -> Option<ValueKind> {
     let leaf = id.rsplit('/').next().unwrap_or("");
+    if let Some(slot) = controls::hotbar::label_slot(id) { return Some(ValueKind::Hotkey(slot)); }
+    if leaf == "TextLabel_ammoslot1" { return Some(ValueKind::EssenceKey); }
+    if leaf == "CurrentQuickbar" { return Some(ValueKind::BarNumber); }
     if id.contains("/StatsCharacter/") {
         if let Some(w) = SHEET_WIDGETS.iter().find(|w| **w == leaf) {
             return Some(ValueKind::Sheet(w));
@@ -608,6 +622,9 @@ fn value_of(id: &str) -> Option<ValueKind> {
 /// The quick slots by wire slot: Shift + left button = 0, right button = 1, keys
 /// 1-5 = 2-6 (crate::gameplay::skills), 6 and 7 the bar's last two.
 fn quick_slot_of(id: &str) -> Option<usize> {
+    if id.contains("/Frame5/") || id.contains("/icon_bg/") {
+        return controls::hotbar::slot_leaf(id.rsplit('/').next()?);
+    }
     let (parent, leaf) = {
         let mut it = id.rsplit('/');
         let leaf = it.next()?;
@@ -701,6 +718,10 @@ fn spawn_windows(
         } else if matches!(layout.window.as_str(), CHAT_WINDOW | CHAT_MENU) {
             prepared = prepare_chat(layout);
             &prepared
+        } else if layout.window == controls::settings::WINDOW {
+            prepared = controls::settings::prepare(layout); &prepared
+        } else if layout.window == "bottombar" {
+            prepared = controls::hotbar::prepare(layout); &prepared
         } else { layout };
         // DSOR_UI_OPEN=inventory,...: menus open from the start (screenshots).
         let open = npc_window || std::env::var("DSOR_UI_OPEN").is_ok_and(|v| v.split(',').any(|w| w == layout.window));
@@ -756,7 +777,11 @@ fn spawn_windows(
             if run.idx.is_empty() {
                 return;
             }
-            let m = materials.add(material(atlas(&run.tex)));
+            let mut appearance = material(atlas(&run.tex));
+            // The character page shades its own textured backing. Preserve its
+            // authored opacity so the dark-panel adjustment cannot erase it.
+            appearance.flags.z = (layout.window == "charactersheet") as u32 as f32;
+            let m = materials.add(appearance);
             let z = run.z;
             let gate = run.gate.clone();
             commands.spawn((Mesh2d(meshes.add(run.mesh())), MeshMaterial2d(m), Transform::from_xyz(0.0, 0.0, z), RenderLayers::layer(LAYER), ChildOf(parent), Element { root, gate }, Visibility::Hidden));
@@ -791,7 +816,7 @@ fn spawn_windows(
             if let Some(slot) = quick_slot_of(&w.id) {
                 controls.region(w.k, w.rect, Gate::default());
                 let p = parent(&mut commands, w.k, true);
-                commands.spawn((QuickSlot { slot, k: w.k, rect: w.rect, shown: None }, Transform::from_xyz(0.0, 0.0, depth + depth_step * 0.5), Visibility::Inherited, ChildOf(p)));
+                commands.spawn((QuickSlot { slot, k: w.k, rect: w.rect, shown: None }, Transform::from_xyz(0.0, 0.0, WINDOW_ITEMS_DEPTH), Visibility::Inherited, ChildOf(p)));
             }
             let gauge = gauge_of(&w.id);
             let other_class = gauge == Some(Gauge::Resource) && !w.id.contains(&format!("/{wanted_resource}/"));
@@ -914,6 +939,9 @@ fn spawn_windows(
                         TextLayout::justify(match label.align[0] { 0 => Justify::Left, 2 => Justify::Right, _ => Justify::Center })));
                 }
                 if w.kind == "TextEntry" { e.insert(controls::EntryLabel(w.id.clone())); }
+                if layout.window == controls::settings::WINDOW && w.id.contains("/Runtime/") {
+                    e.insert(controls::settings::Caption(w.id.rsplit('/').next().unwrap_or("").to_owned()));
+                }
             }
         }
         if let Some(prev_k) = run.as_ref().map(|r| r.k) {
@@ -1085,12 +1113,14 @@ fn update_fills(
 
 fn update_values(
     figures: Res<Figures>,
+    settings: Res<Settings>,
+    hotbar: Res<controls::hotbar::Hotbar>,
     sheet: Res<crate::gameplay::stats::Sheet>,
     hover: Res<crate::actors::monsters::HoverInfo>,
     current_map: Option<Res<crate::world::map::CurrentMap>>,
     mut texts: Query<(&Value, &mut Text2d)>,
 ) {
-    let changed = figures.is_changed() || sheet.is_changed() || hover.is_changed() || current_map.as_ref().is_some_and(|m| m.is_changed());
+    let changed = figures.is_changed() || settings.is_changed() || hotbar.is_changed() || sheet.is_changed() || hover.is_changed() || current_map.as_ref().is_some_and(|m| m.is_changed());
     for (v, mut t) in &mut texts {
         // Layouts load asynchronously, even when the current figures are stable.
         if !changed && !t.is_added() { continue; }
@@ -1098,6 +1128,9 @@ fn update_values(
         // UNVERIFIED: the split (the currency bar's own code is not traced).
         let copper = figures.gold.unwrap_or(0);
         let s = match v.0 {
+            ValueKind::Hotkey(slot) => settings.current.slot_label(slot),
+            ValueKind::EssenceKey => settings.current.label("essence"),
+            ValueKind::BarNumber => (hotbar.active + 1).to_string(),
             ValueKind::Fixed(n) => n.to_string(),
             ValueKind::Gold => (copper / 10_000).to_string(),
             ValueKind::Silver => (copper / 100 % 100).to_string(),
@@ -1125,7 +1158,7 @@ fn update_values(
     }
 }
 
-/// Quick slot icons: the skill's IconBrush, inset in its slot.
+/// Runtime slot contents use the full authored socket, with counts above the art.
 #[allow(clippy::too_many_arguments)]
 fn update_slots(
     mut commands: Commands,
@@ -1136,33 +1169,32 @@ fn update_slots(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<UiMaterial>>,
     mut slots: Query<(Entity, &mut QuickSlot)>,
+    net: Option<NonSend<crate::network::net::Net>>,
+    hotbar: Res<controls::hotbar::Hotbar>,
+    data: Res<controls::items::Data>,
+    catalogs: Res<Assets<Catalog>>,
+    screen: Res<Screen>,
 ) {
     let Some(table) = icon_table.get(&loaded.icons) else { return };
+    let catalog = catalogs.get(&data.catalog);
     for (e, mut s) in &mut slots {
-        let want = figures.bar.get(s.slot).cloned().flatten().filter(|id| table.0.contains_key(id));
-        if want == s.shown {
-            continue;
-        }
+        let want = controls::hotbar::appearance(s.slot, hotbar.active, net.as_deref(), &figures, catalog, table);
+        if want == s.shown && !screen.is_changed() { continue; }
         commands.entity(e).despawn_related::<Children>();
-        if let Some(id) = &want {
+        if let Some((path, count)) = &want {
             let [l, t, r, b] = s.rect;
-            // The SlotButton (32 px) is its frame's size (Iconslots/SlotsMiddle):
-            // the icon fills it but for the frame's 1 px edge.
-            // FAILURE (2026-10-17): inset 4 px, the icons were 24 px in 32 px
-            // slots ("ils fit pas la case").
-            let inset = 1.0;
-            let (l, t, r, b) = (l + inset, t + inset, r - inset, b - inset);
-            let art = Art {
-                tex: None,
-                pos: vec![l, t, r, t, r, b, l, b],
-                uv: vec![0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0],
-                color: vec![1.0; 16],
-                idx: vec![0, 1, 2, 0, 2, 3],
-            };
-            let mut run = Run { k: s.k, ..default() };
-            run.push(&art, 0.0);
-            let m = materials.add(material(Some(assets.load(table.0[id].clone()))));
+            let art = Art { tex: None, pos: vec![l,t,r,t,r,b,l,b],
+                uv: vec![0.0,0.0,1.0,0.0,1.0,1.0,0.0,1.0], color: vec![1.0;16], idx: vec![0,1,2,0,2,3] };
+            let mut run = Run { k:s.k, ..default() }; run.push(&art,0.0);
+            let m = materials.add(material(Some(assets.load(path.clone()))));
             commands.spawn((Mesh2d(meshes.add(run.mesh())), MeshMaterial2d(m), Transform::IDENTITY, RenderLayers::layer(LAYER), ChildOf(e)));
+            // This parent is y-flipped for the artwork; text flips back.
+            if *count > 0 {
+                commands.spawn((Text2d::new(count.to_string()), TextFont { font: assets.load("fonts/tahoma.ttf").into(),
+                    font_size: bevy::text::FontSize::Px(10.0 * screen.scale), ..default() }, TextColor(Color::WHITE),
+                    Anchor::BOTTOM_RIGHT, Transform::from_xyz(r-1.0,b-1.0,1.0).with_scale(Vec3::new(1.0,-1.0,1.0)/screen.scale),
+                    RenderLayers::layer(LAYER), ChildOf(e)));
+            }
         }
         s.shown = want;
     }

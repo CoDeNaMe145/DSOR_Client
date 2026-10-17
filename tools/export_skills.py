@@ -312,6 +312,7 @@ for r in db.execute("select rowid, * from _Template_Skill order by rowid"):
         "cooldown_category": r["CoolDownCategory"] or "",
         "class": r["CharClass"] or "",
         "resource_cost": r["ResourceCost"] or 0.0,
+        "ammo_cost": r["AmmoCost"] or 0,
         "pre": mapped(r["PreExecuteSequenceMapping"]),
         "execute": mapped(r["ExecuteSequenceMapping"]),
         "post": mapped(r["PostExecuteSequenceMapping"]),

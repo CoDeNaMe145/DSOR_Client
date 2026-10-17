@@ -127,6 +127,9 @@ Combine with `DSOR_UI_OPEN` and `DSOR_INVENTORY_PREVIEW` for populated panels.
 Inventory equipment, ingredients, trinkets and mercenary pages are mutually
 exclusive. The character sheet likewise selects one of its five tabs. Switching
 between the character sheet and skills/talents closes the previous panel.
+The character sheet preserves the authored opacity of the shades over its
+textured backing. Its scrolling statistic rows and subsection headings use
+visible copies of the atlas backgrounds; the source templates remain hidden.
 Escape closes the topmost menu, or opens the game menu when none is open.
 The central navigation opens inventory, character sheet and skills; the gamebar
 opens the game menu, toggles fullscreen and opens the membership tab.
@@ -164,6 +167,21 @@ NPCs and props use their authored `LocationMapIcon`, including the distinct
 normal, golden and cursed amphoras. Quest offers, active tasks and turn-ins
 override NPC icons, with turn-ins taking priority; clearing the quest restores
 the NPC's own icon. Marker positions and lifetimes follow their world entities.
+NPCs also carry the original additive, camera-facing `t000_general/status_*`
+models above them: profession symbols (including the glowing merchant bag),
+`!` for available quests and `?` for turn-ins or active interaction targets.
+An unfinished quest does not show a turn-in at its giver. World and map markers
+share quest priority and colors; completing a quest restores the service symbol.
+The models supply their authored height, with DB4 `OverHeadIconOffset` applied
+from the NPC sidecars. World markers follow NPC visibility and visual streaming,
+are click-through, and disappear with their actor. Re-run `export_npcs.py` to
+include the offsets in older asset packs (missing offsets default to zero).
+Hovering an NPC also shows a compact top-center name/profession panel below the
+navigation, with the original `interactinfo/LabelGradient` fading side edges,
+using the same picked actor as its outline. `ProfessionLocaId` is exported as
+the localized `profession_title` (for example, Garnet / Jeweler). The panel is
+click-through, scales with the HUD, and clears over UI, during loading, or when
+the NPC leaves the world. Re-export NPC sidecars to add these localized labels.
 Terrain and player markers share the scene camera's ground-plane projection,
 so map directions match the world view without a mirrored vertical axis.
 Shared triangle edges are removed, so the overlay shows terrain boundaries.
@@ -300,10 +318,21 @@ Acceptance, turn-in and Continue send
 the corresponding `Quest` or `Talk` command and refresh the NPC's options.
 
 The merchant's **View selection** requests its current offers and opens
-`tradingscreen`, with twelve item cards per page, icons, quantities and prices.
-The top-navigation `shopwindow` remains the separate global shop. Purchasing and selling still
-need the trading controller. Other NPC services and delivery/payment choices
-are not implemented by the conversation controller.
+`tradingscreen` with the original Trader header, buy/buyback controls, category
+icon tabs, two-column item cards, currency icons and usable-items checkbox.
+The release 261 Offer decoder retains all eight flags, icon configuration,
+48 category codes, discount metadata and payment items. Tabs follow the server's
+category order, with a fallback to the returned offers when the list is absent.
+Filtering by category/class/level happens before pagination; changing the tab or
+filter resets the page. Twelve ordinary cards fit per page; mixed-currency prices
+can use taller cards and fewer rows. Prices use the received values and the local
+server's veteran-discount rounding. Item-currency icons come from the shop's
+`_Template_ItemCurrency`, and offer icon/configuration overrides take precedence
+over the item template. Buyback-only updates preserve the shop selection and
+refresh its returned item list. Buying, selling and restoring items still need
+the transaction controller; buyback prices are not supplied by these snapshots.
+The top-navigation `shopwindow` remains the separate global shop. Other NPC
+services and delivery/payment choices are not implemented by this controller.
 
 Close or Escape dismisses the interaction. A new ground click, attack, loss of
 focus, death, map change or removed NPC cancels it. A blocked approach does not
@@ -312,12 +341,17 @@ ground walking after arrival. Decorative `NoTalk` actors remain noninteractive.
 
 Re-export `export_npcs.py`, then `export_ui.py ... npcscreen questscreen2 tradingscreen` to
 include portrait/interaction metadata, NPC portrait textures, option icons and
-`interface/dialogue.catalog.json`. The catalogue uses the original English
+`interface/dialogue.catalog.json`. Exporting `tradingscreen` also rebuilds the
+item catalogue and this catalogue, including category icons and shop currency/offer metadata from
+`tools/trading_catalog.py`. The catalogue uses the original English
 localizations and strips Nebula's inline colour tags. Offline `--play --npcs`
 also supports approaching NPCs. The native UI replay accepts an `npc` template
-ID to point at its actual torso; offline-only `player: [x,y,z]`, `npc_quest`, and
+ID to point at its actual torso; offline-only `player: [x,y,z]`, `npc_quest`,
+`npc_quest_state` (0 active, 1 ready, 2 closed, 3 canceled), and
 `npc_offers: [item-template, ...]` provide repeatable placement and menu fixtures
 without changing an account. `left_point` addresses left-anchored UI controls.
+`npc_offer_packet` replays a binary server Offer message through the real decoder
+for the selected NPC in offline mode, including categories, prices and buyback.
 
 ## Missing
 
@@ -332,3 +366,40 @@ without changing an account. `left_point` addresses left-anchored UI controls.
   panels and switching their UI pages works independently of those services.
 - Context-specific dialogs outside the top navigation (crafting, etc.)
   still need their owning gameplay controllers.
+
+
+## Settings, shortcuts and hover descriptions
+
+Escape > Settings opens the original settings frame with General, Graphics,
+Audio, Hotkeys, Mouse and Combat tabs. Preferences are edited as a draft:
+Apply saves and activates them, Cancel/Escape discards them, and Reset restores
+defaults in the draft. Native settings live in `game-settings.json`; browser
+settings use local storage (`dsor.settings`). Failed saves keep the draft open.
+Audio explains that playback is not implemented in this client.
+
+The Hotkeys tab supports modifier combinations, Delete to clear a binding and
+Escape to cancel capture. Assigning an occupied key clears its old action and
+identifies that action. Bindings drive gameplay, HUD captions and tooltips from
+one source. The modal blocks movement/casting and other window shortcuts while
+editing. Existing mouse attacks remain available alongside keyboard alternatives.
+
+The full seventeen-entry server quickbar is retained: slots 0-7 are attacks,
+8-12 collection favourites, and 13-16 consumables. The HUD uses the original
+mount and companion sockets. Arrows switch the active server-provided
+bar; edits preserve every untouched entry and other bars. Kind-1 entries resolve
+carried item instances or template names, and kind-2 collection entries send
+`UseStickerBookItem`. Essence sockets independently follow equipment slots 35
+(primary) and 34 (backup); switching uses the normal authoritative inventory
+operation. Icons fill their authored sockets and stack amounts refresh from
+inventory updates.
+
+Hover cards use the original gold tooltip frame for navigation, settings,
+quickbar items, collection entries, essences, skills, gauges and currencies.
+Icon-only controls use compact, centered hints sized to their text, with yellow
+hotkey captions. The Escape menu, labeled buttons, settings rows and text entries
+do not repeat their visible captions in hover cards.
+Skill descriptions, targeting, costs, essence costs, cooldowns and range use
+exported data; unresolved legacy damage/talent formulas are omitted rather than
+shown as computed figures. Re-exporting skills/UI adds the description, target
+and `ammo_cost` metadata. Hover cards do not capture clicks; the General setting
+also controls inventory hover descriptions.
