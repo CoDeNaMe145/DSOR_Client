@@ -481,15 +481,16 @@ impl AssetLoader for AmbienceLoader {
 
 /// The current level's ambience and what of it has been applied.
 #[derive(Resource, Default)]
-struct Level {
-    map: String,
-    ambience: Handle<Ambience>,
+pub(crate) struct Level {
+    pub(crate) map: String,
+    pub(crate) ambience: Handle<Ambience>,
     /// The current post effects, radiance mixture and fixed map shadow direction.
     bubble: Bubble,
     blend: LightBlend,
     shadow_dir: Vec3,
     fade: Option<(Bubble, Bubble, LightBlend, f32)>,
-    inside: Option<usize>,
+    /// The local bubble in effect (None: the global one).
+    pub(crate) inside: Option<usize>,
     bubble_loaded: bool,
     lights_placed: bool,
 }
@@ -698,13 +699,19 @@ fn follow_level(
         level.shadow_dir = blend::direction(ambience.shadow.or(global.dir));
         level.bubble_loaded = true;
     }
-    if !ambience.bubbles.is_empty() {
+    // The menu's "preview selected zone": that bubble (or the global one) in
+    // effect wherever the observer is, event bubbles included.
+    let preview = menu.as_deref().and_then(|s| s.preview_target);
+    if !ambience.bubbles.is_empty() || preview.is_some() {
         // A spawned player's feet are authoritative, independent of camera
         // offsets, zoom, and whether a camera is available during map handoff.
         // A free camera must enter the volume too: its ground focus moves when
         // looking around and can cross a doorway while the camera is outside.
         let position = observer_position(players.single().ok().map(|p| p.translation()), cameras.iter());
-        let inside = position.and_then(|p| ambience.bubble_at(p));
+        let inside = match preview {
+            Some(target) => target.filter(|&i| i < ambience.bubbles.len()),
+            None => position.and_then(|p| ambience.bubble_at(p)),
+        };
         if inside != level.inside {
             level.inside = inside;
             // A local box never moves the sun: its Transform is its volume, not a

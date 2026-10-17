@@ -27,6 +27,10 @@ pub struct LightingMenuStore {
     pub working_map_overrides: BTreeMap<String, MapLightingOverrides>,
     /// Stable internal IDs keep presets usable even after being renamed.
     pub presets: BTreeMap<String, LightingPreset>,
+    /// Not saved. "Preview selected zone": Some(Some(i)) shows bubble i, Some(None)
+    /// the global bubble, wherever the observer is; None follows the observer.
+    #[serde(skip)]
+    pub preview_target: Option<Option<usize>>,
 }
 
 impl Default for LightingMenuStore {
@@ -37,6 +41,7 @@ impl Default for LightingMenuStore {
             next_preset_id: 1,
             working_map_overrides: BTreeMap::new(),
             presets: BTreeMap::new(),
+            preview_target: None,
         }
     }
 }

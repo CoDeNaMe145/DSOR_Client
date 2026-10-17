@@ -1,12 +1,12 @@
 //! The Lighting page's global render controls: the lighting panel's multipliers
 //! (crate::rendering::lighting::FIELDS, saved to look.json), each with - / +
 //! (Shift: x10) and a value to click and type (Enter applies, Esc cancels).
-//! While a value takes text the game's keys and the free camera are held.
+//! While a value takes text the game's keys and the free camera are held
+//! (crate::diagnostics::lighting_menu).
 
 use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::input::ButtonState;
 use bevy::prelude::*;
-use bevy::camera_controller::free_camera::FreeCameraState;
 
 use super::window::menu_text;
 use crate::rendering::lighting::{save, Lighting, FIELDS};
@@ -122,13 +122,9 @@ pub(super) fn spawn(page: &mut ChildSpawnerCommands) {
     });
 }
 
-pub(super) struct GlobalControlsPlugin;
-
-impl Plugin for GlobalControlsPlugin {
-    fn build(&self, app: &mut App) {
-        app.init_resource::<NumericEditor>()
-            .add_systems(Update, (press_buttons, edit_numeric_fields, refresh_values, hold_keys).chain());
-    }
+/// The page systems, run by the menu after the editors are blurred.
+pub(super) fn systems() -> impl IntoScheduleConfigs<bevy::ecs::system::ScheduleSystem, ()> {
+    (press_buttons, edit_numeric_fields, refresh_values).chain()
 }
 
 fn press_buttons(
@@ -154,7 +150,7 @@ fn press_buttons(
     }
 }
 
-fn format_edit_value(value: f32, step: f32) -> String {
+pub(super) fn format_edit_value(value: f32, step: f32) -> String {
     if step >= 1.0 {
         return format!("{value:.0}");
     }
@@ -236,34 +232,5 @@ fn refresh_values(lighting: Res<Lighting>, editor: Res<NumericEditor>, mut texts
         } else {
             format_edit_value((FIELDS[*i].get)(&lighting), FIELDS[*i].step)
         };
-    }
-}
-
-/// While a value takes text: the game's keys (UiInput.typing) and the free
-/// camera's WASD are held; both come back as they were afterwards.
-fn hold_keys(
-    editor: Res<NumericEditor>,
-    mut input: ResMut<crate::ui::input::UiInput>,
-    mut saved_enabled: Local<Option<bool>>,
-    mut cameras: Query<&mut FreeCameraState>,
-) {
-    let typing = editor.typing();
-    if input.hold_keys != typing {
-        input.hold_keys = typing;
-    }
-    if typing {
-        input.typing = true;
-    }
-    for mut camera in &mut cameras {
-        if typing {
-            if saved_enabled.is_none() {
-                *saved_enabled = Some(camera.enabled);
-            }
-            camera.enabled = false;
-            camera.velocity = Vec3::ZERO;
-        } else if let Some(enabled) = saved_enabled.take() {
-            camera.enabled = enabled;
-            camera.velocity = Vec3::ZERO;
-        }
     }
 }
