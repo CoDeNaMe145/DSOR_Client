@@ -21,6 +21,8 @@ struct Params {
     vignette_color: vec4<f32>,
     // Saturation, VignetteIntensity, VignetteSize, transient death gain
     grading: vec4<f32>,
+    // Active opaque viewport: UV scale followed by offset (before DLSS).
+    source_uv: vec4<f32>,
 }
 
 @group(0) @binding(0) var source: texture_2d<f32>;
@@ -38,7 +40,8 @@ fn shown(c: vec3<f32>) -> vec3<f32> {
 @fragment
 fn fs_bright(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     // The 2x2 average (pe_downsample2x2) by the bilinear sampler between texels.
-    let s = shown(textureSample(source, source_sampler, in.uv).rgb);
+    let uv = in.uv * params.source_uv.xy + params.source_uv.zw;
+    let s = shown(textureSample(source, source_sampler, uv).rgb);
     let threshold = params.p.x * 0.5;
     let over = max(s - vec3<f32>(threshold), vec3<f32>(0.0));
     return vec4<f32>(s * params.color.rgb * dot(over, LUM), 1.0);

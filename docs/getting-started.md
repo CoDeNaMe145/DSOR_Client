@@ -113,6 +113,45 @@ from it: run `tools/vfx_apply.py <assets>` last.
 
 ## 3. Native client
 
+### Optional native DLSS / DLAA
+
+The `dlss` Cargo feature integrates Bevy's NVIDIA DLSS Super Resolution backend
+on Windows/Linux with Vulkan. It is off by default so ordinary native and web
+builds do not require NVIDIA's SDK. The browser and macOS disable this backend
+even if the feature is requested. RTX support is checked at runtime; a vendor
+name alone does not enable the menu option.
+
+To build, install the [DLSS SDK v310.5.3](https://github.com/NVIDIA/DLSS/tree/v310.5.3),
+the Vulkan SDK and libclang, then set `DLSS_SDK`, `VULKAN_SDK` and (if needed)
+`LIBCLANG_PATH` to their installation directories. This version matches
+`dlss_wgpu` 4.0.0 / Bevy 0.19. Build with:
+
+```sh
+cargo build --release -p dsor-client --features dlss
+```
+
+Place `nvngx_dlss.dll` from the SDK's `lib/Windows_x86_64/rel` beside the Windows
+executable, or `libnvidia-ngx-dlss.so.310.5.3` from `lib/Linux_x86_64/rel` beside
+the Linux executable. Distribution also requires the copyright and license
+texts specified in section 9.5 of the SDK programming guide; see the
+[wrapper's packaging instructions](https://github.com/bevyengine/dlss_wgpu#distributing-your-app).
+SDK files and binaries are not checked into this repository.
+
+This build uses Bevy's native Vulkan initialization. Build without `dlss` when
+you need another graphics backend. Settings > Graphics offers DLAA and DLSS Quality/Balanced/Performance
+only when the active adapter is NVIDIA and the runtime reports support. Missing
+runtime files and unsupported cards retain the selected
+FXAA/SMAA fallback. DLAA keeps native resolution; DLSS renders at a lower
+resolution and reconstructs the output. Frame generation and ray reconstruction
+are not included.
+
+The integration accounts for the reduced opaque viewport in bloom/refraction
+and corrects Bevy 0.19's output-resolution assumptions in clustered lighting and
+SSAO. A Bevy update that changes those shader anchors disables the DLSS control
+until the compatibility fix is reviewed.
+
+### Launching the client
+
 Running `dsor-client.exe` without arguments opens its built-in login screen.
 On Windows, `Play.cmd` opens this same executable. Sign in or create an account,
 then choose a character and press **Play Now** to enter the game in the same window. The client uses the

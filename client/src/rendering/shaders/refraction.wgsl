@@ -53,9 +53,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let screen = in.position.xy * pixel;
     // Keep the displaced bilinear footprint inside this view. Clamping only to
     // the texture edge still lets heat haze pull in pixels behind editor panels.
-    let lower = (view.viewport.xy + vec2<f32>(0.5)) * pixel;
-    let upper = (view.viewport.xy + view.viewport.zw - vec2<f32>(0.5)) * pixel;
-    let displaced = clamp(screen + d * pixel * refraction.params.x, lower, upper);
+    let lower = (view.main_pass_viewport.xy + vec2<f32>(0.5)) * pixel;
+    let upper = (view.main_pass_viewport.xy + view.main_pass_viewport.zw - vec2<f32>(0.5)) * pixel;
+    let render_scale = view.main_pass_viewport.zw / view.viewport.zw;
+    let displaced = clamp(screen + d * pixel * render_scale * refraction.params.x, lower, upper);
     let moved = textureSample(view_transmission_texture, view_transmission_sampler, displaced);
     let behind = textureSample(view_transmission_texture, view_transmission_sampler, screen);
     let a = clamp(refraction.params.y * tint.a, 0.0, 1.0);

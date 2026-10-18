@@ -85,12 +85,14 @@ fn prepare(
     cache: Res<PipelineCache>,
     mut pipelines: ResMut<SpecializedRenderPipelines<ClampPipeline>>,
     pipeline: Option<Res<ClampPipeline>>,
-    views: Query<(Entity, &ViewTarget, &ExtractedCamera)>,
+    views: Query<(Entity, &ViewTarget, &ExtractedCamera, Has<ClampPipelineId>)>,
 ) {
     let Some(pipeline) = pipeline else { return };
-    for (e, target, camera) in &views {
+    for (e, target, camera, prepared) in &views {
         // Only the HDR scene (the interface camera draws on top later).
         if !camera.hdr {
+            // DLSS can return a game camera to SDR. Do not retain its HDR pipeline.
+            if prepared { commands.entity(e).remove::<ClampPipelineId>(); }
             continue;
         }
         let id = pipelines.specialize(&cache, &pipeline, target.main_texture_format());
