@@ -22,7 +22,7 @@ fn look() -> Bubble {
 fn saved_lighting_migrates_old_compensation_defaults_but_keeps_user_tuning() {
     let old = decode_saved(r#"{"sun":0.8,"back":0.35,"ambient":0.9,"lights":1.75,"fog":0.55,"fog_range":0.5,"shadows":false}"#).unwrap();
     assert_eq!((old.sun, old.back, old.shadows), (0.8, 0.35, false));
-    assert_eq!((old.ambient, old.lights, old.fog, old.fog_range), (1., 1., 1., 1.));
+    assert_eq!((old.ambient, old.lights, old.fog, old.fog_range), (1., 1., 1., 1.5));
     let current = decode_saved(r#"{"color_pipeline":2,"back":0.9,"ambient":0.9,"lights":1.75,"fog":0.55,"fog_range":0.5}"#).unwrap();
     assert_eq!((current.back, current.ambient, current.lights, current.fog, current.fog_range), (0.9, 0.9, 1.75, 0.55, 0.5));
 }
@@ -59,10 +59,10 @@ fn fog_thresholds_follow_authored_camera_depth_without_focus_offsets() {
         assert_eq!((start, end), (near, far));
     };
     app.update();
-    check(&app, 27., 50.);
+    check(&app, 40.5, 75.);
     app.world_mut().entity_mut(camera).insert(GlobalTransform::from_translation(Vec3::new(300., 90., 200.)));
     app.update();
-    check(&app, 27., 50.);
+    check(&app, 40.5, 75.);
     app.world_mut().resource_mut::<Lighting>().fog_range = 2.;
     app.update();
     check(&app, 54., 100.);

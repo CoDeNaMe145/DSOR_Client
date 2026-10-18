@@ -531,7 +531,7 @@ impl Default for Lighting {
             ambient: 1.0,
             lights: 1.0,
             fog: 1.0,
-            fog_range: 1.0,
+            fog_range: 1.5,
             shadows: true,
         }
     }
@@ -572,7 +572,7 @@ fn decode_saved(raw: &str) -> Option<Lighting> {
         // to one of these numbers is never migrated again.
         for (field, previous) in [("back", 0.9), ("ambient", 0.9), ("lights", 1.75), ("fog", 0.55), ("fog_range", 0.5)] {
             if object.get(field).and_then(|v| v.as_f64()).is_some_and(|v| (v - previous).abs() < 1e-5) {
-                object.insert(field.into(), serde_json::json!(1.0));
+                object.remove(field); // Use the current default for this field.
             }
         }
     }

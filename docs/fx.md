@@ -123,8 +123,9 @@ F2 and `look.json`/browser preferences now adjust scene lighting and fog only.
 Legacy saved `saturation`, `exposure`, `bloom`, `vignette` and `tonemapping` values
 are ignored, so they cannot override the authored camera colours. Death/revival
 temporarily desaturates and dims the view without changing the bubble settings.
-Lighting and fog multipliers now default to 1. Old saved compensation defaults
-(`back/ambient=0.9`, `lights=1.75`, `fog=0.55`, `fog_range=0.5`) migrate to 1;
+Lighting and fog-strength multipliers default to 1; fog range defaults to 1.50.
+Old saved compensation defaults (`back/ambient=0.9`, `lights=1.75`, `fog=0.55`,
+`fog_range=0.5`) migrate to the current defaults;
 other tuned values are preserved. New saves carry `color_pipeline: 2`, so manually
 choosing one of those old numbers is preserved on subsequent loads.
 
