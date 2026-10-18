@@ -4,9 +4,10 @@ use super::*;
 fn preferences_migrate_and_round_trip() {
     let old: GraphicsSettings = serde_json::from_str("{}").unwrap();
     assert_eq!(old, GraphicsSettings::default());
+    assert!(!old.vignette, "new and legacy preferences leave vignette off until explicitly enabled");
     let changed = GraphicsSettings { anti_aliasing: AntiAliasing::SmaaHigh, shadows: Quality::Low,
         shadow_filter: ShadowFilter::Fast, ambient_occlusion: Quality::Off, sharpening: 63,
-        bloom: false, vignette: false, dlss: DlssMode::Quality };
+        bloom: false, vignette: true, dlss: DlssMode::Quality };
     let restored: GraphicsSettings = serde_json::from_str(&serde_json::to_string(&changed).unwrap()).unwrap();
     assert_eq!(restored, changed);
 }

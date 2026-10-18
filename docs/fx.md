@@ -64,11 +64,20 @@ Confirmed corrections in our post-processing:
   linear cap is `((2 + .055) / 1.055)^2.4`. This is internal precision, not HDR
   monitor output, and does not enable a filmic tonemapper.
 
-Remaining differences are separate from these corrections: Bevy's BRDF and
-linear light accumulation approximate the original gamma-space light buffer;
-distance fog still mixes in linear space and height fog uses a 2.2 approximation;
-transparent blending and scene downsampling also operate in linear space.
-The original quantizes its intermediate scene/light buffers to eight bits.
+The fog and diffuse-lighting follow-up (2026-10-19) also restores the original
+order of operations: sum authored display-space light, cap the decoded light
+buffer at 2, then multiply by the display-space texture. Converting each light
+to linear space before summing changes the result whenever lights overlap.
+Sunlight, back light, ambient and point-light falloff now use this path. Distance
+and height fog mix display values using exact sRGB conversions. Distance fog
+uses camera-forward depth, without an added camera-to-player offset; its opacity
+is capped rather than multiplied by the distance ramp. Additive particles and
+glows fade by the smaller of the two fog clear factors, in display space.
+
+Remaining differences include Bevy's approximate material specular response and
+shadow filtering, absent spot-light projection textures, linear-space transparent
+blending and scene downsampling. The original also quantizes its intermediate
+scene/light buffers to eight bits; ours preserves floating-point precision.
 F2 / `look.json` scales light and fog values, so comparisons must use the same
 settings and map data. In particular, the legacy Kingshill default uses bloom
 scale/threshold 0.8/0.8, while the two newer installations and our exported data
@@ -77,16 +86,18 @@ use 0.4/1.0. A shader comparison alone does not establish pixel-identical output
 ## The level's look (`_Instance_AmbienceBubble`, `_Instance_Light`)
 
 `tools/export_ambience.py` writes `maps/<map>.ambience.json`; crate::rendering::lighting
-applies it, converting Nebula's gamma-space light units to bevy's (`UNIT`, the
-inverse of the camera's exposure: what Nebula shows as `v`, bevy shows as `v`):
+applies it. Map diffuse lighting is evaluated in Nebula's display space and
+converted back to Bevy's linear render target after multiplying by albedo:
 
 - global light: `sat(N.L) x LightColor x LightIntensity` from the bubble's z axis,
-  plus `LightOppositeColor x LightIntensity` from the other side (a second
-  directional light, approximating `sat(BackLightFactor - N.L)`), plus
-  `LightAmbient` (bevy's ambient divided by its 0.452 diffuse BRDF factor);
-- fog: linear between `FogNearDist` and `FogFarDist` (25 and 50 in Kingshill: the
-  game camera sits 25 units from the player, so the fog starts at the player),
-  `FogColor`, opacity `FogIntensity` (UNVERIFIED mapping);
+  plus `sat(BackLightFactor - N.L) x LightOppositeColor x LightIntensity`,
+  plus `LightAmbient`;
+- fog: a ramp between `FogNearDist` and `FogFarDist` (27 and 50 in the current
+  Kingshill export), measured along the camera's forward axis. The original
+  passes projected depth; we use view-space depth, omitting its small projection
+  offset. `FogColor` supplies the colour; `FogIntensity` is interpreted as maximum
+  opacity (`FogColor.w = 1 - intensity`; engine-side parameter mapping remains
+  unverified);
 - bloom (threshold `BrightPassThreshold` in display space, intensity x `BloomScale`,
   tint `BloomColor`), saturation, RGB `Balance`, and vignette colour/intensity/size;
 - the light that follows the player (`LocalLightColor x LocalLightIntensity` at
@@ -94,13 +105,16 @@ inverse of the camera's exposure: what Nebula shows as `v`, bevy shows as `v`):
 - the other bubbles (714 permanent ones in 149 levels: caves, interiors): inside
   one (box or sphere through its transform), the highest priority's look fades in
   over its `PEFadeTime`;
-- placed lights (15 069 always-on rows): point lights with Nebula's linear falloff
-  matched at half range, flickering ones wandering (UNVERIFIED curve), each in its
+- placed lights (15 069 always-on rows): point lights with Nebula's display-space
+  `sat(1 - distance / range)` falloff, flickering ones wandering (UNVERIFIED curve), each in its
   culling cell so they go out with it.
 
 Camera colour is controlled by the active ambience bubble in both the game and
 editor camera monitor. Saturation and balance are applied after bloom, followed
-by the authored vignette; zero bloom still applies the other effects. All these
+by the authored vignette when explicitly enabled in graphics settings. Vignette
+defaults to off, including for older saves missing that setting: some maps author
+a bright vignette colour that overlays white near the edges. Existing explicit
+choices persist. Zero bloom still applies the other enabled effects. All these
 values fade with `PEFadeTime` when entering or leaving a local zone. The editor's
 explicit selected-bubble preview uses the same composition. Older assets without
 `Balance` use neutral `[1, 1, 1, 1]`.
@@ -109,6 +123,10 @@ F2 and `look.json`/browser preferences now adjust scene lighting and fog only.
 Legacy saved `saturation`, `exposure`, `bloom`, `vignette` and `tonemapping` values
 are ignored, so they cannot override the authored camera colours. Death/revival
 temporarily desaturates and dims the view without changing the bubble settings.
+Lighting and fog multipliers now default to 1. Old saved compensation defaults
+(`back/ambient=0.9`, `lights=1.75`, `fog=0.55`, `fog_range=0.5`) migrate to 1;
+other tuned values are preserved. New saves carry `color_pipeline: 2`, so manually
+choosing one of those old numbers is preserved on subsequent loads.
 
 Height fog follows distance fog on fogged materials, as in the 2018/261 shaders:
 none above `FogNearHeight`, all of `HeightFogColor` past `FogFarHeight`, linear
@@ -129,7 +147,7 @@ Bubble membership uses the local player's feet after movement transforms have
 propagated. The map viewer uses the camera's physical position. Disabled volumes
 remain disabled through asset export.
 
-Ambience transitions cross-fade the linear lighting contributions of the source
+Ambience transitions cross-fade the display-space lighting contributions of the source
 and target presets over `PEFadeTime`. Each direction stays fixed; changing a look
 never sweeps the sun across the scene. An interrupted transition starts from the
 visible mixture, including its outgoing directions. Repeated crossings merge
@@ -146,8 +164,8 @@ Back light remains unshadowed. Native and browser builds share the same blend;
 it fits WebGL's single-directional-light limit. Studio/thumbnail cameras retain
 their own lighting.
 
-The renderer adapter in `client/src/rendering/lighting/blend.rs` reuses Bevy's PBR
-BRDF for each contribution and binds a small view uniform in the unused probe
+The renderer adapter in `client/src/rendering/lighting/blend.rs` supplies Nebula
+diffuse lighting, retains Bevy's sun-specular approximation, and binds a small view uniform in the unused probe
 bind group. The client uses material cube maps rather than view environment
 probes; adding view probes or clustered decals requires extending this binding
 integration. Shader adapters check their Bevy source anchors when loading.

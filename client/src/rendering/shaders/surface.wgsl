@@ -23,6 +23,7 @@
     mesh_view_bindings::{globals, view},
     view_transformations::{depth_ndc_to_view_z, position_world_to_view},
 }
+#import bevy_render::color_operations::{linear_rgb_to_srgb, srgb_to_linear_rgb}
 #ifdef DEPTH_PREPASS
 #import bevy_pbr::prepass_utils::prepass_depth
 #endif
@@ -30,7 +31,7 @@
 #import bevy_pbr::{mesh_view_bindings as view_bindings, mesh_view_types}
 #endif
 #ifdef DSOR_AMBIENCE
-#import dsor::ambience::rim_light
+#import dsor::ambience::{ambience, rim_light, distance_fog_clear, height_fog_clear}
 #endif
 
 struct Surface {
@@ -59,10 +60,10 @@ const CHARACTER: i32 = 7;
 
 // Nebula shades in gamma space (D3D9, no sRGB reads); bevy in linear.
 fn to_gamma(c: vec3<f32>) -> vec3<f32> {
-    return pow(max(c, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2));
+    return linear_rgb_to_srgb(max(c, vec3<f32>(0.0)));
 }
 fn to_linear(c: vec3<f32>) -> vec3<f32> {
-    return pow(max(c, vec3<f32>(0.0)), vec3<f32>(2.2));
+    return srgb_to_linear_rgb(max(c, vec3<f32>(0.0)));
 }
 
 // How far behind this fragment the opaque scene is, in view units (large when
@@ -111,6 +112,11 @@ fn uv0(in: VertexOutput) -> vec2<f32> {
 fn fog_clear(in: VertexOutput) -> f32 {
     var clear = 1.0;
 #ifdef DISTANCE_FOG
+#ifdef DSOR_AMBIENCE
+    if ambience.counts.x != 0u {
+        return min(distance_fog_clear(in.world_position.xyz), height_fog_clear(in.world_position.xyz));
+    }
+#endif
     let d = distance(in.world_position.xyz, view.world_position.xyz);
     let fog = view_bindings::fog;
     if fog.mode == mesh_view_types::FOG_MODE_LINEAR {
@@ -139,7 +145,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             // Nebula b_additive uses ONE / ONE (shaders_sm30), not
             // SRC_ALPHA / ONE. Bevy's Add premultiplies by alpha below;
             // supplying one preserves the authored RGB emission envelope.
-            c = vec4<f32>(c.rgb * soft * fog_clear(in), 1.0);
+            c = vec4<f32>(to_linear(to_gamma(c.rgb) * soft * fog_clear(in)), 1.0);
         } else {
             c.a = c.a * soft;
         }
@@ -155,7 +161,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         if d > 0.0 && x > 0.0 {
             g = x * p / d * 0.5;
         }
-        out.color = vec4<f32>(surface.p1.rgb * surface.p0.y * g * fog_clear(in), 1.0);
+        out.color = vec4<f32>(to_linear(to_gamma(surface.p1.rgb) * surface.p0.y * g * fog_clear(in)), 1.0);
         return out;
     }
 

@@ -136,7 +136,7 @@ fn entering_exiting_and_retargeting_never_move_the_shadow_sun() {
 fn uniform_layout_matches_wgsl_and_remains_within_webgl_limits() {
     assert_eq!(GpuTerm::min_size().get(), 64);
     // counts, the terms, the height fog colour and heights, the rim colour and direction.
-    assert_eq!(GpuAmbience::min_size().get(), 16 + 64 * MAX_TERMS as u64 + 32 + 32);
+    assert_eq!(GpuAmbience::min_size().get(), 16 + 64 * MAX_TERMS as u64 + 32 + 32 + 16);
     assert!(GpuAmbience::min_size().get() <= 16384);
     let disabled = GpuAmbience::default();
     assert_eq!(disabled.counts.x, 0);
@@ -178,11 +178,20 @@ fn back_light_factor_reaches_the_gpu_and_fades_with_the_zone() {
 #[test]
 fn pbr_patch_adds_height_fog_after_distance_fog_on_fogged_materials_only() {
     let source = r#"
+    var direct_light: vec3<f32> = vec3<f32>(0.0);
+        let light_contrib = lighting::point_light(light_id, &lighting_input, enable_diffuse, true);
+        direct_light += light_contrib * shadow;
+        let light_contrib = lighting::spot_light(light_id, &lighting_input, enable_diffuse);
+        direct_light += light_contrib * shadow;
         var light_contrib = lighting::directional_light(i, &lighting_input, enable_diffuse);
         direct_light += light_contrib * shadow;
         let transmitted_light_contrib =
             lighting::directional_light(i, &transmissive_lighting_input, enable_diffuse);
         transmitted_light += transmitted_light_contrib * transmitted_shadow;
+    output_color = vec4<f32>(
+        (view_bindings::view.exposure * (transmitted_light + direct_light + indirect_light)) + emissive_light,
+        output_color.a
+    );
     if ((pbr_input.material.flags & pbr_types::STANDARD_MATERIAL_FLAGS_FOG_ENABLED_BIT) != 0u) {
         output_color = apply_fog(
             view_bindings::fog,
@@ -199,9 +208,23 @@ fn pbr_patch_adds_height_fog_after_distance_fog_on_fogged_materials_only() {
     let height = patched.find("output_color = apply_height_fog(output_color, pbr_input.world_position.xyz);").unwrap();
     let fogged_block_end = patched.find("#endif  // DISTANCE_FOG").unwrap();
     assert!(fog < height && height < fogged_block_end, "height fog follows distance fog inside its block");
-    assert!(patched.contains("#import dsor::ambience::{ambience, apply_ambience, apply_height_fog}"));
+    assert!(patched.contains("apply_distance_fog(output_color, pbr_input.world_position.xyz)"));
+    assert!(patched.contains("nebula_diffuse += local_irradiance"));
+    assert!(patched.contains("compose_lighting(in.material.base_color.rgb, nebula_diffuse"));
     // A Bevy version without this fog block must fail loudly, never silently skip.
     assert!(blend_function(&source.replace("#endif  // DISTANCE_FOG", "#endif")).is_none());
+}
+
+#[test]
+fn diffuse_light_reaches_gpu_in_authored_display_units() {
+    let bubble = Bubble { light_color: [0.5, 0.25, 0.1, 1.], light_intensity: 2.,
+        light_opposite_color: [0.1, 0.2, 0.3, 1.], light_ambient: [0.15, 0.25, 0.35, 1.], ..default() };
+    let controls = Lighting::default();
+    let gpu = LightBlend::from(&bubble).gpu(&controls).with_ambient(&bubble, &controls);
+    near(gpu.terms[0].front.truncate(), Vec3::new(1., 0.5, 0.2));
+    near(gpu.terms[0].back.truncate(), Vec3::new(0.2, 0.4, 0.6));
+    near(gpu.ambient.truncate(), Vec3::new(0.15, 0.25, 0.35));
+    assert_eq!(GpuAmbience::default().ambient, Vec4::ZERO);
 }
 
 #[test]

@@ -10,9 +10,9 @@
 //! EVIDENCE: shaders_sm30 "lightsources" GlobalLight / PointLight ps_3_0, the
 //!   "standard" Solid ps_3_0 (lit colour = light buffer x DiffMap0) and "pe_compose"
 //!   (no curve, only saturation, balance, bloom, vignette and fade).
-//! Bevy lights linearly and divides the diffuse by pi, so each term becomes its
-//! linear value in Bevy's units (see `UNIT`): what the 2018 renderer shows as `v`
-//! Bevy shows as `v` too once the camera is not tonemapped.
+//! Map views sum diffuse light and multiply albedo in Nebula's display space,
+//! then convert once to Bevy's linear render target. Material specular remains
+//! Bevy's approximation; source specular maps/powers are not all exported.
 //!
 //! Camera colour, bloom and vignette come directly from the active bubble.
 //! F2 scales scene lighting and fog (Shift: ten steps at once). Those factors
@@ -54,13 +54,10 @@ fn linear(c: [f32; 3], k: f32) -> LinearRgba {
     LinearRgba::rgb(l.red, l.green, l.blue)
 }
 
-/// A Nebula point light: gamma colour x intensity, falling off linearly to its
-/// range. Bevy's falloff is replaced by Nebula's (`NebulaFalloff`: sat(1 - d/r),
-/// ^2.2 as the light is added in gamma space), so the light is its colour x
-/// intensity at the centre and nothing at its range, with no inverse-square hot
-/// spot near it: matched at half range with bevy's 1/d^2, a lamp lit the wall
-/// beside it ~9 times too bright ("trop emissive les lights").
-/// E / pi x exposure = linear(colour x intensity) x f: intensity / (4 pi) = pi x UNIT.
+/// Transport authored colour/intensity through Bevy's clustered light buffer.
+/// Map diffuse shaders recover the display colour by dividing by pi*UNIT before
+/// decoding sRGB, then apply N.L and sat(1 - d/r) in display space. This avoids
+/// an inverse-square hot spot. Non-map PBR views use the fallback below.
 pub fn point_light(color: [f32; 3], intensity: f32, range: f32) -> PointLight {
     PointLight {
         color: Color::LinearRgba(linear(color, intensity)),
@@ -71,8 +68,8 @@ pub fn point_light(color: [f32; 3], intensity: f32, range: f32) -> PointLight {
     }
 }
 
-/// Bevy's `getDistanceAttenuation` (bevy_pbr::lighting) replaced, once the module
-/// is loaded, by Nebula's linear point light falloff. Point and spot lights only.
+/// Approximate Nebula falloff for the retained PBR fallback/transmission path.
+/// Map diffuse uses ambience.wgsl's exact display-space falloff instead.
 /// EVIDENCE: the frame's Lights batch (b_empty, default.xml) and docs/fx.md
 ///   ("Nebula's linear falloff").
 fn nebula_falloff(mut shaders: ResMut<Assets<bevy::shader::Shader>>, mut done: Local<bool>) {
@@ -521,7 +518,7 @@ pub struct Lighting {
     pub ambient: f32,
     pub lights: f32,
     pub fog: f32,
-    /// Scale the authored fog distances beyond the camera's focus.
+    /// Scale authored camera-forward fog distances (1 preserves the map data).
     pub fog_range: f32,
     pub shadows: bool,
 }
@@ -530,11 +527,11 @@ impl Default for Lighting {
     fn default() -> Self {
         Self {
             sun: 1.0,
-            back: 0.9,
-            ambient: 0.9,
-            lights: 1.75,
-            fog: 0.55,
-            fog_range: 0.5,
+            back: 1.0,
+            ambient: 1.0,
+            lights: 1.0,
+            fog: 1.0,
+            fog_range: 1.0,
             shadows: true,
         }
     }
@@ -565,21 +562,40 @@ pub(crate) const FIELDS: &[Field] = &[
 
 const STORAGE_KEY: &str = "dsor.look";
 
+fn decode_saved(raw: &str) -> Option<Lighting> {
+    let mut value: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let object = value.as_object_mut()?;
+    if object.get("color_pipeline").and_then(|v| v.as_u64()).unwrap_or(0) < 2 {
+        // These old defaults compensated for linear-space light/fog. Retaining
+        // a half fog range now would put the player inside dense fog. Preserve
+        // other values the user tuned, and version new saves so opting back in
+        // to one of these numbers is never migrated again.
+        for (field, previous) in [("back", 0.9), ("ambient", 0.9), ("lights", 1.75), ("fog", 0.55), ("fog_range", 0.5)] {
+            if object.get(field).and_then(|v| v.as_f64()).is_some_and(|v| (v - previous).abs() < 1e-5) {
+                object.insert(field.into(), serde_json::json!(1.0));
+            }
+        }
+    }
+    serde_json::from_value(value).ok()
+}
+
 fn load_saved() -> Option<Lighting> {
     #[cfg(target_arch = "wasm32")]
     {
         let raw = web_sys::window()?.local_storage().ok()??.get_item(STORAGE_KEY).ok()??;
-        serde_json::from_str(&raw).ok()
+        decode_saved(&raw)
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
         let _ = STORAGE_KEY;
-        serde_json::from_slice(&std::fs::read("look.json").ok()?).ok()
+        decode_saved(&std::fs::read_to_string("look.json").ok()?)
     }
 }
 
 pub(crate) fn save(l: &Lighting) {
-    let Ok(raw) = serde_json::to_string(l) else { return };
+    let Ok(mut value) = serde_json::to_value(l) else { return };
+    value["color_pipeline"] = serde_json::json!(2);
+    let Ok(raw) = serde_json::to_string(&value) else { return };
     #[cfg(target_arch = "wasm32")]
     if let Some(Ok(Some(store))) = web_sys::window().map(|w| w.local_storage()) {
         let _ = store.set_item(STORAGE_KEY, &raw);
@@ -757,7 +773,7 @@ fn apply_look(
     fresh.extend(cameras.iter());
     let (l, b) = (&*lighting, &level.bubble);
     let rgb = |c: [f32; 4]| [c[0], c[1], c[2]];
-    *gpu_ambience = level.blend.gpu(l).with_height_fog(b).with_rim_light(b);
+    *gpu_ambience = level.blend.gpu(l).with_height_fog(b).with_rim_light(b).with_ambient(b, l);
     let toward = level.shadow_dir.normalize_or(blend::direction(None));
     for (mut sun, mut tf, mut global_tf) in &mut suns {
         // The single real sun supplies the fixed shadow map. The fragment
@@ -795,7 +811,7 @@ fn apply_look(
                 saturation: b.saturation,
                 balance: Vec4::from_array(b.balance),
                 vignette_color: Vec4::from_array(b.vignette_color),
-                vignette_intensity: if graphics.as_ref().is_some_and(|g| !g.vignette) { 0.0 } else { b.vignette_intensity },
+                vignette_intensity: if graphics.as_ref().is_none_or(|g| !g.vignette) { 0.0 } else { b.vignette_intensity },
                 vignette_size: b.vignette_size,
                 death_fade: 0.0,
             }));
@@ -964,28 +980,17 @@ fn refresh_values(lighting: Res<Lighting>, mut texts: Query<(&ValueText, &mut Te
     }
 }
 
-/// Bevy measures fog from the camera. Start the map's authored range beyond
-/// its focus so the camera-to-player distance does not consume the clear range.
-/// Previously `zoom - CAM_HEIGHT_MAX` left only 2 clear units behind the
-/// player in Kingshill (near 27, camera distance 25), washing out the upper
-/// half of the top-down view. Use the actual transform for both play and the
-/// free-camera map viewer, after camera/player transforms have propagated.
+/// Original fog thresholds are measured from the camera. Adding focus distance
+/// makes zoom change the authored fog and incorrectly pushes it away from the player.
 fn shift_fog(
     level: Res<Level>,
     lighting: Res<Lighting>,
-    current: Option<Res<CurrentMap>>,
-    manifests: Res<Assets<crate::world::map::MapManifest>>,
-    players: Query<&GlobalTransform, With<crate::network::net::LocalPlayer>>,
-    mut fogs: Query<(&GlobalTransform, &mut DistanceFog), (With<Camera3d>, Without<crate::rendering::highlight::HighlightCamera>, Without<NoLevelLook>)>,
+    mut fogs: Query<&mut DistanceFog, (With<Camera3d>, Without<crate::rendering::highlight::HighlightCamera>, Without<NoLevelLook>)>,
 ) {
     let b = &level.bubble;
-    let ground = current.as_ref().and_then(|m| manifests.get(&m.manifest)).map(|m| m.center[1]).unwrap_or(0.0);
-    let player = players.iter().next().map(|p| p.translation());
-    for (camera, mut fog) in &mut fogs {
-        let focus = crate::world::map::camera_focus(camera, player, ground);
-        let shift = camera.translation().distance(focus);
-        let start = shift + b.fog_near_dist.max(0.0) * lighting.fog_range;
-        let end = (shift + b.fog_far_dist * lighting.fog_range).max(start + 0.1);
+    for mut fog in &mut fogs {
+        let start = b.fog_near_dist.max(0.0) * lighting.fog_range;
+        let end = (b.fog_far_dist * lighting.fog_range).max(start + 0.1);
         if let FogFalloff::Linear { start: s, end: e } = fog.falloff {
             if (s - start).abs() > 1e-3 || (e - end).abs() > 1e-3 {
                 fog.falloff = FogFalloff::Linear { start, end };

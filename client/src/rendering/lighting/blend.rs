@@ -1,7 +1,7 @@
-//! Cross-fade radiance from fixed preset directions using one map-wide shadow map.
+//! Cross-fade authored display-space light from fixed directions using one shadow map.
 //! A small shared view uniform also works with WebGL's one-directional-light limit.
 //! All forward materials (including cutouts) keep their own PBR specialization.
-use super::{linear, Bubble, Lighting, UNIT};
+use super::{linear, Bubble, Lighting};
 use std::{any::Any, sync::Arc};
 use bevy::prelude::*;
 use bevy::material::{key::ErasedMaterialPipelineKey, MaterialProperties};
@@ -49,8 +49,7 @@ impl From<&Bubble> for LightBlend {
 impl LightBlend {
     pub(super) fn with_reference(b: &Bubble, reference: f32) -> Self {
         let color = |c: [f32; 4]| {
-            let c = linear([c[0], c[1], c[2]], b.light_intensity);
-            Vec3::new(c.red, c.green, c.blue)
+            Vec3::new(c[0], c[1], c[2]) * b.light_intensity
         };
         let front = color(b.light_color);
         // Preserve outdoor contrast, but dim local presets must also lose
@@ -100,12 +99,11 @@ impl LightBlend {
             terms.truncate(MAX_TERMS);
         }
         value.counts = UVec4::new(1, terms.len() as u32, 0, 0);
-        let unit = std::f32::consts::PI * UNIT;
         for (out, term) in value.terms.iter_mut().zip(terms) {
             *out = GpuTerm { direction: term.dir.extend(0.),
-                front: (term.front * unit * factors.sun).extend(0.),
-                shadowed: (term.shadowed * unit * factors.sun).extend(0.),
-                back: (term.back * unit * factors.back).extend(term.back_offset) };
+                front: (term.front * factors.sun).extend(0.),
+                shadowed: (term.shadowed * factors.sun).extend(0.),
+                back: (term.back * factors.back).extend(term.back_offset) };
         }
         value
     }
@@ -127,16 +125,23 @@ pub(super) struct GpuAmbience {
     rim_color: Vec4,
     /// View-space direction (xyz) and exponent (w), Nebula's rimLightDirAndSpec.
     rim_dir_spec: Vec4,
+    /// Authored display-space ambient light, before multiplication by albedo.
+    ambient: Vec4,
 }
 
 impl Default for GpuAmbience {
     fn default() -> Self {
         Self { counts: UVec4::ZERO, terms: [GpuTerm::default(); MAX_TERMS], height_fog_color: Vec4::ZERO, fog_heights: Vec4::ZERO,
-            rim_color: Vec4::ZERO, rim_dir_spec: Vec4::ZERO }
+            rim_color: Vec4::ZERO, rim_dir_spec: Vec4::ZERO, ambient: Vec4::ZERO }
     }
 }
 
 impl GpuAmbience {
+    pub(super) fn with_ambient(mut self, b: &Bubble, factors: &Lighting) -> Self {
+        self.ambient = Vec3::new(b.light_ambient[0], b.light_ambient[1], b.light_ambient[2])
+            .extend(0.) * factors.ambient;
+        self
+    }
     /// The bubble's height fog. Like the 2018 shaders, it has no strength of its
     /// own: the colour and the two heights are the whole of it.
     pub(super) fn with_height_fog(mut self, b: &Bubble) -> Self {
@@ -255,8 +260,8 @@ fn prepare_bind_groups(device: Res<RenderDevice>, queue: Res<RenderQueue>, cache
     for (mut view, enabled) in &mut views { view.binding_array = if enabled { active.clone() } else { inactive.clone() }; }
 }
 
-/// Reuse Bevy's current BRDF for each fixed direction, including normal maps,
-/// specular and material extensions. Only the contribution blend is custom.
+/// Retain Bevy's specular response for each fixed direction, including normal
+/// maps and material extensions. Diffuse uses Nebula's display-space formula.
 fn light_function(source: &str) -> Option<String> {
     let start = source.find("fn directional_light(")?;
     let end = source[start..].find("\n}")? + start + 2;
@@ -277,19 +282,33 @@ fn blend_function(source: &str) -> Option<String> {
     let end_anchor = "        direct_light += light_contrib * shadow;";
     let end = source[start..].find(end_anchor)? + start + end_anchor.len();
     let original = &source[start..end];
-    let mut patched = source.replace(original, &format!("#ifdef DSOR_AMBIENCE\n        if ambience.counts.x != 0u && i == 0u {{\n            direct_light += apply_ambience(&lighting_input, enable_diffuse, shadow);\n        }} else {{\n{original}\n        }}\n#else\n{original}\n#endif"));
+    let mut patched = source.replace(original, &format!("#ifdef DSOR_AMBIENCE\n        if ambience.counts.x != 0u && i == 0u {{\n            nebula_diffuse += apply_ambience(&lighting_input, enable_diffuse, shadow) * diffuse_occlusion;\n            direct_light += ambience_specular(&lighting_input, shadow);\n        }} else {{\n{original}\n        }}\n#else\n{original}\n#endif"));
+    let direct = "    var direct_light: vec3<f32> = vec3<f32>(0.0);";
+    if !patched.contains(direct) { return None; }
+    patched = patched.replace(direct, &format!("{direct}\n#ifdef DSOR_AMBIENCE\n    var nebula_diffuse = ambience.ambient.rgb * diffuse_occlusion;\n#endif"));
+    for (kind, spot, suffix) in [("point", "false", ", true"), ("spot", "true", "")] {
+        let original = format!("        let light_contrib = lighting::{kind}_light(light_id, &lighting_input, enable_diffuse{suffix});\n        direct_light += light_contrib * shadow;");
+        if !patched.contains(&original) { return None; }
+        patched = patched.replace(&original, &format!("#ifdef DSOR_AMBIENCE\n        if ambience.counts.x != 0u {{\n            nebula_diffuse += local_irradiance(light_id, &lighting_input, enable_diffuse, {spot}) * shadow;\n        }} else {{\n{original}\n        }}\n#else\n{original}\n#endif"));
+    }
     // Transmission uses the same radiance blend on the opposite material lobe.
     let start = patched.find("        let transmitted_light_contrib =\n            lighting::directional_light(")?;
     let anchor = "        transmitted_light += transmitted_light_contrib * transmitted_shadow;";
     let end = patched[start..].find(anchor)? + start + anchor.len();
     let original = patched[start..end].to_owned();
-    patched = patched.replace(&original, &format!("#ifdef DSOR_AMBIENCE\n        if ambience.counts.x != 0u && i == 0u {{\n            transmitted_light += apply_ambience(&transmissive_lighting_input, enable_diffuse, transmitted_shadow);\n        }} else {{\n{original}\n        }}\n#else\n{original}\n#endif"));
+    patched = patched.replace(&original, &format!("#ifdef DSOR_AMBIENCE\n        if ambience.counts.x != 0u && i == 0u {{\n            transmitted_light += compose_lighting(diffuse_transmissive_color, apply_ambience(&transmissive_lighting_input, enable_diffuse, transmitted_shadow), vec3(0.0)) / view_bindings::view.exposure;\n        }} else {{\n{original}\n        }}\n#else\n{original}\n#endif"));
+    let total = "    output_color = vec4<f32>(\n        (view_bindings::view.exposure * (transmitted_light + direct_light + indirect_light)) + emissive_light,\n        output_color.a\n    );";
+    if !patched.contains(total) { return None; }
+    patched = patched.replace(total, &format!("#ifdef DSOR_AMBIENCE\n    if ambience.counts.x != 0u {{\n        output_color = vec4(compose_lighting(in.material.base_color.rgb, nebula_diffuse,\n            view_bindings::view.exposure * (transmitted_light + direct_light) + emissive_light), output_color.a);\n    }} else {{\n{total}\n    }}\n#else\n{total}\n#endif"));
+    let distance = "        output_color = apply_fog(\n            view_bindings::fog,\n            output_color,\n            pbr_input.world_position.xyz,\n            view_bindings::view.world_position.xyz,\n            pbr_input.frag_coord.xy,\n        );";
+    if !patched.contains(distance) { return None; }
+    patched = patched.replace(distance, &format!("#ifdef DSOR_AMBIENCE\n        if ambience.counts.x != 0u && view_bindings::fog.mode == mesh_view_types::FOG_MODE_LINEAR {{\n            output_color = apply_distance_fog(output_color, pbr_input.world_position.xyz);\n        }} else {{\n{distance}\n        }}\n#else\n{distance}\n#endif"));
     // Height fog follows distance fog on the same fogged materials, as the 2018
     // pixel shaders lerp heightFogColor over the distance-fogged colour.
-    let fog_end = "            pbr_input.frag_coord.xy,\n        );\n    }\n#endif  // DISTANCE_FOG";
+    let fog_end = "#endif\n    }\n#endif  // DISTANCE_FOG";
     if !patched.contains(fog_end) { return None; }
-    patched = patched.replace(fog_end, "            pbr_input.frag_coord.xy,\n        );\n#ifdef DSOR_AMBIENCE\n        output_color = apply_height_fog(output_color, pbr_input.world_position.xyz);\n#endif\n    }\n#endif  // DISTANCE_FOG");
-    Some(format!("#ifdef DSOR_AMBIENCE\n#import dsor::ambience::{{ambience, apply_ambience, apply_height_fog}}\n#endif\n{patched}"))
+    patched = patched.replace(fog_end, "#endif\n#ifdef DSOR_AMBIENCE\n        output_color = apply_height_fog(output_color, pbr_input.world_position.xyz);\n#endif\n    }\n#endif  // DISTANCE_FOG");
+    Some(format!("#ifdef DSOR_AMBIENCE\n#import dsor::ambience::{{ambience, apply_ambience, ambience_specular, local_irradiance, compose_lighting, apply_distance_fog, apply_height_fog}}\n#endif\n{patched}"))
 }
 
 fn prepare_shaders(mut shaders: ResMut<Assets<Shader>>, mut done: Local<bool>) {

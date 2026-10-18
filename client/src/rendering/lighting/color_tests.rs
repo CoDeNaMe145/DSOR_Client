@@ -7,6 +7,7 @@ fn app() -> App {
         .init_resource::<Level>()
         .init_resource::<GpuAmbience>()
         .init_resource::<GlobalAmbientLight>()
+        .insert_resource(crate::rendering::graphics::GraphicsSettings { vignette: true, ..default() })
         .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(std::time::Duration::from_millis(100)))
         // Existing native/browser preferences must not override bubble colour.
         .insert_resource(serde_json::from_str::<Lighting>(r#"{"saturation":3,"bloom":0,"vignette":0,"exposure":4,"tonemapping":true,"sun":0.8}"#).unwrap());
@@ -15,6 +16,56 @@ fn app() -> App {
 
 fn look() -> Bubble {
     serde_json::from_str(r#"{"Saturation":0.25,"Balance":[0.5,0.75,1,1],"BloomScale":0.4,"BloomColor":[1,0.5,0.2,1],"BrightPassThreshold":0.8,"VignetteIntensity":0.7,"VignetteSize":3,"VignetteColor":[0.1,0.2,0.3,1]}"#).unwrap()
+}
+
+#[test]
+fn saved_lighting_migrates_old_compensation_defaults_but_keeps_user_tuning() {
+    let old = decode_saved(r#"{"sun":0.8,"back":0.35,"ambient":0.9,"lights":1.75,"fog":0.55,"fog_range":0.5,"shadows":false}"#).unwrap();
+    assert_eq!((old.sun, old.back, old.shadows), (0.8, 0.35, false));
+    assert_eq!((old.ambient, old.lights, old.fog, old.fog_range), (1., 1., 1., 1.));
+    let current = decode_saved(r#"{"color_pipeline":2,"back":0.9,"ambient":0.9,"lights":1.75,"fog":0.55,"fog_range":0.5}"#).unwrap();
+    assert_eq!((current.back, current.ambient, current.lights, current.fog, current.fog_range), (0.9, 0.9, 1.75, 0.55, 0.5));
+}
+
+#[test]
+fn vignette_is_opt_in_even_when_the_map_authors_a_bright_colour() {
+    use crate::rendering::graphics::GraphicsSettings;
+    let mut app = app();
+    app.insert_resource(GraphicsSettings::default()).add_systems(Update, apply_look);
+    let camera = app.world_mut().spawn(Camera3d::default()).id();
+    let bubble = Bubble { vignette_color: [1.; 4], vignette_intensity: 2., ..look() };
+    app.world_mut().resource_mut::<Level>().bubble = bubble.clone();
+    app.update();
+    assert_eq!(app.world().get::<NebulaPostProcess>(camera).unwrap().vignette_intensity, 0.);
+    app.world_mut().resource_mut::<GraphicsSettings>().vignette = true;
+    app.update();
+    assert_look(&app, camera, &bubble);
+    app.world_mut().remove_resource::<GraphicsSettings>();
+    app.update();
+    // A newly created editor view without preferences also starts with it off.
+    let editor = app.world_mut().spawn(Camera3d::default()).id();
+    app.update();
+    assert_eq!(app.world().get::<NebulaPostProcess>(editor).unwrap().vignette_intensity, 0.);
+}
+
+#[test]
+fn fog_thresholds_follow_authored_camera_depth_without_focus_offsets() {
+    let mut app = app();
+    app.insert_resource(Lighting::default()).add_systems(Update, (apply_look, shift_fog).chain());
+    app.world_mut().resource_mut::<Level>().bubble = Bubble { fog_near_dist: 27., fog_far_dist: 50., ..default() };
+    let camera = app.world_mut().spawn((Camera3d::default(), GlobalTransform::from_translation(Vec3::Y * 25.))).id();
+    let check = |app: &App, near, far| {
+        let FogFalloff::Linear { start, end } = app.world().get::<DistanceFog>(camera).unwrap().falloff else { panic!("linear fog expected") };
+        assert_eq!((start, end), (near, far));
+    };
+    app.update();
+    check(&app, 27., 50.);
+    app.world_mut().entity_mut(camera).insert(GlobalTransform::from_translation(Vec3::new(300., 90., 200.)));
+    app.update();
+    check(&app, 27., 50.);
+    app.world_mut().resource_mut::<Lighting>().fog_range = 2.;
+    app.update();
+    check(&app, 54., 100.);
 }
 
 fn assert_look(app: &App, camera: Entity, bubble: &Bubble) {
@@ -63,7 +114,7 @@ fn player_graphics_gates_effects_and_restores_the_current_bubble() {
     app.world_mut().resource_mut::<Level>().bubble = next.clone();
     app.update();
     assert_eq!(app.world().get::<NebulaPostProcess>(camera).unwrap().scale, 0.);
-    *app.world_mut().resource_mut::<GraphicsSettings>() = GraphicsSettings::default();
+    *app.world_mut().resource_mut::<GraphicsSettings>() = GraphicsSettings { vignette: true, ..default() };
     app.update();
     assert_look(&app, camera, &next);
     assert!(app.world().get::<DirectionalLight>(sun).unwrap().shadow_maps_enabled);

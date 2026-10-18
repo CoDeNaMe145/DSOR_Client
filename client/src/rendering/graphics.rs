@@ -98,7 +98,7 @@ impl Default for GraphicsSettings {
         Self { anti_aliasing: AntiAliasing::Auto, dlss: DlssMode::Off,
             shadows: if crate::WEBGL2 { Quality::Medium } else { Quality::High },
             shadow_filter: ShadowFilter::Auto, ambient_occlusion: Quality::Medium,
-            sharpening: 0, bloom: true, vignette: true }
+            sharpening: 0, bloom: true, vignette: false }
     }
 }
 
