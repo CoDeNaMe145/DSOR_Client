@@ -32,9 +32,11 @@ struct Params {
 
 const LUM: vec3<f32> = vec3<f32>(0.299, 0.587, 0.114);
 
-// What the client shows for a linear HDR value: gamma, within its range (2.0).
+// Undo the GPU's sRGB texture decoding, matching compose below. A power of 1/2.2
+// is not its inverse and changes dark colours and which pixels cross threshold.
+// Nebula's half-encoded 8-bit colour buffer holds up to 2.0 in display space.
 fn shown(c: vec3<f32>) -> vec3<f32> {
-    return min(pow(max(c, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2)), vec3<f32>(2.0));
+    return min(linear_to_srgb(max(c, vec3<f32>(0.0))), vec3<f32>(2.0));
 }
 
 @fragment
@@ -42,7 +44,9 @@ fn fs_bright(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     // The 2x2 average (pe_downsample2x2) by the bilinear sampler between texels.
     let uv = in.uv * params.source_uv.xy + params.source_uv.zw;
     let s = shown(textureSample(source, source_sampler, uv).rgb);
-    let threshold = params.p.x * 0.5;
+    // pe_brightpassfilter: max(2 * encoded_scene - threshold, 0).
+    // `shown` has already decoded the scene; the threshold is not halved.
+    let threshold = params.p.x;
     let over = max(s - vec3<f32>(threshold), vec3<f32>(0.0));
     return vec4<f32>(s * params.color.rgb * dot(over, LUM), 1.0);
 }
@@ -78,9 +82,10 @@ fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
 @fragment
 fn fs_compose(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let scene = textureSample(source, source_sampler, in.uv);
-    var display = linear_to_srgb(max(scene.rgb, vec3<f32>(0.0)));
+    var display = shown(scene.rgb);
     if params.p.y > 0.0 {
-        display += textureSample(bloom, source_sampler, in.uv).rgb * params.p.y * 2.0;
+        // pe_compose doubles only the encoded scene, not the bloom buffer.
+        display += textureSample(bloom, source_sampler, in.uv).rgb * params.p.y;
     }
     // pe_compose grades the combined scene and bloom in display space. Balance
     // is an RGB multiplier, not Bevy's temperature/tint white-balance control.

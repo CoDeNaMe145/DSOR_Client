@@ -17,7 +17,7 @@
 use bevy::core_pipeline::core_3d::{main_opaque_pass_3d, main_transparent_pass_3d};
 use bevy::core_pipeline::schedule::{Core3d, Core3dSystems};
 use bevy::core_pipeline::FullscreenShader;
-use bevy::camera::MainPassResolutionOverride;
+use bevy::camera::{Hdr, MainPassResolutionOverride};
 use bevy::prelude::*;
 use bevy::render::camera::ExtractedCamera;
 use bevy::render::extract_component::{ExtractComponent, ExtractComponentPlugin};
@@ -29,7 +29,10 @@ use bevy::render::view::ViewTarget;
 use bevy::render::{Render, RenderApp, RenderStartup, RenderSystems};
 
 /// The active ambience bubble's post effects, plus the transient death fade.
+/// Preserve Nebula's 0..2 display-space scene range until composition. An SDR
+/// target clips at 1 before the bright pass and loses every highlight above it.
 #[derive(Component, Clone, Copy, ExtractComponent, Debug, PartialEq)]
+#[require(Hdr)]
 pub struct NebulaPostProcess {
     pub threshold: f32,
     pub scale: f32,

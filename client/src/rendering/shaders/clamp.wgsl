@@ -1,11 +1,11 @@
 // The 2018 client's colour range (crate::rendering::clamp): what its 8-bit scene buffer,
-// encoded x 0.5, can hold -- 2.0 shown, 2^2.2 in linear -- before its bloom.
+// encoded x 0.5, can hold -- 2.0 shown, sRGB-decoded in linear -- before compose.
 #import bevy_core_pipeline::fullscreen_vertex_shader::FullscreenVertexOutput
 
 @group(0) @binding(0) var in_texture: texture_2d<f32>;
 @group(0) @binding(1) var in_sampler: sampler;
 
-const TOP: f32 = 4.5948; // 2^2.2
+const TOP: f32 = 4.953846; // ((2 + 0.055) / 1.055)^2.4
 
 @fragment
 fn fs_main(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {

@@ -6,8 +6,8 @@
 //! lum(max(2c - threshold, 0))) only ever sees that range. Bevy's HDR scene is
 //! unbounded: a window's emission or a stack of additive particles reached tens,
 //! and the bloom spread them over the screen ("les fenetres et les fx sont hyper
-//! brillants"). This pass clamps the scene to 2.0 shown (2^2.2 linear) just
-//! before bevy's bloom.
+//! brillants"). This pass clamps the scene to 2.0 shown (sRGB-decoded linear)
+//! before composition. The opaque bright pass applies the same cap itself.
 //! EVIDENCE: shaders_sm30 standard / monster Solid ps (`mul oC0, r1, c10.xxxy`,
 //!   c10.x = 0.5), pe_brightpassfilter ps (`mad r1.xyz, r0, 2, -threshold`).
 

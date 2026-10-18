@@ -30,6 +30,50 @@ client draws it. Every claim about the 2018 client comes from its files:
 | Refraction | refraction surfaces, over everything drawn | crate::rendering::refraction over bevy's copy of the opaque scene (gap: transparent surfaces drawn after it are not refracted) |
 | pe_compose | colour x 2 + bloom x BloomScale, saturation, balance, gamma, highlight, vignette x VignetteColor, fade | bubble-driven bloom, saturation, RGB balance and vignette in one display-space pass before FXAA; neutral brightness/gamma and no tonemapping |
 
+## Original shader colour audit (2026-10-18)
+
+The local `dso-client`, `dso-client-2-aug-2026` and `dso-legacy-client` shader
+pools were extracted and compared with `tools/shader_dis.py`. The disassembled
+instructions for composition, bright pass, both bloom blurs, downsampling,
+standard surfaces, characters and lights match across these installations
+(the legacy effects additionally declare an unused `ratio` parameter).
+Binary hashes differ, so compare the instructions and parameters as well.
+Reproduce the extraction into an ignored local directory:
+
+```sh
+python tools/shader_dis.py extract <export_win32>/shaders/shaders_sm30 \
+  .local/shader-color-audit/reference pe_compose pe_brightpassfilter \
+  pe_bloomvert pe_bloomhori pe_downsample2x2 standard character lightsources
+```
+
+The extractor writes the original `.fxo` effects, readable `.asm.txt` listings
+and a SHA-256 manifest. Original game binaries remain local assets.
+
+Confirmed corrections in our post-processing:
+
+- `pe_brightpassfilter` computes `S * BloomColor * dot(max(S - threshold, 0), LUM)`,
+  where `S = 2 * encoded_scene`. Our threshold was incorrectly halved.
+- `pe_compose` adds `bloom * BloomScale` to `S`; our extra factor of two made
+  the bloom too strong. For a constant grey `S=0.75`, threshold 1, the original
+  bright pass is zero; the previous formula emitted about 0.18 before tint.
+- Both stages now use the same exact sRGB conversion to recover display values
+  from Bevy's linear scene, instead of using a 2.2 power in the bright pass.
+- Scene cameras with Nebula composition require an HDR intermediate even with
+  DLSS or bloom disabled. SDR clipped highlights to 1 before bloom/colour grading;
+  the original half-encoded buffer retains display values up to 2. The matching
+  linear cap is `((2 + .055) / 1.055)^2.4`. This is internal precision, not HDR
+  monitor output, and does not enable a filmic tonemapper.
+
+Remaining differences are separate from these corrections: Bevy's BRDF and
+linear light accumulation approximate the original gamma-space light buffer;
+distance fog still mixes in linear space and height fog uses a 2.2 approximation;
+transparent blending and scene downsampling also operate in linear space.
+The original quantizes its intermediate scene/light buffers to eight bits.
+F2 / `look.json` scales light and fog values, so comparisons must use the same
+settings and map data. In particular, the legacy Kingshill default uses bloom
+scale/threshold 0.8/0.8, while the two newer installations and our exported data
+use 0.4/1.0. A shader comparison alone does not establish pixel-identical output.
+
 ## The level's look (`_Instance_AmbienceBubble`, `_Instance_Light`)
 
 `tools/export_ambience.py` writes `maps/<map>.ambience.json`; crate::rendering::lighting
@@ -43,7 +87,7 @@ inverse of the camera's exposure: what Nebula shows as `v`, bevy shows as `v`):
 - fog: linear between `FogNearDist` and `FogFarDist` (25 and 50 in Kingshill: the
   game camera sits 25 units from the player, so the fog starts at the player),
   `FogColor`, opacity `FogIntensity` (UNVERIFIED mapping);
-- bloom (threshold `BrightPassThreshold / 2` in gamma, intensity x `BloomScale`,
+- bloom (threshold `BrightPassThreshold` in display space, intensity x `BloomScale`,
   tint `BloomColor`), saturation, RGB `Balance`, and vignette colour/intensity/size;
 - the light that follows the player (`LocalLightColor x LocalLightIntensity` at
   `PlayerLightOffset`; UNVERIFIED range);

@@ -6,6 +6,8 @@ Usage:
   shader_dis.py params <shaders_sm30> <effect>              parameters: name <semantic> = default
   shader_dis.py dis    <shaders_sm30> <effect> [technique]  techniques, render states,
                                                             shaders and preshaders
+  shader_dis.py extract <shaders_sm30> <output_dir> [effect ...]
+                                                         .fxo, disassembly, SHA-256 manifest
 
 The pool ("PDHS", u32 version, u32 count, then count x (u16 len, name, u32 size,
 fx_2_0 effect)) holds Nebula's D3DX effects. Each effect is parsed as Wine's d3dx9
@@ -18,6 +20,11 @@ The n3 variables reach the shaders through each parameter's semantic
 (Intensity0, Amplitude, BumpScale...): `params` lists them.
 SEE: docs/fx.md, which these listings were read for.
 """
+import contextlib
+import hashlib
+import io
+import json
+from pathlib import Path
 import struct, sys
 
 OPS = {0: 'nop', 1: 'mov', 2: 'add', 3: 'sub', 4: 'mad', 5: 'mul', 6: 'rcp', 7: 'rsq', 8: 'dp3', 9: 'dp4',
@@ -389,6 +396,32 @@ def dis_effect(d, want=None):
                         print('      ' + ln)
 
 
+def extract(path, output, names=None):
+    """Keep original binaries and readable evidence locally, outside source control."""
+    effects = pool(path)
+    names = list(effects) if not names else names
+    for name in names:
+        if not name or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-' for c in name):
+            raise ValueError(f'unsafe effect filename: {name!r}')
+        if name not in effects:
+            raise ValueError(f'unknown effect: {name}')
+    output = Path(output)
+    output.mkdir(parents=True, exist_ok=True)
+    manifest = {'source': str(Path(path).resolve()),
+                'sha256': hashlib.sha256(Path(path).read_bytes()).hexdigest(), 'effects': {}}
+    for name in names:
+        blob = effects[name]
+        assembly = io.StringIO()
+        with contextlib.redirect_stdout(assembly):
+            print('\n'.join(params_of(blob)))
+            dis_effect(blob)
+        (output / f'{name}.fxo').write_bytes(blob)
+        (output / f'{name}.asm.txt').write_text(assembly.getvalue(), encoding='utf-8')
+        manifest['effects'][name] = {'bytes': len(blob), 'sha256': hashlib.sha256(blob).hexdigest()}
+    (output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
+    return len(names)
+
+
 if __name__ == '__main__':
     if len(sys.argv) < 3:
         print(__doc__)
@@ -401,5 +434,7 @@ if __name__ == '__main__':
         print('\n'.join(params_of(effects[sys.argv[3]])))
     elif cmd == 'dis':
         dis_effect(effects[sys.argv[3]], sys.argv[4] if len(sys.argv) > 4 else None)
+    elif cmd == 'extract':
+        print(f'Extracted {extract(sys.argv[2], sys.argv[3], sys.argv[4:])} effects into {sys.argv[3]}')
     else:
         raise SystemExit(f'unknown command {cmd}')

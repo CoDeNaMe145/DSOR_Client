@@ -28,6 +28,7 @@ fn assert_look(app: &App, camera: Entity, bubble: &Bubble) {
     assert_eq!(post.vignette_size, bubble.vignette_size);
     assert_eq!(post.vignette_color.to_array(), bubble.vignette_color);
     assert_eq!(app.world().get::<Tonemapping>(camera), Some(&Tonemapping::None));
+    assert!(app.world().get::<bevy::camera::Hdr>(camera).is_some(), "retain highlights until Nebula composition, including with bloom off");
     let grading = app.world().get::<ColorGrading>(camera).unwrap();
     assert_eq!(grading.global.exposure, 0.);
     assert_eq!(grading.global.post_saturation, 1.);

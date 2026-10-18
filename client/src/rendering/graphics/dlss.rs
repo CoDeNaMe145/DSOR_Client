@@ -117,10 +117,10 @@ pub(super) fn apply(
     graphics: Res<GraphicsSettings>,
     availability: Res<DlssAvailability>,
     map: Option<Res<crate::world::map::CurrentMap>>,
-    mut cameras: Query<(Entity, &GlobalTransform, Has<Hdr>, &mut CameraMainTextureUsages, Option<&mut Dlss>, Option<&mut DlssCameraState>), (With<GameGraphics>, With<Camera3d>)>,
+    mut cameras: Query<(Entity, &GlobalTransform, Has<Hdr>, &mut CameraMainTextureUsages, Option<&mut Dlss>, Option<&mut DlssCameraState>, Has<crate::rendering::nebula_bloom::NebulaPostProcess>), (With<GameGraphics>, With<Camera3d>)>,
 ) {
     let active = availability.active(graphics.dlss);
-    for (entity, transform, hdr, mut usages, dlss, state) in &mut cameras {
+    for (entity, transform, hdr, mut usages, dlss, state, nebula_post) in &mut cameras {
         let mut camera = commands.entity(entity);
         if active {
             let position = transform.translation();
@@ -159,7 +159,9 @@ pub(super) fn apply(
                 // so it removes its render-world context and resolution override.
                 state.retiring = true;
             } else {
-                if state.added_hdr { camera.remove::<Hdr>(); }
+                // The level look can arrive after DLSS starts. Its composition
+                // needs HDR independently of DLSS to retain the 0..2 range.
+                if state.added_hdr && !nebula_post { camera.remove::<Hdr>(); }
                 usages.0 = state.texture_usages;
                 camera.remove::<DlssCameraState>();
             }
@@ -213,5 +215,27 @@ mod tests {
         assert!(app.world().get::<Hdr>(camera).is_none());
         assert!(app.world().get::<DlssCameraState>(camera).is_none());
         assert_eq!(app.world().get::<CameraMainTextureUsages>(camera).unwrap().0, original_usages);
+    }
+
+    #[test]
+    fn disabling_dlss_preserves_hdr_when_the_level_look_arrives_later() {
+        use crate::rendering::nebula_bloom::NebulaPostProcess;
+        let mut app = App::new();
+        app.insert_resource(GraphicsSettings { dlss: DlssMode::Dlaa, ..default() })
+            .insert_resource(DlssAvailability::Available).add_systems(Update, apply);
+        let camera = app.world_mut().spawn((Camera3d::default(), GameGraphics)).id();
+        app.update();
+        assert!(app.world().get::<DlssCameraState>(camera).unwrap().added_hdr);
+        // Map lighting may become available after the upscaler has started.
+        app.world_mut().entity_mut(camera).insert(NebulaPostProcess {
+            threshold: 1., scale: 0., color: Vec4::ONE, saturation: 1., balance: Vec4::ONE,
+            vignette_color: Vec4::ZERO, vignette_intensity: 0., vignette_size: 2., death_fade: 0.,
+        });
+        app.world_mut().resource_mut::<GraphicsSettings>().dlss = DlssMode::Off;
+        app.update();
+        app.update();
+        assert!(app.world().get::<Dlss>(camera).is_none());
+        assert!(app.world().get::<DlssCameraState>(camera).is_none());
+        assert!(app.world().get::<Hdr>(camera).is_some(), "composition must retain highlights after DLSS cleanup");
     }
 }
