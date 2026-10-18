@@ -328,6 +328,11 @@ fn main() {
     }
     let opts = options();
     let mut app = App::new();
+    // Outside debug builds a command on an entity already despawned (an effect
+    // ending the frame its actor goes) is logged, not fatal: one such race
+    // crashed the game (2026-10-18). Debug builds keep panicking to show them.
+    #[cfg(not(debug_assertions))]
+    app.set_error_handler(bevy::ecs::error::warn);
     app.register_asset_source(bevy::asset::io::AssetSourceId::Default, model_variant::source(asset_root()));
     if let Some(config) = opts.net.as_ref().filter(|_| !opts.login_screen) {
         app.insert_resource(config.clone());
