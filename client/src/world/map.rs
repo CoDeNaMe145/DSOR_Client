@@ -615,7 +615,12 @@ pub(crate) fn flat_surfaces(
                 .and_then(|e| serde_json::from_str::<serde_json::Value>(&e.value).ok())
                 .and_then(|v| v["dsor_shader"]["MatSpecularIntensity"].as_f64())
                 .and_then(|v| crate::rendering::materials::specular_scale(Some(v as f32)));
-            let adjusted = state.contains("\"dsor_unlit\":true") || state.contains("\"dsor_alpha\"") || specular.is_some();
+            // Only when the loader made it: it pairs materials with nodes by name,
+            // which some models share or name differently, and a missing label
+            // never loads (deco_banner_mound_01 held Kingshill at 346/347 models).
+            let specular = specular.is_some()
+                && asset_server.get_handle::<StandardMaterial>(path.clone().with_label(format!("{label}/dsor"))).is_some();
+            let adjusted = state.contains("\"dsor_unlit\":true") || state.contains("\"dsor_alpha\"") || specular;
             let material = match ours {
                 Some("refr") => MapMaterial::Refraction(asset_server.load(path.clone().with_label(format!("{label}/refr")))),
                 Some(_) => MapMaterial::Surface(asset_server.load(path.clone().with_label(format!("{label}/neb")))),
