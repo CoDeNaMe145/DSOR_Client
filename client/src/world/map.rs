@@ -403,7 +403,7 @@ fn stream_models(
                         };
                         let merged = mesh_assets.get(&s.mesh).and_then(|mesh| {
                             let layout = crate::rendering::merge::layout_of(mesh)?;
-                            let key = crate::rendering::merge::BatchKey { cell: key, material: material.id(), casts_shadow, layout };
+                            let key = crate::rendering::merge::BatchKey { cell: key, material: material.id(), casts_shadow, decal_receiver: s.decal_receiver, layout };
                             current.batches.batch(key, &material).push(mesh, &world, layout).then_some(())
                         });
                         if merged.is_none() {
@@ -412,6 +412,9 @@ fn stream_models(
                             s.material.insert(&mut e);
                             if !casts_shadow {
                                 e.insert(bevy::light::NotShadowCaster);
+                            }
+                            if s.decal_receiver {
+                                e.insert(crate::rendering::decals::DecalReceiver);
                             }
                         }
                     }
@@ -433,6 +436,7 @@ fn stream_models(
         let mut e = commands.spawn((Mesh3d(mesh_assets_mut.add(mesh)), Transform::IDENTITY, ChildOf(cell)));
         material.insert(&mut e);
         if !key.casts_shadow { e.insert(bevy::light::NotShadowCaster); }
+        if key.decal_receiver { e.insert(crate::rendering::decals::DecalReceiver); }
     }
     let ready = current.wanted_cells.iter().all(|k| current.contents.contains_key(k));
     if ready && !current.spawned {
@@ -545,6 +549,9 @@ pub(crate) struct FlatSurface {
     pub(crate) material: MapMaterial,
     pub(crate) local: bevy::math::Affine3A,
     pub(crate) no_shadow: bool,
+    /// The node's pass is DecalReceiveSolid: map decals land on it
+    /// (crate::rendering::decals::DecalReceiver).
+    pub(crate) decal_receiver: bool,
     /// Largest extent of the surface in the model's space (its mesh bounds
     /// through `local`).
     size: f32,
@@ -635,7 +642,10 @@ pub(crate) fn flat_surfaces(
                 .and_then(|m| m.compute_aabb())
                 .map(|b| (local.matrix3 * Vec3A::from(b.half_extents * 2.0)).abs().max_element())
                 .unwrap_or(f32::MAX);
-            out.push(FlatSurface { mesh: prim.mesh.clone(), material, local, no_shadow: additive || !opaque, size });
+            let decal_receiver = node.extras.as_ref()
+                .and_then(|e| serde_json::from_str::<serde_json::Value>(&e.value).ok())
+                .is_some_and(|v| v["dsor_pass"].as_str() == Some("DecalReceiveSolid"));
+            out.push(FlatSurface { mesh: prim.mesh.clone(), material, local, no_shadow: additive || !opaque, decal_receiver, size });
         }
     }
     Some(out)

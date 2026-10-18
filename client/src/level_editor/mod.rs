@@ -383,6 +383,7 @@ fn stream(mut commands: Commands, mut editor: ResMut<Editor>, assets: Res<AssetS
                     let mut entity = commands.spawn((Mesh3d(surface.mesh.clone()), Transform::from_matrix(Mat4::from(surface.local)), ChildOf(placed.entity)));
                     surface.material.insert(&mut entity);
                     if surface.no_shadow { entity.insert(bevy::light::NotShadowCaster); }
+                    if surface.decal_receiver { entity.insert(crate::rendering::decals::DecalReceiver); }
                 }
             }
             Visual::Scene(scene) => { commands.spawn((WorldAssetRoot(scene.clone()), Transform::IDENTITY, ChildOf(placed.entity))); }

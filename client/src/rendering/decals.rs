@@ -3,8 +3,9 @@
 //! inside it -- stone patches, sand, paths. Drawing the box itself gave flat
 //! squares; projecting needs the depth buffer, which WebGL2 cannot sample.
 //!
-//! So the projection is done once, on the CPU: once the map is in, every opaque
-//! ground triangle inside a box is clipped to it. The mask is laid over the box
+//! So the projection is done once, on the CPU: once the map is in, every ground
+//! triangle of a DecalReceiveSolid surface (DecalReceiver) inside a box is
+//! clipped to it. The mask is laid over the box
 //! (uv_b = box x + 0.5, z + 0.5); the colour repeats over the ground at the n3
 //! node's `Scale` (uv = world x, z * Scale; 0.2 in Kingshill, so the stones keep
 //! their size however big the box). All decals sharing textures end up in one
@@ -64,6 +65,19 @@ pub const DECAL_DEPTH_BIAS: f32 = -1000.0;
 /// A decal box already drawn.
 #[derive(Component)]
 struct Projected;
+
+/// A map surface whose node pass is DecalReceiveSolid (crate::world::map): the
+/// only surfaces map decals land on. The original's Color pass draws those
+/// first with b_decalreceive, which writes stencil 100 where they are the
+/// visible surface (ZFunc EQUAL after the depth pass), and b_decal draws only
+/// where the stencil is 100: ground tiles take the decal, the stairs, crates,
+/// walls and props standing in its box do not.
+/// EVIDENCE: export_win32/frame/default.xml (Color pass batches);
+///   shaders_sm30 b_decalreceive (StencilEnable, StencilRef 100, StencilFunc
+///   ALWAYS, StencilPass REPLACE, ZFunc EQUAL) and b_decal (StencilRef 100,
+///   StencilFunc EQUAL, SrcBlend SRCALPHA, DestBlend INVSRCALPHA).
+#[derive(Component)]
+pub struct DecalReceiver;
 
 pub struct DecalPlugin;
 
@@ -153,7 +167,7 @@ fn project_decals(
     pending: Query<(Entity, &GlobalTransform, &DecalVolume, &MeshMaterial3d<StandardMaterial>), Without<Projected>>,
     ground: Query<
         (&Mesh3d, &GlobalTransform, &Aabb, Option<&MeshMaterial3d<StandardMaterial>>),
-        (Without<DecalVolume>, Without<NotShadowCaster>, Without<SkinnedMesh>),
+        (With<DecalReceiver>, Without<DecalVolume>, Without<SkinnedMesh>),
     >,
     mut settled: Local<u32>,
     parents: Query<&ChildOf>,
