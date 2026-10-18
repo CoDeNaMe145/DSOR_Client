@@ -22,11 +22,12 @@ client draws it. Every claim about the 2018 client comes from its files:
 | CollectShadows, BlurShadows | the global light's shadow, blurred | bevy cascaded shadow map, one cascade |
 | Prelight | light buffer: global light, point lights | bevy forward lighting: the level's global light, its back light, ambient and placed lights (crate::rendering::lighting) |
 | Color | Solid, AlphaTest, DecalReceive | opaque / alpha-mask surfaces; cull mode from the n3 |
-| ColorAlphaDecals | ground decals, SequenceAlpha | crate::rendering::decals (projected on the CPU once) |
+| ColorAlphaDecals | ground decals (only on DecalReceiveSolid surfaces: b_decalreceive writes stencil 100, b_decal tests it), SequenceAlpha | crate::rendering::decals (projected on the CPU once, onto DecalReceiver surfaces only) |
 | ColorAlpha | AlphaLit, AlphaUnlit, PreAdditive, ParticleLit, PostAlphaUnlit, Alpha, Additive, in that batch order | bevy's transparent pass, sorted back to front whatever the batch (gap: no batch order) |
-| BrightPass, Bloom x4 | bright pass of the half-res opaque scene, blurred at quarter res | `nebula_bloom`, including the bubble's `BloomColor`, threshold and scale |
+| SSAO | pe_ssao: 16 fixed samples within 0.4 above the surface, counted 0.05-0.4 behind it, x 1.3 / 16, subtracted from the shadow buffer's y (the game enables it; the frame file says disabled) | `pe_ssao.wgsl` in bevy's SSAO pass (`AoMode::Original`) |
+| BrightPass, Bloom x5 | bright pass of the half-res opaque scene, blurred at quarter res (V H V H V) | `nebula_bloom`, including the bubble's `BloomColor`, threshold and scale |
 | HighlightSilhouette, GatherOutline | outline of the hovered / targeted actor | **missing** |
-| HiddenCharacterColor | characters behind walls as a silhouette | **missing** |
+| HiddenCharacterColor | characters behind walls as a silhouette | crate::rendering::hidden_pixels: the local character more than 1.5 behind the visible surface, added in a highlight colour (colour UNVERIFIED, not blurred) |
 | Refraction | refraction surfaces, over everything drawn | crate::rendering::refraction over bevy's copy of the opaque scene (gap: transparent surfaces drawn after it are not refracted) |
 | pe_compose | colour x 2 + bloom x BloomScale, saturation, balance, gamma, highlight, vignette x VignetteColor, fade | bubble-driven bloom, saturation, RGB balance and vignette in one display-space pass before FXAA; neutral brightness/gamma and no tonemapping |
 
@@ -41,14 +42,19 @@ inverse of the camera's exposure: what Nebula shows as `v`, bevy shows as `v`):
   `LightAmbient`, plus `LightOppositeColor x sat(BackLightFactor - N.L)` (not
   scaled by the intensity); the albedo is multiplied by that sum, so in linear
   terms by its 2.2 power. Point lights add `colour x sat(N.L) x sat(1 - d/range)`
-  into the same sum, diffuse only. Bevy's AO, with the original's 0.4 radius,
-  darkens the sun's sum squared, as the original's SSAO does. Specular is scaled by each node's MatSpecularIntensity (none at 0).
-  The compose pass shows the result with a 2.2 power,
-  not the sRGB curve, as the original shows its gamma colours as they are.
-  `DSOR_FLAGS=linearlight` sums in linear instead (the old look), `aolinear`
-  applies the AO once in linear, `ao13` with pe_ssao's x 1.3, `DSOR_AO_RADIUS` sets its radius, `shadowfloor` keeps half the whole light in full
-  shadow as the original's blurred shadow buffer does (not default: interiors
-  differ);
+  into the same sum, diffuse only. The original's SSAO estimate (pe_ssao.wgsl)
+  darkens the sun's sum by its visibility squared. Full shadow keeps half of
+  the whole light (sun, ambient and back light), as the original's blurred
+  shadow buffer does. Specular is scaled by each node's MatSpecularIntensity
+  (none at 0), map decals and dyed characters included.
+  Every surface writes gamma colours to the scene target and the compose pass
+  shows them as they are, so decals, alpha surfaces, particles and glows blend
+  in gamma space as the original's 8-bit targets do.
+  `DSOR_FLAGS=linearlight` sums in linear instead (the old look), `noao`,
+  `aolinear`, `aosquared`, `ao13` use none or Bevy's GTAO (`DSOR_AO_RADIUS` its
+  radius), `noshadowfloor` lets shadow remove the sun's share only,
+  `linearscene` blends in Bevy's linear target, `nospecular` drops the sun's
+  specular (diagnostics). The Lighting Menu's RENDER SWITCHES flip these live;
 - sun shadows: full strength in every zone (`LightShadowIntensity` only; the
   original's shadowDarkeningFactor is 0 in Kingshill's interiors as outdoors),
   and the shadow map draws both faces of every caster, so downward-facing
@@ -131,6 +137,23 @@ of each box moves; its other bounds and lighting settings are retained. Reapply
 these overrides after conversion with `tools/apply_level_overrides.py`.
 
 ## Keeping the player visible indoors
+
+The original's way, the default:
+
+- **Visibility groups.** A map group of type 0 (`maps/<map>.map.json` `groups`)
+  is a visibility group: church wall tops and towers, palace roofs, the crypt's
+  upper walls. The original's map manager hides a group that stands between
+  the camera and the player (`Map::ClientMapManager::HideGroups`,
+  `HandleGroupFade`). `occlusion.rs` `fade_groups` casts rays from the camera to
+  the player's torso and head; a group surface on them dissolves the whole
+  group (the cutout's dithered discard over all of it, 0.16 s in, held 0.12 s,
+  0.25 s out). Shadow views keep it.
+- **The hidden character.** Where the local character is still behind map
+  geometry (more than 1.5 units behind the visible surface), it is added over
+  the frame in a highlight colour (`hidden_pixels.rs`, the original's
+  HiddenCharacterColor pass).
+
+The older dithered hole below is kept behind `DSOR_FLAGS=playerhole`.
 
 `client/src/rendering/occlusion.rs` casts five rays from the active game camera to the local
 player's torso, head, lower body and sides. A reveal starts only when all five
