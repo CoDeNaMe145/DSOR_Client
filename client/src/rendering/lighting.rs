@@ -532,6 +532,43 @@ pub struct Lighting {
     pub shadows: bool,
 }
 
+/// How the light is put together: the original's way by default, the others
+/// kept to compare against it. Switchable live from the Lighting Menu, starting
+/// from DSOR_FLAGS (linearlight, aogamma, ao13, shadowfloor, norim). Not saved.
+#[derive(Resource, Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RenderSwitches {
+    /// The original's gamma-space light sum (false: Bevy's linear sum).
+    pub(crate) gamma_light: bool,
+    pub(crate) ao: AoMode,
+    /// Full shadow keeps half the whole light, as the original's blurred shadow
+    /// buffer (UNVERIFIED in interiors: too dark there).
+    pub(crate) shadow_floor: bool,
+    /// The characters' rim light.
+    pub(crate) rim: bool,
+}
+
+/// How Bevy's ambient occlusion darkens the sun pass's sum.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AoMode {
+    /// Once, in linear (the best match measured).
+    Linear,
+    /// Squared in the gamma sum, the original's formula.
+    Squared,
+    /// x 1.3 clamped to 1, then squared: pe_ssao's boost.
+    Clamped,
+}
+
+impl Default for RenderSwitches {
+    fn default() -> Self {
+        Self {
+            gamma_light: !crate::flag("linearlight"),
+            ao: if crate::flag("ao13") { AoMode::Clamped } else if crate::flag("aogamma") { AoMode::Squared } else { AoMode::Linear },
+            shadow_floor: crate::flag("shadowfloor"),
+            rim: !crate::flag("norim"),
+        }
+    }
+}
+
 /// Neutral: the original has no such multipliers. The earlier tuned values
 /// (back 0.9 / 0.35, lights 1.75 / 1.05, fog 0.55, fog range 0.5) compensated
 /// the back light scaled by LightIntensity and the fog started behind the player;
@@ -589,6 +626,8 @@ fn load_saved() -> Option<Lighting> {
 }
 
 pub(crate) fn save(l: &Lighting) {
+    // Tests (the Lighting Menu's) must not write the working copy's look.json.
+    if cfg!(test) { return; }
     let Ok(raw) = serde_json::to_string(l) else { return };
     #[cfg(target_arch = "wasm32")]
     if let Some(Ok(Some(store))) = web_sys::window().map(|w| w.local_storage()) {
@@ -617,6 +656,7 @@ impl Plugin for EditorLightingPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(BlendPlugin).init_resource::<Level>().init_resource::<EditorLook>()
             .insert_resource(load_saved().unwrap_or_default())
+            .init_resource::<RenderSwitches>()
             .add_systems(Update, nebula_falloff)
             .add_systems(Update, (copy_editor_look, apply_look, flicker).chain().in_set(ApplyEditorLighting))
             .add_systems(PostUpdate, shift_fog.after(bevy::transform::TransformSystems::Propagate));
@@ -636,6 +676,7 @@ impl Plugin for LightingPlugin {
             .init_asset_loader::<AmbienceLoader>()
             .init_resource::<Level>()
             .insert_resource(load_saved().unwrap_or_default())
+            .init_resource::<RenderSwitches>()
             .add_systems(Update, nebula_falloff)
             // The Lighting Menu replaces this panel when it is on (crate::diagnostics::lighting_menu).
             .add_systems(Startup, spawn_panel.run_if(|| !crate::diagnostics::lighting_menu::enabled()))
@@ -757,6 +798,7 @@ fn follow_level(
 fn apply_look(
     mut commands: Commands,
     lighting: Res<Lighting>,
+    switches: Option<Res<RenderSwitches>>,
     level: Res<Level>,
     mut suns: Query<(&mut DirectionalLight, &mut Transform, &mut GlobalTransform), With<Sun>>,
     mut gpu_ambience: ResMut<GpuAmbience>,
@@ -765,9 +807,10 @@ fn apply_look(
     mut fresh: Local<Vec<Entity>>,
 ) {
     let new_camera = cameras.iter().any(|e| !fresh.contains(&e));
-    if !lighting.is_changed() && !level.is_changed() && !new_camera {
+    if !lighting.is_changed() && !level.is_changed() && !new_camera && !switches.as_ref().is_some_and(|s| s.is_changed()) {
         return;
     }
+    let switches = switches.map(|s| *s).unwrap_or_default();
     fresh.clear();
     fresh.extend(cameras.iter());
     let (l, b) = (&*lighting, &level.bubble);
@@ -775,10 +818,10 @@ fn apply_look(
     let a = linear(rgb(b.light_ambient), 1.0);
     // The light is summed in gamma space as the original's sun pass does, the
     // ambient joining that sum instead of Bevy's ambient light.
-    // DSOR_FLAGS=linearlight: the earlier linear sum, for comparisons.
-    let gamma_light = !crate::flag("linearlight");
-    *gpu_ambience = level.blend.gpu(l).with_height_fog(b).with_rim_light(b).with_fog(b, l)
-        .with_gamma_light(gamma_light, Vec3::new(a.red, a.green, a.blue) * l.ambient, b.light_shadow_intensity);
+    // RenderSwitches (the Lighting Menu, DSOR_FLAGS): the other ways, to compare.
+    let gamma_light = switches.gamma_light;
+    *gpu_ambience = level.blend.gpu(l).with_height_fog(b).with_rim_light(b).with_rim_enabled(switches.rim).with_fog(b, l)
+        .with_gamma_light(&switches, Vec3::new(a.red, a.green, a.blue) * l.ambient, b.light_shadow_intensity);
     let toward = level.shadow_dir.normalize_or(blend::direction(None));
     for (mut sun, mut tf, mut global_tf) in &mut suns {
         // The single real sun supplies the fixed shadow map. The fragment

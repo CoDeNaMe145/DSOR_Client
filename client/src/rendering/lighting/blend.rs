@@ -224,10 +224,18 @@ impl GpuAmbience {
     ///   zone's values, lighting-work/captures/kingshill-*.txt); a linear sum of
     ///   the same colours over-saturates tinted ambients (the church's
     ///   (0.18, 0.25, 0.35): blue 4x red in linear, 2x in gamma).
-    pub(super) fn with_gamma_light(mut self, enabled: bool, ambient: Vec3, shadow_intensity: f32) -> Self {
-        let floor = if crate::flag("shadowfloor") { 1.0 } else { 0.0 };
-        self.gamma_light = Vec4::new(if enabled { 1.0 } else { 0.0 }, std::f32::consts::PI * UNIT, shadow_floor(shadow_intensity), floor);
-        self.ambient_gamma = ambient.max(Vec3::ZERO).powf(1.0 / 2.2).extend(if crate::flag("ao13") { 2.0 } else if crate::flag("aogamma") { 1.0 } else { 0.0 });
+    pub(super) fn with_gamma_light(mut self, switches: &super::RenderSwitches, ambient: Vec3, shadow_intensity: f32) -> Self {
+        let floor = if switches.shadow_floor { 1.0 } else { 0.0 };
+        self.gamma_light = Vec4::new(if switches.gamma_light { 1.0 } else { 0.0 }, std::f32::consts::PI * UNIT, shadow_floor(shadow_intensity), floor);
+        let ao = match switches.ao { super::AoMode::Linear => 0.0, super::AoMode::Squared => 1.0, super::AoMode::Clamped => 2.0 };
+        self.ambient_gamma = ambient.max(Vec3::ZERO).powf(1.0 / 2.2).extend(ao);
+        self
+    }
+
+    /// Leaves the characters' rim light out (the Lighting Menu's switch, or
+    /// DSOR_FLAGS=norim), for comparisons.
+    pub(super) fn with_rim_enabled(mut self, enabled: bool) -> Self {
+        if !enabled { self.rim_color = Vec4::ZERO; }
         self
     }
 
@@ -241,9 +249,7 @@ impl GpuAmbience {
     ///   0.5; c9 = (0.6963, 0.6963, 0.1741, 4), (4, 4, 1) normalised.
     pub(super) fn with_rim_light(mut self, b: &Bubble) -> Self {
         let c = b.rim_light_color;
-        // DSOR_FLAGS=norim leaves it out, for comparisons.
-        let scale = if crate::flag("norim") { 0.0 } else { 1.0 };
-        self.rim_color = Vec4::new(c[0], c[1], c[2], 1.0) * b.rim_light_intensity * scale;
+        self.rim_color = Vec4::new(c[0], c[1], c[2], 1.0) * b.rim_light_intensity;
         self.rim_dir_spec = Vec3::new(4.0, 4.0, 1.0).normalize().extend(4.0);
         self
     }

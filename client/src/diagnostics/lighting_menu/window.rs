@@ -409,8 +409,8 @@ fn scroll_menu_pages(
 
 fn update_menu_navigation(
     buttons: Query<(&Interaction, &MenuNav), Changed<Interaction>>,
-    mut nav_styles: Query<(&MenuNav, &mut BackgroundColor)>,
-    mut pages: Query<(&MenuPageBody, &mut Node)>,
+    nav_styles: Query<(&MenuNav, &mut BackgroundColor)>,
+    pages: Query<(&MenuPageBody, &mut Node)>,
 ) {
     let selected = buttons.iter().find_map(|(interaction, nav)| {
         (*interaction == Interaction::Pressed).then_some(nav.0)
@@ -418,7 +418,44 @@ fn update_menu_navigation(
     let Some(selected) = selected else {
         return;
     };
+    select_page(selected, nav_styles, pages);
+}
 
+/// For screenshots: DSOR_PANEL=lighting (overview, regions, atmosphere,
+/// presets) opens the window on that page once its pages exist, and
+/// DSOR_PANEL_SCROLL=<px> scrolls it (held while the layout settles).
+fn open_requested_page(
+    mut frames: Local<u32>,
+    nav_styles: Query<(&MenuNav, &mut BackgroundColor)>,
+    pages: Query<(&MenuPageBody, &mut Node)>,
+    mut scrolls: Query<(&MenuPageBody, &mut ScrollPosition)>,
+) {
+    if *frames > 120 || pages.is_empty() {
+        return;
+    }
+    *frames += 1;
+    let page = match std::env::var("DSOR_PANEL").unwrap_or_default().to_ascii_lowercase().as_str() {
+        "lighting" => MenuPage::Lighting,
+        "regions" => MenuPage::Regions,
+        "atmosphere" => MenuPage::Atmosphere,
+        "presets" => MenuPage::Presets,
+        _ => { *frames = u32::MAX; return; }
+    };
+    if *frames == 1 {
+        select_page(page, nav_styles, pages);
+    }
+    if let Some(y) = std::env::var("DSOR_PANEL_SCROLL").ok().and_then(|v| v.parse::<f32>().ok()) {
+        for (body, mut scroll) in &mut scrolls {
+            if body.0 == page { scroll.y = y; }
+        }
+    }
+}
+
+fn select_page(
+    selected: MenuPage,
+    mut nav_styles: Query<(&MenuNav, &mut BackgroundColor)>,
+    mut pages: Query<(&MenuPageBody, &mut Node)>,
+) {
     for (nav, mut background) in &mut nav_styles {
         background.0 = if nav.0 == selected {
             Color::srgb(0.29, 0.25, 0.18)
@@ -438,6 +475,11 @@ fn update_menu_navigation(
 
 fn spawn_menu(commands: &mut Commands, starts_open: bool) {
     commands.insert_resource(MenuAppearance::default());
+    // For screenshots: DSOR_PANEL_SIZE=width,height (the drag's 520 x 420 at least).
+    let size = std::env::var("DSOR_PANEL_SIZE").ok()
+        .and_then(|v| { let (w, h) = v.split_once(',')?; Some((w.trim().parse::<f32>().ok()?, h.trim().parse::<f32>().ok()?)) })
+        .map(|(w, h)| (w.max(520.0), h.max(420.0)))
+        .unwrap_or((900.0, 650.0));
     commands.spawn((
         MenuRoot,
         // Clicks, drags and the wheel over the window stay out of the world.
@@ -446,8 +488,8 @@ fn spawn_menu(commands: &mut Commands, starts_open: bool) {
             position_type: PositionType::Absolute,
             left: Val::Px(40.0),
             top: Val::Px(40.0),
-            width: Val::Px(900.0),
-            height: Val::Px(650.0),
+            width: Val::Px(size.0),
+            height: Val::Px(size.1),
             flex_direction: FlexDirection::Column,
             row_gap: Val::Px(12.0),
             padding: UiRect::new(Val::Px(14.0), Val::Px(14.0), Val::Px(0.0), Val::Px(30.0)),
@@ -1111,7 +1153,7 @@ pub(super) struct WindowPlugin;
 impl Plugin for WindowPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn).add_systems(Update, (
-            (update_menu_navigation, update_menu_appearance).chain(),
+            (open_requested_page, update_menu_navigation, update_menu_appearance).chain(),
             update_menu_window,
             scroll_menu_pages,
         ));

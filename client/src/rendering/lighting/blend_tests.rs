@@ -292,3 +292,25 @@ fn full_shadow_keeps_half_the_light_as_the_blurred_shadow_buffer_does() {
     assert!(super::shadow_floor(0.25) > super::shadow_floor(0.5));
     assert_eq!(super::shadow_floor(0.0), 1.0);
 }
+
+#[test]
+fn render_switches_reach_the_gpu_the_frame_they_change() {
+    use super::super::{AoMode, RenderSwitches};
+    let mut app = App::new();
+    app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default()))
+        .init_asset::<Ambience>().init_resource::<GpuAmbience>()
+        .init_resource::<Lighting>().init_resource::<GlobalAmbientLight>()
+        .insert_resource(RenderSwitches { gamma_light: true, ao: AoMode::Linear, shadow_floor: false, rim: true })
+        .insert_resource(Level::default())
+        .add_systems(Update, apply_look);
+    app.update();
+    let gpu = app.world().resource::<GpuAmbience>().clone();
+    assert_eq!((gpu.gamma_light.x, gpu.gamma_light.w, gpu.ambient_gamma.w), (1.0, 0.0, 0.0));
+    *app.world_mut().resource_mut::<RenderSwitches>() = RenderSwitches { gamma_light: false, ao: AoMode::Clamped, shadow_floor: true, rim: false };
+    app.update();
+    let gpu = app.world().resource::<GpuAmbience>().clone();
+    assert_eq!((gpu.gamma_light.x, gpu.gamma_light.w, gpu.ambient_gamma.w), (0.0, 1.0, 2.0));
+    assert_eq!(gpu.rim_color, Vec4::ZERO);
+    // Linear: Bevy's ambient light is back on, as before the gamma sum.
+    assert!(app.world().resource::<GlobalAmbientLight>().brightness > 0.0);
+}
