@@ -101,25 +101,46 @@ fn nebula_falloff(mut shaders: ResMut<Assets<bevy::shader::Shader>>, mut done: L
     info!("point lights: Nebula's linear falloff");
 }
 
-/// Bevy's screen-space ambient occlusion with the original's radius: 0.4 units
-/// around each point (Bevy's GTAO: 0.73). The original's pe_ssao is a small,
-/// contact-only occlusion: 16 samples in a 0.4 hemisphere, counted when 0.05 to
-/// 0.4 behind the visible surface. DSOR_AO_RADIUS overrides it for comparisons.
+/// Bevy's screen-space ambient occlusion pass, adapted:
+/// - its GTAO (AoMode Linear / Squared / Clamped, to compare) with the
+///   original's radius, 0.4 units around each point (Bevy's: 0.73);
+///   DSOR_AO_RADIUS overrides it;
+/// - the original's own estimate (AoMode::Original), lighting/pe_ssao.wgsl,
+///   when the view's ScreenSpaceAmbientOcclusion has a negative
+///   constant_object_thickness (ORIGINAL_SSAO): Bevy's depth preprocessing,
+///   normal prepass and spatial denoiser stay, the per-pixel estimate is
+///   pe_ssao's.
 /// EVIDENCE: shaders_sm30 pe_ssao (occlusionConstants c23 = (0.4, 0.05, 0.4,
 ///   1.3) captured, lighting-work/captures/kingshill-*.txt: `mul r6.xyz, r6,
 ///   c23.x` scales the offsets, `add r0.y, r0.x, -c23.z` / `-r0.x, c23.y` bound
 ///   the depth test).
-fn ssao_radius(mut shaders: ResMut<Assets<bevy::shader::Shader>>, mut done: Local<[bool; 2]>) {
+fn patch_ssao(mut shaders: ResMut<Assets<bevy::shader::Shader>>, mut done: Local<[bool; 2]>) {
     if done.iter().all(|d| *d) {
         return;
     }
     let radius = std::env::var("DSOR_AO_RADIUS").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.4);
-    let targets = [
-        ("ssao/ssao.wgsl", "let effect_radius = 0.5 * 1.457;", format!("let effect_radius = {radius:?};")),
-        ("ssao/preprocess_depth.wgsl", "let effect_radius = depth_range_scale_factor * 0.5 * 1.457;",
-            format!("let effect_radius = depth_range_scale_factor * {radius:?};")),
+    let dispatch = "    pixel_depth += 0.00001; // Avoid depth precision issues
+";
+    let original = format!("{dispatch}    if thickness < 0.0 {{
+        textureStore(ambient_occlusion, pixel_coordinates, vec4<f32>(dsor_pe_ssao(pixel_coordinates, pixel_depth), 0.0, 0.0, 0.0));
+        return;
+    }}
+");
+    let compute = "@compute
+@workgroup_size(8, 8, 1)
+fn ssao(";
+    let targets: [(&str, Vec<(&str, String)>); 2] = [
+        ("ssao/ssao.wgsl", vec![
+            ("let effect_radius = 0.5 * 1.457;", format!("let effect_radius = {radius:?};")),
+            (dispatch, original),
+            (compute, format!("{}
+{compute}", include_str!("lighting/pe_ssao.wgsl"))),
+        ]),
+        ("ssao/preprocess_depth.wgsl", vec![
+            ("let effect_radius = depth_range_scale_factor * 0.5 * 1.457;", format!("let effect_radius = depth_range_scale_factor * {radius:?};")),
+        ]),
     ];
-    for (i, (path, old, new)) in targets.iter().enumerate() {
+    for (i, (path, edits)) in targets.iter().enumerate() {
         if done[i] {
             continue;
         }
@@ -127,15 +148,22 @@ fn ssao_radius(mut shaders: ResMut<Assets<bevy::shader::Shader>>, mut done: Loca
         done[i] = true;
         let Some(mut shader) = shaders.get_mut(id) else { continue };
         let bevy::shader::Source::Wgsl(src) = &shader.source else { continue };
-        if !src.contains(old) {
-            warn!("bevy_pbr {path}: effect radius not as expected; ambient occlusion keeps Bevy's radius");
+        if let Some((old, _)) = edits.iter().find(|(old, _)| src.matches(old).count() != 1) {
+            warn!("bevy_pbr {path}: {old:?} not as expected; ambient occlusion keeps Bevy's own");
             continue;
         }
-        let patched = src.replace(old, new);
+        let mut patched = src.to_string();
+        for (old, new) in edits {
+            patched = patched.replace(old, new);
+        }
         shader.source = bevy::shader::Source::Wgsl(patched.into());
-        info!("ambient occlusion: the original's radius {radius} ({path})");
+        info!("ambient occlusion: the original's radius {radius} and pe_ssao ({path})");
     }
 }
+
+/// ScreenSpaceAmbientOcclusion::constant_object_thickness meaning "the
+/// original's estimate" to the patched pass (patch_ssao).
+const ORIGINAL_SSAO: f32 = -1.0;
 
 /// An ambience bubble's settings (the fields the client uses; names as in the
 /// level database).
@@ -570,28 +598,48 @@ pub struct Lighting {
 
 /// How the light is put together: the original's way by default, the others
 /// kept to compare against it. Switchable live from the Lighting Menu, starting
-/// from DSOR_FLAGS (linearlight, aolinear, ao13, shadowfloor, norim). Not saved.
+/// from DSOR_FLAGS (linearlight, noao, aolinear, aosquared, ao13, noshadowfloor,
+/// norim, linearscene). Not saved.
 #[derive(Resource, Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct RenderSwitches {
     /// The original's gamma-space light sum (false: Bevy's linear sum).
     pub(crate) gamma_light: bool,
     pub(crate) ao: AoMode,
     /// Full shadow keeps half the whole light, as the original's blurred shadow
-    /// buffer (UNVERIFIED in interiors: too dark there).
+    /// buffer (false: shadow removes the sun's share only).
+    /// MEASURED (2026-10-18, Kingshill church, offline, away from the
+    /// original's player light): pillars 13/11/14 vs the original's 13/11/14,
+    /// floor 26/19/20 vs 28/21/22 and 18/16/19 vs 19/19/23; without it 17/17/21,
+    /// 29/26/31, 20/23/29 (too bright and blue). The earlier "too dark" was the
+    /// player light in the original's frame and Bevy's AO on top.
     pub(crate) shadow_floor: bool,
     /// The characters' rim light.
     pub(crate) rim: bool,
+    /// Surfaces write gamma colours to the scene target and the compose pass
+    /// shows them as they are, so blending (decals, alpha surfaces, particles,
+    /// glows) mixes shown colours as the original's 8-bit targets do
+    /// (lighting/ambience.wgsl encode_scene). false: Bevy's linear target.
+    pub(crate) gamma_scene: bool,
 }
 
-/// How Bevy's ambient occlusion darkens the sun pass's sum.
+/// The ambient occlusion and how it darkens the sun pass's sum.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AoMode {
-    /// Once, in linear.
+    /// The original's: pe_ssao's estimate (lighting/pe_ssao.wgsl, in Bevy's SSAO
+    /// pass), the sun pass's light x its visibility squared. The running
+    /// release261_192 client drew pe_ssao once per frame in Kingshill's garden,
+    /// church and throne room (its default frame shader declares the effect
+    /// disabled; the game turns it on), not at the gate.
+    Original,
+    /// None, Bevy's SSAO pass removed.
+    Off,
+    /// Bevy's GTAO (0.4 radius), once, in linear.
     Linear,
-    /// Squared in the gamma sum, the original's formula, with the original's
-    /// 0.4 radius (ssao_radius): the best match measured (see ambience.wgsl).
+    /// Bevy's GTAO squared in the gamma sum. FAILURE: a dark mat between
+    /// Kingshill's tall grass blades (2026-10-18), where the original's
+    /// contact-only estimate finds almost nothing.
     Squared,
-    /// x 1.3 clamped to 1, then squared: pe_ssao's boost.
+    /// Bevy's GTAO x 1.3 clamped to 1, then squared.
     Clamped,
 }
 
@@ -599,9 +647,20 @@ impl Default for RenderSwitches {
     fn default() -> Self {
         Self {
             gamma_light: !crate::flag("linearlight"),
-            ao: if crate::flag("ao13") { AoMode::Clamped } else if crate::flag("aolinear") { AoMode::Linear } else { AoMode::Squared },
-            shadow_floor: crate::flag("shadowfloor"),
+            ao: if crate::flag("ao13") {
+                AoMode::Clamped
+            } else if crate::flag("aolinear") {
+                AoMode::Linear
+            } else if crate::flag("aosquared") || crate::flag("aogamma") {
+                AoMode::Squared
+            } else if crate::flag("noao") {
+                AoMode::Off
+            } else {
+                AoMode::Original
+            },
+            shadow_floor: !crate::flag("noshadowfloor"),
             rim: !crate::flag("norim"),
+            gamma_scene: !crate::flag("linearscene"),
         }
     }
 }
@@ -694,7 +753,7 @@ impl Plugin for EditorLightingPlugin {
         app.add_plugins(BlendPlugin).init_resource::<Level>().init_resource::<EditorLook>()
             .insert_resource(load_saved().unwrap_or_default())
             .init_resource::<RenderSwitches>()
-            .add_systems(Update, (nebula_falloff, ssao_radius))
+            .add_systems(Update, (nebula_falloff, patch_ssao))
             .add_systems(Update, (copy_editor_look, apply_look, flicker).chain().in_set(ApplyEditorLighting))
             .add_systems(PostUpdate, shift_fog.after(bevy::transform::TransformSystems::Propagate));
     }
@@ -714,7 +773,7 @@ impl Plugin for LightingPlugin {
             .init_resource::<Level>()
             .insert_resource(load_saved().unwrap_or_default())
             .init_resource::<RenderSwitches>()
-            .add_systems(Update, (nebula_falloff, ssao_radius))
+            .add_systems(Update, (nebula_falloff, patch_ssao))
             // The Lighting Menu replaces this panel when it is on (crate::diagnostics::lighting_menu).
             .add_systems(Startup, spawn_panel.run_if(|| !crate::diagnostics::lighting_menu::enabled()))
             .add_systems(
@@ -841,8 +900,11 @@ fn apply_look(
     mut gpu_ambience: ResMut<GpuAmbience>,
     mut ambient: ResMut<GlobalAmbientLight>,
     cameras: Query<Entity, (With<Camera3d>, Without<crate::rendering::highlight::HighlightCamera>, Without<NoLevelLook>)>,
+    msaa: Query<&Msaa>,
     mut fresh: Local<Vec<Entity>>,
 ) {
+    #[cfg(target_arch = "wasm32")]
+    let _ = &msaa;
     let new_camera = cameras.iter().any(|e| !fresh.contains(&e));
     if !lighting.is_changed() && !level.is_changed() && !new_camera && !switches.as_ref().is_some_and(|s| s.is_changed()) {
         return;
@@ -898,8 +960,24 @@ fn apply_look(
                 vignette_intensity: b.vignette_intensity,
                 vignette_size: b.vignette_size,
                 death_fade: 0.0,
+                gamma_scene: switches.gamma_scene,
             }));
         cam.remove::<(Bloom, Vignette)>();
+        // Bevy's SSAO pass runs unless the AO is off; AoMode::Original runs the
+        // original's estimate in it (patch_ssao). It needs single-sample depth:
+        // crate::main keeps Msaa::Off with FXAA on native views.
+        #[cfg(not(target_arch = "wasm32"))]
+        if switches.ao == AoMode::Off || crate::flag("noao") || !matches!(msaa.get(e), Ok(Msaa::Off)) {
+            cam.remove::<bevy::pbr::ScreenSpaceAmbientOcclusion>();
+        } else {
+            cam.insert(bevy::pbr::ScreenSpaceAmbientOcclusion {
+                // Eight samples retain contact shading without the default
+                // high preset's eighteen full-resolution samples per pixel
+                // (Bevy's GTAO modes; the original's estimate takes 16).
+                quality_level: bevy::pbr::ScreenSpaceAmbientOcclusionQualityLevel::Medium,
+                constant_object_thickness: if switches.ao == AoMode::Original { ORIGINAL_SSAO } else { 0.25 },
+            });
+        }
     }
 }
 

@@ -167,12 +167,16 @@ pub(super) struct GpuAmbience {
     fog_dist: Vec4,
     /// x 1 sums the sun, back light and ambient in gamma space as the 2018/261
     /// sun pass does; y the terms' unit (PI x UNIT); z the share of the whole
-    /// light kept in full shadow; w 1 applies it (DSOR_FLAGS=shadowfloor).
+    /// light kept in full shadow; w 1 applies it (the default; DSOR_FLAGS=noshadowfloor).
     gamma_light: Vec4,
     /// The ambient light in that gamma sum (gamma rgb); w 1 squares the
     /// ambient occlusion in gamma (DSOR_FLAGS=aogamma), 2 the same after x 1.3 clamped to 1
-    /// (ao13), 0 applies it once in linear.
+    /// (ao13), 0 applies it once in linear, 3 leaves it out, 4 the original's
+    /// estimate squared (the default; lighting/pe_ssao.wgsl).
     ambient_gamma: Vec4,
+    /// x 1: surfaces write gamma colours to the scene target (ambience.wgsl
+    /// encode_scene), blending in gamma as the original; 0 in the inactive buffer.
+    output: Vec4,
 }
 // CONTRACT: the field order above is ambience.wgsl's `Ambience` struct order
 // (the GPU reads by position); `uniform_fields_follow_the_wgsl_order` checks it.
@@ -181,7 +185,7 @@ impl Default for GpuAmbience {
     fn default() -> Self {
         Self { counts: UVec4::ZERO, terms: [GpuTerm::default(); MAX_TERMS], height_fog_color: Vec4::ZERO, fog_heights: Vec4::ZERO,
             rim_color: Vec4::ZERO, rim_dir_spec: Vec4::ZERO, fog_color: Vec4::ZERO, fog_dist: Vec4::ZERO,
-            gamma_light: Vec4::ZERO, ambient_gamma: Vec4::ZERO }
+            gamma_light: Vec4::ZERO, ambient_gamma: Vec4::ZERO, output: Vec4::ZERO }
     }
 }
 
@@ -227,8 +231,12 @@ impl GpuAmbience {
     pub(super) fn with_gamma_light(mut self, switches: &super::RenderSwitches, ambient: Vec3, shadow_intensity: f32) -> Self {
         let floor = if switches.shadow_floor { 1.0 } else { 0.0 };
         self.gamma_light = Vec4::new(if switches.gamma_light { 1.0 } else { 0.0 }, std::f32::consts::PI * UNIT, shadow_floor(shadow_intensity), floor);
-        let ao = match switches.ao { super::AoMode::Linear => 0.0, super::AoMode::Squared => 1.0, super::AoMode::Clamped => 2.0 };
+        let ao = match switches.ao {
+            super::AoMode::Linear => 0.0, super::AoMode::Squared => 1.0, super::AoMode::Clamped => 2.0, super::AoMode::Off => 3.0,
+            super::AoMode::Original => 4.0,
+        };
         self.ambient_gamma = ambient.max(Vec3::ZERO).powf(1.0 / 2.2).extend(ao);
+        self.output = Vec4::new(if switches.gamma_scene { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0);
         self
     }
 
@@ -402,18 +410,21 @@ fn blend_function(source: &str) -> Option<String> {
     let end_anchor = "        direct_light += light_contrib * shadow;";
     let end = source[start..].find(end_anchor)? + start + end_anchor.len();
     let original = &source[start..end];
-    let mut patched = source.replace(original, &format!("#ifdef DSOR_AMBIENCE\n        if ambience.counts.x != 0u && i == 0u {{\n            direct_light += apply_ambience(&lighting_input, enable_diffuse, shadow, diffuse_occlusion, dsor_point_gamma);\n        }} else {{\n{original}\n        }}\n#else\n{original}\n#endif"));
+    let mut patched = source.replace(original, &format!("#ifdef DSOR_AMBIENCE\n        if ambience.counts.x != 0u && i == 0u {{\n            direct_light += apply_ambience(&lighting_input, enable_diffuse, shadow, dsor_occlusion, dsor_point_gamma);\n        }} else {{\n{original}\n        }}\n#else\n{original}\n#endif"));
     // Transmission uses the same radiance blend on the opposite material lobe.
     let start = patched.find("        let transmitted_light_contrib =\n            lighting::directional_light(")?;
     let anchor = "        transmitted_light += transmitted_light_contrib * transmitted_shadow;";
     let end = patched[start..].find(anchor)? + start + anchor.len();
     let original = patched[start..end].to_owned();
-    patched = patched.replace(&original, &format!("#ifdef DSOR_AMBIENCE\n        if ambience.counts.x != 0u && i == 0u {{\n            transmitted_light += apply_ambience(&transmissive_lighting_input, enable_diffuse, transmitted_shadow, diffuse_occlusion, vec3(0.0));\n        }} else {{\n{original}\n        }}\n#else\n{original}\n#endif"));
+    patched = patched.replace(&original, &format!("#ifdef DSOR_AMBIENCE\n        if ambience.counts.x != 0u && i == 0u {{\n            transmitted_light += apply_ambience(&transmissive_lighting_input, enable_diffuse, transmitted_shadow, dsor_occlusion, vec3(0.0));\n        }} else {{\n{original}\n        }}\n#else\n{original}\n#endif"));
     // With the gamma light sum, point lights join it as the original's point
     // light pass adds into its light buffer (ambience.wgsl nebula_point_light).
     let points = "    // Point lights (direct)\n";
     if !patched.contains(points) { return None; }
-    patched = patched.replace(points, &format!("#ifdef DSOR_AMBIENCE\n    var dsor_point_gamma = vec3<f32>(0.0);\n#endif\n{points}"));
+    // The original's AO estimate (AoMode::Original) as its pass wrote it: Bevy's
+    // diffuse_occlusion is its multi-bounce approximation of the SSAO texture.
+    let raw_ao = "#ifdef SCREEN_SPACE_AMBIENT_OCCLUSION\n    if ambience.ambient_gamma.w > 3.5 {\n        dsor_occlusion = vec3(textureLoad(view_bindings::screen_space_ambient_occlusion_texture, vec2<i32>(in.frag_coord.xy), 0i).r);\n    }\n#endif\n";
+    patched = patched.replace(points, &format!("#ifdef DSOR_AMBIENCE\n    var dsor_point_gamma = vec3<f32>(0.0);\n    var dsor_occlusion = diffuse_occlusion;\n{raw_ao}#endif\n{points}"));
     let point = "        let light_contrib = lighting::point_light(light_id, &lighting_input, enable_diffuse, true);\n        direct_light += light_contrib * shadow;";
     if patched.matches(point).count() != 1 { return None; }
     patched = patched.replace(point, &format!("#ifdef DSOR_AMBIENCE\n        if ambience.gamma_light.x != 0.0 {{\n            if enable_diffuse {{ dsor_point_gamma += nebula_point_light(light_id, &lighting_input); }}\n        }} else {{\n{point}\n        }}\n#else\n{point}\n#endif"));
@@ -429,7 +440,13 @@ fn blend_function(source: &str) -> Option<String> {
     let fog_end = "            pbr_input.frag_coord.xy,\n        );\n        }\n#else\n        output_color = apply_fog(\n            view_bindings::fog,\n            output_color,\n            pbr_input.world_position.xyz,\n            view_bindings::view.world_position.xyz,\n            pbr_input.frag_coord.xy,\n        );\n#endif\n    }\n#endif  // DISTANCE_FOG";
     if !patched.contains(fog_end) { return None; }
     patched = patched.replace(fog_end, &format!("{fog_end_body}\n#ifdef DSOR_AMBIENCE\n        output_color = apply_height_fog(output_color, pbr_input.world_position.xyz);\n#endif\n    }}\n#endif  // DISTANCE_FOG", fog_end_body = &fog_end[..fog_end.len() - "\n    }\n#endif  // DISTANCE_FOG".len()]));
-    Some(format!("#ifdef DSOR_AMBIENCE\n#import dsor::ambience::{{ambience, apply_ambience, apply_height_fog, apply_nebula_fog, apply_points_gamma, nebula_point_light}}\n#endif\n{patched}"))
+    // Every material's last step (lit, unlit, decals, particles, our surfaces):
+    // the gamma scene target (ambience.wgsl encode_scene), after the fogs and
+    // before the premultiplication, so blending mixes the shown colours.
+    let premultiply = "#ifdef PREMULTIPLY_ALPHA\n    output_color = premultiply_alpha(pbr_input.material.flags, output_color);\n#endif\n    return output_color;";
+    if patched.matches(premultiply).count() != 1 { return None; }
+    patched = patched.replace(premultiply, &format!("#ifdef DSOR_AMBIENCE\n    output_color = encode_scene(output_color);\n#endif\n{premultiply}"));
+    Some(format!("#ifdef DSOR_AMBIENCE\n#import dsor::ambience::{{ambience, apply_ambience, apply_height_fog, apply_nebula_fog, apply_points_gamma, encode_scene, nebula_point_light}}\n#endif\n{patched}"))
 }
 
 fn prepare_shaders(mut shaders: ResMut<Assets<Shader>>, mut done: Local<bool>) {

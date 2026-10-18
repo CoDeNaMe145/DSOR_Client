@@ -15,7 +15,8 @@ struct Params {
     p: vec4<f32>,
     // BloomColor
     color: vec4<f32>,
-    // xy the blur direction (1,0) or (0,1)
+    // xy the blur direction (1,0) or (0,1); z 1 when the scene target holds
+    // gamma colours (lighting/ambience.wgsl encode_scene)
     dir: vec4<f32>,
     balance: vec4<f32>,
     vignette_color: vec4<f32>,
@@ -30,8 +31,12 @@ struct Params {
 
 const LUM: vec3<f32> = vec3<f32>(0.299, 0.587, 0.114);
 
-// What the client shows for a linear HDR value: gamma, within its range (2.0).
+// What the client shows for a scene value, within its range (2.0): the value
+// itself in the gamma scene target, else the linear value's gamma.
 fn shown(c: vec3<f32>) -> vec3<f32> {
+    if params.dir.z != 0.0 {
+        return min(max(c, vec3<f32>(0.0)), vec3<f32>(2.0));
+    }
     return min(pow(max(c, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2)), vec3<f32>(2.0));
 }
 
@@ -75,7 +80,11 @@ fn fs_compose(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     // the light sums here are taken back to linear with 2.2, so 2.2 shows them.
     // The sRGB curve's linear toe crushed dark products (a dark rock, albedo
     // 0.2 under light 0.25: 0.05 in the original, 0.018 through sRGB).
+    // In the gamma scene target the stored values are already what is shown.
     var display = pow(max(scene.rgb, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2));
+    if params.dir.z != 0.0 {
+        display = max(scene.rgb, vec3<f32>(0.0));
+    }
     if params.p.y > 0.0 {
         // pe_compose: 2 x scene + bloom x hdrBloomScale (`add r0, r2, r2`,
         // `mad r0.xyz, r1, c0.x, r0`): the scene's x 2 undoes its 8-bit encoding;

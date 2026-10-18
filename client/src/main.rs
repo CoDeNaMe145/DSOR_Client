@@ -494,22 +494,11 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, opts: Res<Optio
             commands.entity(camera).insert(Msaa::Off);
         }
     }
-    // Sun shadows only occlude direct light. SSAO also occludes ambient light
-    // near contacts, grounding objects even inside another object's shadow.
-    // The native SSAO pass requires single-sample depth; FXAA smooths edges.
+    // Single-sample with FXAA on native views: Bevy's SSAO pass, which the level's
+    // look adds unless the AO is off (crate::rendering::lighting AoMode), requires
+    // single-sample depth.
     #[cfg(not(target_arch = "wasm32"))]
-    if !flag("noao") {
-        commands.entity(camera).insert((
-            bevy::pbr::ScreenSpaceAmbientOcclusion {
-                // Eight samples retain contact shading without the default
-                // high preset's eighteen full-resolution samples per pixel.
-                quality_level: bevy::pbr::ScreenSpaceAmbientOcclusionQualityLevel::Medium,
-                ..default()
-            },
-            Msaa::Off,
-            bevy::anti_alias::fxaa::Fxaa::default(),
-        ));
-    }
+    commands.entity(camera).insert((Msaa::Off, bevy::anti_alias::fxaa::Fxaa::default()));
     // Online the game camera follows the player (net::follow_camera); the free
     // fly camera is the map viewer's.
     if opts.net.is_none() && !opts.login_screen {

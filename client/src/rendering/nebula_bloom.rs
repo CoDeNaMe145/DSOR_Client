@@ -39,6 +39,9 @@ pub struct NebulaPostProcess {
     pub vignette_intensity: f32,
     pub vignette_size: f32,
     pub death_fade: f32,
+    /// The scene target holds gamma colours (crate::rendering::lighting's
+    /// RenderSwitches::gamma_scene): shown as they are, no 1/2.2 power.
+    pub gamma_scene: bool,
 }
 
 pub struct NebulaBloomPlugin;
@@ -261,7 +264,7 @@ impl NebulaPostProcess {
         let b = self.balance;
         let v = self.vignette_color;
         [self.threshold, self.scale, pixel.x, pixel.y,
-            c.x, c.y, c.z, c.w, dir.x, dir.y, 0.0, 0.0,
+            c.x, c.y, c.z, c.w, dir.x, dir.y, if self.gamma_scene { 1.0 } else { 0.0 }, 0.0,
             b.x, b.y, b.z, b.w, v.x, v.y, v.z, v.w,
             self.saturation * (1.0 - 0.9 * self.death_fade),
             self.vignette_intensity, self.vignette_size,

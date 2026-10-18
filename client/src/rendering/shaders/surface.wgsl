@@ -30,7 +30,7 @@
 #import bevy_pbr::{mesh_view_bindings as view_bindings, mesh_view_types}
 #endif
 #ifdef DSOR_AMBIENCE
-#import dsor::ambience::rim_light
+#import dsor::ambience::{ambience, rim_light}
 #endif
 
 struct Surface {
@@ -152,7 +152,15 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         var c = textureSample(pbr_bindings::base_color_texture, pbr_bindings::base_color_sampler, uv0(in)) * vertex_color(in);
         let soft = clamp(depth_behind(in.position, in.world_position.xyz) / (surface.p2.x + 0.05), 0.0, 1.0);
         if surface.p2.y > 0.5 {
-            c = vec4<f32>(c.rgb * soft * fog_clear(in), c.a);
+            var fade = soft * fog_clear(in);
+#ifdef DSOR_AMBIENCE
+            // Raised so that it scales the stored colour once encoded for the
+            // gamma scene target, as the original multiplies its gamma colour.
+            if ambience.output.x != 0.0 {
+                fade = pow(fade, 2.2);
+            }
+#endif
+            c = vec4<f32>(c.rgb * fade, c.a);
         } else {
             c.a = c.a * soft;
         }
@@ -169,6 +177,13 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             g = x * p / d * 0.5;
         }
         out.color = vec4<f32>(surface.p1.rgb * surface.p0.y * g * fog_clear(in), 1.0);
+#ifdef DSOR_AMBIENCE
+        // The gamma scene target (ambience.wgsl encode_scene): the shell adds
+        // MatDiffuse as stored x Amplitude x g, the original's sum, unconverted.
+        if ambience.output.x != 0.0 {
+            out.color = vec4<f32>(raw(surface.p1.rgb) * surface.p0.y * g * fog_clear(in), 1.0);
+        }
+#endif
         return out;
     }
 

@@ -29,8 +29,12 @@ struct Ambience {
     // z the share of the whole light kept in full shadow; w 1 applies it.
     gamma_light: vec4<f32>,
     // The ambient light in that gamma sum (gamma rgb); w 1 squares the AO in
-    // gamma (DSOR_FLAGS=aogamma), 2 x 1.3 clamped then squared (ao13), 0 once in linear.
+    // gamma (DSOR_FLAGS=aosquared), 2 x 1.3 clamped then squared (ao13), 0 once in
+    // linear, 3 none, 4 the original's estimate squared (pe_ssao.wgsl, the default).
     ambient_gamma: vec4<f32>,
+    // x 1: the scene target holds gamma colours (encode_scene), so alpha and
+    // additive surfaces blend in gamma space as D3D9 without sRGB does.
+    output: vec4<f32>,
 }
 @group(1) @binding(0) var<uniform> ambience: Ambience;
 
@@ -93,10 +97,9 @@ fn apply_ambience_gamma(input: ptr<function, LightingInput>, enable_diffuse: boo
     }
     // The sun pass multiplies the whole sum by the blurred shadow value: full
     // shadow keeps gamma_light.z of it (crate::rendering::lighting::blend::shadow_floor).
-    // Only with DSOR_FLAGS=shadowfloor (gamma_light.w 1) while interiors differ:
-    // Bevy's sun shadow covers church and gate interiors the original leaves
-    // unshadowed, and halving their light there made them too dark (Kingshill
-    // church 17.9 vs 22.1). Without it shadow removes the sun's share only.
+    // The default (gamma_light.w 1; DSOR_FLAGS=noshadowfloor: shadow removes
+    // the sun's share only). Kingshill's church, fully shadowed, matches the
+    // original with it (RenderSwitches::shadow_floor).
     if ambience.gamma_light.w != 0.0 {
         light *= mix(ambience.gamma_light.z, 1.0, shadow);
     } else {
@@ -104,7 +107,13 @@ fn apply_ambience_gamma(input: ptr<function, LightingInput>, enable_diffuse: boo
     }
     // The occlusion darkens the sun pass's sum only: once in linear is its
     // 1/2.2 power here.
-    if ambience.ambient_gamma.w > 1.5 {
+    if ambience.ambient_gamma.w > 3.5 {
+        // The original's estimate (pe_ssao.wgsl), its visibility as computed:
+        // the sun pass's globalShadowSampler.y squared.
+        light *= occlusion * occlusion;
+    } else if ambience.ambient_gamma.w > 2.5 {
+        // None.
+    } else if ambience.ambient_gamma.w > 1.5 {
         let o = min(occlusion * 1.3, vec3(1.0));
         light *= o * o;
     } else if ambience.ambient_gamma.w != 0.0 {
@@ -137,6 +146,25 @@ fn nebula_point_light(light_id: u32, input: ptr<function, LightingInput>) -> vec
 // The point lights alone, where no sun term takes them into its sum.
 fn apply_points_gamma(input: ptr<function, LightingInput>, points: vec3<f32>) -> vec3<f32> {
     return gamma_albedo((*input).diffuse_color) * pow(points, vec3(2.2)) * (ambience.gamma_light.y * 0.31830988618);
+}
+
+// The colour a surface writes to the scene target. The 2018/261 client renders
+// into 8-bit targets without sRGB: every value it stores, blends and adds is a
+// gamma (display) value. With output.x 1 the target holds those too (the compose
+// pass shows them without a power), so Bevy's fixed-function blending mixes
+// decals, alpha surfaces, particles and glows as the original does: a decal at
+// alpha 0.5 lands halfway between the two colours as shown, not halfway in light
+// (linear pulled Kingshill's olive grass decals towards the pale cobbles under
+// them), and an additive glow adds to the shown colour (in linear a blue glow
+// stayed blue and dim where the original's turned the background whitish).
+// Called last, after the fogs and before the alpha premultiplication.
+// EVIDENCE: export_win32/frame/default.xml declares every colour target A8R8G8B8
+//   and no sRGB; b_decal: SrcBlend SRCALPHA, DestBlend INVSRCALPHA.
+fn encode_scene(color: vec4<f32>) -> vec4<f32> {
+    if ambience.output.x == 0.0 {
+        return color;
+    }
+    return vec4(pow(max(color.rgb, vec3(0.0)), vec3(1.0 / 2.2)), color.a);
 }
 
 fn apply_ambience(input: ptr<function, LightingInput>, enable_diffuse: bool, shadow: f32, occlusion: vec3<f32>, points: vec3<f32>) -> vec3<f32> {

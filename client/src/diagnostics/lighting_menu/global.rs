@@ -23,15 +23,16 @@ struct StepButton(usize, f32);
 #[derive(Component)]
 struct ResetButton;
 #[derive(Component, Clone, Copy)]
-enum Switch { LightSum, Occlusion, ShadowFloor, Rim }
+enum Switch { LightSum, Occlusion, ShadowFloor, Rim, Blending }
 #[derive(Component)]
 struct SwitchText(Switch);
 
-const SWITCHES: [(Switch, &str); 4] = [
+const SWITCHES: [(Switch, &str); 5] = [
     (Switch::LightSum, "Light sum"),
     (Switch::Occlusion, "Ambient occlusion"),
     (Switch::ShadowFloor, "Shadow floor"),
     (Switch::Rim, "Rim light"),
+    (Switch::Blending, "Blending"),
 ];
 
 impl Switch {
@@ -40,12 +41,15 @@ impl Switch {
         match self {
             Switch::LightSum => if s.gamma_light { "Gamma" } else { "Linear" },
             Switch::Occlusion => match s.ao {
+                AoMode::Original => "Original",
+                AoMode::Off => "Off",
                 AoMode::Linear => "Once, linear",
                 AoMode::Squared => "Squared",
                 AoMode::Clamped => "x1.3, squared",
             },
             Switch::ShadowFloor => if s.shadow_floor { "On" } else { "Off" },
             Switch::Rim => if s.rim { "On" } else { "Off" },
+            Switch::Blending => if s.gamma_scene { "Gamma" } else { "Linear" },
         }
     }
 
@@ -53,12 +57,15 @@ impl Switch {
         match self {
             Switch::LightSum => s.gamma_light = !s.gamma_light,
             Switch::Occlusion => s.ao = match s.ao {
+                AoMode::Original => AoMode::Off,
+                AoMode::Off => AoMode::Linear,
                 AoMode::Linear => AoMode::Squared,
                 AoMode::Squared => AoMode::Clamped,
-                AoMode::Clamped => AoMode::Linear,
+                AoMode::Clamped => AoMode::Original,
             },
             Switch::ShadowFloor => s.shadow_floor = !s.shadow_floor,
             Switch::Rim => s.rim = !s.rim,
+            Switch::Blending => s.gamma_scene = !s.gamma_scene,
         }
     }
 }
@@ -413,7 +420,7 @@ mod tests {
             .add_message::<KeyboardInput>()
             .init_resource::<ButtonInput<KeyCode>>()
             .insert_resource(Lighting { sun: 1.35, fog: 0.03, shadows: false, ..default() })
-            .insert_resource(RenderSwitches { gamma_light: true, ao: AoMode::Linear, shadow_floor: false, rim: true })
+            .insert_resource(RenderSwitches { gamma_light: true, ao: AoMode::Linear, shadow_floor: false, rim: true, gamma_scene: true })
             .init_resource::<NumericEditor>()
             .add_systems(Update, systems());
         app
@@ -447,7 +454,7 @@ mod tests {
         let text = app.world_mut().spawn((SwitchText(Switch::Occlusion), Text::new(""))).id();
         app.update();
         assert_eq!(app.world().get::<Text>(text).unwrap().0, "Once, linear", "shown when the page opens");
-        for (mode, label) in [(AoMode::Squared, "Squared"), (AoMode::Clamped, "x1.3, squared"), (AoMode::Linear, "Once, linear")] {
+        for (mode, label) in [(AoMode::Squared, "Squared"), (AoMode::Clamped, "x1.3, squared"), (AoMode::Original, "Original"), (AoMode::Off, "Off"), (AoMode::Linear, "Once, linear")] {
             press(&mut app, ao);
             assert_eq!(app.world().resource::<RenderSwitches>().ao, mode);
             assert_eq!(app.world().get::<Text>(text).unwrap().0, label);
@@ -461,7 +468,7 @@ mod tests {
     #[test]
     fn every_switch_has_two_or_more_settings_with_distinct_labels() {
         for (switch, _) in SWITCHES {
-            let mut s = RenderSwitches { gamma_light: true, ao: AoMode::Linear, shadow_floor: false, rim: true };
+            let mut s = RenderSwitches { gamma_light: true, ao: AoMode::Linear, shadow_floor: false, rim: true, gamma_scene: true };
             let first = switch.label(&s);
             switch.next(&mut s);
             assert_ne!(switch.label(&s), first);

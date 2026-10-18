@@ -133,8 +133,8 @@ fn entering_exiting_and_retargeting_never_move_the_shadow_sun() {
 #[test]
 fn uniform_layout_matches_wgsl_and_remains_within_webgl_limits() {
     assert_eq!(GpuTerm::min_size().get(), 64);
-    // counts, the terms, height fog colour and heights, rim colour and direction, fog colour and distances, gamma light and ambient.
-    assert_eq!(GpuAmbience::min_size().get(), 16 + 64 * MAX_TERMS as u64 + 32 + 32 + 32 + 32);
+    // counts, the terms, height fog colour and heights, rim colour and direction, fog colour and distances, gamma light and ambient, output.
+    assert_eq!(GpuAmbience::min_size().get(), 16 + 64 * MAX_TERMS as u64 + 32 + 32 + 32 + 32 + 16);
     assert!(GpuAmbience::min_size().get() <= 16384);
     let disabled = GpuAmbience::default();
     assert_eq!(disabled.counts.x, 0);
@@ -198,19 +198,28 @@ fn pbr_patch_adds_height_fog_after_distance_fog_on_fogged_materials_only() {
         );
     }
 #endif  // DISTANCE_FOG
+#ifdef PREMULTIPLY_ALPHA
+    output_color = premultiply_alpha(pbr_input.material.flags, output_color);
+#endif
+    return output_color;
 "#;
     let patched = blend_function(source).expect("anchors present");
     let fog = patched.find("output_color = apply_fog(").unwrap();
     let height = patched.find("output_color = apply_height_fog(output_color, pbr_input.world_position.xyz);").unwrap();
     let fogged_block_end = patched.find("#endif  // DISTANCE_FOG").unwrap();
     assert!(fog < height && height < fogged_block_end, "height fog follows distance fog inside its block");
-    assert!(patched.contains("#import dsor::ambience::{ambience, apply_ambience, apply_height_fog, apply_nebula_fog, apply_points_gamma, nebula_point_light}"));
+    assert!(patched.contains("#import dsor::ambience::{ambience, apply_ambience, apply_height_fog, apply_nebula_fog, apply_points_gamma, encode_scene, nebula_point_light}"));
+    // The gamma scene target: encoded after the fogs, before the premultiplication.
+    let encoded = patched.find("output_color = encode_scene(output_color);").unwrap();
+    assert!(height < encoded && encoded < patched.find("output_color = premultiply_alpha(").unwrap());
     // Point lights join the gamma sum before the sun term reads it; Bevy's
     // point light stays for the linear sum and without DSOR_AMBIENCE.
     let declared = patched.find("var dsor_point_gamma = vec3<f32>(0.0);").unwrap();
     let gathered = patched.find("dsor_point_gamma += nebula_point_light(light_id, &lighting_input);").unwrap();
     let alone = patched.find("direct_light += apply_points_gamma(&lighting_input, dsor_point_gamma);").unwrap();
-    let summed = patched.find("apply_ambience(&lighting_input, enable_diffuse, shadow, diffuse_occlusion, dsor_point_gamma)").unwrap();
+    let summed = patched.find("apply_ambience(&lighting_input, enable_diffuse, shadow, dsor_occlusion, dsor_point_gamma)").unwrap();
+    // The original's AO estimate is read as written, not Bevy's multi-bounce.
+    assert!(patched.find("var dsor_occlusion = diffuse_occlusion;").unwrap() < summed);
     assert!(declared < gathered && gathered < alone && alone < summed);
     assert_eq!(patched.matches("lighting::point_light(light_id, &lighting_input, enable_diffuse, true)").count(), 2);
     // Nebula's distance fog replaces Bevy's where the level's look is active;
@@ -300,16 +309,18 @@ fn render_switches_reach_the_gpu_the_frame_they_change() {
     app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default()))
         .init_asset::<Ambience>().init_resource::<GpuAmbience>()
         .init_resource::<Lighting>().init_resource::<GlobalAmbientLight>()
-        .insert_resource(RenderSwitches { gamma_light: true, ao: AoMode::Linear, shadow_floor: false, rim: true })
+        .insert_resource(RenderSwitches { gamma_light: true, ao: AoMode::Linear, shadow_floor: false, rim: true, gamma_scene: true })
         .insert_resource(Level::default())
         .add_systems(Update, apply_look);
     app.update();
     let gpu = app.world().resource::<GpuAmbience>().clone();
     assert_eq!((gpu.gamma_light.x, gpu.gamma_light.w, gpu.ambient_gamma.w), (1.0, 0.0, 0.0));
-    *app.world_mut().resource_mut::<RenderSwitches>() = RenderSwitches { gamma_light: false, ao: AoMode::Clamped, shadow_floor: true, rim: false };
+    assert_eq!(gpu.output.x, 1.0, "the gamma scene target");
+    *app.world_mut().resource_mut::<RenderSwitches>() = RenderSwitches { gamma_light: false, ao: AoMode::Clamped, shadow_floor: true, rim: false, gamma_scene: false };
     app.update();
     let gpu = app.world().resource::<GpuAmbience>().clone();
     assert_eq!((gpu.gamma_light.x, gpu.gamma_light.w, gpu.ambient_gamma.w), (0.0, 1.0, 2.0));
+    assert_eq!(gpu.output.x, 0.0, "Bevy's linear target");
     assert_eq!(gpu.rim_color, Vec4::ZERO);
     // Linear: Bevy's ambient light is back on, as before the gamma sum.
     assert!(app.world().resource::<GlobalAmbientLight>().brightness > 0.0);
