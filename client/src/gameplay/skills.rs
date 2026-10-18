@@ -1035,19 +1035,25 @@ fn remote_skills(
     tables: Res<Assets<SkillTable>>,
     seqs: Res<Assets<SequenceTable>>,
     // Monsters too (crate::actors::monsters): they move as remote actors, without a Character.
-    mut remotes: Query<(Entity, &mut Transform, &mut RemotePlayer, Option<&Character>, &CharacterAnim)>,
+    mut remotes: Query<(Entity, &mut Transform, &mut RemotePlayer, Option<&Character>, &CharacterAnim, Option<&crate::actors::monsters::Monster>)>,
+    locals: Query<(&Transform, &LocalPlayer), Without<RemotePlayer>>,
 ) {
     let Some(mut net) = net else { return };
     if net.skill_events.is_empty() {
         return;
     }
     let (Some(table), Some(sequences)) = (tables.get(&data.skills), seqs.get(&data.sequences)) else { return };
+    // Where each actor's chest is, for a bullet aimed at it.
+    let chests: HashMap<u32, Vec3> = remotes.iter()
+        .map(|(_, tf, r, _, _, m)| (r.actor, tf.translation + Vec3::Y * m.map_or(PLAYER_HEIGHT, |m| m.height) * 0.5))
+        .chain(locals.iter().map(|(tf, l)| (l.actor, tf.translation + Vec3::Y * PLAYER_HEIGHT * 0.5)))
+        .collect();
     for ev in std::mem::take(&mut net.skill_events) {
         let Some(skill) = table.0.get(&(ev.wire as u32)) else {
             warn!("actor {:#x} used skill {} that skills.json does not have: nothing played", ev.actor, ev.wire);
             continue;
         };
-        let Some((e, mut tf, mut r, character, anim)) = remotes.iter_mut().find(|(_, _, r, _, _)| r.actor == ev.actor) else {
+        let Some((e, mut tf, mut r, character, anim, _)) = remotes.iter_mut().find(|(_, _, r, _, _, _)| r.actor == ev.actor) else {
             debug!("skill {} ({}) of actor {:#x}, which is not here", ev.wire, skill.id, ev.actor);
             continue;
         };
@@ -1073,7 +1079,15 @@ fn remote_skills(
             .first()
             .map(|p| Vec3::from(*p))
             .unwrap_or(tf.translation + Quat::from_rotation_y(facing) * Vec3::Z * skill.range.min(15.0));
-        perform(&mut commands, skill, sequences, e, character, tf.translation, facing, point, Some(ev.actor), None, ev.target, 1.0);
+        // Aimed at an actor (TargetSkill, TargetBulletSkill), its bullet dips or
+        // climbs to that actor's chest, as the local player's own do: from high
+        // ground a monster's bullet flew flat at its hand's height, over or past
+        // its victim, while the server's blow still landed.
+        // FAILURE (2026-10-18): "a monster on high ground attacked me, and the
+        //   attack visually passed through me or missed, but I still took the
+        //   damage".
+        let aim = ev.target.filter(|_| skill.bullet.is_some()).and_then(|t| chests.get(&t).copied());
+        perform(&mut commands, skill, sequences, e, character, tf.translation, facing, point, Some(ev.actor), aim, ev.target, 1.0);
     }
 }
 
@@ -1333,6 +1347,10 @@ fn fly_bullets(
         }
         if let Some((_, e)) = best {
             if let Ok((_, _, mut b)) = bullets.get_mut(e) {
+                // It ends on its victim: turned to the victim's chest, it meets
+                // the victim where the victim stands, above or below its flight
+                // (a bullet from high ground otherwise ended over the head).
+                if let Some(chest) = live_targets.get(&victim) { steer_bullet(&mut b, *chest); }
                 b.end_t = flight_time_to(&b, p, radius).max(b.t);
                 b.snapped = Some(victim);
             }
