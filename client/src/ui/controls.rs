@@ -557,6 +557,7 @@ pub(super) struct Pointer {
     spell_drag: Option<spells::DragSpell>,
     spell_drop: Option<spells::DropSpell>,
     item_command: Option<i32>,
+    slider: Option<settings::SliderDrag>,
 }
 
 #[derive(Component)]
@@ -895,6 +896,9 @@ pub(super) fn interact(
     if !window.focused || blocked || pointer.down.is_some_and(|(e, _)| !windows.get(e).is_ok_and(|(_, _, _, v, _)| *v != Visibility::Hidden)) { pointer.down = None; }
     let mut clicked = pointer.update(hit, mouse.just_pressed(MouseButton::Left), mouse.just_released(MouseButton::Left));
     if spells::drag(&mut pointer, &windows, &mouse, hit, point, window.focused && !blocked && modal.is_none()) {
+        clicked = None;
+    }
+    if settings::drag_slider(&mut pointer, &windows, &mouse, point, width, window.focused && !blocked, &mut settings) {
         clicked = None;
     }
     if !mouse.pressed(MouseButton::Left) { pointer.down = None; }

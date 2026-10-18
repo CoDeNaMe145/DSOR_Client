@@ -413,6 +413,7 @@ fn main() {
         .add_plugins((dump::DumpPlugin, shadow_views::ShadowViewsPlugin, draw_mode::DrawModePlugin::default()))
         .add_plugins(diagnostics::lighting_menu::LightingMenuPlugin)
         .add_plugins(ui::UiPlugin)
+        .add_plugins(rendering::graphics::GraphicsPlugin)
         .add_plugins(ui_input::UiInputPlugin)
         .add_plugins(loading::LoadingPlugin)
         .add_plugins(selection::SelectionPlugin)
@@ -477,7 +478,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, opts: Res<Optio
         z_config: default(),
         dynamic_resizing: true,
     };
-    let camera = commands.spawn((Camera3d::default(), clusters, cam)).id();
+    let camera = commands.spawn((Camera3d::default(), rendering::graphics::GameGraphics, clusters, cam)).id();
     // The depth of the opaque scene, for the 2018 shaders' soft edges: particles
     // (depthDensity), volume fog, water borders (crate::rendering::surfaces). Natively and on
     // WebGPU always; on WebGL2 on request (?flag=depth): it binds the depth
@@ -494,22 +495,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, opts: Res<Optio
             commands.entity(camera).insert(Msaa::Off);
         }
     }
-    // Sun shadows only occlude direct light. SSAO also occludes ambient light
-    // near contacts, grounding objects even inside another object's shadow.
-    // The native SSAO pass requires single-sample depth; FXAA smooths edges.
-    #[cfg(not(target_arch = "wasm32"))]
-    if !flag("noao") {
-        commands.entity(camera).insert((
-            bevy::pbr::ScreenSpaceAmbientOcclusion {
-                // Eight samples retain contact shading without the default
-                // high preset's eighteen full-resolution samples per pixel.
-                quality_level: bevy::pbr::ScreenSpaceAmbientOcclusionQualityLevel::Medium,
-                ..default()
-            },
-            Msaa::Off,
-            bevy::anti_alias::fxaa::Fxaa::default(),
-        ));
-    }
+    // Player anti-aliasing, SSAO and sharpening are applied by GraphicsPlugin.
     // Online the game camera follows the player (net::follow_camera); the free
     // fly camera is the map viewer's.
     if opts.net.is_none() && !opts.login_screen {

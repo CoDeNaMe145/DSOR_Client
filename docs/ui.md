@@ -232,8 +232,8 @@ are click-through and have no header or settings controls. A right-aligned
 localized map name sits just below the preview's bottom-right corner; names
 come from the original English `maps.names` localization, matching the rest of
 the current interface. The exporter writes them to `interface/maps.names.json`.
-Until the settings window is implemented, the F3 debug menu's "Map transparency"
-row adjusts terrain transparency in 5% steps from 0-100% (default 45%), while
+Settings provides a draggable "Map transparency" slider from 0-100% (default
+45%); the F3 debug menu adjusts it in 5% steps. In both cases,
 all markers and the map name stay visible.
 The setting survives restarts in `map-settings.json` natively or `dsor.map` in
 browser localStorage. Re-export the UI, NPCs and props to generate the localized
@@ -427,6 +427,20 @@ Audio, Hotkeys, Mouse and Combat tabs. Preferences are edited as a draft:
 Apply saves and activates them, Cancel/Escape discards them, and Reset restores
 defaults in the draft. Native settings live in `game-settings.json`; browser
 settings use local storage (`dsor.settings`). Failed saves keep the draft open.
+Graphics spans two pages (Previous/Next): fullscreen, vertical sync, anti-aliasing
+(Default, Off, FXAA, SMAA Low/High), sun shadow quality (Off/Low/Medium/High),
+shadow filtering (Default/Fast/Soft), desktop SSAO (Off/Low/Medium/High), a CAS
+sharpening slider, bloom, vignette, and map transparency. Apply updates rendering
+without restarting. Default AA retains desktop FXAA and browser MSAA (disabled
+when WebGL2's optional depth prepass is enabled). Shadow maps use 512/1024/2048
+texels; WebGL2 keeps fast hardware shadow filtering. Browser SSAO is unavailable.
+Bloom and vignette switches gate the authored map effects without replacing
+their colors or strengths. Diagnostic `noao`, `noshadows`, `lowshadows` and
+`nobloom` flags still take precedence. DLSS/DLAA and FSR/XeSS have read-only
+"Not supported" rows: none is integrated in this client. SMAA/FXAA smooth edges
+at the current resolution, and CAS sharpens; these options do not upscale.
+Percentage settings use draggable sliders with exact percentage labels. Track
+clicks and thumb drags update the draft until Apply.
 Audio explains that playback is not implemented in this client.
 
 The Hotkeys tab supports modifier combinations, Delete to clear a binding and
