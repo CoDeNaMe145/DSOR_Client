@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Copy the shader-variable animations of each .n3 model into its .glb.
 
-Usage: embed_animators.py <export_win32/models> <assets>
+Usage: embed_animators.py <export_win32/models> <assets> [model/path ...]
 
 Nebula animates material variables over time with "animator" nodes; glTF has no
 place for them, so DSO_Godot dropped them, and effects stayed lit for as long as
@@ -32,6 +32,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 from fix_materials_io import read_glb, write_glb  # noqa: E402
 
 models, assets = sys.argv[1], sys.argv[2]
+# Optional model paths allow repairing a small set without rewriting the pack.
+only = {p.replace("\\", "/").removesuffix(".n3").removesuffix(".glb") for p in sys.argv[3:]}
 
 
 def string(d, i):
@@ -280,6 +282,8 @@ for root, _dirs, files in os.walk(models):
             continue
         n3 = os.path.join(root, name)
         rel = os.path.relpath(n3, models)[:-3]
+        if only and rel.replace("\\", "/") not in only:
+            continue
         glb = os.path.join(assets, rel + ".glb")
         if not os.path.exists(glb):
             continue

@@ -37,6 +37,11 @@ import json, os, sys, sqlite3
 from PIL import Image  # Fail before writing any layouts if conversion deps are missing.
 
 root, assets, godot = sys.argv[1], sys.argv[2], sys.argv[3]
+# The converter's Unix default omits .exe, so Windows silently skipped new
+# Crunch artwork even when the bundled transcoder was installed.
+crunch = os.path.abspath(os.path.join(godot, 'build', 'crn2dds.exe'))
+if os.name == 'nt' and os.path.isfile(crunch):
+    os.environ.setdefault('DSO_CRN2DDS', crunch)
 # Every window by default ("--hud": the four the HUD needs).
 only = sys.argv[4:]
 database = os.path.join(root, "db", "static.db4")
@@ -304,6 +309,9 @@ def export(name):
                 w["text"].update(text="—", key="—")
     if name == "skilltalentswindow": widgets = spell_grid(widgets, catalog, tex, loca)
     if name == "leaderboards": widgets = ranking_categories(widgets, catalog, loca)
+    if name == "collectorsalbum":
+        from collector_catalog import collector_pages
+        widgets = collector_pages(widgets, catalog, tex, loca)
     if name == "locationmap": widgets = local_map_controls(widgets)
     if name == "shopwindow":
         # The game assigns these labels along with its catalogue. Keep the
@@ -380,6 +388,10 @@ with open(os.path.join(out_dir, "skills.icons.json"), "w") as f:
 print(f"skill icons: {len(icons)}")
 # Runtime map markers are not referenced by the static window meshes.
 from pathlib import Path
+# Cursors are selected at runtime, so no window mesh references these textures.
+# Preserve the original RGBA pixels and colour variants for native/web cursors.
+for source in sorted((Path(root) / "textures" / "mousecursor").glob("*.*")):
+    tex.get("mousecursor/" + source.stem)
 for source in sorted((Path(root) / "textures" / "ui").glob("icon_map_*.*")):
     tex.get("ui/" + source.stem)
 # The notification column's icons, chosen per NotificationType at run time

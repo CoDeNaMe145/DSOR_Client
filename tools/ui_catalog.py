@@ -30,6 +30,8 @@ def localized(loca, key, fallback):
 
 
 def spell_grid(widgets, db, textures, loca):
+    from tooltip_catalog import SkillPreview
+    preview = SkillPreview(db)
     source = next(w for w in widgets if w["id"].endswith("/Skillgrid/TemplateSkill"))
     talent = next(w for w in widgets if w["id"].endswith("/Skillgrid/TemplateTalent"))
     background = next(w for w in widgets if w["id"].endswith("/ExperienceLabel/background_classes"))
@@ -62,6 +64,10 @@ def spell_grid(widgets, db, textures, loca):
                     icon=f"textures/{brush}.png", column=column, row=row,
                     target=localized(loca, f"db.skill2.table_{sid}SkillTarget", "") if active else "",
                     description=localized(loca, f"db.skill2.table_{sid}Description", localized(loca, f"db.skill.table_{name}_defaultDesc", "")) if active else localized(loca, f"db.skilltalent2.table_{tid}Description", ""))
+        meta['preview_description'] = preview.resolve(meta['description'], sid)
+        meta['growth'] = preview.resolve(localized(loca, f"db.skilltalent2.table_{tid}Description", ""), sid) if active else ''
+        talent_meta = preview.talents.get(tid, {})
+        meta['talent_cost'] = int(talent_meta.get('CostsPerLevel') or 0)
         for w in copies:
             leaf = w["id"].rsplit("/", 1)[-1]
             if "glow" in w["id"].lower() and not w.get("state"):

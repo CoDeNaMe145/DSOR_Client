@@ -31,10 +31,13 @@ pub(super) fn section(window: &str, parts: &[&str]) -> Option<Section> {
     }
     match window {
         "collectorsalbum" => {
-            // Start on the favorites page. Categories, offers and item effects
-            // need stickerbook data before they can be shown.
-            if parts.iter().any(|p| matches!(*p, "Categorypage" | "AdvertisementArtwork" | "AnimUnlock" | "AnimUse")) {
+            if parts.iter().any(|p| matches!(*p, "Categorypage" | "AnimUnlock" | "AnimUse" | "AnimIconGlow"
+                | "AdvertisedItems" | "DealsCounterLabel" | "FlagLabelCategory" | "FlagLabelSubcategory")) {
                 return Some(Section::Hidden);
+            }
+            if has("Firstpage") { return Some(page("album", 0)); }
+            if let Some(index) = parts.iter().find_map(|p| p.strip_prefix("AlbumPage").and_then(|s| s.parse().ok())) {
+                return Some(page("album", index));
             }
         }
         "skilltalentswindow" => {
@@ -117,6 +120,11 @@ pub(super) fn action(window: &str, widget: &Widget) -> Option<Action> {
     let event = widget.event.as_str();
     let tab = |group, index| Some(Action::Tab(group, index as u8));
     match window {
+        "collectorsalbum" => {
+            if let Some(category) = event.strip_prefix("AlbumCategory:").and_then(|s| s.parse().ok()) {
+                return tab("album", category);
+            }
+        }
         "skilltalentswindow" => {
             if let Some(i) = ["ExperienceTab", "KnowledgeTab", "GroupTab", "FameTab"].iter().position(|s| *s == leaf) { return tab("talents", i); }
             if let Some(i) = leaf.strip_prefix("PresetButton").and_then(|s| s.parse::<usize>().ok()) { return tab("preset", i.saturating_sub(1)); }

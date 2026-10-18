@@ -136,7 +136,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         var c = textureSample(pbr_bindings::base_color_texture, pbr_bindings::base_color_sampler, uv0(in)) * vertex_color(in);
         let soft = clamp(depth_behind(in.position, in.world_position.xyz) / (surface.p2.x + 0.05), 0.0, 1.0);
         if surface.p2.y > 0.5 {
-            c = vec4<f32>(c.rgb * soft * fog_clear(in), c.a);
+            // Nebula b_additive uses ONE / ONE (shaders_sm30), not
+            // SRC_ALPHA / ONE. Bevy's Add premultiplies by alpha below;
+            // supplying one preserves the authored RGB emission envelope.
+            c = vec4<f32>(c.rgb * soft * fog_clear(in), 1.0);
         } else {
             c.a = c.a * soft;
         }

@@ -560,7 +560,8 @@ fn screenshot_when_loaded(
     }
     if loading.active() { return; }
     // Also allow a capture of the native account form before a map is loaded.
-    if opts.login_screen && current.is_none() && *frames > 120 {
+    let login_wait = std::env::var("DSOR_SHOT_WAIT").ok().and_then(|w| w.parse().ok()).unwrap_or(120);
+    if opts.login_screen && current.is_none() && *frames > login_wait {
         commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path.clone()));
         *taken = Some(*frames);
         return;

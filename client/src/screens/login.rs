@@ -11,16 +11,16 @@ use serde_json::{json, Value};
 
 use crate::{network::net, LoginGate, Options};
 
+mod view;
+
 const SETTINGS: &str = "client-auth.json";
-const GOLD: Color = Color::srgb(0.78, 0.64, 0.39);
-const INK: Color = Color::srgb(0.045, 0.061, 0.08);
-const MUTED: Color = Color::srgb(0.57, 0.64, 0.70);
 
 pub struct LoginPlugin;
 impl Plugin for LoginPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, setup.run_if(resource_exists::<LoginGate>))
-            .add_systems(Update, (buttons, keyboard, poll, draw, update_text).chain()
+        app.add_systems(Startup, (setup, view::load).run_if(resource_exists::<LoginGate>))
+            .add_systems(PostStartup, view::preload.run_if(resource_exists::<LoginGate>))
+            .add_systems(Update, (buttons, keyboard, poll, view::draw, view::resize, view::paint).chain()
                 .run_if(resource_exists::<LoginGate>));
     }
 }
@@ -87,11 +87,8 @@ impl Input {
 #[derive(Clone, Copy, PartialEq)]
 enum Page { Login, Register, Settings }
 #[derive(Component)] struct Root;
-#[derive(Component)] struct Field(usize);
-#[derive(Component)] struct FieldText(usize);
-#[derive(Component)] struct Status;
 #[derive(Component, Clone, Copy)]
-enum Action { Field(usize), Play, Register, Settings, Back, Class, Gender, Cancel }
+enum Action { Field(usize), Play, Register, Settings, Back, Class, Gender, Cancel, Reveal, Retry }
 enum Reply { Status(Value), Authenticated(net::NetConfig) }
 struct Job { receiver: Mutex<mpsc::Receiver<Result<Reply, String>>>, authentication: bool }
 
@@ -109,6 +106,7 @@ struct Form {
     connecting: Option<Instant>,
     login_override: Option<String>,
     character_id: Option<u32>,
+    reveal_password: bool,
 }
 impl Form {
     fn busy(&self) -> bool { self.connecting.is_some() || self.job.as_ref().is_some_and(|j| j.authentication) }
@@ -116,6 +114,16 @@ impl Form {
         match self.page { Page::Login => &[0, 1], Page::Register => &[0, 1, 2], Page::Settings => &[3, 4] }
     }
     fn message(&mut self, text: impl Into<String>, error: bool) { self.status = text.into(); self.error = error; }
+    fn cancel(&mut self) {
+        self.job = None;
+        if self.connecting.is_some() { self.connecting = Some(Instant::now() - Duration::from_secs(120)); }
+        self.redraw = true;
+        self.message("Sign-in cancelled.", false);
+    }
+    fn back(&mut self) {
+        self.page = Page::Login; self.focus = 0; self.reveal_password = false;
+        self.inputs[2] = Input::default(); self.redraw = true; self.check_server();
+    }
     fn preferences(&self) -> Preferences {
         Preferences { server: self.inputs[3].value.trim().into(), username: self.inputs[0].value.trim().into(),
             character: self.inputs[4].value.trim().into(), class: self.class, gender: self.gender }
@@ -148,16 +156,19 @@ impl Form {
         }
         let username = self.inputs[0].value.trim().to_string();
         if username.is_empty() || self.inputs[1].value.is_empty() {
+            self.focus = if username.is_empty() { 0 } else { 1 };
             self.message("Enter your username and password.", true); return;
         }
         let register = self.page == Page::Register;
         if register && self.inputs[1].value != self.inputs[2].value {
+            self.focus = 2;
             self.message("The passwords do not match.", true); return;
         }
         let address = match account_address(&self.inputs[3].value) {
             Ok(a) => a, Err(e) => { self.message(e, true); return; }
         };
         let password = std::mem::take(&mut self.inputs[1]).value;
+        self.reveal_password = false;
         self.inputs[2] = Input::default();
         let mut preferences = self.preferences();
         preferences.server = address.clone();
@@ -249,7 +260,7 @@ fn setup(mut commands: Commands, mut options: ResMut<Options>) {
     let mut form = Form { inputs: [Input::new(prefs.username), Input::new(password), Input::default(),
             Input::new(prefs.server), Input::new(prefs.character)], focus: 0, page: Page::Login,
         class: prefs.class.min(3), gender: prefs.gender.min(1), status: String::new(), error: false,
-        redraw: true, job: None, connecting: None, login_override, character_id };
+        redraw: true, job: None, connecting: None, login_override, character_id, reveal_password: false };
     if !form.inputs[0].value.is_empty() { form.focus = 1; }
     form.check_server();
     commands.insert_resource(form);
@@ -259,29 +270,33 @@ fn buttons(mut form: ResMut<Form>, interactions: Query<(&Interaction, &Action), 
     for (interaction, action) in &interactions {
         if *interaction != Interaction::Pressed { continue; }
         if form.busy() {
-            if matches!(action, Action::Cancel) {
-                form.job = None;
-                if form.connecting.is_some() { form.connecting = Some(Instant::now() - Duration::from_secs(120)); }
-                form.redraw = true; form.message("Sign-in cancelled.", false);
-            }
+            if matches!(action, Action::Cancel) { form.cancel(); }
             continue;
         }
         match *action {
             Action::Field(i) => { form.focus = i; form.inputs[i].cursor = form.inputs[i].value.len(); }
             Action::Play => form.submit(),
-            Action::Register => { form.page = Page::Register; form.focus = 0; form.redraw = true; form.message("Create an account on this server.", false); }
-            Action::Settings => { form.page = Page::Settings; form.focus = 3; form.redraw = true; form.message("Choose your server and new character defaults.", false); }
-            Action::Back => { form.page = Page::Login; form.focus = 0; form.inputs[2] = Input::default(); form.redraw = true; form.check_server(); }
+            Action::Register => { form.job = None; form.page = Page::Register; form.focus = 0; form.reveal_password = false; form.redraw = true; form.message("Create an account on this server.", false); }
+            Action::Settings => { form.job = None; form.page = Page::Settings; form.focus = 3; form.reveal_password = false; form.redraw = true; form.message("Choose your server and new character defaults.", false); }
+            Action::Back => form.back(),
             Action::Class => { form.class = (form.class + 1) % 4; form.redraw = true; }
             Action::Gender => { form.gender ^= 1; form.redraw = true; }
             Action::Cancel => {}
+            Action::Reveal => form.reveal_password = !form.reveal_password,
+            Action::Retry => form.check_server(),
         }
     }
 }
 
 fn keyboard(mut events: MessageReader<KeyboardInput>, keys: Res<ButtonInput<KeyCode>>, mut clipboard: ResMut<Clipboard>, mut form: ResMut<Form>) {
     for event in events.read() {
-        if !event.state.is_pressed() || form.busy() { continue; }
+        if !event.state.is_pressed() { continue; }
+        if event.key_code == KeyCode::Escape {
+            if form.busy() { form.cancel(); }
+            else if form.page != Page::Login { form.back(); }
+            continue;
+        }
+        if form.busy() { continue; }
         let control = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
         let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
         if event.key_code == KeyCode::Tab {
@@ -381,83 +396,6 @@ fn poll(world: &mut World) {
         world.resource_mut::<Options>().login_screen = false;
         for mut window in world.query::<&mut Window>().iter_mut(world) { window.title = "DSOR Kitty".into(); }
         info!("in-client login: entered the world");
-    }
-}
-
-fn text(value: impl Into<String>, size: f32, color: Color) -> impl Bundle {
-    (Text::new(value), TextFont { font_size: bevy::text::FontSize::Px(size), ..default() }, TextColor(color))
-}
-fn button(parent: &mut ChildSpawnerCommands, label: &str, action: Action, primary: bool) {
-    parent.spawn((Button, action, Node { min_height: px(40), padding: UiRect::axes(px(18), px(10)),
-        justify_content: JustifyContent::Center, align_items: AlignItems::Center, flex_grow: 1.0,
-        border_radius: BorderRadius::all(px(4)), ..default() },
-        BackgroundColor(if primary { GOLD } else { Color::srgb(0.13, 0.17, 0.21) })))
-        .with_children(|b| { b.spawn(text(label, 15.0, if primary { INK } else { Color::WHITE })); });
-}
-
-fn draw(mut commands: Commands, mut form: ResMut<Form>, roots: Query<Entity, With<Root>>) {
-    if !form.redraw { return; }
-    form.redraw = false;
-    for entity in &roots { commands.entity(entity).despawn(); }
-    commands.spawn((Root, Node { position_type: PositionType::Absolute, width: percent(100), height: percent(100),
-        flex_direction: FlexDirection::Column, align_items: AlignItems::Center, justify_content: JustifyContent::Center,
-        row_gap: px(18), ..default() }, BackgroundColor(INK), GlobalZIndex(10000)))
-        .with_children(|root| {
-            root.spawn(text("D S O R   K I T T Y", 32.0, GOLD));
-            root.spawn((Node { width: px(460), max_width: percent(95), padding: UiRect::all(px(28)),
-                flex_direction: FlexDirection::Column, row_gap: px(12), border: UiRect::all(px(1)),
-                border_radius: BorderRadius::all(px(8)), ..default() },
-                BackgroundColor(Color::srgb(0.075, 0.10, 0.13)), BorderColor::all(Color::srgb(0.25, 0.28, 0.30))))
-                .with_children(|card| {
-                    let title = if form.busy() { "Welcome to Dracania" } else { match form.page {
-                        Page::Login => "Sign in", Page::Register => "Create account", Page::Settings => "Settings" } };
-                    card.spawn(text(title, 24.0, Color::WHITE));
-                    if !form.busy() {
-                        for &i in form.fields() {
-                            let label = ["Username", "Password", "Confirm password", "Account server (HTTP)", "New character name (optional)"][i];
-                            card.spawn(text(label, 13.0, MUTED));
-                            card.spawn((Button, Action::Field(i), Field(i), Node { width: percent(100), height: px(42),
-                                padding: UiRect::axes(px(12), px(8)), border: UiRect::all(px(1)), align_items: AlignItems::Center,
-                                overflow: Overflow::clip(), border_radius: BorderRadius::all(px(3)), ..default() }, BackgroundColor(INK), BorderColor::all(MUTED)))
-                                .with_children(|f| { f.spawn((FieldText(i), text("", 17.0, Color::WHITE))); });
-                        }
-                        if form.page == Page::Settings {
-                            card.spawn(text("Used only when your account has no character.", 12.0, MUTED));
-                            card.spawn(Node { column_gap: px(8), ..default() }).with_children(|row| {
-                                button(row, ["Warrior", "Mage", "Ranger", "Dwarf"][form.class as usize], Action::Class, false);
-                                button(row, ["Male", "Female"][form.gender as usize], Action::Gender, false);
-                            });
-                        }
-                    }
-                    card.spawn((Status, text(&form.status, 14.0, MUTED), Node { min_height: px(40), ..default() }));
-                    if form.busy() { button(card, "Cancel", Action::Cancel, false); }
-                    else {
-                        button(card, match form.page { Page::Login => "PLAY", Page::Register => "CREATE ACCOUNT & PLAY", Page::Settings => "SAVE SETTINGS" }, Action::Play, true);
-                        card.spawn(Node { column_gap: px(8), ..default() }).with_children(|row| {
-                            if form.page == Page::Login {
-                                button(row, "Create account", Action::Register, false);
-                                button(row, "Settings", Action::Settings, false);
-                            } else { button(row, "Back to sign in", Action::Back, false); }
-                        });
-                    }
-                });
-            root.spawn(text("RELEASE 261   /   Tab to switch fields   /   Enter to continue", 12.0, MUTED));
-        });
-}
-
-fn update_text(form: Res<Form>, time: Res<Time>, mut texts: Query<(&FieldText, &mut Text)>,
-    mut fields: Query<(&Field, &mut BorderColor, &mut BackgroundColor)>, mut status: Query<(&mut Text, &mut TextColor), (With<Status>, Without<FieldText>)>) {
-    for (field, mut text) in &mut texts {
-        **text = form.inputs[field.0].display(field.0 == 1 || field.0 == 2,
-            form.focus == field.0 && (time.elapsed_secs() * 2.0) as u32 % 2 == 0);
-    }
-    for (field, mut border, mut background) in &mut fields {
-        *border = BorderColor::all(if form.focus == field.0 { GOLD } else { Color::srgb(0.22, 0.27, 0.32) });
-        background.0 = if form.focus == field.0 && form.inputs[field.0].selected { Color::srgb(0.18, 0.24, 0.32) } else { INK };
-    }
-    for (mut text, mut color) in &mut status {
-        **text = form.status.clone();
-        color.0 = if form.error { Color::srgb(1.0, 0.52, 0.45) } else { MUTED };
     }
 }
 

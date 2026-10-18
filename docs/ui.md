@@ -1,5 +1,45 @@
 # The original client interface
 
+## Native account screen
+
+`client/src/screens/login/view.rs` renders sign-in, registration and connection
+settings with the exported game artwork: the chapter-zero castle illustration,
+`struktur` panel texture, `deco_elemente_5` window rails and button states,
+`deco_elemente` recessed inputs, and the character-selection primary button.
+It uses the game's Tahoma font. Atlas regions are sliced or mirrored at
+runtime; no separately generated login textures are required.
+
+The artwork preloads behind the shared loading screen. Wide windows place the
+form beside the castle; narrower windows center the form and scale it to keep
+every control visible. Fields have focus and selection feedback, buttons use
+hover/pressed artwork, and pending sign-in uses an indeterminate loading bar.
+Tab / Shift+Tab move between fields, Enter submits, and Escape returns or cancels.
+Show / Hide reveals passwords temporarily; submission and page changes restore
+masking. Passwords and tokens remain in memory only.
+
+## Game cursors
+
+`client/src/ui/cursor.rs` uses the original `textures/mousecursor` artwork as
+native custom cursors, with the top-left tip as the click hotspot. The gold hand
+is shared by login, loading, character selection, menus and ordinary movement.
+All styles are resampled from 64×64 to 42×42 before native cursor creation,
+making them about 35% smaller while retaining the full artwork and click hotspot.
+World hover switches to the sword for enemies, speech bubble for NPCs, shop
+cursor for merchants, and gears for loot and exits. UI input and dragging keep
+the hand; free-camera cursor visibility still follows the camera controls.
+
+**Settings > Mouse > Classic cursor** selects the original gold arrow
+(`mousecursor/arrow.png`). Like the original client's `classiccursor` option,
+it keeps the arrow across hover targets, menus and login. It is off by default;
+Apply switches immediately and saves `classic_cursor` with the other preferences,
+while Cancel keeps the previous style. Reset restores the modern style in the
+draft. Existing settings files without the field keep the modern cursors.
+
+`tools/export_ui.py` also converts the complete mousecursor set (including its
+colour variants) into `assets/textures/mousecursor/*.png`. Re-run that exporter
+for an existing asset folder. Cursor images keep their CPU pixels for winit and
+use the same asset paths in native and browser builds.
+
 ## The 2018 data
 
 - `export_win32/ui/<window>.bxml`: one window per file, Nebula binary XML.
@@ -222,8 +262,20 @@ hidden, so these selectors remain visible.
 `tools/inventory_catalog.py`, called when exporting `inventory`, writes
 `inventory.items.json` from the server database and original localizations/icons.
 Export `inventory tooltip unstackwindow` together. Hovering an item shows its
-name, description, level, enchantments, sockets and quantity in the original
-tooltip border. Ctrl+left-click opens the original split dialog: choose the
+rarity-colored name, category, level, base values, gem icons, unique effects,
+customization, melting value and selling coins using the original XML templates.
+Hold **Y** for the wider advanced card, or enable **Always show advanced tooltips**
+under Settings > General and choose Apply. The saved preference covers inventory
+and action-bar item cards. Advanced cards show base rolls, gem values, enchantment
+percentages and their contributions. `item_tooltip_values.py` exports numeric
+modifier ranges, progressions and rarity/tier limits. The tooltip materializes
+base rolls using the native dSFMT stream; wire enchantment fractions are quality
+rolls, not absolute stats. Character bonuses (including attack/movement speed,
+regeneration and PvP bonuses) remain separate from item-local totals and appear
+in both views. Scoped resistance bonuses retain their element. Scripted unique
+effects use their authored modifier descriptions alongside the numeric values,
+and unrecognized rolls are labeled in advanced
+view. Ctrl+left-click opens the original split dialog: choose the
 amount using its input, +/- buttons or slider, then confirm with its button or
 Enter. The new stack goes into the first free slot in the same storage.
 
@@ -288,7 +340,7 @@ respects the UI under the cursor.
 ## Chat
 
 The chat panel and channel dropdown stay anchored to the screen's left edge at
-every aspect ratio. V and the mode button switch between expanded controls and
+every aspect ratio and starts compact on login. V and the mode button switch between expanded controls and
 a compact preview. Compact mode shows only the expand button and the four newest
 message rows; the text lets clicks pass through to the world. Enter expands the
 chat and focuses its entry. Expanded scrollback is preserved while the compact
@@ -398,8 +450,57 @@ quickbar items, collection entries, essences, skills, gauges and currencies.
 Icon-only controls use compact, centered hints sized to their text, with yellow
 hotkey captions. The Escape menu, labeled buttons, settings rows and text entries
 do not repeat their visible captions in hover cards.
-Skill descriptions, targeting, costs, essence costs, cooldowns and range use
-exported data; unresolved legacy damage/talent formulas are omitted rather than
-shown as computed figures. Re-exporting skills/UI adds the description, target
-and `ammo_cost` metadata. Hover cards do not capture clicks; the General setting
-also controls inventory hover descriptions.
+Spell cards use an icon/title header, effect descriptions, blue per-level
+bonuses, separators, target, resource/essence costs and cooldown. Re-export
+`skilltalentswindow` to resolve static locale tokens from the skill, status-effect
+and actor-variable tables (`tooltip_catalog.py`). Values are labeled as base
+skill values; actor-dependent formulas remain an em dash with a legend rather
+than deleting the whole effect. Active talent/buff damage is not yet evaluated.
+
+All hover cards anchor to their control's rectangle, including moved windows,
+quickbar slots, gauges and currency labels. Placement flips to a free side and
+clamps within the viewport; oversized cards scale as a whole without clipping
+their contents. Mouse motion within the control does not move its card. Only
+the dragged item's icon follows the pointer. Text is measured and wrapped before
+the border is sized; the dark fill starts at the frame's opaque vertices, with
+three extra reference pixels inset vertically to cover the rail texture's
+transparent strip. Item cards use a darker, 98.5% opaque fill. Hover cards do not
+capture clicks; the General setting also controls inventory hover descriptions.
+
+### Equipment-derived character statistics
+
+`gameplay/stats/calculation.rs` evaluates the server's layered stat arithmetic:
+seeded base enchantments, concrete rolled enchantments, progression/tier scaling,
+socketed gems/jewels/runes, equipment set thresholds, actor variables and active
+status instances (including stacks and numeric parameters). Item-relative bonuses
+are applied before weapon and actor bonuses. The secondary essence slot is inert.
+Conditional procs contribute only when the server sends their active status.
+
+The cache refreshes on inventory, class, level, status or data changes. Local
+movement and run animation use calculated movement speed; cast locks, sequence
+animations and release timing use the server's attack-speed breakpoints and each
+skill's `ScaleSkillTiming`. Damage, health/resource maxima, armor/resistances,
+critical/block values and regeneration feed the character sheet. Combat outcomes
+and live health/resource updates remain authoritative on the server. Rift and
+per-element damage-increase rows remain zero because the server stat calculator
+does not calculate them; this change does not implement new combat procs.
+
+Export from the same DB4 revision used by the server:
+
+```sh
+python tools/export_stats.py <export_win32> assets --database .local/dso_server/data/db/static.db4
+python tools/export_skills.py <export_win32> assets --database .local/dso_server/data/db/static.db4
+python tools/stat_parity_vectors.py .local/dso_server assets client/tests/fixtures/character_stats.json
+```
+
+The fixture compares the Rust evaluator with server-generated loadouts, equipment
+and socket removal, changed item seeds, pet removal and all four bare classes.
+The expected values allow for f32 values on the wire. Regenerate it deliberately
+when the server's stat rules or static database change.
+
+The Collector's Bag category buttons are generated from `_Template_Stickerbook`.
+They switch pages and retain the authored preview art; the first page uses the
+active localized `_Template_StickerbookBanner`. Ownership grids and collection
+actions still require stickerbook runtime integration. Map destination captions
+use smaller text rasterized at the actual screen scale instead of magnifying a
+low-resolution glyph atlas.

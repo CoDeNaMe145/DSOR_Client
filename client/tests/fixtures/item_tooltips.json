@@ -1,0 +1,523 @@
+{
+  "source": "release261 static.db4 item_tooltip_values.export_values, levels 1 and 100, tier 0",
+  "items": {
+    "all_mythic_ring_death": {
+      "name": "Ring of Death",
+      "description": "",
+      "category": "Ring",
+      "icon": "textures/icons_jewelry/all_ring_of_fate_black_mythic.png",
+      "max_stack": 1,
+      "required_level": 1,
+      "slots": [
+        8,
+        9
+      ],
+      "class_name": "",
+      "rarity": "Set",
+      "graphics": "dropitems/all_drop_ring_01",
+      "drop_sequence": "",
+      "icon_config": "item_equipment_mythic",
+      "item_category": "Jewelry",
+      "unique_effects": []
+    },
+    "all_unique_ring_pw_death": {
+      "name": "Mortis' Ring of Death",
+      "description": "",
+      "category": "Ring",
+      "icon": "textures/icons_jewelry/all_unique_ring_pw_death_01.png",
+      "max_stack": 1,
+      "required_level": 1,
+      "slots": [
+        8,
+        9
+      ],
+      "class_name": "",
+      "rarity": "Unique",
+      "graphics": "dropitems/all_drop_ring_01",
+      "drop_sequence": "",
+      "icon_config": "item_equipment_unique",
+      "item_category": "Jewelry",
+      "unique_effects": []
+    },
+    "unique_ring_stego_yellow_01": {
+      "name": "Presence of Iron Will",
+      "description": "",
+      "category": "Ring",
+      "icon": "textures/icons_jewelry/e_stego_ring_yellow.png",
+      "max_stack": 1,
+      "required_level": 1,
+      "slots": [
+        8,
+        9
+      ],
+      "class_name": "",
+      "rarity": "Unique",
+      "graphics": "dropitems/all_drop_ring_01",
+      "drop_sequence": "",
+      "icon_config": "item_equipment_unique",
+      "item_category": "Jewelry",
+      "unique_effects": [
+        "Each successful hit grants a Brutality Force stack. Upon reaching 25 stacks, the Power of Brutality effect will be applied to all enemies in 10 meter radius, reducing their Resistance Values by 15% for 10 seconds."
+      ]
+    },
+    "all_unique_ring_pw_fire": {
+      "name": "Fyrgon's Ring of Fire",
+      "description": "",
+      "category": "Ring",
+      "icon": "textures/icons_jewelry/all_unique_ring_pw_fire_01.png",
+      "max_stack": 1,
+      "required_level": 1,
+      "slots": [
+        8,
+        9
+      ],
+      "class_name": "",
+      "rarity": "Unique",
+      "graphics": "dropitems/all_drop_ring_01",
+      "drop_sequence": "",
+      "icon_config": "item_equipment_unique",
+      "item_category": "Jewelry",
+      "unique_effects": []
+    }
+  },
+  "ingredients": [],
+  "colors": {},
+  "values": {
+    "items": {
+      "all_mythic_ring_death": {
+        "base": [],
+        "unique": [
+          {
+            "name": "Attack speed",
+            "low": 5.0,
+            "high": 5.0,
+            "relative": false,
+            "item_local": false,
+            "factor": "AttacksPerSecondFactorAbsolute",
+            "explicit": false
+          },
+          {
+            "name": "Movement speed",
+            "low": 5.0,
+            "high": 5.0,
+            "relative": false,
+            "item_local": false,
+            "factor": "MovementSpeedFactorAbsolute",
+            "explicit": false
+          },
+          {
+            "name": "Damage against players",
+            "low": 0.66,
+            "high": 0.66,
+            "relative": true,
+            "item_local": false,
+            "factor": "",
+            "explicit": false
+          }
+        ],
+        "base_enchantments": [
+          "item_base_damage_ring",
+          "item_base_damage_ring",
+          "item_base_speed_movement_ring"
+        ],
+        "enchantments": [
+          "item_damage_ring",
+          "item_damage_ring",
+          "item_speed_movement_ring",
+          "item_speed_movement_ring"
+        ],
+        "scaled": true
+      },
+      "all_unique_ring_pw_death": {
+        "base": [],
+        "unique": [
+          {
+            "name": "Attack speed",
+            "low": 0.002389,
+            "high": 0.002389,
+            "relative": false,
+            "item_local": true,
+            "factor": "AttacksPerSecondFactorAbsolute",
+            "explicit": false
+          }
+        ],
+        "base_enchantments": [
+          "item_base_critical_ring",
+          "item_base_damage_ring",
+          "item_base_healthpoints_ring"
+        ],
+        "enchantments": [
+          "item_critical_ring",
+          "item_damage_ring",
+          "item_damage_ring",
+          "item_healthpoints_ring"
+        ],
+        "scaled": true
+      },
+      "unique_ring_stego_yellow_01": {
+        "base": [],
+        "unique": [
+          {
+            "name": "Attack speed",
+            "low": 0.02,
+            "high": 0.02,
+            "relative": true,
+            "item_local": false,
+            "factor": "AttacksPerSecondFactorRelative",
+            "explicit": false
+          }
+        ],
+        "base_enchantments": [
+          "item_base_damage_ring",
+          "item_base_critical_ring",
+          "item_base_healthpoints_ring"
+        ],
+        "enchantments": [
+          "item_damage_ring",
+          "item_damage_ring",
+          "item_critical_ring",
+          "item_critical_ring"
+        ],
+        "scaled": true
+      },
+      "all_unique_ring_pw_fire": {
+        "base": [],
+        "unique": [
+          {
+            "name": "Burn duration",
+            "low": -0.33,
+            "high": -0.33,
+            "relative": true,
+            "item_local": false,
+            "factor": "",
+            "explicit": false
+          }
+        ],
+        "base_enchantments": [
+          "item_base_damage_ring",
+          "item_base_resistance_fire_ring",
+          "item_base_healthpoints_ring"
+        ],
+        "enchantments": [
+          "item_damage_ring",
+          "item_resistance_fire_ring",
+          "item_resistance_fire_ring",
+          "item_healthpoints_ring"
+        ],
+        "scaled": true
+      }
+    },
+    "enchantments": {
+      "item_base_critical_ring": {
+        "modifiers": [
+          {
+            "name": "Critical value",
+            "low": 0.628,
+            "high": 1.571,
+            "relative": false,
+            "item_local": true,
+            "factor": "CriticalFactorAbsolute",
+            "explicit": false
+          }
+        ],
+        "scaled": true,
+        "tier": true,
+        "min_level": 1,
+        "max_level": 200,
+        "reference": 1
+      },
+      "item_base_damage_ring": {
+        "modifiers": [
+          {
+            "name": "Damage",
+            "low": 0.557,
+            "high": 0.928,
+            "relative": false,
+            "item_local": true,
+            "factor": "DamageFactorAbsolute",
+            "explicit": false
+          }
+        ],
+        "scaled": true,
+        "tier": true,
+        "min_level": 1,
+        "max_level": 200,
+        "reference": 1
+      },
+      "item_base_healthpoints_ring": {
+        "modifiers": [
+          {
+            "name": "Health Points",
+            "low": 0.467,
+            "high": 3.111,
+            "relative": false,
+            "item_local": true,
+            "factor": "HealthPointsFactorAbsolute",
+            "explicit": false
+          }
+        ],
+        "scaled": true,
+        "tier": true,
+        "min_level": 1,
+        "max_level": 200,
+        "reference": 1
+      },
+      "item_base_resistance_fire_ring": {
+        "modifiers": [
+          {
+            "name": "Fire resistance",
+            "low": 0.783,
+            "high": 3.915,
+            "relative": false,
+            "item_local": true,
+            "factor": "ResistanceFactorAbsolute",
+            "explicit": false
+          }
+        ],
+        "scaled": true,
+        "tier": true,
+        "min_level": 1,
+        "max_level": 200,
+        "reference": 1
+      },
+      "item_base_speed_movement_ring": {
+        "modifiers": [
+          {
+            "name": "Movement speed",
+            "low": 0.00523,
+            "high": 0.01307,
+            "relative": false,
+            "item_local": true,
+            "factor": "MovementSpeedFactorAbsolute",
+            "explicit": false
+          }
+        ],
+        "scaled": true,
+        "tier": true,
+        "min_level": 1,
+        "max_level": 200,
+        "reference": 1
+      },
+      "item_critical_ring": {
+        "modifiers": [
+          {
+            "name": "Critical value",
+            "low": 0.192,
+            "high": 0.192,
+            "relative": true,
+            "item_local": true,
+            "factor": "CriticalFactorRelative",
+            "explicit": false
+          }
+        ],
+        "scaled": false,
+        "tier": true,
+        "min_level": 1,
+        "max_level": 200,
+        "reference": 1
+      },
+      "item_damage_ring": {
+        "modifiers": [
+          {
+            "name": "Damage",
+            "low": 0.284,
+            "high": 0.284,
+            "relative": true,
+            "item_local": true,
+            "factor": "DamageFactorRelative",
+            "explicit": false
+          }
+        ],
+        "scaled": false,
+        "tier": true,
+        "min_level": 1,
+        "max_level": 200,
+        "reference": 1
+      },
+      "item_healthpoints_ring": {
+        "modifiers": [
+          {
+            "name": "Health Points",
+            "low": 0.218,
+            "high": 0.218,
+            "relative": true,
+            "item_local": true,
+            "factor": "HealthPointsFactorRelative",
+            "explicit": false
+          }
+        ],
+        "scaled": false,
+        "tier": true,
+        "min_level": 1,
+        "max_level": 200,
+        "reference": 1
+      },
+      "item_resistance_fire_ring": {
+        "modifiers": [
+          {
+            "name": "Fire resistance",
+            "low": 0.204,
+            "high": 0.204,
+            "relative": true,
+            "item_local": true,
+            "factor": "ResistanceFactorRelative",
+            "explicit": false
+          }
+        ],
+        "scaled": false,
+        "tier": true,
+        "min_level": 1,
+        "max_level": 200,
+        "reference": 1
+      },
+      "item_speed_movement_ring": {
+        "modifiers": [
+          {
+            "name": "Movement speed",
+            "low": 0.196,
+            "high": 0.196,
+            "relative": true,
+            "item_local": true,
+            "factor": "MovementSpeedFactorRelative",
+            "explicit": false
+          }
+        ],
+        "scaled": false,
+        "tier": true,
+        "min_level": 25,
+        "max_level": 200,
+        "reference": 1
+      }
+    },
+    "progressions": {
+      "1": {
+        "BlockFactorRelative": 1.0,
+        "BasePowerFactorAbsolute": 1.0,
+        "BasePowerFactorRelative": 1.0,
+        "DamageFactorRelative": 1.0,
+        "CriticalFactorAbsolute": 1.0,
+        "HealthPointsPerSecondFactorAbsolute": 1.0,
+        "CriticalFactorRelative": 1.0,
+        "ArmorFactorAbsolute": 1.0,
+        "HealthPointsFactorAbsolute": 1.0,
+        "AttacksPerSecondFactorRelative": 1.0,
+        "AttacksPerSecondFactorAbsolute": 1.0,
+        "MovementSpeedFactorAbsolute": 1.0,
+        "MovementSpeedFactorRelative": 1.0,
+        "DamageFactorAbsolute": 1.0,
+        "MaxResourceFactorAbsolute": 1.0,
+        "MaxResourceFactorRelative": 1.0,
+        "ResourceRegenerationFactorAbsolute": 1.0,
+        "HealthPointsFactorRelative": 1.0,
+        "HealthPointsPerSecondFactorRelative": 1.0,
+        "ResistanceFactorRelative": 1.0,
+        "ArmorFactorRelative": 1.0,
+        "ResistanceFactorAbsolute": 1.0,
+        "BlockFactorAbsolute": 1.0,
+        "ResourceGainFactorRelative": 1.0,
+        "ResourceRegenerationFactorRelative": 1.0,
+        "ResourceGainFactorAbsolute": 1.0
+      },
+      "100": {
+        "BlockFactorRelative": 1.1794726848602295,
+        "BasePowerFactorAbsolute": 1.0,
+        "BasePowerFactorRelative": 1.0,
+        "DamageFactorRelative": 1.3603485822677612,
+        "CriticalFactorAbsolute": 658.162841796875,
+        "HealthPointsPerSecondFactorAbsolute": 1679.71337890625,
+        "CriticalFactorRelative": 1.183307409286499,
+        "ArmorFactorAbsolute": 613.39794921875,
+        "HealthPointsFactorAbsolute": 4624.24560546875,
+        "AttacksPerSecondFactorRelative": 1.1804473400115967,
+        "AttacksPerSecondFactorAbsolute": 45.116249084472656,
+        "MovementSpeedFactorAbsolute": 44.291080474853516,
+        "MovementSpeedFactorRelative": 1.108016848564148,
+        "DamageFactorAbsolute": 1049.615966796875,
+        "MaxResourceFactorAbsolute": 60.97660827636719,
+        "MaxResourceFactorRelative": 1.0,
+        "ResourceRegenerationFactorAbsolute": 35.0,
+        "HealthPointsFactorRelative": 1.7907490730285645,
+        "HealthPointsPerSecondFactorRelative": 1.0,
+        "ResistanceFactorRelative": 1.1913414001464844,
+        "ArmorFactorRelative": 1.1903492212295532,
+        "ResistanceFactorAbsolute": 601.7904663085938,
+        "BlockFactorAbsolute": 658.162841796875,
+        "ResourceGainFactorRelative": 1.0,
+        "ResourceRegenerationFactorRelative": 1.0,
+        "ResourceGainFactorAbsolute": 1.0
+      }
+    },
+    "tiers": {
+      "0": [
+        [
+          0.10000000149011612,
+          1.0
+        ],
+        [
+          0.20000000298023224,
+          1.0
+        ],
+        [
+          0.30000001192092896,
+          1.0
+        ],
+        [
+          0.4000000059604645,
+          1.0
+        ],
+        [
+          0.5,
+          1.0
+        ],
+        [
+          0.6000000238418579,
+          1.0
+        ],
+        [
+          0.6000000238418579,
+          1.0
+        ],
+        [
+          0.699999988079071,
+          1.0
+        ]
+      ]
+    },
+    "base_tiers": {
+      "0": [
+        [
+          0.009999999776482582,
+          1.0
+        ],
+        [
+          0.029999999329447746,
+          1.0
+        ],
+        [
+          0.05000000074505806,
+          1.0
+        ],
+        [
+          0.10000000149011612,
+          1.0
+        ],
+        [
+          0.20000000298023224,
+          1.0
+        ],
+        [
+          0.30000001192092896,
+          1.0
+        ],
+        [
+          0.30000001192092896,
+          1.0
+        ],
+        [
+          0.5,
+          1.0
+        ]
+      ]
+    }
+  }
+}

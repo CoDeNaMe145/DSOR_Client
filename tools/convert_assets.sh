@@ -1,6 +1,6 @@
 #!/bin/sh
 # Convert an unpacked 2018 Drakensang Online client into the assets this client
-# loads (glTF models + PNG textures + map placement manifests), using DSO_Godot.
+# loads (glTF models + PNG textures + maps + prepared audio), using DSO_Godot.
 #
 #   tools/convert_assets.sh <export_win32> <out_dir> [<DSO_Godot>]
 #
@@ -21,7 +21,8 @@
 # server repository: DSOR_SERVER=<DSOR_Server> (or EXPERIMENTAL) enables them.
 #
 # Needs python3 with Pillow and numpy, a C++ compiler and curl (the .crn
-# transcoder), git (only when cloning DSO_Godot). Logs go to <out_dir>/logs/.
+# transcoder), git (only when cloning DSO_Godot), and vgmstream-cli for audio
+# (on PATH or DSOR_VGMSTREAM=/path/to/vgmstream-cli). Logs go to <out_dir>/logs/.
 set -eu
 
 if [ $# -lt 2 ]; then
@@ -44,6 +45,12 @@ if [ ! -f "$godot/export_model.py" ]; then
 fi
 python3 -c "import PIL, numpy" || {
     echo "error: python3 needs Pillow and numpy (pip install -r $godot/requirements.txt)" >&2; exit 1; }
+
+# Prepare audio first so a missing decoder fails before the model conversion.
+echo "[convert] audio (log: $logs/export_audio.log)"
+python3 "$tools/export_audio.py" "$root" "$out" > "$logs/export_audio.log" 2>&1 || {
+    cat "$logs/export_audio.log" >&2; exit 1; }
+tail -n 3 "$logs/export_audio.log"
 
 # 1. The Crunch (.crn) texture transcoder; without it ~2,600 textures are skipped.
 [ -x "$godot/build/crn2dds" ] || sh "$godot/tools/build_crn2dds.sh"

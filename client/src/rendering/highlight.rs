@@ -120,6 +120,7 @@ pub(crate) fn pick(
     hovered: Res<crate::actors::monsters::Hovered>,
     actors: Query<(Entity, &GlobalTransform, &InheritedVisibility, Option<&crate::actors::picking::PickBoxes>), Or<(With<crate::actors::npc::Npc>, (With<crate::network::net::RemotePlayer>, With<crate::actors::character::Character>, Without<crate::actors::monsters::Monster>))>>,
     joints: Query<&GlobalTransform>,
+    exits: Query<(Entity, &crate::world::exits::Exit)>,
     mut highlighted: ResMut<Highlighted>,
 ) {
     let colour = |c: Vec4| [c.x.to_bits(), c.y.to_bits(), c.z.to_bits(), c.w.to_bits()];
@@ -142,7 +143,18 @@ pub(crate) fn pick(
                     if best.is_none_or(|(bt, _)| t < bt) { best = Some((t, e)); }
                 }
             }
-            best.map(|(_, e)| (e, colour(DEFAULT)))
+            // Exits share the default silhouette highlight. Pick the same
+            // ground disc used for travel, excluding overhead particle batches.
+            for (e, exit) in &exits {
+                if ray.direction.y.abs() < 1e-5 { continue; }
+                let t = (exit.at.y - ray.origin.y) / ray.direction.y;
+                if t < 0.0 { continue; }
+                let point = ray.get_point(t);
+                if point.xz().distance(exit.at.xz()) <= 2.0 && best.is_none_or(|(bt, _)| t < bt) {
+                    best = Some((t, e));
+                }
+            }
+            best.map(|(_, e)| (e, colour(if exits.contains(e) { Vec4::new(1.0, 1.0, 1.0, 0.35) } else { DEFAULT })))
         })
     };
     if highlighted.0 != now {
@@ -163,7 +175,9 @@ fn relayer(
     mut last: Local<Option<Entity>>,
     children: Query<&Children>,
     parents: Query<&ChildOf>,
-    excluded: Query<(), With<NoHighlight>>,
+    // Decorative billboards are not part of an object's outline. In particular,
+    // outlining an exit's light column exposes the flat quad around its halo.
+    excluded: Query<(), Or<(With<NoHighlight>, With<crate::rendering::materials::FacesViewer>)>>,
     meshes: Query<(), With<Mesh3d>>,
     on_layer: Query<Entity, With<OnHighlightLayer>>,
     mut camera: Query<&mut Camera, With<HighlightCamera>>,
