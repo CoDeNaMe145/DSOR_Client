@@ -41,17 +41,17 @@ struct Ambience {
 // The sun pass multiplies the whole sum by globalShadowSampler.y^2 (pe_ssao
 // writes that channel: the average visibility of 16 samples x
 // occlusionConstants.w 1.3). Bevy's screen-space AO is a different, stronger
-// quantity: it darkens open flat ground (visibility about 0.92 on Kingshill's
-// market cobbles, where the original's are exactly texture x light). It darkens
-// the sun pass's sum once, in linear, as Bevy applies its own AO (ambient_gamma.w
-// 0); DSOR_FLAGS=aogamma squares it in the gamma sum like the original's formula,
-// ao13 first applies pe_ssao's x 1.3 clamped to 1.
-// MEASURED (2026-10-18, after the specular and shadow fixes; mean luminance vs
-// the original, zones at the camera's focus; garden / market / market by the
-// pumpkins / church / gate / throne / Wild Forest entrance):
-//   once in linear:  -6% / 0% / +4% / +14% / +8% / -7% / +4%   (total 43%)
-//   x 1.3, squared:  -3% / +3% / +7% / +17% / +12% / -6% / +4%  (total 52%)
-//   squared:        -19% / -12% / -10% / +1% / -12% / -10% / -7% (total 71%)
+// quantity; with the original's 0.4 radius (crate::rendering::lighting
+// ssao_radius) it is squared in the gamma sum, the original's formula
+// (ambient_gamma.w 1). DSOR_FLAGS=aolinear applies it once in linear (w 0),
+// ao13 first applies pe_ssao's x 1.3 clamped to 1 (w 2).
+// MEASURED (2026-10-18, radius 0.4, 11 views: Kingshill garden / market /
+// church / gate / throne, market by the pumpkins, Wild Forest entrance, swamp,
+// dock, Wildherz Caverns entrance and campfire; total |luminance error|):
+//   squared 73%, once in linear 94%, x 1.3 squared 97% (with Bevy's 0.73
+//   radius the three tied at 88-94%).
+// (With Bevy's 0.73 radius, 7 views: once in linear 43%, x 1.3 squared 52%,
+// squared 71%: squared left open sunlit ground 10-19% too dark.)
 // FAILURE (2026-10-17): Bevy's AO x 1.3 clamped to 1 almost everywhere (its
 // visibility is already near 1 on open ground, a different quantity than
 // pe_ssao's average) and brought back the sunlit overshoot (Kingshill garden

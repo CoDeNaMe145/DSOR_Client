@@ -101,6 +101,42 @@ fn nebula_falloff(mut shaders: ResMut<Assets<bevy::shader::Shader>>, mut done: L
     info!("point lights: Nebula's linear falloff");
 }
 
+/// Bevy's screen-space ambient occlusion with the original's radius: 0.4 units
+/// around each point (Bevy's GTAO: 0.73). The original's pe_ssao is a small,
+/// contact-only occlusion: 16 samples in a 0.4 hemisphere, counted when 0.05 to
+/// 0.4 behind the visible surface. DSOR_AO_RADIUS overrides it for comparisons.
+/// EVIDENCE: shaders_sm30 pe_ssao (occlusionConstants c23 = (0.4, 0.05, 0.4,
+///   1.3) captured, lighting-work/captures/kingshill-*.txt: `mul r6.xyz, r6,
+///   c23.x` scales the offsets, `add r0.y, r0.x, -c23.z` / `-r0.x, c23.y` bound
+///   the depth test).
+fn ssao_radius(mut shaders: ResMut<Assets<bevy::shader::Shader>>, mut done: Local<[bool; 2]>) {
+    if done.iter().all(|d| *d) {
+        return;
+    }
+    let radius = std::env::var("DSOR_AO_RADIUS").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.4);
+    let targets = [
+        ("ssao/ssao.wgsl", "let effect_radius = 0.5 * 1.457;", format!("let effect_radius = {radius:?};")),
+        ("ssao/preprocess_depth.wgsl", "let effect_radius = depth_range_scale_factor * 0.5 * 1.457;",
+            format!("let effect_radius = depth_range_scale_factor * {radius:?};")),
+    ];
+    for (i, (path, old, new)) in targets.iter().enumerate() {
+        if done[i] {
+            continue;
+        }
+        let Some(id) = shaders.iter().find(|(_, s)| s.path.ends_with(path)).map(|(id, _)| id) else { continue };
+        done[i] = true;
+        let Some(mut shader) = shaders.get_mut(id) else { continue };
+        let bevy::shader::Source::Wgsl(src) = &shader.source else { continue };
+        if !src.contains(old) {
+            warn!("bevy_pbr {path}: effect radius not as expected; ambient occlusion keeps Bevy's radius");
+            continue;
+        }
+        let patched = src.replace(old, new);
+        shader.source = bevy::shader::Source::Wgsl(patched.into());
+        info!("ambient occlusion: the original's radius {radius} ({path})");
+    }
+}
+
 /// An ambience bubble's settings (the fields the client uses; names as in the
 /// level database).
 #[derive(Deserialize, Clone, Debug, PartialEq)]
@@ -534,7 +570,7 @@ pub struct Lighting {
 
 /// How the light is put together: the original's way by default, the others
 /// kept to compare against it. Switchable live from the Lighting Menu, starting
-/// from DSOR_FLAGS (linearlight, aogamma, ao13, shadowfloor, norim). Not saved.
+/// from DSOR_FLAGS (linearlight, aolinear, ao13, shadowfloor, norim). Not saved.
 #[derive(Resource, Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct RenderSwitches {
     /// The original's gamma-space light sum (false: Bevy's linear sum).
@@ -550,9 +586,10 @@ pub(crate) struct RenderSwitches {
 /// How Bevy's ambient occlusion darkens the sun pass's sum.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AoMode {
-    /// Once, in linear (the best match measured).
+    /// Once, in linear.
     Linear,
-    /// Squared in the gamma sum, the original's formula.
+    /// Squared in the gamma sum, the original's formula, with the original's
+    /// 0.4 radius (ssao_radius): the best match measured (see ambience.wgsl).
     Squared,
     /// x 1.3 clamped to 1, then squared: pe_ssao's boost.
     Clamped,
@@ -562,7 +599,7 @@ impl Default for RenderSwitches {
     fn default() -> Self {
         Self {
             gamma_light: !crate::flag("linearlight"),
-            ao: if crate::flag("ao13") { AoMode::Clamped } else if crate::flag("aogamma") { AoMode::Squared } else { AoMode::Linear },
+            ao: if crate::flag("ao13") { AoMode::Clamped } else if crate::flag("aolinear") { AoMode::Linear } else { AoMode::Squared },
             shadow_floor: crate::flag("shadowfloor"),
             rim: !crate::flag("norim"),
         }
@@ -657,7 +694,7 @@ impl Plugin for EditorLightingPlugin {
         app.add_plugins(BlendPlugin).init_resource::<Level>().init_resource::<EditorLook>()
             .insert_resource(load_saved().unwrap_or_default())
             .init_resource::<RenderSwitches>()
-            .add_systems(Update, nebula_falloff)
+            .add_systems(Update, (nebula_falloff, ssao_radius))
             .add_systems(Update, (copy_editor_look, apply_look, flicker).chain().in_set(ApplyEditorLighting))
             .add_systems(PostUpdate, shift_fog.after(bevy::transform::TransformSystems::Propagate));
     }
@@ -677,7 +714,7 @@ impl Plugin for LightingPlugin {
             .init_resource::<Level>()
             .insert_resource(load_saved().unwrap_or_default())
             .init_resource::<RenderSwitches>()
-            .add_systems(Update, nebula_falloff)
+            .add_systems(Update, (nebula_falloff, ssao_radius))
             // The Lighting Menu replaces this panel when it is on (crate::diagnostics::lighting_menu).
             .add_systems(Startup, spawn_panel.run_if(|| !crate::diagnostics::lighting_menu::enabled()))
             .add_systems(

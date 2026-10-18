@@ -239,7 +239,7 @@ pub(super) fn spawn(page: &mut ChildSpawnerCommands) {
     .with_children(|card| {
         card.spawn(menu_text("RENDER SWITCHES", 12.0, Color::srgb(0.91, 0.73, 0.43)));
         card.spawn(menu_text(
-            "How the light is put together, to compare the ways. Click to change. Defaults (the closest to the original measured): Gamma, Once linear, Off, On. Not saved: a restart goes back to them (or to DSOR_FLAGS).",
+            "How the light is put together, to compare the ways. Click to change. Defaults (the closest to the original measured): Gamma, Squared, Off, On. Not saved: a restart goes back to them (or to DSOR_FLAGS).",
             11.0,
             Color::srgb(0.64, 0.70, 0.79),
         ));
