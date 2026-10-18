@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The character sheet's data (client/src/gameplay/stats.rs), from the 2018 client's own files.
 
-Usage: export_stats.py <export_win32> <assets>
+Usage: export_stats.py <export_win32> <assets> [--database static.db4]
 
 Writes characters/stats.json:
   attrs     _Template_ActorAttributes: name -> [initial, lower, upper]
@@ -18,13 +18,15 @@ Writes characters/stats.json:
   skills    _Template_Skill: id -> [UseWeaponDPS, DamageModifier, English title, CharClass]
   texts     language/en/gui.window.xml, categories gui.window.charsheet and gui.window.general
   items, enchantments, tiers, item_attrs   for the worn items (SEE: stats.rs)
+  combat    server modifier programs, progression factors, sets, variables and status indices
 SEE: the spec of the 2018 computation in client/src/gameplay/stats.rs (addresses there).
 """
 import json, os, re, sqlite3, sys
 import xml.etree.ElementTree as ET
 
 export, assets = sys.argv[1], sys.argv[2]
-db = sqlite3.connect(f"file:{os.path.join(export, 'db', 'static.db4')}?mode=ro", uri=True)
+database = sys.argv[sys.argv.index('--database')+1] if '--database' in sys.argv else os.path.join(export, 'db', 'static.db4')
+db = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
 db.row_factory = sqlite3.Row
 
 
@@ -54,7 +56,8 @@ for r in rows("select * from _Template_Player"):
     player[cls] = {k: r[k] for k in ("RunSpeed", "RunSpeedMin", "SkillSpeedMin", "Armor", "BlockRating", "BlockDamageReduction",
                                        "CriticalRating", "CriticalDamageFactor", "ClassHitpointsFactor", "HitPointsRegeneration",
                                        "AbsoluteHitPointsRegeneration", "SkillResourceRegeneration",
-                                       "AbsoluteSkillResourceRegeneration", "AnimRunSpeed")}
+                                       "AbsoluteSkillResourceRegeneration", "AnimRunSpeed", "HitPointsRegFrequency",
+                                       "SkillResourceRegFrequency", "SkillResourceRegDelay")}
     player[cls]["resist"] = resist
 out["player"] = player
 # The 2018 client keeps these per-level factors in _Template_DmgLvlCurves; release 261
@@ -119,6 +122,8 @@ out["enchantments"] = {r["Id"]: {k: r.get(k) for k in ("BaseEnchantment", "UseRa
 out["tiers"] = {str(r["Tier"]): r for r in rows("select * from _Template_EnchantmentTiers")}
 
 path = os.path.join(assets, "characters", "stats.json")
+from combat_catalog import export_combat
+out['combat'] = export_combat(db)
 with open(path, "w", encoding="utf-8") as f:
     json.dump(out, f, ensure_ascii=False, separators=(",", ":"), default=str)
 print({k: len(v) if hasattr(v, "__len__") else v for k, v in out.items()}, os.path.getsize(path))

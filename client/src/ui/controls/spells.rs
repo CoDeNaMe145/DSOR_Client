@@ -16,6 +16,10 @@ pub(in crate::ui) struct Spell {
     pub icon: String,
     #[serde(default)] pub description: String,
     #[serde(default)] pub target: String,
+    /// Authored locale tokens resolved against unmodified skill database values.
+    #[serde(default)] pub preview_description: String,
+    #[serde(default)] pub growth: String,
+    #[serde(default)] pub talent_cost: u32,
 }
 
 #[derive(Clone)]
@@ -208,7 +212,7 @@ pub(in crate::ui) fn overlay(
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn spell() -> Spell { Spell { id: "magicmissile".into(), wire: Some(42), class_id: 1, unlock: 1, name: "Magic missile".into(), icon: String::new(), description: String::new(), target: String::new() } }
+    fn spell() -> Spell { Spell { id: "magicmissile".into(), wire: Some(42), class_id: 1, unlock: 1, name: "Magic missile".into(), icon: String::new(), description: String::new(), target: String::new(), preview_description: String::new(), growth: String::new(), talent_cost: 0 } }
 
     #[test]
     fn availability_uses_the_server_book_and_class_not_just_level() {

@@ -37,6 +37,7 @@ use serde::Deserialize;
 pub(crate) mod combat_text;
 pub(crate) mod input;
 mod controls;
+mod cursor;
 mod dialogue;
 /// The item catalog (names by template), for crate::ui::combat_text's loot texts.
 pub(crate) use controls::items::Catalog;
@@ -471,6 +472,7 @@ impl Plugin for UiPlugin {
         bevy::asset::embedded_asset!(app, "ui.wgsl");
         app.add_plugins(Material2dPlugin::<UiMaterial>::default())
             .add_plugins(selection::SelectionUiPlugin)
+            .add_plugins(cursor::CursorPlugin)
             .init_asset::<Layout>()
             .init_asset::<SkillIcons>()
             .init_asset::<local_map::MapNames>()
@@ -506,7 +508,10 @@ impl Plugin for UiPlugin {
             );
         #[cfg(not(target_arch = "wasm32"))]
         app.add_systems(PreUpdate, replay::run.after(bevy::input::InputSystems)
-            .before(bevy::ui::UiSystems::Focus).run_if(crate::screens::loading::gameplay_ready));
+            .before(bevy::ui::UiSystems::Focus).run_if(|login: Option<Res<crate::LoginGate>>,
+                loading: Res<crate::screens::loading::LoadingScreen>, selection: Option<Res<crate::screens::selection::Selection>>| {
+                (login.is_some() && !loading.active()) || crate::screens::loading::gameplay_ready(login, loading, selection)
+            }));
     }
 }
 

@@ -10,11 +10,13 @@ pub(super) const ROWS: usize = 7;
 #[serde(default)]
 pub(crate) struct Preferences {
     pub tooltips: bool,
+    pub advanced_tooltips: bool,
     pub own_name: bool,
     pub other_names: bool,
     pub combat_text: bool,
     pub camera_shake: bool,
     pub attack_hovered: bool,
+    pub classic_cursor: bool,
     pub lock_bar: bool,
     pub fullscreen: bool,
     pub vsync: bool,
@@ -24,8 +26,8 @@ pub(crate) struct Preferences {
 
 impl Default for Preferences {
     fn default() -> Self {
-        Self { tooltips: true, own_name: true, other_names: true, combat_text: true,
-            camera_shake: true, attack_hovered: true, lock_bar: false, fullscreen: false,
+        Self { tooltips: true, advanced_tooltips: false, own_name: true, other_names: true, combat_text: true,
+            camera_shake: true, attack_hovered: true, classic_cursor: false, lock_bar: false, fullscreen: false,
             vsync: true, map_transparency: 45,
             bindings: shortcuts().into_iter().map(|(id, _, key)| (id, key.to_owned())).collect() }
     }
@@ -76,6 +78,9 @@ pub(super) fn display_key(key: &str) -> String {
 }
 
 impl Preferences {
+    pub(super) fn advanced_tooltips(&self, keys: &ButtonInput<KeyCode>, typing: bool) -> bool {
+        self.advanced_tooltips || (!typing && keys.pressed(KeyCode::KeyY))
+    }
     pub(crate) fn pressed(&self, action: &str, keys: &ButtonInput<KeyCode>) -> bool {
         self.bindings.get(action).filter(|v| !v.is_empty()).is_some_and(|binding|
             keys.get_just_pressed().any(|key| chord(keys, *key) == *binding))
@@ -181,8 +186,10 @@ impl Settings {
                 if let Some((id, _, _)) = self.rows().get(self.page * ROWS + row).cloned() {
                     match id.as_str() {
                         "tooltips" => self.draft.tooltips ^= true, "own_name" => self.draft.own_name ^= true,
+                        "advanced_tooltips" => self.draft.advanced_tooltips ^= true,
                         "other_names" => self.draft.other_names ^= true, "combat_text" => self.draft.combat_text ^= true,
                         "camera_shake" => self.draft.camera_shake ^= true, "attack_hovered" => self.draft.attack_hovered ^= true,
+                        "classic_cursor" => self.draft.classic_cursor ^= true,
                         "lock_bar" => self.draft.lock_bar ^= true, "fullscreen" => self.draft.fullscreen ^= true,
                         "vsync" => self.draft.vsync ^= true,
                         "map_transparency" => self.draft.map_transparency = if self.draft.map_transparency >= 100 { 0 } else { (self.draft.map_transparency + 10).min(100) },
@@ -197,7 +204,8 @@ impl Settings {
         let on = |v| if v { "On" } else { "Off" }.to_owned();
         let p = &self.draft;
         let rows: Vec<(&str, &str, String)> = match self.tab {
-            0 => vec![("tooltips", "Hover descriptions", on(p.tooltips)), ("own_name", "Display your name", on(p.own_name)),
+            0 => vec![("tooltips", "Hover descriptions", on(p.tooltips)),
+                ("advanced_tooltips", "Always show advanced tooltips", on(p.advanced_tooltips)), ("own_name", "Display your name", on(p.own_name)),
                 ("other_names", "Display other names", on(p.other_names)), ("map_transparency", "Map transparency", format!("{}%", p.map_transparency))],
             1 => vec![("fullscreen", "Fullscreen", on(p.fullscreen)), ("vsync", "Vertical sync", on(p.vsync)),
                 ("map_transparency", "Map transparency", format!("{}%", p.map_transparency))],
@@ -206,7 +214,8 @@ impl Settings {
                 let label = if self.listening.as_ref() == Some(&id) { "Press a key...".into() } else { p.label(&id) };
                 (id, title, label)
             }).collect(),
-            4 => vec![("attack_hovered", "Left click attacks hovered enemies", on(p.attack_hovered)),
+            4 => vec![("classic_cursor", "Classic cursor", on(p.classic_cursor)),
+                ("attack_hovered", "Left click attacks hovered enemies", on(p.attack_hovered)),
                 ("fixed", "Hold Shift + left click", "Attack in place".into()), ("fixed", "Hold right click", "Secondary attack".into())],
             _ => vec![("combat_text", "Floating combat text", on(p.combat_text)), ("camera_shake", "Camera shake", on(p.camera_shake)),
                 ("lock_bar", "Lock action bar", on(p.lock_bar))],
@@ -298,6 +307,49 @@ pub(in crate::ui) fn sync(settings: ResMut<Settings>, mut windows: Query<(&Windo
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn classic_cursor_is_optional_persistent_and_uses_the_settings_draft() {
+        // Settings written before the cursor option retain the current style.
+        let p: Preferences = serde_json::from_str(r#"{"tooltips":true}"#).unwrap();
+        assert!(!p.classic_cursor);
+        let mut s = Settings { current:p.clone(), draft:p, open:false, tab:0, page:0, listening:None, notice:String::new() };
+        s.begin(); s.action("cursor");
+        let row = s.rows().iter().position(|r| r.0 == "classic_cursor").unwrap();
+        assert_eq!(s.rows()[row].2, "Off");
+        s.action(&format!("row{row}"));
+        assert_eq!(s.rows()[row].2, "On");
+        assert!(!s.current.classic_cursor, "draft changes wait for Apply");
+        let restored: Preferences = serde_json::from_str(&serde_json::to_string(&s.draft).unwrap()).unwrap();
+        assert!(restored.classic_cursor);
+        s.action("cancel"); s.begin();
+        assert!(!s.draft.classic_cursor, "Cancel discards the change");
+        s.current = restored;
+        s.begin(); s.action("revert");
+        assert!(!s.draft.classic_cursor, "Reset restores the modern cursor in the draft");
+        assert!(s.current.classic_cursor, "Reset must also wait for Apply");
+    }
+    #[test]
+    fn advanced_tooltips_persist_and_keep_the_temporary_key_override() {
+        let mut p: Preferences = serde_json::from_str(r#"{"tooltips":true}"#).unwrap();
+        let mut keys = ButtonInput::default();
+        assert!(!p.advanced_tooltips(&keys,false));
+        keys.press(KeyCode::KeyY);
+        assert!(p.advanced_tooltips(&keys,false));
+        assert!(!p.advanced_tooltips(&keys,true));
+        p.advanced_tooltips = true;
+        let p:Preferences=serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+        keys.release(KeyCode::KeyY);
+        assert!(p.advanced_tooltips(&keys,false));
+        assert!(p.advanced_tooltips(&keys,true));
+        let mut s = Settings {current:p.clone(),draft:p,open:false,tab:0,page:0,listening:None,notice:String::new()};
+        s.begin();
+        let row=s.rows().iter().position(|r|r.0=="advanced_tooltips").unwrap();
+        s.action(&format!("row{row}"));
+        assert!(!s.draft.advanced_tooltips);
+        s.action("cancel");
+        assert!(s.current.advanced_tooltips);
+        s.begin(); assert!(s.draft.advanced_tooltips);
+    }
     #[test]
     fn rebind_replaces_conflicts_and_drives_gameplay() {
         let mut p = Preferences::default();

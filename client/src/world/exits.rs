@@ -24,7 +24,7 @@ use bevy::world_serialization::WorldAssetRoot;
 use dsor_proto::commands::{player::UnlockMap, ClientCommand};
 use serde::Deserialize;
 
-use crate::world::map::{model_path, CurrentMap};
+use crate::world::map::CurrentMap;
 use crate::world::nav::{CurrentNav, NavMesh};
 use crate::network::net::{LocalPlayer, Net, NetSystems};
 
@@ -133,7 +133,8 @@ fn spawn_exits(
     let mut drawn = 0;
     for row in list.0.iter().filter(|r| r.event == -1) {
         let tf = Transform::from_matrix(Mat4::from_cols_array(&row.m));
-        let scene = assets.load(GltfAssetLabel::Scene(0).from_asset(model_path(&row.graphics)));
+        let scene = assets.load(GltfAssetLabel::Scene(0).from_asset(
+            crate::rendering::model_variant::prop_path(&row.graphics, "active")));
         let icon = if row.icon.is_empty() { "ui/icon_map_exit".to_owned() } else { row.icon.clone() };
         commands.spawn((
             Name::new(format!("exit {} -> {}", row.name, row.url)),

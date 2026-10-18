@@ -5,6 +5,8 @@ use bevy::render::view::screenshot::{save_to_disk, Screenshot};
 #[derive(Deserialize)]
 struct Step {
     frame: u32,
+    /// Logical window dimensions, for responsive native UI captures.
+    window_size: Option<[u32; 2]>,
     /// Reference pixels on a 1024x768 screen, centered at wider aspect ratios.
     point: Option<[f32; 2]>,
     /// Reference pixels anchored to the screen's left edge.
@@ -18,6 +20,10 @@ struct Step {
     npc_offers: Option<Vec<String>>,
     /// Replay a server Offer packet through the real decoder, offline only.
     npc_offer_packet: Option<String>,
+    /// Offline tooltip fixture, decoded through the ordinary inventory protocol.
+    inventory_packet: Option<String>,
+    /// Hold/release Y across captures to inspect the advanced item card.
+    advanced_tooltip: Option<bool>,
     key: Option<String>,
     left: Option<bool>,
     capture: Option<String>,
@@ -53,12 +59,13 @@ pub(super) fn run(mut commands: Commands, mut replay: Local<Replay>,
     if replay.steps.is_empty() && replay.quit_at.is_none() { return; }
     if let Some(key) = replay.key.take() { keys.release(key); }
     let Ok(mut window) = windows.single_mut() else { return };
-    // Inject game input without asking winit to warp the desktop cursor.
-    let window = window.bypass_change_detection();
     replay.frame += 1;
     if replay.quit_at.is_some_and(|at| replay.frame >= at) { commands.write_message(AppExit::Success); return; }
     while replay.steps.front().is_some_and(|s| s.frame <= replay.frame) {
         let step = replay.steps.pop_front().unwrap();
+        if let Some([width, height]) = step.window_size {
+            window.resolution.set(width as f32, height as f32);
+        }
         if let Some(name) = step.key.as_deref() {
             if let Some(key) = match name { "Escape" => Some(KeyCode::Escape), "F1" => Some(KeyCode::F1), "V" => Some(KeyCode::KeyV), "I" => Some(KeyCode::KeyI), "9" => Some(KeyCode::Digit9), "S" => Some(KeyCode::KeyS), "Delete" => Some(KeyCode::Delete), _ => None } {
                 keys.press(key);
@@ -66,6 +73,18 @@ pub(super) fn run(mut commands: Commands, mut replay: Local<Replay>,
             }
         }
         if net.as_ref().is_some_and(|n| n.offline) {
+            if let Some(held) = step.advanced_tooltip {
+                if held { keys.press(KeyCode::KeyY); } else { keys.release(KeyCode::KeyY); }
+            }
+            if let (Some(path),Some(net))=(&step.inventory_packet,net.as_mut()) {
+                match std::fs::read(path).map_err(|e|e.to_string()).and_then(|bytes|
+                    dsor_proto::commands::decode_message(&bytes,bytes.len()*8).map_err(|e|e.to_string())) {
+                    Ok(commands)=>for (command,_) in commands {
+                        if let dsor_proto::commands::ServerCommand::InventoryInfo(info)=command {net.inventory.apply(info);}
+                    },
+                    Err(e)=>error!("Inventory tooltip replay: {e}"),
+                }
+            }
             if let Some(position) = step.player {
                 for (mut player, mut at) in &mut players { at.translation = Vec3::from(position); player.target = None; }
             }
@@ -107,6 +126,7 @@ pub(super) fn run(mut commands: Commands, mut replay: Local<Replay>,
                 }
                 if let Ok((camera, transform)) = cameras.single() {
                     if let Ok(point) = camera.world_to_viewport(transform, at.translation() + Vec3::Y * 1.1) {
+                        let window = window.bypass_change_detection();
                         window.set_cursor_position(Some(point));
                         window.focused = true;
                         info!("NPC replay: clicking {} actor {} at {:?}", template, npc.actor, point);
@@ -115,12 +135,15 @@ pub(super) fn run(mut commands: Commands, mut replay: Local<Replay>,
             } else { error!("NPC replay: missing {template}"); }
         }
         if let Some([x, y]) = step.point {
+            // Inject game input without asking winit to warp the desktop cursor.
+            let window = window.bypass_change_detection();
             let scale = window.height() / BASE_H;
             let point = Vec2::new(x * scale + (window.width() - BASE_W * scale) * 0.5, y * scale);
             window.set_cursor_position(Some(point));
             window.focused = true;
         }
         if let Some([x, y]) = step.left_point {
+            let window = window.bypass_change_detection();
             window.set_cursor_position(Some(Vec2::new(x, y) * (window.height() / BASE_H)));
             window.focused = true;
         }

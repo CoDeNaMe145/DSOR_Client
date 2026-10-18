@@ -2,7 +2,7 @@
 //! visibility, hit testing and actions share the same page/state gates.
 use super::*;
 use bevy::ui::RelativeCursorPosition;
-use bevy::window::{CursorIcon, MonitorSelection, SystemCursorIcon, WindowMode};
+use bevy::window::{MonitorSelection, WindowMode};
 use bevy::input::keyboard::KeyboardInput;
 mod panels;
 pub(super) mod spells;
@@ -407,10 +407,10 @@ impl WindowControls {
         let mut controls = Self { map_mode: local_map::MapMode::Compact, buttons, regions: Vec::new(), drag_handle: DragHandle::from_layout(layout), inventory: 0, character: 0, bag: 0, bag_pages: 8, premium_bag: false, overflow_page: 0, overflow_pages: 1, ingredient: 0, rarity: 1, locked: false, hovered: None, pressed: None,
             pages: HashMap::new(), toggles: default(), open_windows: Vec::new(), entries: HashMap::new(), choices: HashMap::new(), spells: default(), chat_compact: false, chat_channels: [false; 5] };
         // The chat's entry starts empty, not with its "Enter text" sample.
-        // DSOR_CHAT_MODE=compact: the chat starts reduced (screenshots).
+        // Start unobtrusively at login; screenshots can opt into expanded mode.
         if layout.window == CHAT_WINDOW {
             for w in layout.widgets.iter().filter(|w| w.kind == "TextEntry") { controls.entries.insert(w.id.clone(), TextEntry::default()); }
-            if std::env::var("DSOR_CHAT_MODE").is_ok_and(|m| m == "compact") { controls.chat_compact = true; }
+            controls.chat_compact = !std::env::var("DSOR_CHAT_MODE").is_ok_and(|m| m == "full");
         }
         // Together with DSOR_UI_OPEN=locationmap, capture either overlay size.
         if layout.window == "locationmap" && std::env::var("DSOR_MAP_VIEW").is_ok_and(|v| v == "expanded") {
@@ -805,9 +805,8 @@ pub(super) fn chat_rows(
 }
 
 pub(super) fn interact(
-    mut commands: Commands,
     mut windows: Windows,
-    mut primary: Query<(Entity, &mut Window, Option<&CursorIcon>), With<PrimaryWindow>>,
+    mut primary: Query<&mut Window, With<PrimaryWindow>>,
     mouse: Res<ButtonInput<MouseButton>>,
     mut pointer: ResMut<Pointer>,
     mut skill_clicks: ResMut<SkillClicks>,
@@ -820,7 +819,7 @@ pub(super) fn interact(
     mut settings: ResMut<settings::Settings>,
     mut hotbar: ResMut<hotbar::Hotbar>,
 ) {
-    let Ok((primary, mut window, cursor)) = primary.single_mut() else { return };
+    let Ok(mut window) = primary.single_mut() else { return };
     let blocked = panels.iter().any(|(cursor, visible)| visible.get() && cursor.cursor_over());
     let point = window.cursor_position().filter(|_| window.focused && window.height() > 0.0)
         .map(|p| p * (BASE_H / window.height()));
@@ -899,10 +898,6 @@ pub(super) fn interact(
         clicked = None;
     }
     if !mouse.pressed(MouseButton::Left) { pointer.down = None; }
-    let want: CursorIcon = if pointer.drag.is_some() || pointer.spell_drag.as_ref().is_some_and(|d| d.active) { SystemCursorIcon::Grabbing }
-        else if !mouse.pressed(MouseButton::Left) && top.is_some_and(|(_, button, title)| title && button.is_none()) { SystemCursorIcon::Grab }
-        else { SystemCursorIcon::Default }.into();
-    if cursor != Some(&want) { commands.entity(primary).insert(want); }
     for (e, _, mut controls, visibility, _) in &mut windows {
         controls.hovered = hovered.filter(|(root, _)| *root == e).map(|(_, i)| i);
         controls.pressed = pointer.down.filter(|(root, _)| *root == e && *visibility != Visibility::Hidden).map(|(_, i)| i);
@@ -1232,6 +1227,8 @@ mod tests {
             .init_resource::<settings::Settings>()
             .init_resource::<hotbar::Hotbar>()
             .init_resource::<items::Interaction>()
+            .init_resource::<social::SocialUi>()
+            .init_resource::<trade::TradeUi>()
             .init_resource::<SkillClicks>()
             .init_resource::<crate::network::chat::ChatLog>()
             .init_resource::<crate::gameplay::dialogue::Dialogue>()
@@ -1324,6 +1321,9 @@ mod tests {
         let shown = |app: &App, e: Entity| *app.world().get::<Visibility>(e).unwrap() != Visibility::Hidden;
         let typing = |app: &App| app.world().resource::<crate::ui::input::UiInput>().typing;
         let sent = |app: &App| app.world().resource::<crate::network::chat::ChatLog>().outbox().to_vec();
+        assert!(app.world().get::<WindowControls>(chat).unwrap().chat_compact,"login starts compact");
+        key(&mut app, KeyCode::KeyV, Some("v"));
+        assert!(!app.world().get::<WindowControls>(chat).unwrap().chat_compact,"V expands the initial preview");
         key(&mut app, KeyCode::KeyV, Some("v"));
         assert!(shown(&app, chat));
         assert!(app.world().get::<WindowControls>(chat).unwrap().chat_compact);
@@ -1646,13 +1646,24 @@ mod tests {
         }
         let album = app.world().get::<WindowControls>(roots["collectorsalbum"]).unwrap();
         for w in &layouts["collectorsalbum"].widgets {
-            if w.id.contains("Template") || ["/Categorypage", "/AdvertisementArtwork", "/AnimUnlock", "/AnimUse"].iter().any(|p| w.id.contains(p)) {
+            if w.id.contains("Template") || ["/Categorypage", "/AdvertisedItems", "/DealsCounterLabel", "/AnimUnlock", "/AnimUse"].iter().any(|p| w.id.contains(p)) {
                 assert!(!album.visible(&album.gate("collectorsalbum", w)), "stickerbook placeholder leaked: {}", w.id);
             }
         }
-        for suffix in ["/WindowTitle", "/Firstpage/background_info/TextLabel_fav", "/Firstpage/background_info/TextLabel_info"] {
+        for suffix in ["/WindowTitle", "/Firstpage/AdvertisementArtwork", "/Firstpage/background_info/TextLabel_fav", "/Firstpage/background_info/TextLabel_info"] {
             let widget = layouts["collectorsalbum"].widgets.iter().find(|w| w.id.ends_with(suffix)).unwrap();
             assert!(album.visible(&album.gate("collectorsalbum", widget)), "stickerbook content missing: {suffix}");
+        }
+        let root = roots["collectorsalbum"];
+        *app.world_mut().get_mut::<Visibility>(root).unwrap() = Visibility::Inherited;
+        for category in 1..8 {
+            app.update();
+            click_control(&mut app, primary, root, &format!("/AlbumCategory{category}"));
+            let album = app.world().get::<WindowControls>(root).unwrap();
+            assert_eq!(album.pages.get("album"), Some(&category));
+            for w in layouts["collectorsalbum"].widgets.iter().filter(|w| w.id.ends_with("/Artwork")) {
+                assert_eq!(album.visible(&album.gate("collectorsalbum", w)), w.id.contains(&format!("/AlbumPage{category}/")));
+            }
         }
     }
 
@@ -1732,6 +1743,11 @@ mod tests {
     #[ignore = "requires locally converted game UI assets"]
     fn exported_title_drags_move_children_and_hits_without_leaking_world_input() {
         let (mut app, primary, roots, _) = exported_app();
+        // UI interaction must leave the game's custom cursor installed, even
+        // while hovering a title or dragging it outside the window's bounds.
+        use bevy::window::{CursorIcon, CustomCursor, CustomCursorImage};
+        let game_cursor = CursorIcon::Custom(CustomCursor::Image(CustomCursorImage::default()));
+        app.world_mut().entity_mut(primary).insert(game_cursor.clone());
         let move_cursor = |app: &mut App, point: Vec2| {
             let mut window = app.world_mut().get_mut::<Window>(primary).unwrap();
             let scale = window.height() / BASE_H;
@@ -1762,7 +1778,7 @@ mod tests {
                 let start = Vec2::new((l + r) * 0.5 + handle.k * (width - BASE_W), t + 12.0);
                 move_cursor(&mut app, start);
                 app.update();
-                assert_eq!(app.world().get::<CursorIcon>(primary), Some(&CursorIcon::from(SystemCursorIcon::Grab)));
+                assert_eq!(app.world().get::<CursorIcon>(primary), Some(&game_cursor));
                 let child_before = app.world().get::<GlobalTransform>(child).unwrap().translation();
                 press(&mut app);
                 assert_eq!(app.world().resource::<Pointer>().drag.as_ref().unwrap().root, root);
@@ -1774,7 +1790,7 @@ mod tests {
                 let moved = app.world().get::<GlobalTransform>(child).unwrap().translation() - child_before;
                 assert!(moved.truncate().distance(Vec2::new(delta.x, -delta.y)) < 0.001);
                 assert!(app.world().resource::<crate::ui::input::UiInput>().blocks(MouseButton::Left));
-                assert_eq!(app.world().get::<CursorIcon>(primary), Some(&CursorIcon::from(SystemCursorIcon::Grabbing)));
+                assert_eq!(app.world().get::<CursorIcon>(primary), Some(&game_cursor));
                 release(&mut app);
                 assert!(app.world().resource::<Pointer>().drag.is_none());
                 move_cursor(&mut app, start);

@@ -234,6 +234,9 @@ pub struct Net {
     /// Status effects the server started on actors (82), and ground effects it
     /// placed (64) or removed (65), for crate::gameplay::skills.
     pub status_events: Vec<StatusEvent>,
+    /// Full modifier parameters must survive consumption of the visual events.
+    pub stat_effects: HashMap<u32, dsor_proto::commands::combat::StatusEffectElement>,
+    pub stat_revision: u64,
     /// Every StatusEffect element as (holder, wire index, instance, added):
     /// crate::actors::mounts finds the ride effects among them (an element
     /// without details is the removal).
@@ -285,6 +288,7 @@ pub struct SkillEvent {
     pub wire: u16,
     pub heading: f32,
     pub points: Vec<[f32; 3]>,
+    pub target: Option<u32>,
     /// The game tick the skill starts at (the command's own).
     pub start_tick: u32,
 }
@@ -756,6 +760,8 @@ pub fn start_offline(world: &mut World, class: u8, gender: u8) {
         skill_book: None,
         skill_events: Vec::new(),
         status_events: Vec::new(),
+        stat_effects: HashMap::new(),
+        stat_revision: 0,
         mount_events: Vec::new(),
         location_events: Vec::new(),
         named_status_events: Vec::new(),
@@ -984,6 +990,8 @@ pub(crate) fn start_session(world: &mut World, config: NetConfig) {
         skill_book: None,
         skill_events: Vec::new(),
         status_events: Vec::new(),
+        stat_effects: HashMap::new(),
+        stat_revision: 0,
         mount_events: Vec::new(),
         location_events: Vec::new(),
         named_status_events: Vec::new(),
@@ -1012,11 +1020,15 @@ impl Drop for Net {
 }
 
 impl Net {
-    /// An actor leaves (a DiscardMonster, or a corpse whose time is over:
-    /// crate::monsters::remove_corpses).
-    pub(crate) fn discard_actor(&mut self, actor: u32) {
+    /// Forget client tracking once an actor's entity has been disposed locally.
+    pub(crate) fn forget_actor(&mut self, actor: u32) {
         self.corrections.pending.remove(&actor);
         self.requested.remove(&actor);
+    }
+
+    /// An actor leaves on a server discard; its entity goes in apply_remotes.
+    pub(crate) fn discard_actor(&mut self, actor: u32) {
+        self.forget_actor(actor);
         self.remote_gone.push(actor);
     }
 
@@ -1039,12 +1051,12 @@ impl Net {
     }
 
     /// A game command to the map server, reliable ordered.
-    fn skill_event(&mut self, actor: Option<u32>, base: &dsor_proto::commands::combat::SkillBase, points: Vec<[f32; 3]>) {
+    fn skill_event(&mut self, actor: Option<u32>, base: &dsor_proto::commands::combat::SkillBase, points: Vec<[f32; 3]>, target: Option<u32>) {
         let Some(actor) = actor else { return };
         if Some(actor) == self.local_actor {
             return;
         }
-        self.skill_events.push(SkillEvent { actor, wire: base.skill_id, heading: base.heading, points, start_tick: base.start_tick });
+        self.skill_events.push(SkillEvent { actor, wire: base.skill_id, heading: base.heading, points, target: target.filter(|id| *id != 0 && *id != u32::MAX), start_tick: base.start_tick });
     }
 
     /// Put the local player (back) on the map: spawned by spawn_local, the old one
@@ -1339,6 +1351,14 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
         ServerCommand::SkillBookInfo(book) => net.skill_book = Some(book.clone()),
         // Skills the server relays from other actors (our own are played as cast).
         ServerCommand::StatusEffect(c) => {
+            if actor.is_some() && actor == net.local_actor {
+                if c.header { net.stat_effects.clear(); }
+                for effect in &c.elements {
+                    if effect.tail.is_some() { net.stat_effects.insert(effect.instance, effect.clone()); }
+                    else { net.stat_effects.remove(&effect.instance); }
+                }
+                net.stat_revision = net.stat_revision.wrapping_add(1);
+            }
             for e in &c.elements {
                 if actor.is_some() && actor == net.local_actor {
                     info!("status effect {} on us for {:.2} s (instance {})", e.index, e.duration as f32 / 25.0, e.instance);
@@ -1365,13 +1385,13 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
             });
         }
         ServerCommand::DiscardLocationEffect(c) => net.location_gone.push(c.effect_id),
-        ServerCommand::Skill(c) => net.skill_event(actor, &c.base, Vec::new()),
-        ServerCommand::TargetSkill(c) => net.skill_event(actor, &c.base, Vec::new()),
-        ServerCommand::BulletSkill(c) => net.skill_event(actor, &c.base, Vec::new()),
+        ServerCommand::Skill(c) => net.skill_event(actor, &c.base, Vec::new(), None),
+        ServerCommand::TargetSkill(c) => net.skill_event(actor, &c.base, Vec::new(), Some(c.target)),
+        ServerCommand::BulletSkill(c) => net.skill_event(actor, &c.base, Vec::new(), None),
         // Monsters' aimed projectiles (release261: the server sends them too).
-        ServerCommand::TargetBulletSkill(c) => net.skill_event(actor, &c.base, c.points.clone()),
-        ServerCommand::TargetPointBulletSkill(c) => net.skill_event(actor, &c.base, c.points.clone()),
-        ServerCommand::ShiftedSkill(c) => net.skill_event(actor, &c.base, c.points.clone()),
+        ServerCommand::TargetBulletSkill(c) => net.skill_event(actor, &c.base, c.points.clone(), Some(c.target)),
+        ServerCommand::TargetPointBulletSkill(c) => net.skill_event(actor, &c.base, c.points.clone(), None),
+        ServerCommand::ShiftedSkill(c) => net.skill_event(actor, &c.base, c.points.clone(), None),
         ServerCommand::NewNpc(n) => {
             let Some(actor) = actor else { return };
             let guid: String = n.guid.iter().map(|b| format!("{b:02X}")).collect();
@@ -1793,6 +1813,7 @@ fn walk_local(
     meshes: Res<Assets<NavMesh>>,
     mut players: Query<(&mut Transform, &mut LocalPlayer, &mut CharacterAnim, Option<&crate::actors::mounts::Riding>)>,
     mut autowalked: Local<bool>,
+    stats: Option<Res<crate::gameplay::stats::CharacterStats>>,
 ) {
     let _profile = crate::diagnostics::hud::FrameSpan::new("net::walk_local");
     let mesh = nav.as_ref().and_then(|n| meshes.get(&n.0));
@@ -1826,7 +1847,9 @@ fn walk_local(
             let here = tf.translation;
             let mut to = target - here;
             to.y = 0.0;
-            let step = (RUN_SPEED + riding.map_or(0.0, |r| r.bonus)) * time.delta_secs();
+            let speed = stats.as_ref().and_then(|s| s.movement_speed())
+                .unwrap_or(RUN_SPEED + riding.map_or(0.0, |r| r.bonus));
+            let step = speed * time.delta_secs();
             let dir = to.normalize_or_zero();
             let wish = if to.length() <= step { Vec3::new(target.x, here.y, target.z) } else { here + dir * step };
             let next = match mesh {
@@ -1865,6 +1888,11 @@ fn walk_local(
         };
         if anim.state != wanted {
             anim.state = wanted;
+        }
+        if matches!(anim.state, AnimState::Run) && riding.is_none() {
+            anim.speed = stats.as_ref().and_then(|s| s.movement_speed()).unwrap_or(RUN_SPEED) / RUN_SPEED;
+        } else if matches!(anim.state, AnimState::Idle) {
+            anim.speed = 1.0;
         }
     }
 }

@@ -430,6 +430,14 @@ impl CharacterAnim {
         self.player.is_some()
     }
 
+    /// Completion of the requested clip, excluding a previous state or the
+    /// Idle fallback. None means the rig/clip is unavailable or culled.
+    pub(crate) fn playback_finished(&self, players: &Query<&AnimationPlayer>) -> Option<bool> {
+        let &(node, _) = self.nodes.get(self.state.key())?;
+        if self.current != Some(node) || self.applied.as_ref()?.0 != self.state { return None; }
+        Some(players.get(self.player?).ok()?.animation(node)?.is_finished())
+    }
+
     /// The animation states this character has clips for (crate::diagnostics::debug).
     pub fn states(&self) -> Vec<String> {
         let mut v: Vec<String> = self.nodes.keys().cloned().collect();
@@ -489,8 +497,11 @@ impl CharacterAnim {
         }
         let active = player.play(node);
         active.set_speed(self.speed);
-        if looping { active.repeat(); }
-        else if !preserve_phase { active.replay(); }
+        if looping && !self.dead { active.repeat(); }
+        else {
+            active.set_repeat(bevy::animation::RepeatAnimation::Never);
+            if !preserve_phase { active.replay(); }
+        }
         if let Some(at) = seek { active.set_seek_time(at); }
         self.current = Some(node);
         self.applied = Some((self.state.clone(), self.speed));
