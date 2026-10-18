@@ -609,7 +609,13 @@ pub(crate) fn flat_surfaces(
             // static alpha factor, and lit surfaces with an emissive map, whose
             // emission is scaled to the node's intensity.
             let emissive = materials.get(gm).is_some_and(|m| m.emissive_texture.is_some());
-            let adjusted = state.contains("\"dsor_unlit\":true") || state.contains("\"dsor_alpha\"");
+            // The node's MatSpecularIntensity other than 1 also has a material of
+            // ours (crate::rendering::materials::specular_scale).
+            let specular = node.extras.as_ref()
+                .and_then(|e| serde_json::from_str::<serde_json::Value>(&e.value).ok())
+                .and_then(|v| v["dsor_shader"]["MatSpecularIntensity"].as_f64())
+                .and_then(|v| crate::rendering::materials::specular_scale(Some(v as f32)));
+            let adjusted = state.contains("\"dsor_unlit\":true") || state.contains("\"dsor_alpha\"") || specular.is_some();
             let material = match ours {
                 Some("refr") => MapMaterial::Refraction(asset_server.load(path.clone().with_label(format!("{label}/refr")))),
                 Some(_) => MapMaterial::Surface(asset_server.load(path.clone().with_label(format!("{label}/neb")))),
