@@ -36,6 +36,39 @@ fn assert_look(app: &App, camera: Entity, bubble: &Bubble) {
 }
 
 #[test]
+fn player_graphics_gates_effects_and_restores_the_current_bubble() {
+    use crate::rendering::graphics::{GraphicsSettings, Quality};
+    let mut app = app();
+    app.init_resource::<GraphicsSettings>().add_systems(Update, apply_look);
+    let camera = app.world_mut().spawn(Camera3d::default()).id();
+    let sun = app.world_mut().spawn((Sun, DirectionalLight::default(), Transform::default())).id();
+    let bubble = look();
+    app.world_mut().resource_mut::<Level>().bubble = bubble.clone();
+    app.update();
+    assert_look(&app, camera, &bubble);
+    {
+        let mut graphics = app.world_mut().resource_mut::<GraphicsSettings>();
+        graphics.bloom = false; graphics.vignette = false; graphics.shadows = Quality::Off;
+    }
+    app.update();
+    let post = app.world().get::<NebulaPostProcess>(camera).unwrap();
+    assert_eq!(post.scale, 0.);
+    assert_eq!(post.vignette_intensity, 0.);
+    assert_eq!(post.saturation, bubble.saturation);
+    assert_eq!(post.balance.to_array(), bubble.balance);
+    assert!(!app.world().get::<DirectionalLight>(sun).unwrap().shadow_maps_enabled);
+    // Zone transitions keep disabled effects off; enabling uses the new zone.
+    let next = Bubble { bloom_scale: 0.8, vignette_intensity: 0.3, ..bubble };
+    app.world_mut().resource_mut::<Level>().bubble = next.clone();
+    app.update();
+    assert_eq!(app.world().get::<NebulaPostProcess>(camera).unwrap().scale, 0.);
+    *app.world_mut().resource_mut::<GraphicsSettings>() = GraphicsSettings::default();
+    app.update();
+    assert_look(&app, camera, &next);
+    assert!(app.world().get::<DirectionalLight>(sun).unwrap().shadow_maps_enabled);
+}
+
+#[test]
 fn bubble_controls_camera_colour_despite_legacy_preferences_and_zero_bloom() {
     let mut app = app();
     app.add_systems(Update, apply_look);

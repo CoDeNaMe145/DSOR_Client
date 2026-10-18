@@ -36,6 +36,7 @@ use serde::Deserialize;
 
 pub(crate) mod combat_text;
 pub(crate) mod input;
+pub(crate) mod slider;
 mod controls;
 mod cursor;
 mod dialogue;
@@ -504,7 +505,7 @@ impl Plugin for UiPlugin {
                 .before(bevy::sprite_render::check_entities_needing_specialization::<UiMaterial>))
             .add_systems(
                 Update,
-                ((dialogue::sync, spawn_windows, controls::sync_chat).chain(), controls::spells::sync, controls::items::sync, controls::keyboard, controls::interact, (controls::settings::sync, controls::hotbar::input, controls::spells::apply_drop).chain(), read_figures, controls::edit_text, controls::items::input, controls::order_windows, (update_fills, update_values, update_slots, (local_map::update, local_map::update_markers, local_map::appearance).chain()), controls::chat_rows, controls::sheet::rows, controls::paint, controls::items::render, (controls::spells::overlay, controls::items::overlay, controls::tooltips), show_hover_window, death_dialog, (controls::trade::sync, controls::social::column, controls::social::context_menu, controls::social::answer, controls::social::dialogs, controls::trade::render).chain()).chain().before(crate::network::net::NetSystems).run_if(crate::screens::loading::gameplay_ready),
+                ((dialogue::sync, spawn_windows, controls::sync_chat).chain(), controls::spells::sync, controls::items::sync, controls::keyboard, controls::interact, (controls::settings::sync, controls::settings::sliders, controls::hotbar::input, controls::spells::apply_drop).chain(), read_figures, controls::edit_text, controls::items::input, controls::order_windows, (update_fills, update_values, update_slots, (local_map::update, local_map::update_markers, local_map::appearance).chain()), controls::chat_rows, controls::sheet::rows, controls::paint, controls::items::render, (controls::spells::overlay, controls::items::overlay, controls::tooltips), show_hover_window, death_dialog, (controls::trade::sync, controls::social::column, controls::social::context_menu, controls::social::answer, controls::social::dialogs, controls::trade::render).chain()).chain().before(crate::network::net::NetSystems).run_if(crate::screens::loading::gameplay_ready),
             );
         #[cfg(not(target_arch = "wasm32"))]
         app.add_systems(PreUpdate, replay::run.after(bevy::input::InputSystems)
@@ -868,6 +869,16 @@ fn spawn_windows(
                         Element { root, gate: gate.clone() },
                         Visibility::Hidden,
                     ));
+                } else if let Some(row) = controls::settings::row_index(w).filter(|_| layout.window == controls::settings::WINDOW) {
+                    let p = parent(&mut commands, w.k, true);
+                    let mut r = Run::default();
+                    r.push(art, depth);
+                    let mut mesh = r.mesh();
+                    mesh.asset_usage |= RenderAssetUsages::MAIN_WORLD;
+                    commands.spawn((Mesh2d(meshes.add(mesh)), MeshMaterial2d(materials.add(material(None))),
+                        controls::settings::RowArt { row, rect: w.rect, original: art.clone(), depth, shown: None },
+                        Transform::from_xyz(0.0, 0.0, depth), RenderLayers::layer(LAYER), ChildOf(p),
+                        Element { root, gate: gate.clone() }, Visibility::Hidden));
                 } else {
                     let same = run.as_ref().is_some_and(|r| r.k == w.k && r.tex == art.tex && r.gate == gate);
                     if !same {

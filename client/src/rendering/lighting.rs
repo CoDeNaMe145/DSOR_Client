@@ -640,6 +640,7 @@ impl Plugin for LightingPlugin {
             .add_systems(PostUpdate,
                 (follow_level, apply_look, death_look, place_level_lights.run_if(resource_exists::<CurrentMap>), shift_fog)
                     .chain().after(bevy::transform::TransformSystems::Propagate)
+                    .after(crate::rendering::graphics::ApplyGraphics)
                     .before(bevy::light::cascade::build_directional_light_cascades));
     }
 }
@@ -740,6 +741,7 @@ fn follow_level(
 fn apply_look(
     mut commands: Commands,
     lighting: Res<Lighting>,
+    graphics: Option<Res<crate::rendering::graphics::GraphicsSettings>>,
     level: Res<Level>,
     mut suns: Query<(&mut DirectionalLight, &mut Transform, &mut GlobalTransform), With<Sun>>,
     mut gpu_ambience: ResMut<GpuAmbience>,
@@ -748,7 +750,7 @@ fn apply_look(
     mut fresh: Local<Vec<Entity>>,
 ) {
     let new_camera = cameras.iter().any(|e| !fresh.contains(&e));
-    if !lighting.is_changed() && !level.is_changed() && !new_camera {
+    if !lighting.is_changed() && !level.is_changed() && !new_camera && !graphics.as_ref().is_some_and(|g| g.is_changed()) {
         return;
     }
     fresh.clear();
@@ -762,7 +764,8 @@ fn apply_look(
         // shader evaluates the preset light contributions using that map.
         sun.color = Color::WHITE;
         sun.illuminance = std::f32::consts::PI * UNIT;
-        sun.shadow_maps_enabled = l.shadows && !crate::flag("noshadows");
+        sun.shadow_maps_enabled = l.shadows && !crate::flag("noshadows")
+            && graphics.as_ref().is_none_or(|g| g.shadows != crate::rendering::graphics::Quality::Off);
         *tf = Transform::default().looking_to(-toward, Vec3::Y);
         // apply_look follows propagation so player membership is current.
         // This unparented light must reach cascade construction this frame.
@@ -787,12 +790,12 @@ fn apply_look(
         cam.insert((fog.clone(), ColorGrading::default(), Tonemapping::None,
             NebulaPostProcess {
                 threshold: b.bright_pass_threshold,
-                scale: if crate::flag("nobloom") { 0.0 } else { b.bloom_scale },
+                scale: if crate::flag("nobloom") || graphics.as_ref().is_some_and(|g| !g.bloom) { 0.0 } else { b.bloom_scale },
                 color: Vec4::from_array(b.bloom_color),
                 saturation: b.saturation,
                 balance: Vec4::from_array(b.balance),
                 vignette_color: Vec4::from_array(b.vignette_color),
-                vignette_intensity: b.vignette_intensity,
+                vignette_intensity: if graphics.as_ref().is_some_and(|g| !g.vignette) { 0.0 } else { b.vignette_intensity },
                 vignette_size: b.vignette_size,
                 death_fade: 0.0,
             }));
