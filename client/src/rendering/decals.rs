@@ -152,7 +152,7 @@ fn project_decals(
     std_materials: Res<Assets<StandardMaterial>>,
     pending: Query<(Entity, &GlobalTransform, &DecalVolume, &MeshMaterial3d<StandardMaterial>), Without<Projected>>,
     ground: Query<
-        (&Mesh3d, &GlobalTransform, &Aabb),
+        (&Mesh3d, &GlobalTransform, &Aabb, Option<&MeshMaterial3d<StandardMaterial>>),
         (Without<DecalVolume>, Without<NotShadowCaster>, Without<SkinnedMesh>),
     >,
     mut settled: Local<u32>,
@@ -226,7 +226,14 @@ fn project_decals(
     // Index the ground by world bounds.
     let mut grid: HashMap<(i32, i32), Vec<u32>> = HashMap::new();
     let mut entries = Vec::new();
-    for (mesh, gt, aabb) in &ground {
+    for (mesh, gt, aabb, material) in &ground {
+        // Not alpha-tested surfaces (tall grass, leaves): projected onto their
+        // whole cards, the decal painted the cut-out parts too, dark slabs over
+        // Kingshill's market grass. The original projects through the depth
+        // buffer, which only holds the blades.
+        if material.and_then(|m| std_materials.get(&m.0)).is_some_and(|m| matches!(m.alpha_mode, AlphaMode::Mask(_))) {
+            continue;
+        }
         let affine = gt.affine();
         let (lo, hi) = world_aabb(&affine, Vec3::from(aabb.min()), Vec3::from(aabb.max()));
         let i = entries.len() as u32;
