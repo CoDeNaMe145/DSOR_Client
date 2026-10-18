@@ -47,10 +47,32 @@ pub struct Placement {
     pub p: [f32; 3],
     pub r: [f32; 4],
     pub s: [f32; 3],
+    /// Its map group (`groups[g]`), -1 for none.
+    #[serde(default = "no_group")]
+    pub g: i32,
 }
 
-/// A whole `.map.json` manifest. Fields the renderer does not use yet (groups,
-/// nav blockers) are skipped by serde.
+fn no_group() -> i32 {
+    -1
+}
+
+/// A map group. Type 0 is the original's visibility group: walls, roofs and
+/// tower tops that fade out as a whole while they stand between the camera and
+/// the player (crate::rendering::occlusion::VisibilityGroup): Kingshill's church
+/// walls and palace roofs, the crypt's upper walls. Type 1 only files
+/// placements for the level editor.
+/// EVIDENCE: dro_client64.exe Map::ClientMapManager::SetupVisibilityGroupCollides,
+///   HideGroups, HandleGroupFade (AlphaBlendFactor), "no valid point of interest
+///   set at time of OnFrame()"; the .map GROP section (DSO_Godot dsomap.py) has
+///   only name, type, parent and members.
+#[derive(Debug, Deserialize)]
+pub struct MapGroup {
+    #[serde(rename = "type")]
+    pub kind: u32,
+}
+
+/// A whole `.map.json` manifest. Fields the renderer does not use yet (nav
+/// blockers, events) are skipped by serde.
 #[derive(Asset, TypePath, Debug, Deserialize)]
 pub struct MapManifest {
     pub map: String,
@@ -61,6 +83,16 @@ pub struct MapManifest {
     /// (`t001_hub/tile_wall_corner_02` -> `t001_hub/tile_wall_corner_02.glb`).
     pub models: Vec<String>,
     pub instances: Vec<Placement>,
+    #[serde(default)]
+    pub groups: Vec<MapGroup>,
+}
+
+impl MapManifest {
+    /// The visibility group (type 0) a placement belongs to.
+    pub fn visibility_group(&self, placement: &Placement) -> Option<u32> {
+        let index = usize::try_from(placement.g).ok()?;
+        (self.groups.get(index)?.kind == 0).then_some(index as u32)
+    }
 }
 
 #[derive(Default, TypePath)]
@@ -358,6 +390,7 @@ fn stream_models(
         let mut flat_cache = HashMap::new();
         for &i in &placements {
             let inst = &manifest.instances[i];
+            let group = manifest.visibility_group(inst);
             let Some(gltf) = gltfs.get(&current.models[&inst.m]) else { continue };
             let flat = flat_cache.entry(inst.m).or_insert_with(|| flat_surfaces(gltf, &nodes, &meshes, &materials, &mesh_assets_mut, &asset_server));
             let mesh_assets = &*mesh_assets_mut;
@@ -403,7 +436,7 @@ fn stream_models(
                         };
                         let merged = mesh_assets.get(&s.mesh).and_then(|mesh| {
                             let layout = crate::rendering::merge::layout_of(mesh)?;
-                            let key = crate::rendering::merge::BatchKey { cell: key, material: material.id(), casts_shadow, decal_receiver: s.decal_receiver, layout };
+                            let key = crate::rendering::merge::BatchKey { cell: key, material: material.id(), casts_shadow, decal_receiver: s.decal_receiver, group, layout };
                             current.batches.batch(key, &material).push(mesh, &world, layout).then_some(())
                         });
                         if merged.is_none() {
@@ -415,6 +448,9 @@ fn stream_models(
                             }
                             if s.decal_receiver {
                                 e.insert(crate::rendering::decals::DecalReceiver);
+                            }
+                            if let Some(g) = group {
+                                e.insert(crate::rendering::occlusion::VisibilityGroup(g));
                             }
                         }
                     }
@@ -437,6 +473,7 @@ fn stream_models(
         material.insert(&mut e);
         if !key.casts_shadow { e.insert(bevy::light::NotShadowCaster); }
         if key.decal_receiver { e.insert(crate::rendering::decals::DecalReceiver); }
+        if let Some(g) = key.group { e.insert(crate::rendering::occlusion::VisibilityGroup(g)); }
     }
     let ready = current.wanted_cells.iter().all(|k| current.contents.contains_key(k));
     if ready && !current.spawned {
@@ -649,4 +686,26 @@ pub(crate) fn flat_surfaces(
         }
     }
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn visibility_groups_are_the_type_0_groups() {
+        // a0202_kingscrypt01: group 207 (type 0) holds the upper walls over its
+        // corridors; type 1 groups only file placements.
+        let manifest: MapManifest = serde_json::from_str(r#"{
+            "map": "m", "center": [0, 0, 0], "extents": [1, 1, 1], "models": ["a"],
+            "groups": [{"name": "x", "parent": -1, "type": 1}, {"name": "y", "parent": -1, "type": 0}],
+            "instances": [
+                {"m": 0, "p": [0, 0, 0], "r": [0, 0, 0, 1], "s": [1, 1, 1], "g": 1},
+                {"m": 0, "p": [0, 0, 0], "r": [0, 0, 0, 1], "s": [1, 1, 1], "g": 0},
+                {"m": 0, "p": [0, 0, 0], "r": [0, 0, 0, 1], "s": [1, 1, 1], "g": -1},
+                {"m": 0, "p": [0, 0, 0], "r": [0, 0, 0, 1], "s": [1, 1, 1]}
+            ]}"#).unwrap();
+        let groups: Vec<_> = manifest.instances.iter().map(|p| manifest.visibility_group(p)).collect();
+        assert_eq!(groups, [Some(1), None, None, None]);
+    }
 }

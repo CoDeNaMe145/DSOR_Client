@@ -163,6 +163,7 @@ fn ssao(";
 
 /// ScreenSpaceAmbientOcclusion::constant_object_thickness meaning "the
 /// original's estimate" to the patched pass (patch_ssao).
+#[cfg(not(target_arch = "wasm32"))]
 const ORIGINAL_SSAO: f32 = -1.0;
 
 /// An ambience bubble's settings (the fields the client uses; names as in the

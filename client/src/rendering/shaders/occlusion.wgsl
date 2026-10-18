@@ -15,6 +15,13 @@ fn player_cutout(world: vec3<f32>, pixel: vec2<f32>) {
     if cutout.focus.w <= 0.0 || distance(view.world_position, cutout.camera.xyz) > 0.01 {
         return;
     }
+    // A visibility group fading as a whole (occlusion.rs fade_groups): the
+    // same dithered discard over all of its surface.
+    if cutout.limits.z > 0.5 {
+        let noise = fract(52.9829189 * fract(dot(floor(pixel), vec2<f32>(0.06711056, 0.00583715))));
+        if noise < cutout.focus.w { discard; }
+        return;
+    }
     let axis = cutout.focus.xyz - cutout.camera.xyz;
     let axis_length = length(axis);
     if axis_length < 0.1 || world.y <= cutout.limits.x { return; }
