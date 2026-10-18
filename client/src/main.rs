@@ -285,7 +285,8 @@ pub(crate) fn asset_root() -> String {
 /// linearlight (the light summed in linear space instead of the original's gamma sum),
 /// shadowfloor (full shadow keeps half the whole light, as the original's blurred shadow buffer),
 /// aolinear (the ambient occlusion once in linear instead of squared in the gamma sum),
-/// camfocus (offline viewer: the ambience zone at the game camera's focus, not the camera).
+/// camfocus (offline viewer: the ambience zone at the game camera's focus, not the camera),
+/// shadowcull (sun shadows from front faces only, as Bevy draws them by default).
 pub static FLAGS: std::sync::OnceLock<std::collections::HashSet<String>> = std::sync::OnceLock::new();
 
 pub fn flag(name: &str) -> bool {

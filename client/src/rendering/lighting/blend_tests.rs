@@ -63,15 +63,13 @@ fn dark_zones_fade_out_shadow_contrast_and_authored_strength_is_respected() {
     let half = LightBlend::from(&preset(Vec3::X, 1., 0.5));
     near(sample(&half, Vec3::X, 0.), sample(&half, Vec3::X, 1.) * 0.5);
 
-    // An interior can reduce ambient and direct light together. Its shadow
-    // contrast still weakens relative to the map's daylight, instead of leaving
-    // black outdoor shadow bands across the dimmer preset.
+    // A dim interior's shadow still takes its whole sun, as the original's
+    // shadowDarkeningFactor is 0 in every Kingshill zone (throne room, church).
     let dim = preset(Vec3::X, 0.2, 1.);
     let blend = LightBlend::from(&a).mix(&dim, 1.);
     let lit = sample(&blend, Vec3::X, 1.);
-    let contrast = lit - sample(&blend, Vec3::X, 0.);
-    near(contrast, lit * (dim.sun_luminance() / a.sun_luminance()));
-    assert!(contrast.length() < lit.length() * 0.1);
+    near(sample(&blend, Vec3::X, 0.), Vec3::ZERO);
+    assert!(lit.length() > 0.);
 }
 
 #[test]

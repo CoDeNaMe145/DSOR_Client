@@ -7,7 +7,8 @@ use bevy::prelude::*;
 use bevy::material::{key::ErasedMaterialPipelineKey, MaterialProperties};
 use bevy::mesh::MeshVertexBufferLayoutRef;
 use bevy::pbr::{MaterialPipeline, MaterialVertexShader, MaterialFragmentShader, MeshPipeline,
-    MeshPipelineKey, MeshViewBindGroup, PreparedMaterial, prepare_mesh_view_bind_groups};
+    MeshPipelineKey, MeshViewBindGroup, PreparedMaterial, PrepassPipeline, PrepassPipelineSpecializer,
+    prepare_mesh_view_bind_groups};
 use bevy::render::erased_render_asset::ErasedRenderAssets;
 use bevy::render::extract_component::{ExtractComponent, ExtractComponentPlugin};
 use bevy::render::extract_resource::{ExtractResource, ExtractResourcePlugin};
@@ -53,11 +54,17 @@ impl LightBlend {
             Vec3::new(c.red, c.green, c.blue)
         };
         let front = color(b.light_color);
-        // Preserve outdoor contrast, but dim local presets must also lose
-        // shadow strength. Merely dimming radiance keeps harsh black shadows
-        // when an interior reduces ambient light by a similar amount.
-        let strength = b.light_shadow_intensity.clamp(0., 1.)
-            * (b.sun_luminance() / reference.max(1e-6)).clamp(0., 1.);
+        // Shadows take the zone's whole sun, however dim the zone: the original
+        // darkens the same way in every zone.
+        // EVIDENCE: the running release261_192 client sends shadowDarkeningFactor
+        //   0 in Kingshill's throne room and church zones as outdoors
+        //   (lighting-work/captures/kingshill-{throne,church,garden}.txt).
+        // FAILURE (S's earlier rule, strength x zone sun / outdoor sun, about
+        //   0.17 in the throne room): Kingshill's palace_shadowobject, whose
+        //   only job is to shade the hall, removed almost nothing; with shadows
+        //   off the hall was only 1.6 brighter while its sun added 18.5.
+        let _ = reference;
+        let strength = b.light_shadow_intensity.clamp(0., 1.);
         // The back light is LightOppositeColor as is: unlike the sun's colour it
         // is not scaled by LightIntensity.
         // EVIDENCE: the running release261_192 client's globalBackLightColor equals
@@ -253,6 +260,7 @@ impl Plugin for BlendPlugin {
             .add_systems(Update, prepare_shaders);
         let Some(render) = app.get_sub_app_mut(RenderApp) else { return };
         render.init_resource::<SpecializedMeshPipelines<BlendPipeline>>()
+            .init_resource::<SpecializedMeshPipelines<ShadowFacesPipeline>>()
             .init_resource::<BlendBuffers>()
             .add_systems(Render, adapt_materials.after(RenderSystems::PrepareAssets).before(RenderSystems::Specialize))
             .add_systems(Render, prepare_bind_groups.in_set(RenderSystems::PrepareBindGroups).after(prepare_mesh_view_bind_groups));
@@ -304,11 +312,44 @@ fn specialize(world: &mut World, key: ErasedMaterialPipelineKey, layout: &MeshVe
     })
 }
 
+/// The sun's shadow map draws both faces of every caster, as the original's
+/// shadow pass must: Kingshill's `t011_kingshill/palace_shadowobject` is a
+/// 28 x 32 m plane over the throne room whose 112 faces all point down. The game
+/// camera above only sees its back, so it is invisible, and it exists only to
+/// shade the hall from the sun above. Culled as Bevy culls back faces in shadow
+/// views too, it cast nothing and the hall's floor was sunlit (in-game throne
+/// room 57.0 vs the original's 46.7, a large shadow band missing).
+/// Only the directional (sun) shadow views, marked UNCLIPPED_DEPTH_ORTHO; the
+/// camera's own depth prepass keeps the material's culling.
+struct ShadowFacesPipeline { inner: PrepassPipelineSpecializer }
+impl SpecializedMeshPipeline for ShadowFacesPipeline {
+    type Key = ErasedMaterialPipelineKey;
+    fn specialize(&self, key: Self::Key, layout: &MeshVertexBufferLayoutRef)
+        -> Result<RenderPipelineDescriptor, SpecializedMeshPipelineError> {
+        let mesh_key: MeshPipelineKey = key.mesh_key.downcast();
+        let mut desc = self.inner.specialize(key, layout)?;
+        if mesh_key.contains(MeshPipelineKey::UNCLIPPED_DEPTH_ORTHO) { desc.primitive.cull_mode = None; }
+        Ok(desc)
+    }
+}
+
+fn prepass_specialize(world: &mut World, key: ErasedMaterialPipelineKey, layout: &MeshVertexBufferLayoutRef,
+    properties: &Arc<MaterialProperties>) -> Result<CachedRenderPipelineId, SpecializedMeshPipelineError> {
+    world.resource_scope(|world, mut cache: Mut<SpecializedMeshPipelines<ShadowFacesPipeline>>| {
+        let specializer = ShadowFacesPipeline { inner: PrepassPipelineSpecializer {
+            pipeline: world.resource::<PrepassPipeline>().clone(), properties: properties.clone() } };
+        cache.specialize(world.resource::<PipelineCache>(), &specializer, key, layout)
+    })
+}
+
 fn adapt_materials(mut materials: ResMut<ErasedRenderAssets<PreparedMaterial>>) {
     for (_, material) in materials.iter_mut() {
         // Newly prepared properties are unique until specialization shares them.
         if let Some(properties) = Arc::get_mut(&mut material.properties) {
             if properties.base_specialize.is_some() { properties.base_specialize = Some(specialize); }
+            if properties.prepass_specialize.is_some() && !crate::flag("shadowcull") {
+                properties.prepass_specialize = Some(prepass_specialize);
+            }
         }
     }
 }

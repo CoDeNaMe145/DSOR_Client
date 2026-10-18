@@ -48,6 +48,11 @@ inverse of the camera's exposure: what Nebula shows as `v`, bevy shows as `v`):
   applies the AO once in linear, `shadowfloor` keeps half the whole light in full
   shadow as the original's blurred shadow buffer does (not default: interiors
   differ);
+- sun shadows: full strength in every zone (`LightShadowIntensity` only; the
+  original's shadowDarkeningFactor is 0 in Kingshill's interiors as outdoors),
+  and the shadow map draws both faces of every caster, so downward-facing
+  shadow-only meshes (`t011_kingshill/palace_shadowobject` over the throne
+  room) shade the rooms below (`DSOR_FLAGS=shadowcull` for back-face culling);
 - fog: Nebula's own, depth measured from the camera along its view, clear share
   `clamp((FogFarDist - depth) / (FogFarDist - FogNearDist), 1 - FogIntensity, 1)`,
   `FogColor` mixed in gamma space (from the shaders and the running client's
