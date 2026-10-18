@@ -64,6 +64,22 @@ fn to_gamma(c: vec3<f32>) -> vec3<f32> {
 fn to_linear(c: vec3<f32>) -> vec3<f32> {
     return pow(max(c, vec3<f32>(0.0)), vec3<f32>(2.2));
 }
+// A colour texture's stored value from Bevy's sRGB-decoded one, and back.
+fn raw(c: vec3<f32>) -> vec3<f32> {
+    let x = max(c, vec3<f32>(0.0));
+    return select(1.055 * pow(x, vec3<f32>(1.0 / 2.4)) - 0.055, x * 12.92, x <= vec3<f32>(0.0031308));
+}
+fn decoded(c: vec3<f32>) -> vec3<f32> {
+    let x = max(c, vec3<f32>(0.0));
+    return select(pow((x + 0.055) / 1.055, vec3<f32>(2.4)), x / 12.92, x <= vec3<f32>(0.04045));
+}
+// A mask as stored. Bevy's glTF loader decodes every texture that is not a
+// normal, metallic-roughness or occlusion map as sRGB, masks included (0.5 read
+// 0.21); Nebula reads them as they are.
+fn stored(c: vec4<f32>) -> vec4<f32> {
+    let x = max(c.rgb, vec3<f32>(0.0));
+    return vec4<f32>(select(1.055 * pow(x, vec3<f32>(1.0 / 2.4)) - 0.055, x * 12.92, x <= vec3<f32>(0.0031308)), c.a);
+}
 
 // How far behind this fragment the opaque scene is, in view units (large when
 // the depth prepass is off).
@@ -211,12 +227,12 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // colour is added. UNVERIFIED: the cube reflection term (masked by the vertex
     // colour's red, which the conversion dropped) is left out.
     if kind == CHARACTER {
-        let m = textureSample(mask_texture, mask_sampler, uv0(in));
-        var base = to_gamma(pbr_input.material.base_color.rgb);
+        let m = stored(textureSample(mask_texture, mask_sampler, uv0(in)));
+        var base = raw(pbr_input.material.base_color.rgb);
         let lum = dot(base, vec3<f32>(0.299, 0.587, 0.114));
         base = mix(base, surface.p1.rgb * lum, m.g * surface.p1.a);
         base = mix(base, surface.p2.rgb * lum, m.b * surface.p2.a);
-        pbr_input.material.base_color = vec4<f32>(to_linear(base), pbr_input.material.base_color.a);
+        pbr_input.material.base_color = vec4<f32>(decoded(base), pbr_input.material.base_color.a);
         pbr_input.material.base_color = alpha_discard(pbr_input.material, pbr_input.material.base_color);
         let lit = apply_pbr_lighting(pbr_input);
         var shown = 0.75 * to_gamma(lit.rgb) + 0.2625 * base;
@@ -234,9 +250,14 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 
     if kind == LAYER {
 #ifdef VERTEX_UVS_B
-        let mask = textureSample(mask_texture, mask_sampler, in.uv_b).r;
+        // simplelayer lerps the two colour maps by the mask's red, all as stored
+        // (D3D9, no sRGB reads): in gamma space. Mixed decoded, the mask's 0.5
+        // read 0.21 and the lighter map dominated the blend (Kingshill market's
+        // grass edges pale and grey against the original's olive).
+        let mask = stored(textureSample(mask_texture, mask_sampler, in.uv_b)).r;
         let layer = textureSample(layer_texture, layer_sampler, in.uv_b * surface.p0.z);
-        pbr_input.material.base_color = vec4<f32>(mix(pbr_input.material.base_color.rgb, layer.rgb, mask), pbr_input.material.base_color.a);
+        let mixed = mix(raw(pbr_input.material.base_color.rgb), raw(layer.rgb), mask);
+        pbr_input.material.base_color = vec4<f32>(decoded(mixed), pbr_input.material.base_color.a);
 #endif
     }
 

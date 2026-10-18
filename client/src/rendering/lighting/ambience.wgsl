@@ -56,6 +56,18 @@ struct Ambience {
 // visibility is already near 1 on open ground, a different quantity than
 // pe_ssao's average) and brought back the sunlit overshoot (Kingshill garden
 // p90 228 vs the original's 184; AO^2 as is: 189).
+// The albedo as the original multiplies it: the texture's stored value. Bevy
+// hands us the sRGB-decoded colour, and the compose pass shows the result with
+// a 2.2 power, so the stored value goes in raised to 2.2: on screen it is then
+// stored x light exactly, as D3D9 (no sRGB reads or writes) draws it. Taken as
+// decoded, dark channels came out lifted (0.106 shown 0.128, 0.243 shown
+// 0.252) and every texture lost saturation (Kingshill market grass).
+fn gamma_albedo(decoded: vec3<f32>) -> vec3<f32> {
+    let x = max(decoded, vec3(0.0));
+    let stored = select(1.055 * pow(x, vec3(1.0 / 2.4)) - 0.055, x * 12.92, x <= vec3(0.0031308));
+    return pow(stored, vec3(2.2));
+}
+
 fn apply_ambience_gamma(input: ptr<function, LightingInput>, enable_diffuse: bool, shadow: f32, occlusion: vec3<f32>, points: vec3<f32>) -> vec3<f32> {
     let unit = ambience.gamma_light.y;
     let n = (*input).layers[LAYER_BASE].N;
@@ -103,7 +115,7 @@ fn apply_ambience_gamma(input: ptr<function, LightingInput>, enable_diffuse: boo
     // The point lights add into the same gamma light buffer, after the sun pass
     // and so without its shadow and occlusion.
     light += points;
-    return (*input).diffuse_color * pow(light, vec3(2.2)) * (unit * 0.31830988618) + specular;
+    return gamma_albedo((*input).diffuse_color) * pow(light, vec3(2.2)) * (unit * 0.31830988618) + specular;
 }
 
 // One point light's share of that gamma sum, as the 2018/261 point light pass
@@ -124,7 +136,7 @@ fn nebula_point_light(light_id: u32, input: ptr<function, LightingInput>) -> vec
 
 // The point lights alone, where no sun term takes them into its sum.
 fn apply_points_gamma(input: ptr<function, LightingInput>, points: vec3<f32>) -> vec3<f32> {
-    return (*input).diffuse_color * pow(points, vec3(2.2)) * (ambience.gamma_light.y * 0.31830988618);
+    return gamma_albedo((*input).diffuse_color) * pow(points, vec3(2.2)) * (ambience.gamma_light.y * 0.31830988618);
 }
 
 fn apply_ambience(input: ptr<function, LightingInput>, enable_diffuse: bool, shadow: f32, occlusion: vec3<f32>, points: vec3<f32>) -> vec3<f32> {
