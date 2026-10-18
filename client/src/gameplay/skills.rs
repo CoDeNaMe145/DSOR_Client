@@ -796,6 +796,18 @@ fn play_with(commands: &mut Commands, seq: Sequence, actor: Option<Entity>, anch
 }
 
 #[allow(clippy::too_many_arguments)]
+/// What a skill costs in the class's resource: its ResourceCost, a fraction of
+/// the maximum, times that maximum (the server's cost_fraction x maximum).
+pub fn skill_cost(skill: &SkillDef, resource_max: f32) -> f32 {
+    skill.resource_cost * resource_max
+}
+
+/// What the skill named `id` costs, once the skill table is in.
+pub fn skill_cost_by_id(data: &SkillData, tables: &Assets<SkillTable>, id: &str, resource_max: f32) -> Option<f32> {
+    let wire = data.by_id.get(id)?;
+    tables.get(&data.skills)?.0.get(wire).map(|s| skill_cost(s, resource_max))
+}
+
 fn cast_input(
     mut commands: Commands,
     net: Option<NonSendMut<Net>>,
@@ -811,7 +823,7 @@ fn cast_input(
     time: Res<Time<Real>>,
     mut players: Query<(Entity, &mut Transform, &mut LocalPlayer, &Character)>,
     mut cooldowns: Local<HashMap<String, f64>>,
-    (hovered, monsters, mut debug_monsters, ui, mut ui_skills, settings, stats): (
+    (hovered, monsters, mut debug_monsters, ui, mut ui_skills, settings, stats, resource_max): (
         Res<crate::actors::monsters::Hovered>,
         Query<(&GlobalTransform, &crate::actors::monsters::Monster, &CharacterAnim)>,
         ResMut<crate::actors::monsters::DebugMonsters>,
@@ -819,6 +831,7 @@ fn cast_input(
         ResMut<crate::ui::SkillClicks>,
         Res<crate::ui::Settings>,
         Res<crate::gameplay::stats::CharacterStats>,
+        Res<crate::gameplay::stats::ResourceMax>,
     ),
     // A target skill aimed at a monster out of reach: (slot, monster), cast once
     // the walk brings it in reach.
@@ -881,7 +894,12 @@ fn cast_input(
     if cooldowns.get(&key).is_some_and(|ready| now < *ready) {
         return;
     }
-    if net.resource.is_some_and(|r| r + 1e-3 < skill.resource_cost) {
+    // ResourceCost is a fraction of the maximum (rage, mana, focus, steam alike):
+    // compared as it was, 0.4 against 10 rage let a 40-rage skill go out, play,
+    // and be refused by the server ("rejected skill index 1842: resource=10,
+    // cost=40", 2026-10-18): it seemed to hit only sometimes.
+    let cost = skill_cost(skill, resource_max.0);
+    if net.resource.is_some_and(|r| r + 1e-3 < cost) {
         return;
     }
     let (Ok(window), Ok((camera, cam_tf))) = (windows.single(), cameras.single()) else { return };
@@ -958,7 +976,7 @@ fn cast_input(
     net.send(&command);
     cooldowns.insert(key, now + skill.cooldown as f64);
     if let Some(r) = net.resource.as_mut() {
-        *r -= skill.resource_cost;
+        *r -= cost;
     }
     info!("cast {} (wire {wire}, {}) at {point:?}", skill.id, skill.kind);
     if net.offline {

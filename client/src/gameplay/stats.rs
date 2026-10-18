@@ -161,6 +161,17 @@ impl AssetLoader for StatsLoader {
 #[derive(Resource, Default)]
 pub struct Sheet(pub HashMap<&'static str, String>);
 
+/// The local player's maximum skill resource (rage, mana, focus...), as the
+/// character page computes it. A skill's ResourceCost is a fraction of it: the
+/// server debits cost_fraction x this maximum (DSOR_Server
+/// services/player_resources.py _apply_player_skill_resource).
+#[derive(Resource, Clone, Copy, PartialEq)]
+pub struct ResourceMax(pub f32);
+
+impl Default for ResourceMax {
+    fn default() -> Self { Self(100.0) }
+}
+
 /// The character page's list (release261): its headlines, sub-headlines and
 /// attribute rows, in the client's order, with their texts as shown.
 /// EVIDENCE: dro_client64 (Ghidra dro_client64_2026) 0x1403c6574 fills the list:
@@ -196,6 +207,7 @@ impl Plugin for StatsPlugin {
         app.init_asset::<StatsData>()
             .register_asset_loader(StatsLoader)
             .init_resource::<Sheet>()
+            .init_resource::<ResourceMax>()
             .init_resource::<SheetRows>()
             .init_resource::<CharacterStats>()
             .add_systems(Startup, |mut commands: Commands, assets: Res<AssetServer>| {
@@ -287,6 +299,7 @@ fn compute(
     mut next: Local<f32>,
     mut sheet: ResMut<Sheet>,
     mut rows_out: ResMut<SheetRows>,
+    mut resource_max: ResMut<ResourceMax>,
     riding: Query<&crate::actors::mounts::Riding, With<crate::network::net::LocalPlayer>>,
     calculated: Res<CharacterStats>,
 ) {
@@ -317,6 +330,8 @@ fn compute(
     };
     let max_health = attr("MaxHealthPoints", Some(row[2] as f32), None);
     let max_resource = attr("MaxSkillResource", Some(row[1] as f32), None);
+    let max = ResourceMax(max_resource.value().max(1.0));
+    if *resource_max != max { *resource_max = max; }
     let min_damage = attr("MinDamage", Some(row[3] as f32), None);
     let max_damage = attr("MaxDamage", Some(row[3] as f32), None);
     let pve = attr("DamageFactorPvE", None, None);

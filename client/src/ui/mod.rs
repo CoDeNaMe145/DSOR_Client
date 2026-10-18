@@ -436,7 +436,9 @@ struct QuickSlot {
     slot: usize,
     k: f32,
     rect: [f32; 4],
-    shown: Option<(String, u32)>,
+    /// The icon and count drawn, and whether greyed (its skill costs more than
+    /// the resource there is).
+    shown: Option<(String, u32, bool)>,
 }
 
 /// The figures the interface shows (from the server when online).
@@ -463,6 +465,8 @@ struct Loaded {
     icons: Handle<SkillIcons>,
     map_names: Handle<local_map::MapNames>,
     spawned: Vec<bool>,
+    /// The class the HUD's resource globe was built for (resource_bar).
+    resource_class: Option<u8>,
 }
 
 pub struct UiPlugin;
@@ -585,6 +589,23 @@ fn gauge_of(id: &str) -> Option<Gauge> {
 }
 
 /// The resource globe of a class (0 warrior, 1 mage, 2 ranger, 3 dwarf).
+/// The bottom bar's resource gauge in the class's own colour: its layout draws
+/// it with the mage's mana; the game sets the texture by class.
+/// EVIDENCE: release261 0x1403ACD74: class 0 ui/statusbar_bottombar_rage, 1 the
+///   mana one, 2 ui/statusbar_bottombar_adrenaline, 3 ui/statusbar_bottombar_steam.
+fn class_resource_gauge(mut layout: Layout, class: u8) -> Layout {
+    let texture = match class {
+        0 => "textures/ui/statusbar_bottombar_rage.png",
+        2 => "textures/ui/statusbar_bottombar_adrenaline.png",
+        3 => "textures/ui/statusbar_bottombar_steam.png",
+        _ => return layout,
+    };
+    for w in layout.widgets.iter_mut().filter(|w| w.id.ends_with("/Resource/progress")) {
+        if let Some(art) = &mut w.art { art.tex = Some(texture.to_owned()); }
+    }
+    layout
+}
+
 fn resource_bar(class: u8) -> &'static str {
     match class {
         0 => "ProgressBar_rage",
@@ -713,7 +734,27 @@ fn spawn_windows(
     dialogue_catalogs: Res<Assets<dialogue::Catalog>>,
     mut windows: Query<(Entity, &Window2018, &Visibility, &mut WindowControls)>,
 ) {
-    let class = players.iter().next().map(|c| c.desc.class).unwrap_or(1);
+    let known = players.iter().next().map(|c| c.desc.class);
+    let class = known.or(loaded.resource_class).unwrap_or(1);
+    // The resource globe shows the class's own resource (rage, mana, focus,
+    // steam). The HUD is built before the character arrives online: built with
+    // the default class it stayed the mage's blue mana for every class ("la rage
+    // pour le combattant c'est pas bleu comme du mana", 2026-10-18). Once the
+    // class is known, or changes, the windows holding a resource gauge rebuild.
+    if known.is_some() && known != loaded.resource_class {
+        let built = loaded.resource_class.is_some() || loaded.spawned.iter().any(|s| *s);
+        loaded.resource_class = known;
+        if built {
+            for i in 0..loaded.layouts.len() {
+                let Some(layout) = layouts.get(&loaded.layouts[i].0) else { continue };
+                if !loaded.spawned[i] || !layout.widgets.iter().any(|w| matches!(gauge_of(&w.id), Some(Gauge::Resource | Gauge::ResourceBar))) { continue; }
+                if let Some((root, _, _, _)) = windows.iter().find(|(_, w, _, _)| w.0 == layout.window) {
+                    commands.entity(root).despawn_related::<Children>();
+                }
+                loaded.spawned[i] = false;
+            }
+        }
+    }
     for i in 0..loaded.layouts.len() {
         if loaded.spawned[i] {
             continue;
@@ -737,7 +778,7 @@ fn spawn_windows(
         } else if layout.window == controls::settings::WINDOW {
             prepared = controls::settings::prepare(layout); &prepared
         } else if layout.window == "bottombar" {
-            prepared = controls::hotbar::prepare(layout); &prepared
+            prepared = class_resource_gauge(controls::hotbar::prepare(layout), class); &prepared
         } else { layout };
         // DSOR_UI_OPEN=inventory,...: menus open from the start (screenshots).
         let open = npc_window || std::env::var("DSOR_UI_OPEN").is_ok_and(|v| v.split(',').any(|w| w == layout.window));
@@ -1023,7 +1064,7 @@ fn follow_screen(
 }
 
 /// The server's figures, or a resting HUD offline.
-fn read_figures(net: Option<NonSend<crate::network::net::Net>>, mut figures: ResMut<Figures>) {
+fn read_figures(net: Option<NonSend<crate::network::net::Net>>, mut figures: ResMut<Figures>, resource_max: Res<crate::gameplay::stats::ResourceMax>) {
     let Some(net) = net else {
         if !figures.online && figures.health.1 == 0.0 {
             // Offline (the map viewer): a full-looking HUD, so it can be seen.
@@ -1057,8 +1098,12 @@ fn read_figures(net: Option<NonSend<crate::network::net::Net>>, mut figures: Res
             figures.health = (h, max);
         }
     }
-    if let Some(r) = net.resource {
-        let max = figures.resource.1.max(r);
+    // DSOR_TEST_RESOURCE=<n>: offline, the resource gauge at n (screenshots).
+    let test = net.offline.then(|| std::env::var("DSOR_TEST_RESOURCE").ok().and_then(|v| v.parse::<f32>().ok())).flatten();
+    if let Some(r) = net.resource.or(test) {
+        // Against the class's maximum (rage starts empty: the largest value seen
+        // made 10 rage look like a full bar).
+        let max = resource_max.0.max(r);
         if figures.resource != (r, max) {
             figures.resource = (r, max);
         }
@@ -1190,17 +1235,26 @@ fn update_slots(
     data: Res<controls::items::Data>,
     catalogs: Res<Assets<Catalog>>,
     screen: Res<Screen>,
+    (skill_data, skill_tables, resource_max): (Res<crate::gameplay::skills::SkillData>, Res<Assets<crate::gameplay::skills::SkillTable>>, Res<crate::gameplay::stats::ResourceMax>),
 ) {
     let Some(table) = icon_table.get(&loaded.icons) else { return };
     let catalog = catalogs.get(&data.catalog);
+    let resource = net.as_ref().and_then(|n| n.resource);
     for (e, mut s) in &mut slots {
-        let want = controls::hotbar::appearance(s.slot, hotbar.active, net.as_deref(), &figures, catalog, table);
+        // A skill the resource does not cover is greyed, as it cannot be cast
+        // (crate::gameplay::skills cast_input refuses it), for every class.
+        let dim = resource.is_some_and(|r| controls::hotbar::skill_id(s.slot, hotbar.active, net.as_deref(), &figures)
+            .and_then(|id| crate::gameplay::skills::skill_cost_by_id(&skill_data, &skill_tables, &id, resource_max.0))
+            .is_some_and(|cost| r + 1e-3 < cost));
+        let want = controls::hotbar::appearance(s.slot, hotbar.active, net.as_deref(), &figures, catalog, table)
+            .map(|(path, count)| (path, count, dim));
         if want == s.shown && !screen.is_changed() { continue; }
         commands.entity(e).despawn_related::<Children>();
-        if let Some((path, count)) = &want {
+        if let Some((path, count, dim)) = &want {
             let [l, t, r, b] = s.rect;
+            let shade = if *dim { [0.35, 0.35, 0.35, 1.0] } else { [1.0; 4] };
             let art = Art { tex: None, pos: vec![l,t,r,t,r,b,l,b],
-                uv: vec![0.0,0.0,1.0,0.0,1.0,1.0,0.0,1.0], color: vec![1.0;16], idx: vec![0,1,2,0,2,3] };
+                uv: vec![0.0,0.0,1.0,0.0,1.0,1.0,0.0,1.0], color: shade.repeat(4), idx: vec![0,1,2,0,2,3] };
             let mut run = Run { k:s.k, ..default() }; run.push(&art,0.0);
             let m = materials.add(material(Some(assets.load(path.clone()))));
             commands.spawn((Mesh2d(meshes.add(run.mesh())), MeshMaterial2d(m), Transform::IDENTITY, RenderLayers::layer(LAYER), ChildOf(e)));
