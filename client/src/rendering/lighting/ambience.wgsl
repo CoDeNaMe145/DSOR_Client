@@ -29,7 +29,7 @@ struct Ambience {
     // z the share of the whole light kept in full shadow; w 1 applies it.
     gamma_light: vec4<f32>,
     // The ambient light in that gamma sum (gamma rgb); w 1 squares the AO in
-    // gamma, 0 applies it once in linear (DSOR_FLAGS=aolinear).
+    // gamma (DSOR_FLAGS=aogamma), 2 x 1.3 clamped then squared (ao13), 0 once in linear.
     ambient_gamma: vec4<f32>,
 }
 @group(1) @binding(0) var<uniform> ambience: Ambience;
@@ -41,15 +41,17 @@ struct Ambience {
 // The sun pass multiplies the whole sum by globalShadowSampler.y^2 (pe_ssao
 // writes that channel: the average visibility of 16 samples x
 // occlusionConstants.w 1.3). Bevy's screen-space AO is a different, stronger
-// quantity; it stands in as is, squared in the gamma sum like the original's
-// (ambient_gamma.w 1). DSOR_FLAGS=aolinear applies it once in linear instead.
-// MEASURED (2026-10-18, mean luminance vs the original, 34 deg crops, zones at
-// the camera's focus, colours shown with 2.2 as the original):
-//   garden / market / church / gate / throne / Wild Forest entrance
-//   AO^2 in gamma: -10% / -4% / +29% / -4% / +31% / -8% (WF p10/50/90 10/25/59 vs 11/26/67)
-//   AO in linear:   +2% / +7% / +45% / +18% / +41% / +2.5%
-// (Shown through the sRGB curve, as before 2026-10-18, AO^2 in gamma crushed
-// the dark scenes: Wild Forest p10 4 vs 11.)
+// quantity: it darkens open flat ground (visibility about 0.92 on Kingshill's
+// market cobbles, where the original's are exactly texture x light). It darkens
+// the sun pass's sum once, in linear, as Bevy applies its own AO (ambient_gamma.w
+// 0); DSOR_FLAGS=aogamma squares it in the gamma sum like the original's formula,
+// ao13 first applies pe_ssao's x 1.3 clamped to 1.
+// MEASURED (2026-10-18, after the specular and shadow fixes; mean luminance vs
+// the original, zones at the camera's focus; garden / market / market by the
+// pumpkins / church / gate / throne / Wild Forest entrance):
+//   once in linear:  -6% / 0% / +4% / +14% / +8% / -7% / +4%   (total 43%)
+//   x 1.3, squared:  -3% / +3% / +7% / +17% / +12% / -6% / +4%  (total 52%)
+//   squared:        -19% / -12% / -10% / +1% / -12% / -10% / -7% (total 71%)
 // FAILURE (2026-10-17): Bevy's AO x 1.3 clamped to 1 almost everywhere (its
 // visibility is already near 1 on open ground, a different quantity than
 // pe_ssao's average) and brought back the sunlit overshoot (Kingshill garden
@@ -90,7 +92,10 @@ fn apply_ambience_gamma(input: ptr<function, LightingInput>, enable_diffuse: boo
     }
     // The occlusion darkens the sun pass's sum only: once in linear is its
     // 1/2.2 power here.
-    if ambience.ambient_gamma.w != 0.0 {
+    if ambience.ambient_gamma.w > 1.5 {
+        let o = min(occlusion * 1.3, vec3(1.0));
+        light *= o * o;
+    } else if ambience.ambient_gamma.w != 0.0 {
         light *= occlusion * occlusion;
     } else {
         light *= pow(occlusion, vec3(1.0 / 2.2));

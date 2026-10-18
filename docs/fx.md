@@ -41,11 +41,13 @@ inverse of the camera's exposure: what Nebula shows as `v`, bevy shows as `v`):
   `LightAmbient`, plus `LightOppositeColor x sat(BackLightFactor - N.L)` (not
   scaled by the intensity); the albedo is multiplied by that sum, so in linear
   terms by its 2.2 power. Point lights add `colour x sat(N.L) x sat(1 - d/range)`
-  into the same sum, diffuse only. Bevy's AO darkens the sun's sum squared, as
-  the original's SSAO does. The compose pass shows the result with a 2.2 power,
+  into the same sum, diffuse only. Bevy's AO darkens the sun's sum once, in
+  linear (it is stronger than the original's SSAO, which leaves open ground
+  alone). Specular is scaled by each node's MatSpecularIntensity (none at 0).
+  The compose pass shows the result with a 2.2 power,
   not the sRGB curve, as the original shows its gamma colours as they are.
-  `DSOR_FLAGS=linearlight` sums in linear instead (the old look), `aolinear`
-  applies the AO once in linear, `shadowfloor` keeps half the whole light in full
+  `DSOR_FLAGS=linearlight` sums in linear instead (the old look), `aogamma`
+  squares the AO in the gamma sum (the original's formula), `ao13` with its x 1.3, `shadowfloor` keeps half the whole light in full
   shadow as the original's blurred shadow buffer does (not default: interiors
   differ);
 - sun shadows: full strength in every zone (`LightShadowIntensity` only; the
