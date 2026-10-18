@@ -286,7 +286,18 @@ pub(in crate::ui) fn update(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<UiMaterial>>,
     mut cache: Local<ArtCache>,
+    screen: Option<Res<crate::ui::Screen>>,
+    mut captions: Query<(&mut TextFont, &mut Transform), (With<ExitCaption>, Without<Marker>)>,
 ) {
+    let scale = screen.as_ref().map_or(1.0, |s| s.scale);
+    // Rasterize at the actual screen resolution. The map art uses reference
+    // units, which otherwise magnify a small glyph atlas on large windows.
+    for (mut font, mut transform) in &mut captions {
+        let size = bevy::text::FontSize::Px(9.0 * scale);
+        if font.font_size != size { font.font_size = size; }
+        let inverse = Vec3::new(1.0, -1.0, 1.0) / scale;
+        if transform.scale != inverse { transform.scale = inverse; }
+    }
     let Ok((parent, child)) = layers.single() else { return };
     let Ok(map) = geometry.get(child.parent()) else { return };
     let empty = MapMarkers::default();
@@ -330,18 +341,21 @@ pub(in crate::ui) fn update(
         let (mesh, mat) = art(&style);
         let marker = commands.spawn((Marker { target, style }, Mesh2d(mesh), MeshMaterial2d(mat), transform,
             Visibility::Inherited, RenderLayers::layer(LAYER), ChildOf(parent))).id();
-        // UNVERIFIED: the caption's font, size and place (under the symbol).
         if let (Ok(label), Some(names)) = (labels.get(target), names) {
             commands.spawn((
+                ExitCaption,
                 Text2d::new(names.caption(&label.0)),
-                TextFont { font: assets.load("fonts/tahoma.ttf").into(), font_size: bevy::text::FontSize::Px(13.0), ..default() },
+                TextFont { font: assets.load("fonts/tahoma.ttf").into(), font_size: bevy::text::FontSize::Px(9.0 * scale), ..default() },
                 TextColor(Color::WHITE),
                 // The marker layer is y-flipped (its art's y runs down): the text
                 // is flipped back, and +y is below the symbol.
-                Transform::from_xyz(0.0, half + 8.0, 0.1).with_scale(Vec3::new(1.0, -1.0, 1.0)),
+                Transform::from_xyz(0.0, half + 6.0, 0.1).with_scale(Vec3::new(1.0, -1.0, 1.0) / scale),
                 RenderLayers::layer(LAYER),
                 ChildOf(marker),
             ));
         }
     }
 }
+
+#[derive(Component)]
+pub(in crate::ui) struct ExitCaption;

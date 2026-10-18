@@ -226,7 +226,9 @@ fn filter_prop_document(doc: &mut Value, wanted: &str) -> Result<(), String> {
     if doc["skins"].as_array().is_some_and(|s| !s.is_empty()) { return Ok(()); }
     let available: HashSet<String> = doc["nodes"].as_array().into_iter().flatten()
         .filter_map(|n| n["name"].as_str()).map(str::to_lowercase)
-        .filter(|n| crate::world::props::STATES.contains(&n.as_str()) || n == wanted).collect();
+        .filter(|n| crate::world::props::STATES.contains(&n.as_str()) || n == wanted
+            || n.strip_prefix("active_").is_some_and(|suffix| !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit())))
+        .collect();
     let selected = crate::world::props::selected_state(wanted, &available);
     filter_scene(doc, |node| node["name"].as_str().is_none_or(|n| {
         let name = n.to_lowercase();
@@ -358,6 +360,16 @@ mod tests {
             assert!(doc["animations"].as_array().unwrap().is_empty());
         }
         assert_ne!(prop_path("t003_outdoor/wall", "active"), prop_path("t003_outdoor/wall", "inactive"));
+    }
+
+    #[test]
+    fn exit_active_state_excludes_numbered_grey_variant() {
+        let mut doc = json!({"scenes":[{"nodes":[0]}], "nodes":[
+            {"name":"root","children":[1,2]}, {"name":"active","children":[3]},
+            {"name":"active_07","children":[4]}, {"name":"blue_halo"}, {"name":"grey_halo"}]});
+        filter_prop_document(&mut doc, "active").unwrap();
+        let names: Vec<_> = doc["nodes"].as_array().unwrap().iter().filter_map(|n| n["name"].as_str()).collect();
+        assert_eq!(names, ["root", "active", "blue_halo"]);
     }
 
     #[test]

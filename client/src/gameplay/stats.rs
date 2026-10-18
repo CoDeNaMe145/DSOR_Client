@@ -22,10 +22,9 @@
 //!   x DamageFactorPvE; a mouse button's damage (0x9C0577) x the attack speed when
 //!   the skill uses the weapon's DPS, x its DamageModifier; curve = the
 //!   _Template_DmgLvlCurves row of the player's level, caps _Globals Max*.
-//! UNVERIFIED: worn items are not counted yet (their enchantments, rolled by the
-//!   client's own random generator from the item's seed, come next); the XP
-//!   figures are the server's (NewPlayer / XPChanged), whose rows the client's
-//!   widget reads is not traced; skill damage ignores talents.
+//! Equipment, seeded enchantments, sockets, sets and active status programs use
+//! the server's layered arithmetic in calculation.rs. Conditional combat procs
+//! remain server driven; only their received active statuses affect this sheet.
 
 use std::collections::HashMap;
 
@@ -33,9 +32,43 @@ use bevy::asset::{io::Reader, AssetLoader, LoadContext};
 use bevy::prelude::*;
 use serde::Deserialize;
 
+mod calculation;
+#[cfg(test)]
+mod tests;
+
+/// Recomputed when equipment, level or active status instances change.
+#[derive(Resource, Default, Debug)]
+pub struct CharacterStats(pub HashMap<String, f64>);
+impl CharacterStats {
+    pub fn value(&self, key: &str) -> Option<f32> { self.0.get(key).map(|v| *v as f32) }
+    pub fn animation_speed(&self) -> f32 {
+        let raw = self.0.get("SkillExecutionSpeed").copied().unwrap_or(1.0).max(0.01);
+        if raw < 1.0 { return raw as f32; }
+        // Server local_combat_state.effective_attack_speed: discrete sequence
+        // breakpoints, distinct from the raw speed printed on the sheet.
+        [(1.0256,1.25),(1.0811,1.3158),(1.1429,1.3889),(1.2121,1.4706),
+         (1.2903,1.5625),(1.3793,1.6667),(1.4815,1.7857),(1.6,1.9231),
+         (1.7391,2.0833),(1.9048,2.2727),(2.1053,2.5),(2.3529,2.7778),
+         (2.6667,3.125),(3.0769,3.5714),(3.6364,4.1667),(4.4444,5.0),
+         (5.7143,6.25),(8.0,8.3333),(13.3333,12.5),(40.0,25.0)]
+            .into_iter().take_while(|(threshold,_)| raw+1e-9 >= *threshold).last().map_or(1.0, |(_,rate)| rate)
+    }
+    pub fn movement_speed(&self) -> Option<f32> {
+        self.value("MovementSpeed").map(|v| v + self.value("MovementBonus").unwrap_or(0.0).max(0.0))
+    }
+}
+
 #[derive(Deserialize, Debug, Clone, Default)]
 #[serde(rename_all = "PascalCase")]
 pub struct PlayerRow {
+    #[serde(default = "unit")]
+    pub class_hitpoints_factor: f32,
+    #[serde(default)]
+    pub hit_points_regeneration: f32,
+    #[serde(default = "unit")]
+    pub hit_points_reg_frequency: f32,
+    #[serde(default = "unit")]
+    pub skill_resource_reg_frequency: f32,
     #[serde(default)]
     pub run_speed: f32,
     #[serde(default)]
@@ -53,6 +86,8 @@ pub struct PlayerRow {
     #[serde(rename = "resist")]
     pub resist: [f32; 6],
 }
+
+fn unit() -> f32 { 1.0 }
 
 /// UNVERIFIED for release261: its _Template_DmgLvlCurves has none of these columns
 /// (tools/export_stats.py leaves them out), so they read as 0 there.
@@ -91,6 +126,8 @@ impl From<Vec<serde_json::Value>> for SkillRow {
 
 #[derive(Asset, TypePath, Deserialize, Debug)]
 pub struct StatsData {
+    #[serde(default)]
+    pub combat: Option<calculation::Catalog>,
     pub attrs: HashMap<String, [f32; 3]>,
     /// class -> level -> [LevelXP, BaseMana, BaseHP, BaseDamage]
     pub levels: HashMap<String, HashMap<String, [f64; 4]>>,
@@ -123,6 +160,17 @@ impl AssetLoader for StatsLoader {
 /// The sheet's texts by widget name (charactersheet.ui.json leaves).
 #[derive(Resource, Default)]
 pub struct Sheet(pub HashMap<&'static str, String>);
+
+/// The local player's maximum skill resource (rage, mana, focus...), as the
+/// character page computes it. A skill's ResourceCost is a fraction of it: the
+/// server debits cost_fraction x this maximum (DSOR_Server
+/// services/player_resources.py _apply_player_skill_resource).
+#[derive(Resource, Clone, Copy, PartialEq)]
+pub struct ResourceMax(pub f32);
+
+impl Default for ResourceMax {
+    fn default() -> Self { Self(100.0) }
+}
 
 /// The character page's list (release261): its headlines, sub-headlines and
 /// attribute rows, in the client's order, with their texts as shown.
@@ -159,12 +207,37 @@ impl Plugin for StatsPlugin {
         app.init_asset::<StatsData>()
             .register_asset_loader(StatsLoader)
             .init_resource::<Sheet>()
+            .init_resource::<ResourceMax>()
             .init_resource::<SheetRows>()
+            .init_resource::<CharacterStats>()
             .add_systems(Startup, |mut commands: Commands, assets: Res<AssetServer>| {
                 commands.insert_resource(Data(assets.load("characters/stats.json")));
             })
-            .add_systems(Update, compute);
+            .add_systems(Update, update_stats.before(crate::network::net::NetSystems))
+            .add_systems(Update, compute.after(update_stats));
     }
+}
+
+fn update_stats(
+    data: Res<Data>, stats: Res<Assets<StatsData>>,
+    net: Option<NonSend<crate::network::net::Net>>,
+    players: Query<&crate::actors::character::Character, With<crate::network::net::LocalPlayer>>,
+    mut output: ResMut<CharacterStats>,
+    mut previous: Local<Option<(u8, u32, u64, u64)>>,
+) {
+    let (Some(d), Some(net), Some(player)) = (stats.get(&data.0), net, players.iter().next()) else {
+        *previous = None;
+        if !output.0.is_empty() { output.0.clear(); }
+        return;
+    };
+    let class = player.desc.class.min(3);
+    let level = net.level.unwrap_or(1).max(1);
+    let key = (class, level, net.inventory.revision, net.stat_revision);
+    if *previous == Some(key) && !stats.is_changed() { return; }
+    *previous = Some(key);
+    let mut effects: Vec<_> = net.stat_effects.values().cloned().collect();
+    effects.sort_by_key(|e| e.instance);
+    output.0 = calculation::calculate(d, CLASSES[class as usize], level, &net.inventory, effects);
 }
 
 /// One actor attribute.
@@ -226,7 +299,9 @@ fn compute(
     mut next: Local<f32>,
     mut sheet: ResMut<Sheet>,
     mut rows_out: ResMut<SheetRows>,
+    mut resource_max: ResMut<ResourceMax>,
     riding: Query<&crate::actors::mounts::Riding, With<crate::network::net::LocalPlayer>>,
+    calculated: Res<CharacterStats>,
 ) {
     // Twice a second is plenty for a window of figures.
     *next -= time.delta_secs();
@@ -238,7 +313,7 @@ fn compute(
     let character = players.iter().next().or_else(|| demo.iter().next());
     let class = character.map(|c| c.desc.class as usize).unwrap_or(1).min(3);
     let female = character.is_some_and(|c| c.desc.gender == 1);
-    let level = net.as_ref().and_then(|n| n.level).unwrap_or(1).clamp(1, 60);
+    let level = net.as_ref().and_then(|n| n.level).unwrap_or(1).max(1);
     let cname = CLASSES[class];
     let Some(row) = d.levels.get(cname).and_then(|l| l.get(&level.to_string())) else { return };
     let Some(p) = d.player.get(cname) else { return };
@@ -248,10 +323,15 @@ fn compute(
     let attr = |name: &str, base: Option<f32>, lower: Option<f32>| {
         let [init, lo, hi] = d.attrs.get(name).copied().unwrap_or([0.0, 0.0, 1.0e8]);
         let lower = lower.unwrap_or(lo);
+        if let Some(value) = calculated.value(name) {
+            return Attr { initial: value, lower: f32::MIN, upper: f32::MAX, abs: 0.0, rel: 0.0 };
+        }
         Attr { initial: base.unwrap_or(init).clamp(lower, hi.max(lower)), lower, upper: hi, abs: 0.0, rel: 0.0 }
     };
     let max_health = attr("MaxHealthPoints", Some(row[2] as f32), None);
     let max_resource = attr("MaxSkillResource", Some(row[1] as f32), None);
+    let max = ResourceMax(max_resource.value().max(1.0));
+    if *resource_max != max { *resource_max = max; }
     let min_damage = attr("MinDamage", Some(row[3] as f32), None);
     let max_damage = attr("MaxDamage", Some(row[3] as f32), None);
     let pve = attr("DamageFactorPvE", None, None);
@@ -270,7 +350,8 @@ fn compute(
     s.insert("CharacterClass", t(&class_key));
     s.insert("Guildname", String::new());
     s.insert("Level", fill(&t("levelShort"), &[level.to_string()]));
-    s.insert("NextLevel", fill(&t("levelShort"), &[(level + 1).min(55).to_string()]));
+    let max_level = d.levels.get(cname).into_iter().flat_map(|l| l.keys()).filter_map(|s| s.parse::<u32>().ok()).max().unwrap_or(level);
+    s.insert("NextLevel", fill(&t("levelShort"), &[(level + 1).min(max_level).to_string()]));
     if let Some((total, _floor, ceiling)) = net.as_ref().and_then(|n| n.xp) {
         s.insert("XP", fill(&t("xp_pve"), &[total.to_string(), ceiling.to_string()]));
     }
@@ -312,13 +393,14 @@ fn compute(
     let chance = |v: f32, factor: f32, cap: f32| if v >= 1e-7 { (v * d.chance * factor).clamp(0.0, cap) } else { 0.0 };
     let br = block_rating.value();
     s.insert("BlockRating", round(br).to_string());
-    s.insert("BlockRating_Percentage", pct(chance(br, curve.block_chance_factor, g("MaxBlockChance"))));
+    s.insert("BlockRating_Percentage", pct(calculated.value("BlockChance").unwrap_or_else(|| chance(br, curve.block_chance_factor, g("MaxBlockChance")))));
     let bdr = block_reduction.value();
     s.insert("BlockValue", fill(&t("attributeValueDivision"), &[fmt(bdr, 2)]));
-    s.insert("BlockValue_Percentage", fill(&t("attributePercentageMinus"), &[fmt((1.0 - 1.0 / bdr) * 100.0, 2)]));
+    let blocked = calculated.value("BlockDamageReduction").unwrap_or_else(|| if bdr > 0.0 { 1.0 - 1.0 / bdr } else { 0.0 });
+    s.insert("BlockValue_Percentage", fill(&t("attributePercentageMinus"), &[fmt(blocked * 100.0, 2)]));
     let cr = crit_rating.value();
     s.insert("CriticalHit", round(cr).to_string());
-    s.insert("CriticalHit_Percentage", pct(chance(cr, curve.critical_chance_factor, g("MaxCriticalChance"))));
+    s.insert("CriticalHit_Percentage", pct(calculated.value("CriticalChance").unwrap_or_else(|| chance(cr, curve.critical_chance_factor, g("MaxCriticalChance")))));
     let cd = crit_damage.value();
     s.insert("CriticalDamage", fill(&t("attributeValueMultiplication"), &[fmt(cd, 2)]));
     s.insert("CriticalDamage_Percentage", fill(&t("attributePercentagePlus"), &[fmt((cd - 1.0) * 100.0, 2)]));
@@ -335,9 +417,8 @@ fn compute(
         s.insert(key, pct((r / (curve.resistance_damage_reduction_value + r)).min(g("MaxResistanceDamageReduction"))));
     }
     // The release261 list (SheetRows).
-    // UNVERIFIED: the regenerations, damage increases, rift force and drop
-    //   bonuses read their attributes' initial values: worn items, talents and
-    //   buffs are not counted yet.
+    // Rift and elemental damage increases have no corresponding calculation in
+    // the server stat snapshot; conditional skill damage remains server driven.
     let mut rows = Vec::new();
     let head = |rows: &mut Vec<SheetRow>, key: &str| rows.push(SheetRow { kind: RowKind::Headline, label: t(key), value: String::new(), right: String::new() });
     let sub = |rows: &mut Vec<SheetRow>, key: &str| rows.push(SheetRow { kind: RowKind::SubHeadline, label: t(key), value: String::new(), right: String::new() });
@@ -346,7 +427,7 @@ fn compute(
     let plus = |v: f32| fill(&t("percentageValuePlus"), &[round(v).to_string()]);
     // The official page: "0.0%" (riftAttributePercentage "{0:s}%", one decimal).
     let rift = |v: f32| fill(&t("riftAttributePercentage"), &[fmt(v, 1)]);
-    let initial = |name: &str| d.attrs.get(name).map(|a| a[0]).unwrap_or(0.0);
+    let initial = |name: &str| calculated.value(name).unwrap_or_else(|| d.attrs.get(name).map(|a| a[0]).unwrap_or(0.0));
     head(&mut rows, "offensiveValuesHeadline");
     row(&mut rows, t("basedamage"), s["BaseDamage"].clone(), String::new());
     row(&mut rows, t("attackspeedNew"), fmt(speed.value(), 3), String::new());
@@ -355,12 +436,12 @@ fn compute(
     let regen = ["rageRegen", "manaRegen", "concentrationRegen", "mechanicResourceRegen"][class];
     // _Template_Player: relative x the resource + absolute (the official
     // page: a level 10 mage's 12.00, AbsoluteSkillResourceRegeneration 12).
-    let regen_value = p.skill_resource_regeneration * max_resource.value() + p.absolute_skill_resource_regeneration;
+    let regen_value = calculated.value("ResourceRegeneration").unwrap_or(p.skill_resource_regeneration * max_resource.value() + p.absolute_skill_resource_regeneration);
     row(&mut rows, t(regen), fmt(regen_value, 2), String::new());
     // The class's RunSpeed plus the MovementBonus of a ride (crate::actors::mounts).
     let bonus = riding.iter().next().map_or(0.0, |r| r.bonus);
     let run = if p.run_speed > 0.0 { p.run_speed } else { crate::network::net::RUN_SPEED };
-    row(&mut rows, t("movementSpeed"), fmt(run + bonus, 3), String::new());
+    row(&mut rows, t("movementSpeed"), fmt(calculated.movement_speed().unwrap_or(run + bonus), 3), String::new());
     row(&mut rows, t("finaldamageincreasevalue"), rift(0.0), String::new());
     sub(&mut rows, "elementDamageIncreaseSubHeadline");
     for key in ["fireDamageIncrease", "iceDamageIncrease", "lightningDamageIncrease", "poisonDamageIncrease", "lightDamageIncrease"] {
@@ -370,7 +451,7 @@ fn compute(
     row(&mut rows, t("healthPoints"), round(max_health.value()).to_string(), String::new());
     // Its absolute part (the official page: 0.00 for a level 10 mage, whose
     // relative HitPointsRegeneration is 0.0083).
-    row(&mut rows, t("hpRegen"), fmt(p.absolute_hit_points_regeneration, 2), String::new());
+    row(&mut rows, t("hpRegen"), fmt(calculated.value("HealthRegeneration").unwrap_or(p.absolute_hit_points_regeneration), 2), String::new());
     row(&mut rows, t("blockvalue"), s["BlockRating"].clone(), s["BlockRating_Percentage"].clone());
     row(&mut rows, t("riftforcevalue"), rift(0.0), String::new());
     sub(&mut rows, "resistenceAndAmorSubHeadline");
@@ -386,7 +467,7 @@ fn compute(
     row(&mut rows, t("xpgain"), percent(initial("XPGain") * 100.0), String::new());
     row(&mut rows, t("honordrop"), percent(initial("HonorGain") * 100.0), String::new());
     for key in ["andermantdrop", "coindrop", "wisdomdrop", "materidrop"] {
-        row(&mut rows, t(key), plus(0.0), String::new());
+        row(&mut rows, t(key), plus(calculated.value(key).unwrap_or(0.0) * 100.0), String::new());
     }
     if rows_out.0 != rows {
         rows_out.0 = rows;

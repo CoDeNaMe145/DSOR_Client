@@ -28,8 +28,8 @@
 //! UNVERIFIED: the heavy sequence also needs a flag of the property (+0x39) whose
 //!   source is not traced; it is taken as set. Players' own hit sequences: not
 //!   traced (their table has no such columns), so blows on players draw nothing.
-//! Deaths: KillCommand plays DeathSequence; the actor keeps its last pose
-//!   (CharacterAnim::dead) until DiscardMonster removes it.
+//! Deaths: zero health or KillCommand disables interaction immediately. The
+//!   actor and its effects are removed when its death animation finishes.
 
 use std::collections::HashMap;
 
@@ -45,6 +45,9 @@ use crate::actors::character::{spawn_character, vary_joints, AnimState, Characte
 use crate::network::net::{now_ms, MonsterSpawn, Net, RemotePlayer};
 use crate::actors::npc::{JointShape, Outfits, Variations};
 use crate::gameplay::skills::{play, SequencePlayer, SequenceTable, SkillData};
+
+#[cfg(test)]
+pub(crate) mod tests;
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct MonsterTemplate {
@@ -187,9 +190,24 @@ pub struct Monster {
     /// Per row and instance: the hit tick it last played and its sequence player.
     hits: [[(Option<u32>, Option<Entity>); INSTANCES]; 7],
     heavy: Option<Entity>,
-    /// Dead: when its corpse goes (elapsed seconds; KillCommand's lifetime).
-    corpse_until: Option<f32>,
 }
+
+impl Monster {
+    pub(crate) fn is_alive(&self, anim: &CharacterAnim) -> bool {
+        self.health > 0 && !anim.dead
+    }
+}
+
+/// Animation completion owns disposal; a bounded fallback also removes bodies
+/// whose rig never loads or whose animation is stopped by visibility culling.
+#[derive(Component)]
+struct MonsterDeath {
+    sequence: Option<Entity>,
+    fallback_at: f32,
+}
+
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct MonsterSystems;
 
 /// What the debug menu (crate::diagnostics::debug) asks for: monsters to place, and blows on
 /// them (actor; 0 a hit of the next damage type, 1 a critical, 2 a kill).
@@ -286,8 +304,8 @@ fn patrol_test_monster(mut test: ResMut<OfflineMonster>, mut monsters: Query<(&T
     if v.len() != 3 || !test.placed {
         return;
     }
-    let Some((tf, _, mut r, anim)) = monsters.iter_mut().find(|(_, m, _, _)| m.actor == 0x6000_0000) else { return };
-    if !anim.is_ready() || anim.dead {
+    let Some((tf, m, mut r, anim)) = monsters.iter_mut().find(|(_, m, _, _)| m.actor == 0x6000_0000) else { return };
+    if !anim.is_ready() || !m.is_alive(anim) {
         return;
     }
     let goal = if test.outward { Vec3::new(v[0], v[1], v[2]) } else { test.at };
@@ -325,13 +343,21 @@ impl Plugin for MonstersPlugin {
             .init_resource::<OfflineMonster>()
             .init_resource::<Hovered>()
             .init_resource::<HoverInfo>()
-            .add_systems(Update, hover_info)
+            .add_systems(Update, hover_info.after(MonsterSystems))
             .init_resource::<ShaderColors>()
             .init_resource::<DebugMonsters>()
             .add_systems(PostUpdate, (own_player_materials, apply_shader_colors).chain())
             .add_systems(PreUpdate, hover.after(crate::ui::input::CaptureUiInput))
             .add_systems(Startup, load)
-            .add_systems(Update, (spawn_monsters, setup_models, monster_health, hits_and_kills, remove_corpses).chain())
+            .add_systems(Update, (spawn_monsters, setup_models, monster_health, hits_and_kills, start_deaths)
+                .chain().in_set(MonsterSystems).before(crate::network::net::NetSystems))
+            // Before the lights' bounds: a corpse takes its effects' lights with it
+            // (ChildOf), and update_point_light_bounding_spheres inserting a Sphere
+            // on one despawned in the same command flush panicked the game
+            // ("Entity despawned ... insert<Sphere>", a0400_deadlands, 2026-10-18).
+            // Ordered, the despawn is applied first and the light is not queried.
+            .add_systems(PostUpdate, remove_corpses.after(bevy::app::AnimationSystems)
+                .before(bevy::light::SimulationLightSystems::UpdateBounds))
             .add_systems(Update, patrol_test_monster);
     }
 }
@@ -476,7 +502,6 @@ fn spawn_monsters(
                 height: t.height.max(1.0),
                 hits: Default::default(),
                 heavy: None,
-                corpse_until: None,
             },
             RemotePlayer { actor: spawn.actor, target: spawn.position, facing: 0.0, still_for: 1.0, held: 0.0, held_until_tick: None, ..default() },
         ));
@@ -610,10 +635,10 @@ fn setup_models(
     }
 }
 
-fn monster_health(net: Option<NonSendMut<Net>>, mut monsters: Query<&mut Monster>) {
+fn monster_health(net: Option<NonSendMut<Net>>, mut monsters: Query<(&mut Monster, &CharacterAnim)>) {
     let Some(mut net) = net else { return };
     for (actor, health, max) in std::mem::take(&mut net.monster_health) {
-        if let Some(mut m) = monsters.iter_mut().find(|m| m.actor == actor) {
+        if let Some((mut m, _)) = monsters.iter_mut().find(|(m, a)| m.actor == actor && m.is_alive(a)) {
             m.health = health;
             m.max_health = max;
         }
@@ -648,7 +673,7 @@ fn hits_and_kills(
     real: Res<Time<Real>>,
     mut net: Option<NonSendMut<Net>>,
     mut test: ResMut<OfflineMonster>,
-    skills: Res<SkillData>,
+    skills: Option<Res<SkillData>>,
     seqs: Res<Assets<SequenceTable>>,
     data: Res<MonsterData>,
     templates: Res<Assets<MonsterTemplates>>,
@@ -666,7 +691,9 @@ fn hits_and_kills(
         Res<Assets<PlayerHits>>,
     ),
 ) {
-    let (Some(sequences), Some(templates)) = (seqs.get(skills.sequences()), templates.get(&data.templates)) else { return };
+    // Combat state must still advance while visual assets are loading/missing.
+    let sequences = skills.as_ref().and_then(|s| seqs.get(s.sequences()));
+    let templates = templates.get(&data.templates);
     let mut blows = Vec::new();
     let mut deaths = Vec::new();
     // Offline the test blows are the local player's own.
@@ -693,7 +720,7 @@ fn hits_and_kills(
                     text: h.combat_text,
                 });
             }
-            deaths.extend(std::mem::take(&mut net.kills).into_iter().map(|(victim, k)| (victim, Some(k.unknown_u32_0))));
+            deaths.extend(std::mem::take(&mut net.kills).into_iter().map(|(victim, _)| victim));
         }
         None => {
             // DSOR_TEST_HIT=<seconds>[,critical]: offline blows on the test monster.
@@ -706,7 +733,7 @@ fn hits_and_kills(
                     test.next = every;
                     test.blows += 1;
                     if test.blows > DAMAGE_TYPES.len() as u32 {
-                        deaths.push((0x6000_0000, None));
+                        deaths.push(0x6000_0000);
                     } else {
                         blows.push(Blow {
                             victim: 0x6000_0000,
@@ -758,7 +785,7 @@ fn hits_and_kills(
         let near = |p: Vec3| Vec2::new(p.x - at.x, p.z - at.z).length() <= radius;
         let hit: Vec<u32> = monsters
             .iter()
-            .filter(|(e, m, a)| !a.dead && (target == Some(m.actor) || (target.is_none() && near(transforms.get(*e).map(|t| t.translation()).unwrap_or(Vec3::INFINITY)))))
+            .filter(|(e, m, a)| m.is_alive(a) && (target == Some(m.actor) || (target.is_none() && near(transforms.get(*e).map(|t| t.translation()).unwrap_or(Vec3::INFINITY)))))
             .map(|(_, m, _)| m.actor)
             .collect();
         for actor in hit {
@@ -774,21 +801,12 @@ fn hits_and_kills(
     // The debug menu's blows, as the local player's.
     for (victim, kind) in std::mem::take(&mut debug.blows) {
         if kind == 2 {
-            deaths.push((victim, None));
+            deaths.push(victim);
             continue;
         }
         debug.tick += 1;
         let t = debug.next_type;
         let damage = 10 + (debug.tick * 37 % 40) as i32;
-        // Debug monsters have 100 health: the blow that empties it kills.
-        if let Some((_, mut m, _)) = monsters.iter_mut().find(|(_, m, _)| m.actor == victim) {
-            if victim >= 0x6100_0000 {
-                m.health = m.health.saturating_sub(damage as u32);
-                if m.health == 0 {
-                    deaths.push((victim, None));
-                }
-            }
-        }
         debug.next_type = (t + 1) % DAMAGE_TYPES.len() as u8;
         blows.push(Blow {
             victim,
@@ -808,6 +826,17 @@ fn hits_and_kills(
         });
     }
     for blow in blows {
+        // Ignore late hits/heals entirely; a new spawn is required to revive a
+        // monster. Apply each blow in order so a lethal one blocks later blows.
+        if let Some((_, mut m, anim)) = monsters.iter_mut().find(|(_, m, _)| m.actor == blow.victim) {
+            if !m.is_alive(&anim) { continue; }
+            if let Some((health, max)) = blow.health {
+                m.health = health;
+                m.max_health = max;
+            } else if blow.victim >= 0x6100_0000 {
+                m.health = m.health.saturating_sub(blow.damage.max(0) as u32);
+            }
+        }
         // Floating texts (crate::ui::combat_text), for blows given or taken by the
         // local player (HitCommand's handler 0x516453).
         let victim_entity = monsters
@@ -861,7 +890,7 @@ fn hits_and_kills(
         // body flashes red), as a monster's (ActorSequenceProperty 0x4BAF2A).
         if let (Some(v), None) = (victim_entity, monsters.iter().find(|(_, m, _)| m.actor == blow.victim)) {
             let row = player_hits.get(&data.player_hits).zip(players.get_mut(v).ok());
-            if let Some((table, (c, slots))) = row {
+            if let (Some(sequences), Some((table, (c, slots)))) = (sequences, row) {
                 if let Some(h) = table.0.get(c.desc.class_name()) {
                     let mut fresh = HitSlots::default();
                     let has = slots.is_some();
@@ -878,19 +907,15 @@ fn hits_and_kills(
             continue;
         }
         let Some((e, mut m, anim)) = monsters.iter_mut().find(|(_, m, _)| m.actor == blow.victim) else { continue };
-        if let Some((health, max)) = blow.health {
-            m.health = health;
-            m.max_health = max;
-        }
-        if anim.dead {
+        if !m.is_alive(&anim) {
             continue;
         }
-        let Some(t) = templates.0.get(&m.template) else { continue };
+        let (Some(sequences), Some(t)) = (sequences, templates.and_then(|t| t.0.get(&m.template))) else { continue };
         let Monster { hits, heavy, .. } = &mut *m;
         play_blow(&mut commands, sequences, e, hits, heavy, &blow, &t.hit, &t.critical, &t.heavy, &playing);
     }
-    for (victim, lifetime) in deaths {
-        let Some((e, mut m, mut anim)) = monsters.iter_mut().find(|(_, m, _)| m.actor == victim) else {
+    for victim in deaths {
+        let Some((_, mut m, _)) = monsters.iter_mut().find(|(_, m, _)| m.actor == victim) else {
             // A player's death is crate::network::net's; anything else is a monster the
             // client does not have (yet, or any more): it would stand there alive.
             let local = locals.iter().next().map(|(_, l)| l.actor);
@@ -899,40 +924,62 @@ fn hits_and_kills(
             }
             continue;
         };
-        if anim.dead {
-            continue;
-        }
+        m.health = 0;
+    }
+}
+
+fn start_deaths(
+    mut commands: Commands,
+    time: Res<Time>,
+    skills: Option<Res<SkillData>>,
+    seqs: Res<Assets<SequenceTable>>,
+    data: Res<MonsterData>,
+    templates: Res<Assets<MonsterTemplates>>,
+    mut monsters: Query<(Entity, &Monster, &mut CharacterAnim), Without<MonsterDeath>>,
+    mut hovered: ResMut<Hovered>,
+    mut info: ResMut<HoverInfo>,
+) {
+    for (e, m, mut anim) in &mut monsters {
+        if m.health > 0 && !anim.dead { continue; }
         anim.dead = true;
         anim.state = AnimState::Named("Death".into());
+        anim.speed = 1.0;
         anim.replay();
-        // The corpse goes by itself after the Kill's lifetime: the server never
-        // discards a dead monster (it sends only the Kill, lifetime 300 ticks; the
-        // client fades the corpse -- DSOR_Server services/combat_resolution.py
-        // 673-678). Death sequences without a hide track left their corpses
-        // standing for good ("certains mobs despawnent pas").
-        // UNVERIFIED: the client's own fade and whether the time counts from the
-        // Kill's arrival or its tick.
-        if let Some(ticks) = lifetime {
-            m.corpse_until = Some(time.elapsed_secs() + ticks as f32 / 25.0);
-        }
-        if let Some(seq) = templates.0.get(&m.template).and_then(|t| sequences.0.get(&t.death)) {
-            crate::skills::play_death(&mut commands, seq.clone(), e);
+        let seq = templates.get(&data.templates).and_then(|t| t.0.get(&m.template))
+            .and_then(|t| skills.as_ref().and_then(|s| seqs.get(s.sequences())).and_then(|s| s.0.get(&t.death)));
+        let fallback = seq.map_or(5.0, |s| s.length.max(1) as f32 / 25.0);
+        let sequence = seq.map(|s| crate::skills::play_death(&mut commands, s.clone(), e));
+        commands.entity(e).insert(MonsterDeath { sequence, fallback_at: time.elapsed_secs() + fallback })
+            .remove::<(crate::actors::picking::PickBoxes, crate::actors::picking::PickModel)>();
+        if hovered.0.is_some_and(|(target, _)| target == e) {
+            hovered.0 = None;
+            info.0 = None;
         }
     }
 }
 
-/// Dead monsters whose corpse time is over leave, as a DiscardMonster would
-/// remove them (crate::net).
-fn remove_corpses(time: Res<Time>, mut net: Option<NonSendMut<Net>>, mut monsters: Query<(Entity, &mut Monster)>, mut commands: Commands) {
-    let now = time.elapsed_secs();
-    for (e, mut m) in &mut monsters {
-        if m.corpse_until.is_some_and(|t| now >= t) {
-            m.corpse_until = None;
-            match net.as_mut() {
-                Some(net) => net.discard_actor(m.actor),
-                None => commands.entity(e).despawn(),
+fn remove_corpses(
+    time: Res<Time>,
+    mut net: Option<NonSendMut<Net>>,
+    monsters: Query<(Entity, &Monster, &CharacterAnim, &MonsterDeath)>,
+    players: Query<&AnimationPlayer>,
+    sequences: Query<(Entity, &SequencePlayer)>,
+    mut commands: Commands,
+) {
+    for (e, m, anim, death) in &monsters {
+        let pending = death.sequence.and_then(|s| sequences.get(s).ok())
+            .is_some_and(|(_, s)| s.has_pending_animation());
+        let finished = anim.playback_finished(&players);
+        if pending || !finished.unwrap_or(time.elapsed_secs() >= death.fallback_at) { continue; }
+        for (s, player) in &sequences {
+            if player.visual_actors().any(|actor| actor == e) {
+                player.despawn(&mut commands, s);
             }
         }
+        if let Some(net) = net.as_mut() { net.forget_actor(m.actor); }
+        // Despawn now in both modes, including the rig, picking geometry, and
+        // attached effects through ChildOf's recursive relationship cleanup.
+        commands.entity(e).try_despawn();
     }
 }
 
@@ -958,7 +1005,7 @@ fn hover(
     if let Some(ray) = ray {
         let (o, d) = (ray.origin, *ray.direction);
         for (e, at, m, anim, shown, boxes) in &monsters {
-            if anim.dead || !shown.get() {
+            if !m.is_alive(anim) || !shown.get() {
                 continue;
             }
             // The client's picking boxes on the joints (crate::actors::picking); the
@@ -1000,7 +1047,7 @@ fn hover(
             let eye = at.translation();
             best = monsters
                 .iter()
-                .filter(|(_, _, _, a, _, _)| !a.dead)
+                .filter(|(_, _, m, a, shown, _)| m.is_alive(a) && shown.get())
                 .map(|(e, g, m, _, _, _)| (g.translation().distance(eye), e, m.actor))
                 .min_by(|a, b| a.0.total_cmp(&b.0));
         }
@@ -1108,12 +1155,12 @@ fn apply_shader_colors(
 /// health, for its info window.
 fn hover_info(
     hovered: Res<Hovered>,
-    monsters: Query<&Monster>,
+    monsters: Query<(&Monster, &CharacterAnim)>,
     data: Res<MonsterData>,
     templates: Res<Assets<MonsterTemplates>>,
     mut info: ResMut<HoverInfo>,
 ) {
-    let now = hovered.0.and_then(|(e, _)| monsters.get(e).ok()).map(|m| {
+    let now = hovered.0.and_then(|(e, _)| monsters.get(e).ok()).filter(|(m, a)| m.is_alive(a)).map(|(m, _)| {
         let title = templates.get(&data.templates).and_then(|t| t.0.get(&m.template)).map(|t| t.title.clone()).unwrap_or_default();
         (title, m.level, m.health, m.max_health)
     });

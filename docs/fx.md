@@ -218,7 +218,7 @@ panes shd:environment (cube reflection), light shafts shd:volumefog.
 ## Skills and combat
 
 Drawn: the sequencer's effect models, attached graphics, point lights, camera
-shakes, bullets flying straight and their death sequence, skill impacts at the
+shakes, straight and homing bullets and their death sequence, skill impacts at the
 hit frame, blows (HitCommand 115) and deaths (KillCommand 116) on monsters.
 
 A bullet (`client/src/gameplay/skills.rs` fly_bullets) meets the actors in its
@@ -233,7 +233,7 @@ off). Aimed at a monster, a bullet dips or climbs to that monster's chest. Shift
 skills whose SkillBulletId is a bullet row (stunshot) are drawn on the aimed
 point, like the other Shifted skills. Missing:
 
-- bullet motions other than Straight (Homing, LockOnHoming, Orbiting...);
+- Orbiting bullet motion;
 - Pre / Post sequences (3 skills, dwarf turrets);
 - shader animators of Amplitude / Fresnel* (glows that pulse), animators on
   NebulaMaterial surfaces.
@@ -384,3 +384,24 @@ a rendering error. It holds the build commit, the URL (session id hidden), the
 browser and WebGL renderer, the game state of the last second (map, camera,
 player, network, FPS, look settings, flags) and the last 600 log lines
 (client/src/diagnostics/dump.rs).
+
+### Exit and mount effects
+
+Exits select their `active` model branch, excluding numbered alternate states
+such as the grey `active_07` branch. The original halo includes a billboard;
+its sprite metadata and material animation must survive conversion. Re-embed
+just the affected models with:
+
+```sh
+python tools/embed_animators.py <export_win32>/models assets t000_general/exit_general_colors_01 t000_general/exit_general_01 effects/mount_summon_loop effects/mount_summon_end
+```
+
+Additive particles use the original ONE/ONE blend. Their RGB envelope, soft
+intersection and fog control emission; texture alpha must not multiply it a
+second time through Bevy's additive material path. This also restores the
+mount summon particles. Hovering an exit adds a subdued silhouette outline to
+the ground marker; the billboard light column is excluded from the outline.
+
+`Homing` and `LockOnHoming` retain the target actor from local casts and remote
+skill packets, steering toward its current chest position without resetting
+flight age or speed. When the target disappears, the last heading remains.

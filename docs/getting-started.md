@@ -14,6 +14,8 @@ locally into `assets/` and are never committed (see `tools/convert_assets.sh`).
 - [trunk](https://trunkrs.dev) for the browser build (`cargo install trunk`, or its
   release binary in `~/.cargo/bin`)
 - python3 with Pillow and numpy, a C++ compiler, git (asset conversion)
+- [vgmstream-cli](https://github.com/vgmstream/vgmstream/releases) with its companion libraries
+  (audio extraction; on `PATH` or selected with `DSOR_VGMSTREAM`)
 - the unpacked 2018 client (`DSOClient2018_rel_206-7-32bit/export_win32`)
 
 ## 2. Convert the game data (once, ~10 minutes, ~3 GB)
@@ -24,7 +26,8 @@ tools/convert_assets.sh ~/Downloads/DSOClient2018_rel_206-7-32bit/export_win32 \
 ln -sfn ~/Documents/Drakensang/dsor_assets assets
 ```
 
-This runs DSO_Godot, then every tool of `tools/` in order (render states, cube
+This prepares audio banks as WAVs and a lookup catalog, runs DSO_Godot, then
+the tools of `tools/` in order (render states, cube
 maps, ambience, skills, NPCs, exits, interface windows, level decorations). With
 `DSOR_SERVER=<DSOR_Server checkout>` it also exports the navigation meshes
 (`maps/<map>.nav.bin`, read with the server's PathEngine parser). Without them the
@@ -90,11 +93,18 @@ the commits touched, for instance:
 | `tools/export_skills.py` (sequences, statuses) | `export_skills.py`, then `export_deco.py` |
 | `tools/export_deco.py` (town guards, townsfolk, animals) | `export_skills.py`, then `export_deco.py` |
 | `tools/export_monsters.py` (summons) | `export_monsters.py` |
+| `tools/export_audio.py` (prepared sound files) | `export_audio.py <export_win32> <assets>`; see [audio preparation](assets.md#audio-preparation) |
 | DB4 props/travel points | `dsor-levels props --assets assets --db-root <server>/data/maps --static-db <server>/data/db/static.db4` |
 | `tools/embed_animators.py` (effect fades, decals) | `embed_animators.py <export_win32>/models <assets>` |
 | `tools/restore_pivots.py` (effect positioning) | `restore_pivots.py <export_win32>/models <assets> <DSO_Godot>` after the other model postprocessors |
 | `tools/export_stats.py` | `export_stats.py` |
 | `vfx-overrides/` (someone's VFX edits) | `python3 tools/vfx_apply.py <assets>` |
+
+Mount rendering needs both `characters/mounts.json` and the `mount` /
+`movement_bonus` fields in `skills/status_effects.json`, produced by
+`export_skills.py`. Without them the summon cast can finish without displaying
+the mount. Use the same static database version as the server: status-effect
+wire IDs depend on its row order.
 
 `export_deco.py` adds its animation sets to `characters/anims.json`, so it must
 run after `export_skills.py` and after any `character_tables.py` run. Any tool

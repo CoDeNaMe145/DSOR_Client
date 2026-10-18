@@ -490,7 +490,8 @@ pub struct Kill {
     pub tick: u32,
     pub damage_types: Vec<u8>,
     /// +0x48: the corpse lifetime in ticks (release261 server: 300, players
-    /// 2160000; crate::monsters removes the corpse after it). +0x4C: not traced (0).
+    /// 2160000). The client disposes monsters at animation completion instead.
+    /// +0x4C: not traced (0).
     pub unknown_u32_0: u32,
     pub unknown_u32_1: u32,
     pub killer: u32,

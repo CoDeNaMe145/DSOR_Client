@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Skills and the sequences that draw them, from the 2018 client's data.
 
-Usage: export_skills.py <export_win32> <assets>
+Usage: export_skills.py <export_win32> <assets> [--database static.db4]
 
 Writes:
   skills/skills.json     wire index -> the skill (static.db4 _Template_Skill, row order;
@@ -257,7 +257,8 @@ def mapped(name):
 
 
 # -- skills ------------------------------------------------------------------------
-db = sqlite3.connect(os.path.join(export, "db", "static.db4"))
+database = sys.argv[sys.argv.index('--database') + 1] if '--database' in sys.argv else os.path.join(export, "db", "static.db4")
+db = sqlite3.connect(database)
 db.row_factory = sqlite3.Row
 bullets = {r["Id"]: r for r in db.execute("select * from _Template_SkillBullet")}
 
@@ -311,6 +312,7 @@ for r in db.execute("select rowid, * from _Template_Skill order by rowid"):
         "cooldown": r["CoolDown"] or 0.0,
         "cooldown_category": r["CoolDownCategory"] or "",
         "class": r["CharClass"] or "",
+        "scale_timing": bool(r["ScaleSkillTiming"]),
         "resource_cost": r["ResourceCost"] or 0.0,
         "ammo_cost": r["AmmoCost"] or 0,
         "pre": mapped(r["PreExecuteSequenceMapping"]),

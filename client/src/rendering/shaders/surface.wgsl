@@ -160,7 +160,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
                 fade = pow(fade, 2.2);
             }
 #endif
-            c = vec4<f32>(c.rgb * fade, c.a);
+            // Nebula b_additive uses ONE / ONE (shaders_sm30), not
+            // SRC_ALPHA / ONE. Bevy's Add premultiplies by alpha below;
+            // supplying one preserves the authored RGB emission envelope.
+            c = vec4<f32>(c.rgb * fade, 1.0);
         } else {
             c.a = c.a * soft;
         }

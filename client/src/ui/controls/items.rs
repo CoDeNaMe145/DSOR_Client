@@ -11,6 +11,8 @@ pub struct Definition {
     #[serde(default)] pub icon_config: String,
     /// The raw _Template_Item ItemCategory ("Mount", "Armor"...).
     #[serde(default)] pub item_category: String,
+    #[serde(default)] pub unique_values: Vec<String>,
+    #[serde(default)] pub unique_effects: Vec<String>,
 }
 /// A rolled appearance's icon and icon configuration (_Template_ItemAppearance).
 #[derive(Deserialize)]
@@ -20,10 +22,14 @@ pub struct Appearance { pub icon: String, pub config: String }
 pub struct IconConfig { pub rarity: bool, pub background: String, #[serde(default)] pub frame: String }
 #[derive(Deserialize)]
 pub struct Ingredient { pub template: String, pub tab: String, pub rarity: usize, pub slot: usize, pub class_name: String, pub unlock: u32 }
+#[derive(Deserialize)]
+pub struct Enchantment { pub name: String }
 #[derive(Asset, TypePath, Deserialize)]
 pub struct Catalog { pub items: HashMap<String, Definition>, pub ingredients: Vec<Ingredient>, pub colors: HashMap<String, [f32;4]>,
     #[serde(default)] pub appearances: HashMap<String, Appearance>, #[serde(default)] pub icon_configs: HashMap<String, IconConfig>,
-    #[serde(default)] pub rarity_backgrounds: Vec<String> }
+    #[serde(default)] pub rarity_backgrounds: Vec<String>,
+    #[serde(default)] pub enchantments: HashMap<String, Enchantment>,
+    #[serde(default)] pub values: values::Data }
 impl Catalog {
     /// What a cell shows: the rolled appearance's icon (a generated item's look;
     /// its template's icon is the base model's, the same for every roll), else the
@@ -331,75 +337,85 @@ pub fn render(mut commands:Commands,windows:Query<(Entity,&Window2018,&WindowCon
     }
 }
 
-fn description(d:&DisplayItem,catalog:&Catalog)->(String,String) {
-    let meta=catalog.items.get(d.template);
-    let title=meta.map_or(d.template,|m|m.name.as_str()).to_owned();
-    let mut lines=Vec::new();
-    if let Some(m)=meta {if !m.category.is_empty(){lines.push(m.category.clone());} if d.item.is_none(){lines.push(m.rarity.clone());}}
-    if let Some(i)=d.item {
-        // release261 wire: +0x0c item level is the first word after dye;
-        // older field names call it durability. Do not display sale value as level.
-        lines.push(format!("Level {}",i.durability));
-        if i.flag_0 {lines.push("Unidentified".into());}
-        else {for s in &i.statistics {lines.push(format!("{} : {:.2}",s.name,s.value));}}
-        for gem in &i.names {lines.push(format!("◆ {}",catalog.items.get(gem).map_or(gem.as_str(),|m|m.name.as_str())));}
-    }
-    if let Some(m)=meta {
-        let required=m.required_level.max(d.unlock);if required>1 {lines.push(format!("Required level: {required}"));}
-        if !m.description.is_empty() {lines.push(m.description.replace("\\n","\n"));}
-        if m.max_stack>1 {lines.push(format!("Quantity: {} / {}",d.amount,m.max_stack));}
-    }
-    if d.item.is_some() && d.amount>1 && !d.read_only {lines.push("Ctrl + click: split stack".into());}
-    if d.waiting {lines.push("Free up a slot to collect this item automatically.".into());}
-    if d.amount==0 {lines.push("Not yet collected".into());}
-    (title,lines.join("\n"))
-}
-
 /// Original tooltip corner/edge meshes keep their border thickness as content grows.
-pub(super) fn frame(commands:&mut Commands,assets:&AssetServer,meshes:&mut Assets<Mesh>,materials:&mut Assets<UiMaterial>,root:Entity,layout:&Layout,w:f32,h:f32) {
+pub(super) fn frame(commands:&mut Commands,assets:&AssetServer,meshes:&mut Assets<Mesh>,materials:&mut Assets<UiMaterial>,root:Entity,layout:&Layout,w:f32,h:f32,fill:Color) {
+    // The edge meshes include a transparent outer fringe. The fill begins at
+    // their opaque vertices, underneath the gold rail, rather than at (0, 0).
+    let edge = |name: &str| layout.widgets.iter().find(|w| w.id == format!("Canvas/BGLabel/{name}"));
+    let (Some(left), Some(right), Some(top), Some(bottom)) = (edge("leftedge"),edge("rightedge"),edge("topedge"),edge("bottomedge")) else {
+        tooltips::card::background(commands,root,w,h,[4.0;4],fill); return;
+    };
+    let x0=left.rect[0]; let y0=top.rect[1];
+    let sw=right.rect[2]-x0; let sh=bottom.rect[3]-y0;
+    let map = |v:f32, size:f32, source:f32, low:f32, high:f32| {
+        if v<=low {v} else if v>=high {size-(source-v)} else {low+(v-low)*(size-low-(source-high))/(high-low)}
+    };
+    let opaque = |widget:&Widget,axis:usize,maximum:bool| widget.art.as_ref().map(|a|
+        a.pos.chunks_exact(2).zip(a.color.chunks_exact(4)).filter(|(_,c)|c[3]>0.99)
+            .map(|(p,_)|p[axis]).reduce(|a,b|if maximum {a.max(b)} else {a.min(b)})).flatten();
+    let mut inset=[opaque(left,0,false).unwrap_or(x0+4.0)-x0,opaque(top,1,false).unwrap_or(y0+4.0)-y0,
+        x0+sw-opaque(right,0,true).unwrap_or(x0+sw-4.0), y0+sh-opaque(bottom,1,true).unwrap_or(y0+sh-4.0)];
+    // The horizontal rail texture still has transparent texels at its opaque
+    // mesh vertices. Three reference pixels cover that strip and its filtering.
+    inset[1]+=3.0; inset[3]+=3.0;
+    tooltips::card::background(commands,root,w,h,inset,fill);
     for widget in &layout.widgets {
         if !widget.id.starts_with("Canvas/BGLabel/") {continue;}
         let leaf=widget.id.rsplit('/').next().unwrap_or("");
         if !leaf.ends_with("edge") && !leaf.ends_with("corner") {continue;}
         let Some(mut art)=widget.art.clone() else{continue};
         for p in art.pos.chunks_exact_mut(2) {
-            let x=p[0]-416.62;let y=p[1]-413.3;
-            p[0]=if x<29.02{x}else if x>162.24{w-(191.0-x)}else{29.02+(x-29.02)*(w-57.78)/133.22};
-            p[1]=-(if y<15.4{y}else if y>112.32{h-(127.73-y)}else{15.4+(y-15.4)*(h-30.81)/96.92});
+            p[0]=map(p[0]-x0,w,sw,top.rect[0]-x0,top.rect[2]-x0);
+            p[1]=-map(p[1]-y0,h,sh,left.rect[1]-y0,left.rect[3]-y0);
         }
         let atlas=art.tex.as_ref().map(|t|assets.load(t.clone()));let mut run=Run::default();run.push(&art,0.0);
         commands.spawn((Mesh2d(meshes.add(run.mesh())),MeshMaterial2d(materials.add(material(atlas))),Transform::from_xyz(0.0,0.0,0.1),RenderLayers::layer(LAYER),ChildOf(root)));
     }
 }
 
+mod preview;
+mod values;
+
+pub(super) fn preview_card(catalog:&Catalog, layout:Option<&Layout>, template:&str, item:Option<&ItemInfo>, amount:u32, advanced:bool)->tooltips::card::Card {
+    preview::card(&DisplayItem { item,template,amount,unlock:0,read_only:false,waiting:false },catalog,layout,advanced)
+}
+
 #[allow(clippy::too_many_arguments)]
-pub fn overlay(mut commands:Commands,ui:Res<Interaction>,windows:Query<(&Window2018,&WindowControls,&Visibility)>,primary:Query<&Window,With<PrimaryWindow>>,
-    net:Option<NonSend<crate::network::net::Net>>,data:Res<Data>,catalogs:Res<Assets<Catalog>>,layouts:Res<Assets<Layout>>,assets:Res<AssetServer>,screen:Res<Screen>,
-    old:Query<Entity,With<Overlay>>,mut transforms:Query<&mut Transform,With<Overlay>>,mut meshes:ResMut<Assets<Mesh>>,mut materials:ResMut<Assets<UiMaterial>>,
-    mut last:Local<Option<(String,u64,bool,u32)>>, settings:Res<settings::Settings>) {
-    let Some(net)=net else{return};let Some(catalog)=catalogs.get(&data.catalog) else{return};
+pub fn overlay(mut commands:Commands,ui:Res<Interaction>,windows:Query<(&Window2018,&WindowControls,&Visibility,&Transform),Without<Overlay>>,primary:Query<&Window,With<PrimaryWindow>>,
+    net:Option<NonSend<crate::network::net::Net>>,(data,catalogs,layouts):(Res<Data>,Res<Assets<Catalog>>,Res<Assets<Layout>>),assets:Res<AssetServer>,screen:Res<Screen>,
+    (old,mut transforms):(Query<Entity,With<Overlay>>,Query<&mut Transform,With<Overlay>>),
+    (mut meshes,mut materials):(ResMut<Assets<Mesh>>,ResMut<Assets<UiMaterial>>),
+    mut last:Local<Option<(String,u64,bool,bool,u32,bool)>>, settings:Res<settings::Settings>,keys:Res<ButtonInput<KeyCode>>,pointer:Res<Pointer>) {
+    let catalog=catalogs.get(&data.catalog);
     let point=primary.single().ok().filter(|w|w.focused).and_then(|w|w.cursor_position().map(|p|p*(BASE_H/w.height().max(1.0))));
-    let dragged=ui.drag.as_ref().filter(|d|d.active).and_then(|d|net.inventory.items.get(&d.id));
-    let display=dragged.map(|i|DisplayItem{item:Some(i),template:&i.template,amount:i.third,unlock:0,read_only:false,waiting:false}).or_else(||windows.iter().filter(|(n,_,v)|n.0=="inventory" && **v!=Visibility::Hidden)
-        .find_map(|(_,c,_)|c.hovered.and_then(|n|match c.buttons[n].action {Action::Item(cell)=>displayed(cell,c,&net.inventory,catalog),_=>None})));
-    let key=display.as_ref().filter(|_|point.is_some() && ui.split.is_none() && (settings.current.tooltips || dragged.is_some())).map(|d|(format!("{}:{}:{}",d.template,d.item.map_or(0,|i|i.id),d.amount),net.inventory.revision,dragged.is_some(),screen.scale.to_bits()));
-    let (title,body)=display.as_ref().map(|d|description(d,catalog)).unwrap_or_default();
-    let h=(60.0+body.lines().map(|l|1+l.chars().count()/42).sum::<usize>() as f32*17.0).min(BASE_H-20.0);
-    let at=point.map(|p|if dragged.is_some(){p-Vec2::splat(22.0)}else{Vec2::new((p.x+18.0).min(screen.width-330.0).max(0.0),(p.y+18.0).min(BASE_H-h).max(0.0))});
-    if *last==key {if let Some(p)=at {for mut tf in &mut transforms {tf.translation=screen.world(0.0,p.x,p.y).extend(800.0);}}return;}
+    let dragged=net.as_ref().and_then(|n|ui.drag.as_ref().filter(|d|d.active).and_then(|d|n.inventory.items.get(&d.id)));
+    let mut anchor=None;
+    let display=dragged.map(|i|DisplayItem{item:Some(i),template:&i.template,amount:i.third,unlock:0,read_only:false,waiting:false}).or_else(|| {
+        let (Some(net),Some(catalog))=(&net,catalog) else{return None;};
+        windows.iter().filter(|(n,_,v,_)|n.0=="inventory" && **v!=Visibility::Hidden)
+            .find_map(|(_,c,_,tf)|c.hovered.and_then(|n|match c.buttons[n].action {
+                Action::Item(cell)=>{
+                    let b=&c.buttons[n]; let offset=window_offset(tf)+Vec2::new(b.k*(screen.width-BASE_W),0.0);
+                    anchor=Some([b.rect[0]+offset.x,b.rect[1]+offset.y,b.rect[2]+offset.x,b.rect[3]+offset.y]);
+                    displayed(cell,c,&net.inventory,catalog)
+                },_=>None
+            }))
+    });
+    let advanced=settings.current.advanced_tooltips(&keys,pointer.focus.is_some());
+    let layout=layouts.get(&data.tooltip);
+    let enabled=point.is_some() && ui.split.is_none() && (dragged.is_some() || (settings.current.tooltips && pointer.down.is_none() && pointer.drag.is_none() && pointer.spell_drag.is_none()));
+    let key=display.as_ref().filter(|_|enabled).map(|d|(format!("{}:{}:{}",d.template,d.item.map_or(0,|i|i.id),d.amount),net.as_ref().map_or(0,|n|n.inventory.revision),dragged.is_some(),advanced,screen.scale.to_bits(),layout.is_some()));
+    let card=display.as_ref().zip(catalog).filter(|_|dragged.is_none()).map(|(d,c)|preview::card(d,c,layout,advanced));
+    let at=if dragged.is_some(){point.map(|p|(p-Vec2::splat(22.0),1.0))}else{card.as_ref().zip(anchor).map(|(c,a)|tooltips::card::placement(a,Vec2::new(c.width,c.height()),Vec2::new(screen.width,BASE_H),false))};
+    if *last==key && !catalogs.is_changed() && !layouts.is_changed() {if let Some((p,scale))=at {for mut tf in &mut transforms {tf.translation=screen.world(0.0,p.x,p.y).extend(800.0);tf.scale=Vec3::splat(scale);}}return;}
     *last=key.clone();for e in &old {commands.entity(e).despawn();}if key.is_none(){return;}
-    let (Some(d),Some(p))=(display,at) else{return};
-    let root=commands.spawn((Overlay,Transform::from_translation(screen.world(0.0,p.x,p.y).extend(800.0)),Visibility::Inherited)).id();
+    let (Some(d),Some((p,scale)),Some(catalog))=(display,at,catalog) else{return;};
+    let root=commands.spawn((Overlay,Transform::from_translation(screen.world(0.0,p.x,p.y).extend(800.0)).with_scale(Vec3::splat(scale)),Visibility::Inherited)).id();
     if dragged.is_some() {
         let (icon,background)=catalog.icon(d.template,d.item);
         if let Some(bg)=background {commands.spawn((Sprite{image:assets.load(bg.to_owned()),custom_size:Some(Vec2::splat(44.0)),..default()},Anchor::TOP_LEFT,Transform::from_xyz(0.0,0.0,-0.01),RenderLayers::layer(LAYER),ChildOf(root)));}
         if let Some(icon)=icon {commands.spawn((Sprite{image:assets.load(icon.to_owned()),custom_size:Some(Vec2::splat(44.0)),..default()},Anchor::TOP_LEFT,RenderLayers::layer(LAYER),ChildOf(root)));}
-        return;
-    }
-    commands.spawn((Sprite::from_color(Color::srgba(0.025,0.02,0.015,0.97),Vec2::new(330.0,h)),Anchor::TOP_LEFT,RenderLayers::layer(LAYER),ChildOf(root)));
-    if let Some(layout)=layouts.get(&data.tooltip) {frame(&mut commands,&assets,&mut meshes,&mut materials,root,layout,330.0,h);}
-    text(&mut commands,&assets,&screen,root,title,Vec3::new(18.0,-14.0,0.2),17.0,color(catalog,d.item),294.0);
-    text(&mut commands,&assets,&screen,root,body,Vec3::new(18.0,-43.0,0.2),13.0,Color::srgb(0.92,0.87,0.76),294.0);
+    } else if let Some(card)=card {card.draw(&mut commands,&assets,&screen,&mut meshes,&mut materials,root,layout);}
 }
 
 #[cfg(test)]
@@ -583,7 +599,7 @@ mod tests {
         let empty = displayed(Cell::Ingredient(1), c, state, catalog).unwrap();
         assert_eq!(empty.amount, 0);
         assert!(empty.item.is_none());
-        assert!(!description(&empty, catalog).0.is_empty());
+        assert!(preview::card(&empty, catalog, None, false).height() > 32.0);
 
         let layout = &layouts["inventory"];
         assert_eq!(layout.widgets.iter().filter(|w| matches!(cell(w), Some(Cell::Bag(_)))).count(), 28);

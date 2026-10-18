@@ -335,6 +335,11 @@ fn main() {
     }
     let opts = options();
     let mut app = App::new();
+    // Outside debug builds a command on an entity already despawned (an effect
+    // ending the frame its actor goes) is logged, not fatal: one such race
+    // crashed the game (2026-10-18). Debug builds keep panicking to show them.
+    #[cfg(not(debug_assertions))]
+    app.set_error_handler(bevy::ecs::error::warn);
     app.register_asset_source(bevy::asset::io::AssetSourceId::Default, model_variant::source(asset_root()));
     if let Some(config) = opts.net.as_ref().filter(|_| !opts.login_screen) {
         app.insert_resource(config.clone());
@@ -415,6 +420,7 @@ fn main() {
         .add_plugins((dump::DumpPlugin, shadow_views::ShadowViewsPlugin, draw_mode::DrawModePlugin::default()))
         .add_plugins(diagnostics::lighting_menu::LightingMenuPlugin)
         .add_plugins(ui::UiPlugin)
+        .add_plugins(rendering::graphics::GraphicsPlugin)
         .add_plugins(ui_input::UiInputPlugin)
         .add_plugins(loading::LoadingPlugin)
         .add_plugins(selection::SelectionPlugin)
@@ -479,7 +485,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, opts: Res<Optio
         z_config: default(),
         dynamic_resizing: true,
     };
-    let camera = commands.spawn((Camera3d::default(), clusters, cam)).id();
+    let camera = commands.spawn((Camera3d::default(), rendering::graphics::GameGraphics, clusters, cam)).id();
     // The depth of the opaque scene, for the 2018 shaders' soft edges: particles
     // (depthDensity), volume fog, water borders (crate::rendering::surfaces). Natively and on
     // WebGPU always; on WebGL2 on request (?flag=depth): it binds the depth
@@ -496,11 +502,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, opts: Res<Optio
             commands.entity(camera).insert(Msaa::Off);
         }
     }
-    // Single-sample with FXAA on native views: Bevy's SSAO pass, which the level's
-    // look adds unless the AO is off (crate::rendering::lighting AoMode), requires
-    // single-sample depth.
-    #[cfg(not(target_arch = "wasm32"))]
-    commands.entity(camera).insert((Msaa::Off, bevy::anti_alias::fxaa::Fxaa::default()));
+    // Player anti-aliasing, SSAO and sharpening are applied by GraphicsPlugin.
     // Online the game camera follows the player (net::follow_camera); the free
     // fly camera is the map viewer's.
     if opts.net.is_none() && !opts.login_screen {
@@ -556,7 +558,8 @@ fn screenshot_when_loaded(
     }
     if loading.active() { return; }
     // Also allow a capture of the native account form before a map is loaded.
-    if opts.login_screen && current.is_none() && *frames > 120 {
+    let login_wait = std::env::var("DSOR_SHOT_WAIT").ok().and_then(|w| w.parse().ok()).unwrap_or(120);
+    if opts.login_screen && current.is_none() && *frames > login_wait {
         commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path.clone()));
         *taken = Some(*frames);
         return;

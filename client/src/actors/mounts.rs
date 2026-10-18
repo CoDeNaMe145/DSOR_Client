@@ -119,6 +119,11 @@ fn apply_rides(
                         tested.0 = 2;
                         net.mount_events.push((local, ride_index, 2, true));
                         net.status_events.push(event(ride_index, 2, 24840.0));
+                        net.stat_effects.insert(2, dsor_proto::commands::combat::StatusEffectElement {
+                            index: ride_index, instance: 2,
+                            tail: Some(Default::default()), ..Default::default()
+                        });
+                        net.stat_revision = net.stat_revision.wrapping_add(1);
                         if let Some(c) = find(&cast) {
                             net.mount_events.push((local, c, 1, false));
                             net.status_events.push(crate::network::net::StatusEvent { removed: true, ..event(c, 1, 3.5) });

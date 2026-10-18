@@ -57,9 +57,7 @@ pub struct BulletDef {
     /// (`impact_count` above 1), and where a charge stops (carry_casters).
     pub impact: String,
     pub death: String,
-    /// Its flight: Straight, Homing, LockOnHoming, Orbiting... Every bullet flies
-    /// straight here (docs/fx.md).
-    #[allow(dead_code)]
+    /// Authored flight mode; homing modes retain their target throughout flight.
     pub motion: String,
     pub velocity: f32,
     pub lifetime: f32,
@@ -95,6 +93,8 @@ pub struct SkillDef {
     pub id: String,
     #[serde(rename = "type")]
     pub kind: String,
+    #[serde(default = "scale_timing_default")]
+    pub scale_timing: bool,
     pub hit_frame: u32,
     pub loop_start: u32,
     pub unblock: u32,
@@ -136,6 +136,8 @@ pub struct SkillDef {
     pub summon: Option<Summon>,
     pub bullet: Option<BulletDef>,
 }
+
+fn scale_timing_default() -> bool { true }
 
 impl SkillDef {
     /// The execute sequence for a weapon kind (an attacksequence.xml column).
@@ -291,6 +293,11 @@ pub struct SkillData {
 }
 
 impl SkillData {
+    #[cfg(test)]
+    pub(crate) fn for_test(sequences: Handle<SequenceTable>) -> Self {
+        Self { skills: default(), status: default(), sequences, by_id: default() }
+    }
+
     /// Every sequence of the sequencer's data (sequences.json).
     pub(crate) fn sequences(&self) -> &Handle<SequenceTable> {
         &self.sequences
@@ -348,6 +355,20 @@ pub struct SequencePlayer {
 }
 
 impl SequencePlayer {
+    pub(crate) fn has_pending_animation(&self) -> bool {
+        !self.stop && self.seq.tracks.iter().enumerate().any(|(i, t)| {
+            matches!(t, Track::Anim { end, .. } if !self.started[i] && self.t * FPS < *end as f32)
+        })
+    }
+
+    /// Release even effects detached from the actor's hierarchy by a skill.
+    pub(crate) fn despawn(&self, commands: &mut Commands, entity: Entity) {
+        for &effect in self.spawned.iter().flatten() {
+            commands.entity(effect).try_despawn();
+        }
+        commands.entity(entity).try_despawn();
+    }
+
     /// Stable actor/anchor roots whose resident rig this sequence may use.
     /// Keep a resident rig until cleanup even when `stop` has just been set.
     pub(crate) fn visual_actors(&self) -> impl Iterator<Item = Entity> {
@@ -369,9 +390,12 @@ struct Bullet {
     /// Where it started and its velocity (units / second).
     start: Vec3,
     velocity: Vec3,
+    homing: bool,
     /// Seconds since it started, and when it ends.
     t: f32,
     end_t: f32,
+    /// Original end time, restored if a server-confirmed target dies in flight.
+    lifetime: f32,
     /// StartOffset.y: how far its end effects are lowered (they play on the ground).
     height: f32,
     death: String,
@@ -385,6 +409,8 @@ struct Bullet {
     radius: f32,
     /// Who shot it (monsters' bullets do not hit monsters).
     caster: Entity,
+    /// Keep the collision side after the caster's corpse has been disposed.
+    from_monster: bool,
     /// Offline play: the aimed monster, struck when the bullet reaches it.
     target: Option<u32>,
     /// Once it has hit or run out: seconds its particles still have to fade.
@@ -503,7 +529,8 @@ impl Plugin for SkillsPlugin {
                 Update,
                 (index_skills, cast_input.run_if(crate::screens::loading::gameplay_ready), remote_skills, status_visuals, hold_for_status, test_cast, run_pending, carry_casters, fly_bullets, play_sequences, start_fx_animations, retire_effects, shake_camera, test_shot, test_view, debug_fx_positions)
                     .chain()
-                    .after(crate::network::net::NetSystems).after(crate::actors::npc::NpcVisualSystems),
+                    .after(crate::network::net::NetSystems).after(crate::actors::npc::NpcVisualSystems)
+                    .before(crate::actors::character::drive_animations),
             );
         #[cfg(not(target_arch = "wasm32"))]
         app.add_systems(Update, vfx_preview.before(play_sequences).after(crate::network::net::NetSystems));
@@ -620,10 +647,21 @@ fn perform(
     point: Vec3,
     caster_actor: Option<u32>,
     aim: Option<Vec3>,
+    target: Option<u32>,
+    rate: f32,
 ) {
+    let rate = if skill.scale_timing { rate.clamp(0.1, 10.0) } else { 1.0 };
+    if character.is_some_and(|c| c.desc.look.is_none()) {
+        commands.queue(move |world: &mut World| {
+            if let Some(mut anim) = world.get_mut::<CharacterAnim>(actor) { anim.enter_combat(); }
+        });
+    }
     let column = character.map(weapon_column).unwrap_or_else(|| "empty".into());
     if let Some(seq) = skill.execute_for(&column).and_then(|n| sequences.0.get(n)) {
-        play(commands, seq.clone(), Some(actor), actor, false);
+        let entity = play(commands, seq.clone(), Some(actor), actor, false);
+        commands.queue(move |world: &mut World| {
+            if let Some(mut sequence) = world.get_mut::<SequencePlayer>(entity) { sequence.rate = rate; }
+        });
     }
     let dir = Quat::from_rotation_y(facing) * Vec3::Z;
     match (skill.kind.as_str(), &skill.bullet) {
@@ -633,10 +671,11 @@ fn perform(
             // skill. EVIDENCE: BulletSkillVisualizer 0x5ECA7A / 0x5EC837: from
             // start + LoopStartFrame, at the target point turned to the aim heading,
             // stretched to last HitFrame ticks.
-            let rate = sequences.0.get(&skill.shifted).map(|q| q.length as f32 / skill.hit_frame.max(1) as f32).unwrap_or(1.0);
+            let impact_rate = if skill.hit_frame < 25 { rate } else { 1.0 };
+            let visual_rate = sequences.0.get(&skill.shifted).map(|q| q.length as f32 / skill.hit_frame.max(1) as f32 * impact_rate).unwrap_or(1.0);
             commands.spawn(Pending {
-                after: skill.loop_start as f32 / FPS,
-                what: PendingKind::Sequence { name: skill.shifted.clone(), at: Transform::from_translation(point).with_rotation(entity_rotation(facing)), rate },
+                after: skill.loop_start as f32 / FPS / rate,
+                what: PendingKind::Sequence { name: skill.shifted.clone(), at: Transform::from_translation(point).with_rotation(entity_rotation(facing)), rate: visual_rate },
             });
         }
         ("Charge" | "ChargeThrough", Some(_)) => {}
@@ -656,16 +695,16 @@ fn perform(
             let to = (skill.kind == "RangedTargetPoint").then(|| Vec3::new(point.x, point.y + o.y, point.z));
             for k in 0..skill.bullet_count.max(1) {
                 commands.spawn(Pending {
-                    after: (skill.loop_start + k * (skill.emit_delay * FPS) as u32) as f32 / FPS,
-                    what: PendingKind::Bullet { from, dir, def: b.clone(), impact: skill.impact.clone(), to, caster: actor, caster_actor, aim, target: None },
+                    after: ((skill.loop_start as f32 / FPS).max(skill.emit_delay) + k as f32 * skill.emit_delay) / rate,
+                    what: PendingKind::Bullet { from, dir, def: b.clone(), impact: skill.impact.clone(), to, caster: actor, caster_actor, aim, target },
                 });
             }
         }
         _ => {}
     }
     if matches!(skill.kind.as_str(), "Jump" | "Charge" | "ChargeThrough") {
-        let start = skill.loop_start as f32 / FPS;
-        let end = (skill.hit_frame.max(skill.loop_start + 1)) as f32 / FPS;
+        let start = skill.loop_start as f32 / FPS / rate;
+        let end = (skill.hit_frame.max(skill.loop_start + 1)) as f32 / FPS / rate;
         let mut duration = (end - start).max(0.05);
         // A charge's caster rides its bullet: placed on the bullet's straight
         // flight to the target point, its loop sequence on the caster (it holds
@@ -697,7 +736,7 @@ fn perform(
         });
     }
     if skill.kind == "Teleport" {
-        commands.spawn(Pending { after: skill.hit_frame as f32 / FPS, what: PendingKind::Teleport { who: actor, to: point } });
+        commands.spawn(Pending { after: skill.hit_frame as f32 / FPS / rate, what: PendingKind::Teleport { who: actor, to: point } });
     }
     if !skill.impact.is_empty() && skill.impact != "empty_sequence" {
         let impact_at = match skill.kind.as_str() {
@@ -707,8 +746,8 @@ fn perform(
         // Shifted: on its hit tick, start + LoopStartFrame + HitFrame (0x946F17;
         // lightning strike 44, meteor 65).
         let after = match skill.kind.as_str() {
-            "Shifted" => (skill.loop_start + skill.hit_frame) as f32 / FPS,
-            _ => skill.hit_frame as f32 / FPS,
+            "Shifted" => skill.loop_start as f32 / FPS / rate + skill.hit_frame as f32 / FPS / if skill.hit_frame < 25 { rate } else { 1.0 },
+            _ => skill.hit_frame as f32 / FPS / rate,
         };
         // A bullet's impact is drawn where it ends (fly_bullets), a charge's where
         // its caster stops (carry_casters); the others here.
@@ -757,6 +796,18 @@ fn play_with(commands: &mut Commands, seq: Sequence, actor: Option<Entity>, anch
 }
 
 #[allow(clippy::too_many_arguments)]
+/// What a skill costs in the class's resource: its ResourceCost, a fraction of
+/// the maximum, times that maximum (the server's cost_fraction x maximum).
+pub fn skill_cost(skill: &SkillDef, resource_max: f32) -> f32 {
+    skill.resource_cost * resource_max
+}
+
+/// What the skill named `id` costs, once the skill table is in.
+pub fn skill_cost_by_id(data: &SkillData, tables: &Assets<SkillTable>, id: &str, resource_max: f32) -> Option<f32> {
+    let wire = data.by_id.get(id)?;
+    tables.get(&data.skills)?.0.get(wire).map(|s| skill_cost(s, resource_max))
+}
+
 fn cast_input(
     mut commands: Commands,
     net: Option<NonSendMut<Net>>,
@@ -772,13 +823,15 @@ fn cast_input(
     time: Res<Time<Real>>,
     mut players: Query<(Entity, &mut Transform, &mut LocalPlayer, &Character)>,
     mut cooldowns: Local<HashMap<String, f64>>,
-    (hovered, monsters, mut debug_monsters, ui, mut ui_skills, settings): (
+    (hovered, monsters, mut debug_monsters, ui, mut ui_skills, settings, stats, resource_max): (
         Res<crate::actors::monsters::Hovered>,
         Query<(&GlobalTransform, &crate::actors::monsters::Monster, &CharacterAnim)>,
         ResMut<crate::actors::monsters::DebugMonsters>,
         Res<crate::ui::input::UiInput>,
         ResMut<crate::ui::SkillClicks>,
         Res<crate::ui::Settings>,
+        Res<crate::gameplay::stats::CharacterStats>,
+        Res<crate::gameplay::stats::ResourceMax>,
     ),
     // A target skill aimed at a monster out of reach: (slot, monster), cast once
     // the walk brings it in reach.
@@ -820,7 +873,7 @@ fn cast_input(
         },
     };
     // A dead or vanished monster is no target.
-    let aimed = aimed.and_then(|e| monsters.get(e).ok().filter(|(_, _, a)| !a.dead).map(|(at, m, _)| (e, at.translation(), m.actor, m.radius, m.height)));
+    let aimed = aimed.and_then(|e| monsters.get(e).ok().filter(|(_, m, a)| m.is_alive(a)).map(|(at, m, _)| (e, at.translation(), m.actor, m.radius, m.height)));
     if aimed.is_none() {
         *queued = None;
     }
@@ -841,7 +894,12 @@ fn cast_input(
     if cooldowns.get(&key).is_some_and(|ready| now < *ready) {
         return;
     }
-    if net.resource.is_some_and(|r| r + 1e-3 < skill.resource_cost) {
+    // ResourceCost is a fraction of the maximum (rage, mana, focus, steam alike):
+    // compared as it was, 0.4 against 10 rage let a 40-rage skill go out, play,
+    // and be refused by the server ("rejected skill index 1842: resource=10,
+    // cost=40", 2026-10-18): it seemed to hit only sometimes.
+    let cost = skill_cost(skill, resource_max.0);
+    if net.resource.is_some_and(|r| r + 1e-3 < cost) {
         return;
     }
     let (Ok(window), Ok((camera, cam_tf))) = (windows.single(), cameras.single()) else { return };
@@ -886,7 +944,8 @@ fn cast_input(
     // Turned now: the cast's effects take the caster's placement this frame.
     tf.rotation = Quat::from_rotation_y(facing);
     player.target = None;
-    player.casting = (skill.motion_unblock.max(skill.unblock).max(1) as f32 / FPS).min(2.0);
+    let rate = if skill.scale_timing { stats.animation_speed().clamp(0.1, 10.0) } else { 1.0 };
+    player.casting = skill.motion_unblock.max(skill.unblock).max(1) as f32 / FPS / rate;
 
     let tick = net.server_tick(now_ms(&time));
     // A fresh cast id per cast: the release261 server keys each cast's projectile
@@ -917,7 +976,7 @@ fn cast_input(
     net.send(&command);
     cooldowns.insert(key, now + skill.cooldown as f64);
     if let Some(r) = net.resource.as_mut() {
-        *r -= skill.resource_cost;
+        *r -= cost;
     }
     info!("cast {} (wire {wire}, {}) at {point:?}", skill.id, skill.kind);
     if net.offline {
@@ -926,7 +985,7 @@ fn cast_input(
     // A bullet aimed at a monster dips or climbs to its chest (fly_bullets).
     let aim = aimed.filter(|_| skill.bullet.is_some()).map(|(_, at, _, _, height)| at + Vec3::Y * height * 0.5);
     let me = Some(net.local_actor.unwrap_or(crate::network::net::OFFLINE_ACTOR));
-    perform(&mut commands, skill, sequences, entity, Some(character), tf.translation, facing, point, me, aim);
+    perform(&mut commands, skill, sequences, entity, Some(character), tf.translation, facing, point, me, aim, aimed.map(|(_, _, actor, _, _)| actor), rate);
 }
 
 /// Offline nobody answers a cast: it lands at its hit frame (and after the
@@ -994,22 +1053,29 @@ fn remote_skills(
     tables: Res<Assets<SkillTable>>,
     seqs: Res<Assets<SequenceTable>>,
     // Monsters too (crate::actors::monsters): they move as remote actors, without a Character.
-    mut remotes: Query<(Entity, &mut Transform, &mut RemotePlayer, Option<&Character>)>,
+    mut remotes: Query<(Entity, &mut Transform, &mut RemotePlayer, Option<&Character>, &CharacterAnim, Option<&crate::actors::monsters::Monster>)>,
+    locals: Query<(&Transform, &LocalPlayer), Without<RemotePlayer>>,
 ) {
     let Some(mut net) = net else { return };
     if net.skill_events.is_empty() {
         return;
     }
     let (Some(table), Some(sequences)) = (tables.get(&data.skills), seqs.get(&data.sequences)) else { return };
+    // Where each actor's chest is, for a bullet aimed at it.
+    let chests: HashMap<u32, Vec3> = remotes.iter()
+        .map(|(_, tf, r, _, _, m)| (r.actor, tf.translation + Vec3::Y * m.map_or(PLAYER_HEIGHT, |m| m.height) * 0.5))
+        .chain(locals.iter().map(|(tf, l)| (l.actor, tf.translation + Vec3::Y * PLAYER_HEIGHT * 0.5)))
+        .collect();
     for ev in std::mem::take(&mut net.skill_events) {
         let Some(skill) = table.0.get(&(ev.wire as u32)) else {
             warn!("actor {:#x} used skill {} that skills.json does not have: nothing played", ev.actor, ev.wire);
             continue;
         };
-        let Some((e, mut tf, mut r, character)) = remotes.iter_mut().find(|(_, _, r, _)| r.actor == ev.actor) else {
+        let Some((e, mut tf, mut r, character, anim, _)) = remotes.iter_mut().find(|(_, _, r, _, _, _)| r.actor == ev.actor) else {
             debug!("skill {} ({}) of actor {:#x}, which is not here", ev.wire, skill.id, ev.actor);
             continue;
         };
+        if anim.dead { continue; }
         let facing = aim_to_facing(ev.heading);
         r.facing = facing;
         // Movement off until its unblock frame, where it stands now: its records
@@ -1031,7 +1097,15 @@ fn remote_skills(
             .first()
             .map(|p| Vec3::from(*p))
             .unwrap_or(tf.translation + Quat::from_rotation_y(facing) * Vec3::Z * skill.range.min(15.0));
-        perform(&mut commands, skill, sequences, e, character, tf.translation, facing, point, Some(ev.actor), None);
+        // Aimed at an actor (TargetSkill, TargetBulletSkill), its bullet dips or
+        // climbs to that actor's chest, as the local player's own do: from high
+        // ground a monster's bullet flew flat at its hand's height, over or past
+        // its victim, while the server's blow still landed.
+        // FAILURE (2026-10-18): "a monster on high ground attacked me, and the
+        //   attack visually passed through me or missed, but I still took the
+        //   damage".
+        let aim = ev.target.filter(|_| skill.bullet.is_some()).and_then(|t| chests.get(&t).copied());
+        perform(&mut commands, skill, sequences, e, character, tf.translation, facing, point, Some(ev.actor), aim, ev.target, 1.0);
     }
 }
 
@@ -1042,9 +1116,20 @@ fn run_pending(
     seqs: Res<Assets<SequenceTable>>,
     mut pending: Query<(Entity, &mut Pending)>,
     mut movers: Query<&mut Transform, With<Character>>,
+    anims: Query<&CharacterAnim>,
+    monsters: Query<(), With<crate::monsters::Monster>>,
 ) {
     let Some(sequences) = seqs.get(&data.sequences) else { return };
     for (e, mut p) in &mut pending {
+        let caster = match &p.what {
+            PendingKind::Bullet { caster, .. } => Some(*caster),
+            PendingKind::Teleport { who, .. } => Some(*who),
+            PendingKind::Sequence { .. } => None,
+        };
+        if caster.is_some_and(|e| !anims.get(e).is_ok_and(|a| !a.dead)) {
+            commands.entity(e).despawn();
+            continue;
+        }
         p.after -= time.delta_secs();
         if p.after > 0.0 {
             continue;
@@ -1081,8 +1166,10 @@ fn run_pending(
                         Bullet {
                             start: *from,
                             velocity,
+                            homing: matches!(def.motion.as_str(), "Homing" | "LockOnHoming"),
                             t: 0.0,
                             end_t,
+                            lifetime: end_t,
                             height: def.start[1],
                             death: def.death.clone(),
                             impact: impact.clone(),
@@ -1090,6 +1177,7 @@ fn run_pending(
                             static_collision: def.static_collision,
                             radius: def.radius.max(0.3),
                             caster: *caster,
+                            from_monster: monsters.contains(*caster),
                             target: *target,
                             dying: None,
                             caster_actor: *caster_actor,
@@ -1189,6 +1277,18 @@ fn flight_time_to(b: &Bullet, p: Vec3, radius: f32) -> f32 {
     (along - b.radius - radius).max(0.0) / speed
 }
 
+/// Preserve the travelled position when changing course. Lifetime is independent
+/// of steering; a missing target leaves the last heading intact.
+fn steer_bullet(b: &mut Bullet, target: Vec3) {
+    let here = b.start + b.velocity * b.t;
+    let delta = target - here;
+    let distance = delta.xz().length();
+    if distance <= 1e-5 { return; }
+    let speed = b.velocity.xz().length();
+    b.velocity = delta * (speed / distance);
+    b.start = here - b.velocity * b.t;
+}
+
 #[allow(clippy::too_many_arguments)]
 fn fly_bullets(
     mut commands: Commands,
@@ -1197,7 +1297,6 @@ fn fly_bullets(
     nav: Option<Res<CurrentNav>>,
     navmeshes: Res<Assets<NavMesh>>,
     monsters: Query<(&GlobalTransform, &crate::actors::monsters::Monster, &CharacterAnim)>,
-    is_monster: Query<(), With<crate::actors::monsters::Monster>>,
     // Not the humanoid monsters: they wear a Character too.
     players: Query<(Entity, &GlobalTransform, Option<&LocalPlayer>, Option<&RemotePlayer>), (With<Character>, Without<crate::actors::monsters::Monster>)>,
     net: Option<NonSendMut<Net>>,
@@ -1216,21 +1315,35 @@ fn fly_bullets(
         strikes.extend(fresh.into_iter().map(|(a, v)| (a, v, now)));
     }
     strikes.retain(|(_, _, at)| now - *at <= STRIKE_MEMORY);
-    // Every actor's place and capsule radius, by its server id.
+    // Only living actors participate in impacts, including server-confirmed
+    // hits: a corpse cannot stop another projectile or trigger another blow.
     let mut actors: HashMap<u32, (Vec3, f32)> = HashMap::new();
-    for (at, m, _) in &monsters {
-        actors.insert(m.actor, (at.translation(), m.radius));
+    for (at, m, anim) in &monsters {
+        if m.is_alive(anim) { actors.insert(m.actor, (at.translation(), m.radius)); }
     }
     for (_, at, local, remote) in &players {
         if let Some(id) = local.map(|l| l.actor).or(remote.map(|r| r.actor)) {
             actors.insert(id, (at.translation(), PLAYER_RADIUS));
         }
     }
+    let live_targets: HashMap<u32, Vec3> = monsters.iter()
+        .filter(|(_, m, anim)| m.is_alive(anim))
+        .map(|(at, m, _)| (m.actor, at.translation() + Vec3::Y * m.height * 0.5))
+        .chain(players.iter().filter_map(|(_, at, local, remote)| {
+            local.map(|l| l.actor).or(remote.map(|r| r.actor))
+                .map(|id| (id, at.translation() + Vec3::Y * PLAYER_HEIGHT * 0.5))
+        })).collect();
+    for (_, mut tf, mut bullet) in &mut bullets {
+        if bullet.homing && bullet.dying.is_none() && bullet.snapped.is_none() {
+            if let Some(target) = bullet.target.and_then(|id| live_targets.get(&id)) {
+                steer_bullet(&mut bullet, *target);
+                tf.rotation = entity_rotation(bullet.velocity.x.atan2(bullet.velocity.z));
+            }
+        }
+    }
     // The server's blow lands on an actor ahead of the attacker's bullet: the
-    // bullet ends on that actor (0x8ED6A1), whatever the client's own test would
-    // have met -- a monster that died meanwhile (its KillCommand came with the
-    // blow, before the bullet reached it), one standing a little off its server
-    // position. Each blow takes the bullet that reaches its victim soonest; one
+    // bullet ends on that living actor (0x8ED6A1), even if it stands a little
+    // off its server position. Each blow takes the bullet that reaches its victim soonest; one
     // that finds none waits for a bullet still in the hand.
     let mut matched = Vec::new();
     for (i, &(attacker, victim, _)) in strikes.iter().enumerate() {
@@ -1240,6 +1353,7 @@ fn fly_bullets(
             if b.caster_actor != Some(attacker) || b.dying.is_some() || b.snapped.is_some() || b.to_point || b.impacts_left > 1 || b.passed.contains(&victim) {
                 continue;
             }
+            if b.homing && b.target.is_some_and(|id| id != victim) { continue; }
             let (aside, along) = beside_line(b, p);
             if aside > b.radius + radius + STRIKE_ASIDE || along < -radius {
                 continue;
@@ -1251,6 +1365,10 @@ fn fly_bullets(
         }
         if let Some((_, e)) = best {
             if let Ok((_, _, mut b)) = bullets.get_mut(e) {
+                // It ends on its victim: turned to the victim's chest, it meets
+                // the victim where the victim stands, above or below its flight
+                // (a bullet from high ground otherwise ended over the head).
+                if let Some(chest) = live_targets.get(&victim) { steer_bullet(&mut b, *chest); }
                 b.end_t = flight_time_to(&b, p, radius).max(b.t);
                 b.snapped = Some(victim);
             }
@@ -1267,6 +1385,10 @@ fn fly_bullets(
                 commands.entity(e).despawn();
             }
             continue;
+        }
+        if b.snapped.is_some_and(|victim| !actors.contains_key(&victim)) {
+            b.snapped = None;
+            b.end_t = b.lifetime;
         }
         let before = b.start + b.velocity * b.t;
         b.t = (b.t + dt).min(b.end_t);
@@ -1296,7 +1418,7 @@ fn fly_bullets(
         // it. A bullet the server has landed flies to its victim through all else.
         // UNVERIFIED: the player's radius (PLAYER_RADIUS) and height, not traced.
         if ending == 0 && b.snapped.is_none() {
-            let from_monster = is_monster.contains(b.caster);
+            let from_monster = b.from_monster;
             let seg = (Vec2::new(before.x, before.z), Vec2::new(here.x, here.z));
             // (fraction of this frame's flight, actor, its feet, its radius)
             let mut contacts: Vec<(f32, u32, Vec3, f32)> = Vec::new();
@@ -1311,7 +1433,7 @@ fn fly_bullets(
             };
             if !from_monster {
                 for (gt, m, a) in &monsters {
-                    if !a.dead {
+                    if m.is_alive(a) {
                         consider(&mut contacts, m.actor, gt.translation(), m.radius, m.height);
                     }
                 }
@@ -1362,7 +1484,7 @@ fn fly_bullets(
         };
         debug!("bullet ends ({how}) at {at:?}, struck {struck:?} ({now:.2} s)");
         // Offline nobody answers the shot: the monster it reached takes the blow.
-        if let (true, Some(actor)) = (offline && b.snapped.is_none(), struck.or(b.target.filter(|_| b.to_point))) {
+        if let (true, Some(actor)) = (offline && b.snapped.is_none(), struck.or(b.target.filter(|a| b.to_point && actors.contains_key(a)))) {
             debug_monsters.blows.push((actor, 0));
         }
         let name = if ending == 1 { b.death.clone() } else { b.impact.clone() };
@@ -1449,7 +1571,7 @@ fn track_transform(at: &[f32; 9]) -> Transform {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn play_sequences(
+pub(crate) fn play_sequences(
     mut commands: Commands,
     time: Res<Time>,
     assets: Res<AssetServer>,
@@ -1493,10 +1615,11 @@ fn play_sequences(
         // Only a skill's own sequence on its caster: hits and deaths carried by the
         // body (`follow`, play_death) play out on a creature that runs -- a chasing
         // monster's blood splash was cut after 0.1 s ("pas de sang quand je tape").
-        let interrupted = !p.follow && !p.on_death && p.actor.is_some_and(|a| {
-            locals.get(a).is_ok_and(|l| l.target.is_some() && l.casting <= 0.0)
-                || remotes.get(a).is_ok_and(|r| r.still_for <= 0.0)
-        }) && p.t > 0.1;
+        let interrupted = !p.on_death && p.actor.is_some_and(|a| {
+            anims.get(a).is_ok_and(|a| a.dead)
+                || (!p.follow && p.t > 0.1 && (locals.get(a).is_ok_and(|l| l.target.is_some() && l.casting <= 0.0)
+                    || remotes.get(a).is_ok_and(|r| r.still_for <= 0.0)))
+        });
         let anchor_alive = exists.contains(p.anchor) && !interrupted;
         // Keep real sequence time while an NPC rig is absent/loading, but defer
         // attachment. One-shot bursts must expire rather than replay much later
@@ -1552,7 +1675,7 @@ fn play_sequences(
                         // en idle").
                         if let Some(Ok(mut a)) = p.actor.map(|a| anims.get_mut(a)).filter(|a| a.as_ref().is_ok_and(|a| !a.dead || p.on_death)) {
                             a.state = AnimState::Named(name.clone());
-                            a.speed = *speed;
+                            a.speed = *speed * p.rate;
                             // The same skill again restarts its animation.
                             a.replay();
                         }
@@ -1914,7 +2037,7 @@ fn test_cast(
     if let Some(mut net) = net.filter(|n| n.offline) {
         offline_landing(&mut net, &mut debug_monsters, skill, tf.translation, facing, point, None);
     }
-    perform(&mut commands, skill, sequences, e, Some(character), tf.translation, facing, point, me, None);
+    perform(&mut commands, skill, sequences, e, Some(character), tf.translation, facing, point, me, None, None, 1.0);
 }
 
 /// When test_cast cast (DSOR_TEST_FACING), for test_shot.
@@ -2054,11 +2177,18 @@ fn carry_casters(
     time: Res<Time>,
     data: Res<SkillData>,
     seqs: Res<Assets<SequenceTable>>,
-    mut movers: Query<(Entity, &mut Transform, &mut SkillMove, Option<&mut LocalPlayer>)>,
+    mut movers: Query<(Entity, &mut Transform, &mut SkillMove, Option<&mut LocalPlayer>, &CharacterAnim)>,
     mut players: Query<&mut SequencePlayer>,
 ) {
     let sequences = seqs.get(&data.sequences);
-    for (e, mut tf, mut m, local) in &mut movers {
+    for (e, mut tf, mut m, local, anim) in &mut movers {
+        if anim.dead {
+            if let Some(mut player) = m.charge.as_ref().and_then(|c| c.player).and_then(|p| players.get_mut(p).ok()) {
+                player.stop = true;
+            }
+            commands.entity(e).remove::<SkillMove>();
+            continue;
+        }
         if let Some(mut l) = local {
             // Held until it lands.
             l.target = None;
@@ -2129,6 +2259,7 @@ fn status_visuals(
     mut pending_test: Local<Vec<crate::network::net::LocationEvent>>,
     locals: Query<&GlobalTransform, With<LocalPlayer>>,
     mut holds: ResMut<StatusHolds>,
+    monsters: Query<(&crate::monsters::Monster, &CharacterAnim)>,
 ) {
     let (Some(table), Some(sequences)) = (statuses.get(&data.status), seqs.get(&data.sequences)) else { return };
     if by_name.is_empty() {
@@ -2137,6 +2268,11 @@ fn status_visuals(
     let now = time.elapsed_secs();
     // Ended: stop the loop, play the end sequence once where it was.
     for (e, v) in &mut visuals {
+        if !actors.contains(v.anchor) || v.holder.is_some_and(|e| monsters.get(e).is_ok_and(|(m, a)| !m.is_alive(a))) {
+            if let Ok(mut p) = players.get_mut(v.player) { p.stop = true; }
+            commands.entity(e).despawn();
+            continue;
+        }
         if v.ends.is_some_and(|t| now >= t) {
             if let Ok(mut p) = players.get_mut(v.player) {
                 p.stop = true;
@@ -2223,14 +2359,14 @@ fn status_visuals(
     };
     for (holder, name, seconds) in named {
         let Some(def) = by_name.get(&name).and_then(|i| table.0.get(i)) else { continue };
-        let Some(e) = actor_entity(holder) else { continue };
+        let Some(e) = actor_entity(holder).filter(|e| monsters.get(*e).map_or(true, |(m, a)| m.is_alive(a))) else { continue };
         let instance = 0x4000_0000 | by_name.get(&name).copied().unwrap_or(0);
         start(&mut commands, def, (holder, instance), Some(e), e, Some(seconds));
     }
     for ev in status_events {
         if ev.removed { continue; }
         let Some(def) = table.0.get(&(ev.index as u32)) else { continue };
-        let Some(holder) = actor_entity(ev.holder) else { continue };
+        let Some(holder) = actor_entity(ev.holder).filter(|e| monsters.get(*e).map_or(true, |(m, a)| m.is_alive(a))) else { continue };
         start(&mut commands, def, (ev.holder, ev.instance), Some(holder), holder, Some(ev.seconds));
     }
     for ev in net_events {
@@ -2383,7 +2519,7 @@ fn vfx_preview(
             if let Some(mut net) = net.filter(|n| n.offline) {
                 offline_landing(&mut net, &mut debug_monsters, skill, from, facing, point, None);
             }
-            perform(&mut commands, skill, sequences, e, Some(character), from, facing, point, None, None);
+            perform(&mut commands, skill, sequences, e, Some(character), from, facing, point, None, None, None, 1.0);
         }
         "sequence" => {
             let Some(seq) = sequences.0.get(&order.name) else { return status("unknown sequence") };
@@ -2419,7 +2555,7 @@ fn hold_for_status(
     time: Res<Time>,
     mut holds: ResMut<StatusHolds>,
     mut playing: Local<Vec<(Entity, String, f32)>>,
-    mut actors: Query<(&mut CharacterAnim, Option<&mut LocalPlayer>)>,
+    mut actors: Query<(&mut CharacterAnim, Option<&mut LocalPlayer>, Option<&crate::monsters::Monster>)>,
 ) {
     // Its animation played once: back to Idle when the effect ends (nothing else
     // ends a state set this way, and the actor stood frozen in its last pose).
@@ -2428,7 +2564,7 @@ fn hold_for_status(
         if now < *until {
             return true;
         }
-        if let Ok((mut anim, _)) = actors.get_mut(*holder) {
+        if let Ok((mut anim, _, _)) = actors.get_mut(*holder) {
             if !anim.dead && anim.state == AnimState::Named(animation.clone()) {
                 anim.state = AnimState::Idle;
             }
@@ -2436,7 +2572,8 @@ fn hold_for_status(
         false
     });
     for (holder, animation, seconds) in holds.0.drain(..) {
-        let Ok((mut anim, local)) = actors.get_mut(holder) else { continue };
+        let Ok((mut anim, local, monster)) = actors.get_mut(holder) else { continue };
+        if monster.is_some_and(|m| !m.is_alive(&anim)) { continue; }
         if !animation.is_empty() {
             anim.dead = false;
             anim.state = AnimState::Named(animation.clone());
@@ -2447,6 +2584,33 @@ fn hold_for_status(
             player.target = None;
             player.casting = player.casting.max(seconds);
         }
+    }
+}
+
+#[cfg(test)]
+mod combat_idle_tests {
+    use super::*;
+    use bevy::ecs::system::RunSystemOnce;
+
+    #[test]
+    fn casting_unarmed_enters_combat_even_without_an_execute_sequence() {
+        let mut world = World::new();
+        world.init_resource::<Time>();
+        let root = world.run_system_once(|mut commands: Commands|
+            crate::actors::character::spawn_character(&mut commands, default(), Transform::default())).unwrap();
+        world.run_system_once(crate::actors::character::drive_animations).unwrap();
+        assert_eq!(world.get::<CharacterAnim>(root).unwrap().state, AnimState::IdleHub);
+        world.run_system_once(move |mut commands: Commands, characters: Query<&Character>| {
+            let skill: SkillDef = serde_json::from_value(serde_json::json!({
+                "id": "test_attack", "type": "Melee", "hit_frame": 1, "loop_start": 0,
+                "unblock": 2, "motion_unblock": 2, "range": 2.0, "cooldown": 0.0,
+                "execute": {}, "impact": ""
+            })).unwrap();
+            perform(&mut commands, &skill, &SequenceTable(default()), root, Some(characters.get(root).unwrap()),
+                Vec3::ZERO, 0.0, Vec3::Z, None, None, None, 1.0);
+        }).unwrap();
+        world.run_system_once(crate::actors::character::drive_animations).unwrap();
+        assert_eq!(world.get::<CharacterAnim>(root).unwrap().state, AnimState::Idle);
     }
 }
 
@@ -2533,13 +2697,16 @@ mod npc_residency_tests {
 #[cfg(test)]
 mod bullet_tests {
     use super::*;
+    use bevy::ecs::system::RunSystemOnce;
 
     fn bullet(start: Vec3, velocity: Vec3, radius: f32) -> Bullet {
         Bullet {
             start,
             velocity,
+            homing: false,
             t: 0.0,
             end_t: 10.0,
+            lifetime: 10.0,
             height: 1.49,
             death: String::new(),
             impact: String::new(),
@@ -2547,6 +2714,7 @@ mod bullet_tests {
             static_collision: false,
             radius,
             caster: Entity::PLACEHOLDER,
+            from_monster: false,
             target: None,
             dying: None,
             caster_actor: None,
@@ -2555,6 +2723,106 @@ mod bullet_tests {
             passed: Vec::new(),
             snapped: None,
         }
+    }
+
+    #[test]
+    fn projectiles_pass_zero_hp_dead_and_disposed_targets_without_hit_triggers() {
+        for state in 0..3 {
+            let mut app = App::new();
+            app.init_resource::<Time>().init_resource::<Time<Real>>()
+                .init_resource::<Assets<NavMesh>>().init_resource::<crate::monsters::DebugMonsters>();
+            crate::net::start_offline(app.world_mut(), 1, 0);
+            app.world_mut().resource_mut::<Time>().advance_by(std::time::Duration::from_secs(1));
+            if state < 2 {
+                let mut anim = CharacterAnim::default();
+                anim.dead = state == 1;
+                app.world_mut().spawn((crate::monsters::tests::monster(41, if state == 0 { 0 } else { 100 }),
+                    anim, GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 2.0))));
+            }
+            app.world_mut().spawn((crate::monsters::tests::monster(42, 100), CharacterAnim::default(),
+                GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 6.0))));
+            let mut b = bullet(Vec3::new(0.0, 1.0, 0.0), Vec3::Z * 10.0, 0.3);
+            b.homing = true;
+            b.target = Some(41);
+            b.snapped = Some(41);
+            b.end_t = 0.2;
+            b.caster_actor = Some(10);
+            let projectile = app.world_mut().spawn((b, Transform::default())).id();
+            app.world_mut().non_send_mut::<Net>().strikes.push((10, 41));
+            app.world_mut().run_system_once(fly_bullets).unwrap();
+            assert_eq!(app.world().resource::<crate::monsters::DebugMonsters>().blows, [(42, 0)],
+                "neither collision, homing nor a late server hit may retrigger the corpse");
+            assert!(app.world().get_entity(projectile).is_err(), "the live target behind it still receives the projectile");
+        }
+    }
+
+    #[test]
+    fn pending_actions_are_cancelled_when_the_caster_dies_or_is_disposed() {
+        let mut app = App::new();
+        app.init_resource::<Time>().init_resource::<Assets<SequenceTable>>();
+        let table = app.world_mut().resource_mut::<Assets<SequenceTable>>().add(SequenceTable(HashMap::new()));
+        app.insert_resource(SkillData::for_test(table));
+        let mut anim = CharacterAnim::default();
+        anim.dead = true;
+        let caster = app.world_mut().spawn(anim).id();
+        for disposed in [false, true] {
+            if disposed { app.world_mut().despawn(caster); }
+            let action = app.world_mut().spawn(Pending { after: 10.0, what: PendingKind::Teleport { who: caster, to: Vec3::X } }).id();
+            app.world_mut().run_system_once(run_pending).unwrap();
+            assert!(app.world().get_entity(action).is_err());
+        }
+    }
+
+    #[test]
+    fn monster_projectile_keeps_its_collision_side_after_caster_disposal() {
+        let mut app = App::new();
+        app.init_resource::<Time>().init_resource::<Assets<NavMesh>>()
+            .init_resource::<crate::monsters::DebugMonsters>();
+        app.world_mut().resource_mut::<Time>().advance_by(std::time::Duration::from_secs(1));
+        app.world_mut().spawn((crate::monsters::tests::monster(42, 100), CharacterAnim::default(),
+            GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 2.0))));
+        let mut b = bullet(Vec3::new(0.0, 1.0, 0.0), Vec3::Z * 10.0, 0.3);
+        b.from_monster = true;
+        let projectile = app.world_mut().spawn((b, Transform::default())).id();
+        app.world_mut().run_system_once(fly_bullets).unwrap();
+        assert!(app.world().get_entity(projectile).is_ok(), "a dead caster's projectile must still pass through monsters");
+    }
+
+    #[test]
+    fn late_status_cannot_revive_a_dead_monster_or_replace_its_death_pose() {
+        let mut app = App::new();
+        app.init_resource::<Time>().init_resource::<StatusHolds>();
+        let mut anim = CharacterAnim::default();
+        anim.dead = true;
+        anim.state = AnimState::Death;
+        let root = app.world_mut().spawn((crate::monsters::tests::monster(41, 0), anim)).id();
+        app.world_mut().resource_mut::<StatusHolds>().0.push((root, "Stunned".into(), 5.0));
+        app.world_mut().run_system_once(hold_for_status).unwrap();
+        let anim = app.world().get::<CharacterAnim>(root).unwrap();
+        assert!(anim.dead);
+        assert_eq!(anim.state, AnimState::Death);
+    }
+
+    #[test]
+    fn homing_turns_towards_a_moving_target_without_teleporting_or_extending_lifetime() {
+        let mut b = bullet(Vec3::new(0.0, 1.49, 0.0), Vec3::new(0.0, 0.0, 12.0), 0.5);
+        b.homing = true;
+        b.t = 0.25;
+        let before = b.start + b.velocity * b.t;
+        steer_bullet(&mut b, Vec3::new(6.0, 2.0, 9.0));
+        assert!((b.start + b.velocity * b.t - before).length() < 1e-5);
+        assert!((b.velocity.xz().length() - 12.0).abs() < 1e-5);
+        assert!(b.velocity.x > 0.0);
+        b.t += 0.1;
+        let before = b.start + b.velocity * b.t;
+        let moved = Vec3::new(-6.0, 3.0, 9.0);
+        steer_bullet(&mut b, moved);
+        assert!((b.start + b.velocity * b.t - before).length() < 1e-5);
+        assert!((b.velocity.normalize() - (moved - before).normalize()).length() < 1e-5);
+        assert_eq!(b.end_t, 10.0);
+        // Arriving exactly at the target must not produce NaNs.
+        steer_bullet(&mut b, before);
+        assert!(b.velocity.is_finite() && b.start.is_finite());
     }
 
     #[test]

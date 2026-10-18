@@ -166,6 +166,21 @@ fn ssao(";
 #[cfg(not(target_arch = "wasm32"))]
 const ORIGINAL_SSAO: f32 = -1.0;
 
+/// Whether SSAO runs, and at what quality, is the player's graphics setting
+/// (crate::rendering::graphics, which inserts and removes the component); the
+/// lighting only picks the algorithm in it: the original's estimate
+/// (AoMode::Original) or Bevy's GTAO with Bevy's thickness.
+#[cfg(not(target_arch = "wasm32"))]
+fn ao_algorithm(switches: Option<Res<RenderSwitches>>, mut cameras: Query<&mut bevy::pbr::ScreenSpaceAmbientOcclusion>) {
+    let original = switches.is_none_or(|s| s.ao == AoMode::Original);
+    let thickness = if original { ORIGINAL_SSAO } else { 0.25 };
+    for mut ssao in &mut cameras {
+        if ssao.constant_object_thickness != thickness {
+            ssao.constant_object_thickness = thickness;
+        }
+    }
+}
+
 /// An ambience bubble's settings (the fields the client uses; names as in the
 /// level database).
 #[derive(Deserialize, Clone, Debug, PartialEq)]
@@ -632,7 +647,8 @@ pub(crate) enum AoMode {
     /// church and throne room (its default frame shader declares the effect
     /// disabled; the game turns it on), not at the gate.
     Original,
-    /// None, Bevy's SSAO pass removed.
+    /// None: the light ignores the SSAO (whether the pass runs at all is the
+    /// player's graphics setting, crate::rendering::graphics).
     Off,
     /// Bevy's GTAO (0.4 radius), once, in linear.
     Linear,
@@ -788,7 +804,10 @@ impl Plugin for LightingPlugin {
             .add_systems(PostUpdate,
                 (follow_level, apply_look, death_look, place_level_lights.run_if(resource_exists::<CurrentMap>), shift_fog)
                     .chain().after(bevy::transform::TransformSystems::Propagate)
+                    .after(crate::rendering::graphics::ApplyGraphics)
                     .before(bevy::light::cascade::build_directional_light_cascades));
+        #[cfg(not(target_arch = "wasm32"))]
+        app.add_systems(PostUpdate, ao_algorithm.after(crate::rendering::graphics::ApplyGraphics));
     }
 }
 
@@ -896,18 +915,17 @@ fn apply_look(
     mut commands: Commands,
     lighting: Res<Lighting>,
     switches: Option<Res<RenderSwitches>>,
+    graphics: Option<Res<crate::rendering::graphics::GraphicsSettings>>,
     level: Res<Level>,
     mut suns: Query<(&mut DirectionalLight, &mut Transform, &mut GlobalTransform), With<Sun>>,
     mut gpu_ambience: ResMut<GpuAmbience>,
     mut ambient: ResMut<GlobalAmbientLight>,
     cameras: Query<Entity, (With<Camera3d>, Without<crate::rendering::highlight::HighlightCamera>, Without<NoLevelLook>)>,
-    msaa: Query<&Msaa>,
     mut fresh: Local<Vec<Entity>>,
 ) {
-    #[cfg(target_arch = "wasm32")]
-    let _ = &msaa;
     let new_camera = cameras.iter().any(|e| !fresh.contains(&e));
-    if !lighting.is_changed() && !level.is_changed() && !new_camera && !switches.as_ref().is_some_and(|s| s.is_changed()) {
+    if !lighting.is_changed() && !level.is_changed() && !new_camera && !switches.as_ref().is_some_and(|s| s.is_changed())
+        && !graphics.as_ref().is_some_and(|g| g.is_changed()) {
         return;
     }
     let switches = switches.map(|s| *s).unwrap_or_default();
@@ -928,7 +946,8 @@ fn apply_look(
         // shader evaluates the preset light contributions using that map.
         sun.color = Color::WHITE;
         sun.illuminance = std::f32::consts::PI * UNIT;
-        sun.shadow_maps_enabled = l.shadows && !crate::flag("noshadows");
+        sun.shadow_maps_enabled = l.shadows && !crate::flag("noshadows")
+            && graphics.as_ref().is_none_or(|g| g.shadows != crate::rendering::graphics::Quality::Off);
         *tf = Transform::default().looking_to(-toward, Vec3::Y);
         // apply_look follows propagation so player membership is current.
         // This unparented light must reach cascade construction this frame.
@@ -953,32 +972,17 @@ fn apply_look(
         cam.insert((fog.clone(), ColorGrading::default(), Tonemapping::None,
             NebulaPostProcess {
                 threshold: b.bright_pass_threshold,
-                scale: if crate::flag("nobloom") { 0.0 } else { b.bloom_scale },
+                scale: if crate::flag("nobloom") || graphics.as_ref().is_some_and(|g| !g.bloom) { 0.0 } else { b.bloom_scale },
                 color: Vec4::from_array(b.bloom_color),
                 saturation: b.saturation,
                 balance: Vec4::from_array(b.balance),
                 vignette_color: Vec4::from_array(b.vignette_color),
-                vignette_intensity: b.vignette_intensity,
+                vignette_intensity: if graphics.as_ref().is_some_and(|g| !g.vignette) { 0.0 } else { b.vignette_intensity },
                 vignette_size: b.vignette_size,
                 death_fade: 0.0,
                 gamma_scene: switches.gamma_scene,
             }));
         cam.remove::<(Bloom, Vignette)>();
-        // Bevy's SSAO pass runs unless the AO is off; AoMode::Original runs the
-        // original's estimate in it (patch_ssao). It needs single-sample depth:
-        // crate::main keeps Msaa::Off with FXAA on native views.
-        #[cfg(not(target_arch = "wasm32"))]
-        if switches.ao == AoMode::Off || crate::flag("noao") || !matches!(msaa.get(e), Ok(Msaa::Off)) {
-            cam.remove::<bevy::pbr::ScreenSpaceAmbientOcclusion>();
-        } else {
-            cam.insert(bevy::pbr::ScreenSpaceAmbientOcclusion {
-                // Eight samples retain contact shading without the default
-                // high preset's eighteen full-resolution samples per pixel
-                // (Bevy's GTAO modes; the original's estimate takes 16).
-                quality_level: bevy::pbr::ScreenSpaceAmbientOcclusionQualityLevel::Medium,
-                constant_object_thickness: if switches.ao == AoMode::Original { ORIGINAL_SSAO } else { 0.25 },
-            });
-        }
     }
 }
 

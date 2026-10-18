@@ -65,6 +65,8 @@ impl Plugin for NebulaBloomPlugin {
                     // an edge, their CPU swaps can disagree with GPU submission
                     // order, feeding a previous frame back into the bloom.
                     .before(bevy::anti_alias::fxaa::fxaa)
+                    .before(bevy::anti_alias::smaa::smaa)
+                    .before(bevy::anti_alias::contrast_adaptive_sharpening::cas)
                     .in_set(Core3dSystems::PostProcess),
             );
     }

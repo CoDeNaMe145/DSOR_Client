@@ -71,6 +71,15 @@ pub(super) fn slot<'a>(net: &'a crate::network::net::Net, bar: usize, index: usi
     net.quickbars.bars.get(bar)?.get(index)
 }
 
+/// The skill a quick slot holds, if it holds one (not an item or essence).
+pub(in crate::ui) fn skill_id(index: usize, bar: usize, net: Option<&crate::network::net::Net>, figures: &Figures) -> Option<String> {
+    if index >= PRIMARY_ESSENCE { return None; }
+    if let Some(s) = net.and_then(|n| slot(n, bar, index)) {
+        return (s.kind == 0).then(|| s.id.clone()).flatten();
+    }
+    figures.bar.get(index)?.clone()
+}
+
 pub(super) fn essence(inventory: &InventoryState, index: usize) -> Option<&ItemInfo> {
     inventory.at(Place::Equipment(if index == PRIMARY_ESSENCE { 35 } else { 34 }))
 }

@@ -1,5 +1,7 @@
 //! One click-through hover layer for navigation, skills and populated HUD slots.
 use super::*;
+pub(super) mod card;
+use card::{Card, WHITE, BLUE};
 
 #[derive(Component)]
 pub(in crate::ui) struct Tooltip;
@@ -35,31 +37,25 @@ fn repeats_label(window: &str, button: &Button, layout: Option<&Layout>) -> bool
 }
 
 pub(super) fn clean_text(raw: &str) -> String {
-    // Localized descriptions carry the old renderer's colour/format tags.
-    let mut out = String::new(); let mut tag = false;
-    for c in raw.replace("\\n", "\n").chars() {
-        if c == '<' { tag = true; } else if c == '>' { tag = false; }
-        else if !tag { out.push(c); }
-    }
-    // Formula placeholders require a stat/talent evaluator. Never display them
-    // as if they were a computed damage figure.
-    out.lines().filter(|s| !s.contains('{') && !s.contains('$')).collect::<Vec<_>>().join("\n")
+    card::plain(raw)
 }
 
 #[allow(clippy::too_many_arguments)]
 pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018, &WindowControls, &Visibility, &Transform), Without<Tooltip>>,
-    primary: Query<&Window, With<PrimaryWindow>>, screen: Res<Screen>, settings: Res<settings::Settings>, pointer: Res<Pointer>,
+    primary: Query<&Window, With<PrimaryWindow>>, screen: Res<Screen>, settings: Res<settings::Settings>, (pointer,keys):(Res<Pointer>,Res<ButtonInput<KeyCode>>),
     net: Option<NonSend<crate::network::net::Net>>, hotbar: Res<hotbar::Hotbar>,
     (data, catalogs, dialogue): (Res<items::Data>, Res<Assets<items::Catalog>>, Res<dialogue::Presentation>), layouts: Res<Assets<Layout>>, loaded: Res<Loaded>,
     skill_tables: Res<Assets<crate::gameplay::skills::SkillTable>>, assets: Res<AssetServer>,
     (old, mut transforms): (Query<Entity, With<Tooltip>>, Query<&mut Transform, With<Tooltip>>),
     (mut meshes, mut materials): (ResMut<Assets<Mesh>>, ResMut<Assets<UiMaterial>>),
-    mut last: Local<Option<(String, String, Option<String>, u32)>>) {
+    mut last: Local<Option<(Card, u32, bool)>>) {
     let point = primary.single().ok().filter(|w| w.focused).and_then(|w| w.cursor_position().map(|p| p*(BASE_H/w.height().max(1.0))));
     let enabled = settings.current.tooltips && pointer.down.is_none() && pointer.drag.is_none() && pointer.spell_drag.is_none();
     let catalog = catalogs.get(&data.catalog);
     let mut content: Option<(String,String,Option<String>)> = None;
     let mut anchor = None;
+    let mut detail = None;
+    let template = layouts.get(&data.tooltip);
     if enabled && point.is_some() {
         let hovered = windows.iter().filter(|(_,_,v,_)| **v != Visibility::Hidden)
             .find_map(|(w,c,_,tf)| c.hovered.filter(|i| !matches!(c.buttons[*i].action, Action::Item(_))).map(|i| (w,c,&c.buttons[i],tf)));
@@ -86,6 +82,7 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
                                     let name = catalog.items.get(&item.template).map_or(item.template.as_str(), |d| d.name.as_str());
                                     body = format!("{name}\nQuantity: {}",item.third);
                                     icon = catalog.icon(&item.template,Some(item)).0.map(str::to_owned);
+                                    detail = Some(items::preview_card(catalog,template,&item.template,Some(item),item.third,settings.current.advanced_tooltips(&keys,pointer.focus.is_some())));
                                 }
                             } else { body = "Empty. Equip an essence from your inventory.".into(); }
                             body.push_str(&format!("\nSwitch essences: {}",settings.current.label("essence")));
@@ -100,6 +97,7 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
                                     heading = meta.name.clone(); body = clean_text(&meta.description);
                                     icon = catalog.icon(template,item).0.map(str::to_owned);
                                     if slot.kind == 1 { body.push_str(&format!("\nQuantity: {}",item.map_or(0,|i| i.third))); }
+                                    detail = Some(items::preview_card(catalog,layouts.get(&data.tooltip),template,item,item.map_or(0,|i|i.third),settings.current.advanced_tooltips(&keys,pointer.focus.is_some())));
                                 }
                             } else { body = "Empty slot".into(); }
                         }
@@ -137,18 +135,28 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
                 }
             }
             if let Some(s) = spell {
-                heading = s.name.clone(); icon = Some(s.icon.clone()); body = clean_text(&s.description);
-                if !s.target.is_empty() { body.push_str(&format!("\nTarget: {}",s.target)); }
-                if let Some(def) = skill_tables.iter().find_map(|(_,t)| t.0.values().find(|d| d.id == s.id)) {
+                let mut card = Card::new(380.0, template);
+                card.title(&s.name, Some(&s.icon), WHITE);
+                card.rule();
+                let description = if s.preview_description.is_empty() { &s.description } else { &s.preview_description };
+                card.text(description, WHITE);
+                if !s.growth.is_empty() { card.gap(10.0); card.text(&s.growth, BLUE); }
+                card.gap(6.0); card.rule();
+                if !s.target.is_empty() { card.text(&format!("Target: {}",s.target), WHITE); }
+                if let Some(def) = skill_tables.iter().find_map(|(_,t)| s.wire.and_then(|id| t.0.get(&id)).filter(|d| d.id == s.id)) {
                     let resource = ["Rage", "Mana", "Concentration", "Steam"].get(s.class_id as usize).unwrap_or(&"Resource");
-                    // Release261 stores costs as fractions of maximum resource;
-                    // talent modifiers are applied by the server when casting.
-                    body.push_str(&format!("\nBase cost: {}% maximum {resource}\nEssence costs: {}\nCooldown: {} s\nRange: {} m",(def.resource_cost*1000.0).round()/10.0,def.ammo_cost,def.cooldown,def.range));
+                    card.text(&format!("Base cost: <GreenStart>{:.0}%</> maximum {resource}",def.resource_cost*100.0), WHITE);
+                    card.text(&format!("Essence Costs: {}",def.ammo_cost), WHITE);
+                    card.text(&format!("Cool-down: {} s",def.cooldown), WHITE);
                 }
-                if !c.spells.available(s) { body.push_str(&format!("\nRequired level: {}",s.unlock)); }
-                if let Action::Skill(index) = b.action { body.push_str(&format!("\nPress {}",settings.current.slot_label(index))); }
-                else if s.wire.is_some() { body.push_str("\nDrag to the action bar"); }
-                else { body.push_str("\nPassive talent"); }
+                if !c.spells.available(s) && s.wire.is_some() { card.text(&format!("Required level: {}",s.unlock), Color::srgb(0.9,0.65,0.3)); }
+                if s.talent_cost > 0 { card.text(&format!("Cost: {} Talent Points", s.talent_cost), WHITE); }
+                if let Action::Skill(index) = b.action { card.hint(&format!("Press {}",settings.current.slot_label(index))); }
+                else if s.wire.is_some() { card.hint("Drag to the action bar"); }
+                else { card.hint("Passive talent"); }
+                if description.contains('{') || s.growth.contains('{') { card.hint("—: value unavailable"); }
+                card.gap(3.0); card.hint("Base skill values");
+                detail = Some(card);
             }
             if !heading.is_empty() { content = Some((heading,body.trim().to_owned(),icon)); }
         } else if let Some(p) = point {
@@ -160,50 +168,116 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
                         let tip = if widget.id.contains("andermant") { Some("Andermant") } else if widget.id.contains("VirtualCurrency") { Some("Coins: 100 copper = 1 silver; 100 silver = 1 gold") }
                         else if widget.id.contains("bottombar_xp_bar") { Some("Experience: earn experience to level up") } else if widget.id.contains("bottombar_wisdom_bar") { Some("Ancient Wisdom") }
                         else { match gauge_of(&widget.id) { Some(Gauge::Health | Gauge::HealthBar) => Some("Health"), Some(Gauge::Resource | Gauge::ResourceBar) => Some("Skill resource"), _ => None } };
-                        if let Some(tip) = tip { content=Some((tip.into(),String::new(),None)); break; }
+                        if let Some(tip) = tip {
+                            content=Some((tip.into(),String::new(),None));
+                            let [l,t,r,b] = widget.rect;
+                            let offset = window_offset(tf) + Vec2::new(widget.k*(screen.width-BASE_W),0.0);
+                            anchor = Some([l+offset.x,t+offset.y,r+offset.x,b+offset.y]);
+                            break;
+                        }
                     }
                 }
             }
         }
     }
-    let key = content.as_ref().map(|(h,b,i)| (h.clone(),b.clone(),i.clone(),screen.scale.to_bits()));
-    let compact = content.as_ref().is_some_and(|(_,_,icon)| icon.is_none());
-    let mut lines = Vec::new();
-    let (width,height) = if let Some((heading,body,_)) = content.as_ref().filter(|_| compact) {
-        // Small icon hints use the same Tahoma metrics as chat, with just enough
-        // padding for the original border. A two-line hint is about 60 x 48.
-        let measure = |text: &str| crate::network::chat::text_width(text,12.0*TEXT_SCALE);
-        let width = (heading.lines().chain(body.lines()).map(measure).fold(0.0,f32::max).ceil()+24.0).clamp(60.0,220.0);
-        for line in heading.lines().chain(body.lines()) {
-            lines.extend(crate::network::chat::wrap_with(line,&|row| measure(row) <= width-24.0));
+    let compact = detail.is_none() && content.as_ref().is_some_and(|(_,_,icon)| icon.is_none());
+    let card = detail.or_else(|| content.map(|(heading,body,icon)| {
+        let mut card = if compact {
+            let width = heading.lines().chain(body.lines()).map(|s| crate::network::chat::text_width(s,12.0))
+                .fold(0.0,f32::max).ceil()+32.0;
+            Card::new(width.clamp(70.0,260.0),template)
+        } else { Card::new(320.0,template) };
+        if compact {
+            card.y = 12.0;
+            card.centered(&heading,WHITE,false);
+            if !body.is_empty() { card.centered(&body,if body.starts_with("(Press ") || body.starts_with("Press ") { Color::srgb(1.0,0.9,0.0) } else { WHITE },false); }
+            card.y -= 4.0;
+        } else {
+            card.title(&heading,icon.as_deref(),WHITE); card.rule(); card.text(&body,WHITE);
         }
-        (width,24.0+lines.len() as f32*12.0)
-    } else {
-        (340.0,content.as_ref().map_or(50.0, |(_,b,_)| 65.0+b.lines().map(|l| l.chars().count().div_ceil(45).max(1)).sum::<usize>() as f32*16.0).min(BASE_H-16.0))
-    };
-    let at = point.map(|p| {
-        let (x,y) = if compact {
-            let [l,t,r,b] = anchor.unwrap_or([p.x,p.y,p.x,p.y]);
-            ((l+r-width)*0.5,if b+10.0+height <= BASE_H-8.0 { b+10.0 } else { t-height-10.0 })
-        } else { (p.x+18.0,p.y-height-12.0) };
-        Vec2::new(x.clamp(8.0,(screen.width-width-8.0).max(8.0)),y.clamp(8.0,(BASE_H-height-8.0).max(8.0)))
-    });
-    if *last == key { if let Some(at)=at { for mut tf in &mut transforms { tf.translation=screen.world(0.0,at.x,at.y).extend(850.0); } } return; }
-    *last=key; for e in &old { commands.entity(e).despawn(); }
-    let (Some((heading,body,icon)),Some(at))=(content,at) else{return;};
-    let root=commands.spawn((Tooltip,Transform::from_translation(screen.world(0.0,at.x,at.y).extend(850.0)),Visibility::Inherited)).id();
-    commands.spawn((Sprite::from_color(Color::srgba(0.025,0.02,0.015,0.97),Vec2::new(width,height)),Anchor::TOP_LEFT,RenderLayers::layer(LAYER),ChildOf(root)));
-    if let Some(layout)=layouts.get(&data.tooltip) { items::frame(&mut commands,&assets,&mut meshes,&mut materials,root,layout,width,height); }
-    if compact {
-        for (i,line) in lines.into_iter().enumerate() {
-            let color = if line.starts_with("(Press ") || line.starts_with("Press ") { Color::srgb(1.0,0.9,0.0) } else { Color::srgb(0.93,0.9,0.83) };
-            commands.spawn((Text2d::new(line),TextFont { font:assets.load("fonts/tahoma.ttf").into(),font_size:bevy::text::FontSize::Px(12.0*TEXT_SCALE*screen.scale),..default() },
-                TextColor(color),TextLayout::justify(Justify::Center),Anchor::TOP_LEFT,bevy::text::TextBounds::new_horizontal((width-24.0)*screen.scale),
-                Transform::from_xyz(12.0,-12.0-i as f32*12.0,1.0).with_scale(Vec3::splat(1.0/screen.scale)),RenderLayers::layer(LAYER),ChildOf(root)));
-        }
+        card
+    }));
+    let key = card.as_ref().map(|c| (c.clone(), screen.scale.to_bits(), template.is_some()));
+    let at = card.as_ref().zip(anchor).map(|(c,a)| card::placement(a,Vec2::new(c.width,c.height()),Vec2::new(screen.width,BASE_H),compact));
+    if *last == key {
+        if let Some((at,scale))=at { for mut tf in &mut transforms { tf.translation=screen.world(0.0,at.x,at.y).extend(850.0); tf.scale=Vec3::splat(scale); } }
         return;
     }
-    let title_x = if let Some(icon)=icon { commands.spawn((Sprite{image:assets.load(icon),custom_size:Some(Vec2::splat(28.0)),..default()},Anchor::TOP_LEFT,Transform::from_xyz(14.0,-12.0,1.0),RenderLayers::layer(LAYER),ChildOf(root))); 51.0 } else {16.0};
-    items::text(&mut commands,&assets,&screen,root,heading,Vec3::new(title_x,-15.0,1.0),17.0,Color::srgb(1.0,0.88,0.62),width-title_x-14.0);
-    items::text(&mut commands,&assets,&screen,root,body,Vec3::new(16.0,-49.0,1.0),15.0,Color::srgb(0.93,0.9,0.83),width-32.0);
+    *last=key; for e in &old { commands.entity(e).despawn(); }
+    let (Some(card),Some((at,scale)))=(card,at) else{return;};
+    let root=commands.spawn((Tooltip,Transform::from_translation(screen.world(0.0,at.x,at.y).extend(850.0)).with_scale(Vec3::splat(scale)),Visibility::Inherited)).id();
+    card.draw(&mut commands,&assets,&screen,&mut meshes,&mut materials,root,template);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires locally converted game UI assets"]
+    fn hover_cards_anchor_to_elements_and_advanced_items_reflow() {
+        let mut app=App::new();
+        app.add_plugins((MinimalPlugins,bevy::asset::AssetPlugin::default(),TransformPlugin))
+            .init_asset::<Layout>().init_asset::<items::Catalog>().init_asset::<Mesh>().init_asset::<UiMaterial>()
+            .init_asset::<Image>().init_asset::<Font>().init_asset::<crate::gameplay::skills::SkillTable>()
+            .init_resource::<Screen>().init_resource::<Loaded>().init_resource::<settings::Settings>()
+            .init_resource::<Pointer>().init_resource::<hotbar::Hotbar>().init_resource::<dialogue::Presentation>()
+            .init_resource::<items::Interaction>().init_resource::<ButtonInput<KeyCode>>()
+            .add_systems(Update,(overlay,items::overlay).chain());
+        app.world_mut().resource_mut::<settings::Settings>().current.advanced_tooltips=false;
+        let dir=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/interface");
+        let load=|name:&str|serde_json::from_slice::<Layout>(&std::fs::read(dir.join(format!("{name}.ui.json"))).unwrap()).unwrap();
+        let tooltip=app.world_mut().resource_mut::<Assets<Layout>>().add(load("tooltip"));
+        let catalog:items::Catalog=serde_json::from_slice(&std::fs::read(dir.join("inventory.items.json")).unwrap()).unwrap();
+        let template=catalog.items.iter().find(|(_,m)|m.item_category=="Weapon" && m.class_name=="dwarf").unwrap().0.clone();
+        let catalog=app.world_mut().resource_mut::<Assets<items::Catalog>>().add(catalog);
+        app.insert_resource(items::Data{catalog,tooltip});
+        let primary=app.world_mut().spawn((Window {focused:true,resolution:(1024,768).into(),..default()},PrimaryWindow)).id();
+        let layout=load("skilltalentswindow");
+        let mut c=WindowControls::new(&layout);
+        c.hovered=c.buttons.iter().position(|b|b.spell.as_ref().is_some_and(|s|s.id=="HeavyShot"));
+        assert!(c.hovered.is_some());
+        let owner=app.world_mut().spawn((Window2018(layout.window.clone()),c,Visibility::Inherited,Transform::default())).id();
+        app.world_mut().get_mut::<Window>(primary).unwrap().set_cursor_position(Some(Vec2::new(500.0,300.0)));
+        app.update();
+        let tip=app.world_mut().query_filtered::<Entity,With<Tooltip>>().single(app.world()).unwrap();
+        let before=*app.world().get::<Transform>(tip).unwrap();
+        let text=app.world_mut().query::<&Text2d>().iter(app.world()).map(|t|t.0.as_str()).collect::<Vec<_>>().join(" ");
+        assert!(text.contains("Heavy Shot") && text.contains("explosion"));
+        assert!(text.contains("250.0%") && text.contains("2.5%"));
+        app.world_mut().get_mut::<Window>(primary).unwrap().set_cursor_position(Some(Vec2::new(530.0,330.0)));
+        app.update();
+        assert_eq!(*app.world().get::<Transform>(tip).unwrap(),before,"cursor motion must not move the card");
+        app.world_mut().get_mut::<Transform>(owner).unwrap().translation.x+=10.0;
+        app.update();
+        assert_ne!(*app.world().get::<Transform>(tip).unwrap(),before,"moving the owner moves the card");
+        // The shared frame's fill stays inside the original opaque border.
+        let fill=app.world().get::<Children>(tip).unwrap().iter().find_map(|e|app.world().get::<Sprite>(e).zip(app.world().get::<Transform>(e)));
+        let (_,tf)=fill.unwrap(); assert!(tf.translation.x>3.0 && tf.translation.y < -3.0);
+        app.world_mut().get_mut::<Visibility>(owner).unwrap().set_if_neq(Visibility::Hidden);
+        crate::network::net::start_offline(app.world_mut(),3,0);
+        app.world_mut().non_send_mut::<crate::network::net::Net>().inventory.apply(dsor_proto::commands::inventory::InventoryInfo {
+            items:vec![dsor_proto::commands::inventory::ItemInfo{id:1,template,third:1,kind:5,durability:100,level:12345,fifty_second:26445,..default()}],
+            placements:vec![(1,0)],storage_sizes:[0,0,224,0,0,0],..default()
+        });
+        let layout=load("inventory");let mut c=WindowControls::new(&layout);
+        c.hovered=c.buttons.iter().position(|b|b.action==Action::Item(items::Cell::Bag(0)));
+        app.world_mut().spawn((Window2018("inventory".into()),c,Visibility::Inherited,Transform::default()));
+        app.update();
+        let texts=|app:&mut App|app.world_mut().query::<&Text2d>().iter(app.world()).map(|t|t.0.as_str()).collect::<Vec<_>>().join(" ");
+        assert!(texts(&mut app).contains("Hold Y"));
+        assert!(texts(&mut app).contains("26445"));
+        let tip=app.world_mut().query_filtered::<Entity,With<items::Overlay>>().single(app.world()).unwrap();
+        let before=*app.world().get::<Transform>(tip).unwrap();
+        app.world_mut().get_mut::<Window>(primary).unwrap().set_cursor_position(Some(Vec2::new(550.0,350.0)));
+        app.update();assert_eq!(*app.world().get::<Transform>(tip).unwrap(),before);
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::KeyY);app.update();
+        assert!(!texts(&mut app).contains("Hold Y"));
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().release(KeyCode::KeyY);app.update();
+        assert!(texts(&mut app).contains("Hold Y"));
+        app.world_mut().resource_mut::<settings::Settings>().current.advanced_tooltips=true;app.update();
+        assert!(!texts(&mut app).contains("Hold Y"),"saved preference reflows an already visible card without Y");
+        app.world_mut().get_mut::<Window>(primary).unwrap().focused=false;app.update();
+        assert_eq!(app.world_mut().query_filtered::<Entity,With<items::Overlay>>().iter(app.world()).count(),0);
+    }
 }

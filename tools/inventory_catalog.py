@@ -3,6 +3,7 @@ import json
 import os
 import struct
 import re
+from item_tooltip_values import export_values, unique_effects
 
 SLOTS = {'HelmetSlot':[0], 'ShoulderSlot':[1], 'TorsoSlot':[2], 'GlovesSlot':[3],
          'BootsSlot':[4], 'RightHandSlot':[5], 'LeftHandSlot':[6],
@@ -20,18 +21,21 @@ def export_inventory(db, textures, loca, assets):
     def local(key, fallback=''):
         if not key:
             return fallback
-        for candidate in (key, 'db.item.table_' + key, 'db.item2.table_' + key):
+        for candidate in (key, 'db.item.table_' + key, 'db.item2.table_' + key, 'gui.window.tooltip_' + key):
             if candidate in table:
                 return re.sub(r'<[^>]*>', '', table[candidate])
         if key in short:
             return re.sub(r'<[^>]*>', '', short[key])
         return fallback
 
-    result = dict(items={}, ingredients=[], colors={}, appearances={}, icon_configs={}, rarity_backgrounds=[])
+    result = dict(items={}, ingredients=[], colors={}, appearances={}, icon_configs={}, rarity_backgrounds=[], enchantments={})
     cursor = db.execute('SELECT * FROM _Template_Item')
     columns = [c[0] for c in cursor.description]
     for values in cursor:
         r = dict(zip(columns, values))
+        category = local(r.get('LocaleIdCategory') or '', r.get('ItemCategory') or '')
+        if r.get('ItemCategory') == 'Weapon' and r.get('SlotType') == 'RightHandSlot,LeftHandSlot':
+            category = local('weaponSlotBothHand', 'Double-Handed') + ', ' + category
         brush = r.get('IconBrush') or ''
         icon = 'textures/' + brush + '.png' if brush else ''
         if brush and not os.path.isfile(os.path.join(assets, icon)):
@@ -39,7 +43,7 @@ def export_inventory(db, textures, loca, assets):
                 icon = ''
         result['items'][r['Id']] = dict(name=local(r.get('LocaleIdTitle') or r['Id']+'Title', r.get('Name') or r['Id']),
             description=local(r.get('LocaleIdDesc') or r['Id']+'Desc'),
-            category=local(r.get('LocaleIdCategory') or '', r.get('ItemCategory') or ''),
+            category=category,
             icon=icon, max_stack=max(1, int(r.get('MaxStackSize') or 1)),
             required_level=max(0, int(r.get('RequiredLevel') or 0)),
             slots=SLOTS.get(r.get('SlotType'), []), class_name=(r.get('CharClass') or '').lower(),
@@ -50,7 +54,10 @@ def export_inventory(db, textures, loca, assets):
             icon_config=r.get('IconConfiguration') or '',
             # The raw category (the localized one is `category`): Mount items are
             # used, not equipped (crate::ui::controls::items).
-            item_category=r.get('ItemCategory') or '')
+            item_category=r.get('ItemCategory') or '',
+            unique_effects=unique_effects(r.get('UniqueModifier'), local))
+    for eid, name, base in db.execute('SELECT Id, Name, BaseEnchantment FROM _Template_Enchantment'):
+        result['enchantments'][eid] = dict(name=(name or eid).removeprefix('Base Enchantment ').removeprefix('Item Enchantment '), base=bool(base))
     # A generated item shows its rolled appearance's icon (ItemInfo.appearance),
     # not its template's: _Template_ItemAppearance.Icon, and its icon frame/background
     # configuration (_Template_IconConfig).
@@ -76,6 +83,7 @@ def export_inventory(db, textures, loca, assets):
         rgba[3] = 1.0
         result['colors'][str(color_id)] = rgba
     path = os.path.join(assets, 'interface', 'inventory.items.json')
+    result['values'] = export_values(db, local)
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(result, f, ensure_ascii=False, separators=(',', ':'))
     return len(result['items']), len(result['ingredients'])

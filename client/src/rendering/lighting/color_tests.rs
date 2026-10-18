@@ -36,6 +36,39 @@ fn assert_look(app: &App, camera: Entity, bubble: &Bubble) {
 }
 
 #[test]
+fn player_graphics_gates_effects_and_restores_the_current_bubble() {
+    use crate::rendering::graphics::{GraphicsSettings, Quality};
+    let mut app = app();
+    app.init_resource::<GraphicsSettings>().add_systems(Update, apply_look);
+    let camera = app.world_mut().spawn(Camera3d::default()).id();
+    let sun = app.world_mut().spawn((Sun, DirectionalLight::default(), Transform::default())).id();
+    let bubble = look();
+    app.world_mut().resource_mut::<Level>().bubble = bubble.clone();
+    app.update();
+    assert_look(&app, camera, &bubble);
+    {
+        let mut graphics = app.world_mut().resource_mut::<GraphicsSettings>();
+        graphics.bloom = false; graphics.vignette = false; graphics.shadows = Quality::Off;
+    }
+    app.update();
+    let post = app.world().get::<NebulaPostProcess>(camera).unwrap();
+    assert_eq!(post.scale, 0.);
+    assert_eq!(post.vignette_intensity, 0.);
+    assert_eq!(post.saturation, bubble.saturation);
+    assert_eq!(post.balance.to_array(), bubble.balance);
+    assert!(!app.world().get::<DirectionalLight>(sun).unwrap().shadow_maps_enabled);
+    // Zone transitions keep disabled effects off; enabling uses the new zone.
+    let next = Bubble { bloom_scale: 0.8, vignette_intensity: 0.3, ..bubble };
+    app.world_mut().resource_mut::<Level>().bubble = next.clone();
+    app.update();
+    assert_eq!(app.world().get::<NebulaPostProcess>(camera).unwrap().scale, 0.);
+    *app.world_mut().resource_mut::<GraphicsSettings>() = GraphicsSettings::default();
+    app.update();
+    assert_look(&app, camera, &next);
+    assert!(app.world().get::<DirectionalLight>(sun).unwrap().shadow_maps_enabled);
+}
+
+#[test]
 fn bubble_controls_camera_colour_despite_legacy_preferences_and_zero_bloom() {
     let mut app = app();
     app.add_systems(Update, apply_look);
@@ -210,4 +243,22 @@ fn lighting_menu_preview_shows_a_zone_from_outside_event_zones_included() {
     app.world_mut().resource_mut::<LightingMenuStore>().preview_target = None;
     for _ in 0..4 { app.update(); }
     assert_look(&app, camera, &global);
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn the_player_setting_owns_ssao_and_the_lighting_picks_its_algorithm() {
+    use bevy::pbr::ScreenSpaceAmbientOcclusion;
+    // The graphics settings (crate::rendering::graphics) insert SSAO with Bevy's
+    // defaults or remove it; the lighting only sets the algorithm on what is there.
+    let mut app = App::new();
+    app.init_resource::<RenderSwitches>().add_systems(Update, ao_algorithm);
+    let with = app.world_mut().spawn(ScreenSpaceAmbientOcclusion::default()).id();
+    let without = app.world_mut().spawn(Camera3d::default()).id();
+    app.update();
+    assert_eq!(app.world().get::<ScreenSpaceAmbientOcclusion>(with).unwrap().constant_object_thickness, ORIGINAL_SSAO);
+    assert!(app.world().get::<ScreenSpaceAmbientOcclusion>(without).is_none(), "never added: the player turned it off");
+    app.world_mut().resource_mut::<RenderSwitches>().ao = AoMode::Squared;
+    app.update();
+    assert_eq!(app.world().get::<ScreenSpaceAmbientOcclusion>(with).unwrap().constant_object_thickness, 0.25);
 }
