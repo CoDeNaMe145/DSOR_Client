@@ -284,7 +284,7 @@ pub(crate) fn asset_root() -> String {
 /// noanim (no character animation), noshadows, nonpcs-shadow, noparticles, norim,
 /// linearlight (the light summed in linear space instead of the original's gamma sum),
 /// shadowfloor (full shadow keeps half the whole light, as the original's blurred shadow buffer),
-/// aogamma (the ambient occlusion squared in gamma space instead of once in linear),
+/// aolinear (the ambient occlusion once in linear instead of squared in the gamma sum),
 /// camfocus (offline viewer: the ambience zone at the game camera's focus, not the camera).
 pub static FLAGS: std::sync::OnceLock<std::collections::HashSet<String>> = std::sync::OnceLock::new();
 

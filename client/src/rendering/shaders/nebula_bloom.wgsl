@@ -62,12 +62,6 @@ fn fs_blur(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     return c * 1.1;
 }
 
-fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
-    let low = c * 12.92;
-    let high = 1.055 * pow(max(c, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.4)) - vec3<f32>(0.055);
-    return select(low, high, c > vec3<f32>(0.0031308));
-}
-
 fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
     let low = c / 12.92;
     let high = pow(max((c + vec3<f32>(0.055)) / 1.055, vec3<f32>(0.0)), vec3<f32>(2.4));
@@ -77,7 +71,11 @@ fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
 @fragment
 fn fs_compose(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let scene = textureSample(source, source_sampler, in.uv);
-    var display = linear_to_srgb(max(scene.rgb, vec3<f32>(0.0)));
+    // The original (D3D9, no sRGB) shows its gamma-space colours as they are;
+    // the light sums here are taken back to linear with 2.2, so 2.2 shows them.
+    // The sRGB curve's linear toe crushed dark products (a dark rock, albedo
+    // 0.2 under light 0.25: 0.05 in the original, 0.018 through sRGB).
+    var display = pow(max(scene.rgb, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2));
     if params.p.y > 0.0 {
         // pe_compose: 2 x scene + bloom x hdrBloomScale (`add r0, r2, r2`,
         // `mad r0.xyz, r1, c0.x, r0`): the scene's x 2 undoes its 8-bit encoding;

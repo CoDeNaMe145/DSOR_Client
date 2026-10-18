@@ -163,7 +163,7 @@ pub(super) struct GpuAmbience {
     /// light kept in full shadow; w 1 applies it (DSOR_FLAGS=shadowfloor).
     gamma_light: Vec4,
     /// The ambient light in that gamma sum (gamma rgb); w 1 squares the
-    /// ambient occlusion in gamma (DSOR_FLAGS=aogamma), 0 applies it once in linear.
+    /// ambient occlusion in gamma, 0 applies it once in linear (DSOR_FLAGS=aolinear).
     ambient_gamma: Vec4,
 }
 // CONTRACT: the field order above is ambience.wgsl's `Ambience` struct order
@@ -219,7 +219,7 @@ impl GpuAmbience {
     pub(super) fn with_gamma_light(mut self, enabled: bool, ambient: Vec3, shadow_intensity: f32) -> Self {
         let floor = if crate::flag("shadowfloor") { 1.0 } else { 0.0 };
         self.gamma_light = Vec4::new(if enabled { 1.0 } else { 0.0 }, std::f32::consts::PI * UNIT, shadow_floor(shadow_intensity), floor);
-        self.ambient_gamma = ambient.max(Vec3::ZERO).powf(1.0 / 2.2).extend(if crate::flag("aogamma") { 1.0 } else { 0.0 });
+        self.ambient_gamma = ambient.max(Vec3::ZERO).powf(1.0 / 2.2).extend(if crate::flag("aolinear") { 0.0 } else { 1.0 });
         self
     }
 
