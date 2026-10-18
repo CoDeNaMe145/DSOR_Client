@@ -32,6 +32,11 @@ use crate::actors::appearance::Equipment;
 /// The blend between two animations.
 const BLEND: Duration = Duration::from_millis(150);
 const EQUIPMENT_BLEND: Duration = Duration::from_millis(220);
+/// No decoded combat-mode flag: retain the stance briefly after a skill or blow.
+const COMBAT_IDLE_SECONDS: f32 = 5.0;
+
+#[cfg(test)]
+mod idle_tests;
 
 const BODY_PARTS: [&str; 12] = [
     "ears", "feet", "hands", "head", "hips", "lowerarms", "lowerlegs", "midbody", "neck",
@@ -311,11 +316,11 @@ impl CharacterDesc {
 
 /// Logical animation states, the rows of anims.xml.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-// Hit, Death, Resurrect, Stunned and IdleHub are the combat and town states the
-// server's HitCommand / KillCommand / ResurrectCommand will drive (docs/fx.md).
 #[allow(dead_code)]
 pub enum AnimState {
+    /// Combat stance for players; default standing state for other actors.
     Idle,
+    /// Relaxed player idle, including outside hubs when out of combat.
     IdleHub,
     Run,
     Hit,
@@ -383,6 +388,7 @@ pub struct CharacterAnim {
     durations: HashMap<AnimationNodeIndex, f32>,
     set: Option<String>,
     set_changed: bool,
+    combat_remaining: f32,
     /// Killed (KillCommand): the death animation keeps its last pose; no sequence
     /// or movement brings the actor back to Idle.
     pub dead: bool,
@@ -392,14 +398,20 @@ impl Default for CharacterAnim {
     fn default() -> Self {
         Self { state: AnimState::Idle, speed: 1.0, applied: None, player: None, nodes: HashMap::new(), current: None,
             fading: Vec::new(), fade_elapsed: 0.0, fade_duration: BLEND.as_secs_f32(), clip_nodes: HashMap::new(),
-            durations: HashMap::new(), set: None, set_changed: false, parked: Vec::new(), parking: false, dead: false }
+            durations: HashMap::new(), set: None, set_changed: false, combat_remaining: 0.0,
+            parked: Vec::new(), parking: false, dead: false }
     }
 }
 
 impl CharacterAnim {
     /// Release a streamed-out rig without losing authoritative status state.
     pub(crate) fn release_rig(&mut self) {
-        *self = Self { state: self.state.clone(), speed: self.speed, dead: self.dead, ..default() };
+        *self = Self { state: self.state.clone(), speed: self.speed, dead: self.dead,
+            combat_remaining: self.combat_remaining, ..default() };
+    }
+
+    pub(crate) fn enter_combat(&mut self) {
+        if !self.dead { self.combat_remaining = COMBAT_IDLE_SECONDS; }
     }
 
     /// Whether bevy evaluates this character's animation (playing, bones hooked).
@@ -576,6 +588,7 @@ impl Plugin for CharacterPlugin {
             .register_asset_loader(AnimTableLoader)
             .register_asset_loader(PartListLoader)
             .add_systems(Startup, load_library)
+            .add_systems(PreUpdate, track_player_combat.after(crate::network::net::NetReceive))
             .add_systems(Update, (build_characters, revive_skeletons, keep_parts_bound, apply_equipment_dyes,
                 finish_outfits, update_animation_sets, drive_animations, check_skins, prune_idle_targets).chain()
                 .after(crate::network::net::NetSystems).after(crate::actors::npc::NpcVisualSystems))
@@ -1298,10 +1311,30 @@ fn apply_variations(
 #[derive(Component)]
 struct VariedChild;
 
-fn drive_animations(
+/// Read blows before the monster systems consume them. Healing and regeneration
+/// do not put either participant in combat; blocked/immune attacks still do.
+fn track_player_combat(
+    net: Option<NonSend<crate::network::net::Net>>,
+    mut players: Query<(Option<&crate::network::net::LocalPlayer>, Option<&crate::network::net::RemotePlayer>, &mut CharacterAnim),
+        (Or<(With<crate::network::net::LocalPlayer>, With<crate::network::net::RemotePlayer>)>, Without<crate::actors::monsters::Monster>)>,
+) {
+    let Some(net) = net else { return };
+    if net.hits.is_empty() && net.kills.is_empty() { return; }
+    for (local, remote, mut anim) in &mut players {
+        let Some(actor) = local.map(|p| p.actor).or_else(|| remote.map(|p| p.actor)) else { continue };
+        let hit = net.hits.iter().any(|(victim, hit)| {
+            (actor == *victim || actor == hit.attacker) && hit.damage >= 0
+                && !hit.combat_text.starts_with("Healing") && *victim != hit.attacker
+        });
+        let kill = net.kills.iter().any(|(victim, kill)| actor == kill.killer && *victim != kill.killer);
+        if hit || kill { anim.enter_combat(); }
+    }
+}
+
+pub(crate) fn drive_animations(
     time: Res<Time>,
     mut frame: Local<u32>,
-    mut characters: Query<(Entity, &mut CharacterAnim, &GlobalTransform, &InheritedVisibility, Option<&mut AnimLod>, Option<&crate::screens::selection::Preview>, Option<&crate::actors::npc::NpcVisualPending>)>,
+    mut characters: Query<(Entity, &mut CharacterAnim, &GlobalTransform, &InheritedVisibility, Option<&mut AnimLod>, Option<&crate::screens::selection::Preview>, Option<&crate::actors::npc::NpcVisualPending>, Option<&Character>)>,
     visibility: Option<Res<crate::rendering::anim_cull::AnimationVisibility>>,
     targets: Query<(Entity, &AnimatedBy)>,
     mut commands: Commands,
@@ -1317,7 +1350,16 @@ fn drive_animations(
         .map(|(_, g, _)| crate::world::map::camera_focus(g, me.iter().next().map(|p| p.translation()), 0.0));
     let near = |p: Vec3| focus.is_none_or(|f| Vec2::new(p.x - f.x, p.z - f.z).length() <= crate::world::map::CULL_DISTANCE);
     *frame = frame.wrapping_add(1);
-    for (entity, mut anim, at, shown, mut lod, preview, pending) in &mut characters {
+    for (entity, mut anim, at, shown, mut lod, preview, pending, character) in &mut characters {
+        if let Some(character) = character.filter(|c| c.desc.look.is_none()) {
+            // Advance even while the rig is loading or culled. Resolve standing
+            // here, after movement and sequences have chosen their logical state.
+            anim.combat_remaining = if anim.dead { 0.0 } else { (anim.combat_remaining - time.delta_secs()).max(0.0) };
+            if !anim.dead && matches!(anim.state, AnimState::Idle | AnimState::IdleHub) {
+                anim.state = if anim.combat_remaining > 0.0 || character.riding.is_some() { AnimState::Idle } else { AnimState::IdleHub };
+                anim.speed = 1.0;
+            }
+        }
         let Some(player) = anim.player else { continue };
         let Ok(mut p) = players.get_mut(player) else { continue };
         // A pending portrait must pose before it is revealed. Check distance

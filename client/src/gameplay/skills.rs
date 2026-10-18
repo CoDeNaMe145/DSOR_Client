@@ -503,7 +503,8 @@ impl Plugin for SkillsPlugin {
                 Update,
                 (index_skills, cast_input.run_if(crate::screens::loading::gameplay_ready), remote_skills, status_visuals, hold_for_status, test_cast, run_pending, carry_casters, fly_bullets, play_sequences, start_fx_animations, retire_effects, shake_camera, test_shot, test_view, debug_fx_positions)
                     .chain()
-                    .after(crate::network::net::NetSystems).after(crate::actors::npc::NpcVisualSystems),
+                    .after(crate::network::net::NetSystems).after(crate::actors::npc::NpcVisualSystems)
+                    .before(crate::actors::character::drive_animations),
             );
         #[cfg(not(target_arch = "wasm32"))]
         app.add_systems(Update, vfx_preview.before(play_sequences).after(crate::network::net::NetSystems));
@@ -621,6 +622,11 @@ fn perform(
     caster_actor: Option<u32>,
     aim: Option<Vec3>,
 ) {
+    if character.is_some_and(|c| c.desc.look.is_none()) {
+        commands.queue(move |world: &mut World| {
+            if let Some(mut anim) = world.get_mut::<CharacterAnim>(actor) { anim.enter_combat(); }
+        });
+    }
     let column = character.map(weapon_column).unwrap_or_else(|| "empty".into());
     if let Some(seq) = skill.execute_for(&column).and_then(|n| sequences.0.get(n)) {
         play(commands, seq.clone(), Some(actor), actor, false);
@@ -2447,6 +2453,33 @@ fn hold_for_status(
             player.target = None;
             player.casting = player.casting.max(seconds);
         }
+    }
+}
+
+#[cfg(test)]
+mod combat_idle_tests {
+    use super::*;
+    use bevy::ecs::system::RunSystemOnce;
+
+    #[test]
+    fn casting_unarmed_enters_combat_even_without_an_execute_sequence() {
+        let mut world = World::new();
+        world.init_resource::<Time>();
+        let root = world.run_system_once(|mut commands: Commands|
+            crate::actors::character::spawn_character(&mut commands, default(), Transform::default())).unwrap();
+        world.run_system_once(crate::actors::character::drive_animations).unwrap();
+        assert_eq!(world.get::<CharacterAnim>(root).unwrap().state, AnimState::IdleHub);
+        world.run_system_once(move |mut commands: Commands, characters: Query<&Character>| {
+            let skill: SkillDef = serde_json::from_value(serde_json::json!({
+                "id": "test_attack", "type": "Melee", "hit_frame": 1, "loop_start": 0,
+                "unblock": 2, "motion_unblock": 2, "range": 2.0, "cooldown": 0.0,
+                "execute": {}, "impact": ""
+            })).unwrap();
+            perform(&mut commands, &skill, &SequenceTable(default()), root, Some(characters.get(root).unwrap()),
+                Vec3::ZERO, 0.0, Vec3::Z, None, None);
+        }).unwrap();
+        world.run_system_once(crate::actors::character::drive_animations).unwrap();
+        assert_eq!(world.get::<CharacterAnim>(root).unwrap().state, AnimState::Idle);
     }
 }
 
