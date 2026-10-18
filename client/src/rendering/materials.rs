@@ -710,6 +710,10 @@ impl GltfExtensionHandler for NebulaStates {
                     base.base_color = Color::WHITE;
                 }
                 Kind::Character => {
+                    // The node's MatSpecularIntensity, as on every other lit surface.
+                    if let Some(v) = specular_scale(node.get("MatSpecularIntensity")) {
+                        base.specular_tint = Color::LinearRgba(LinearRgba::rgb(v, v, v));
+                    }
                     mask = dye_mask(&self.textures, &extras);
                     // The rim light is in shd:character and characterfalloff only.
                     let rim = ["character", "characterfalloff"].iter()
@@ -731,6 +735,17 @@ impl GltfExtensionHandler for NebulaStates {
             Some(State::Decal) => {
                 m.alpha_mode = AlphaMode::Blend;
                 m.depth_bias = crate::rendering::decals::DECAL_DEPTH_BIAS;
+                // The node's MatSpecularIntensity, as on lit surfaces (specular_scale):
+                // the decal ps adds specMap x MatSpecularIntensity x the light
+                // buffer's highlight, none at 0. With Bevy's default sheen every
+                // decal took a film of the sun's colour: Wildherz Caverns' brown
+                // path decals (mat_ground_02, 68/53/41) came out blue under its low
+                // moon, 31/27/28 against the original's 35/23/16.
+                // EVIDENCE: shaders_sm30 decal ps (`mul r1.xyz, r1, c12.x`,
+                //   MatSpecularIntensity, added x pow(light.w, power)).
+                if let Some(v) = specular_scale(node.get("MatSpecularIntensity")) {
+                    m.specular_tint = Color::LinearRgba(LinearRgba::rgb(v, v, v));
+                }
                 // An effect's decal (tools/embed_animators.py dsor_decal_effect):
                 // the colour map with its own alpha, lit, plus its second map as
                 // light x MatEmissiveIntensity -- not the map decals' merged mask.

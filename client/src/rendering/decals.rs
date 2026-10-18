@@ -101,9 +101,9 @@ struct Batch {
 /// What a batch is drawn with.
 #[derive(Clone, PartialEq, Eq, Hash)]
 enum Look {
-    /// Colour repeated at a scale, mask over the box, and the box material's
-    /// opacity (the node's static Intensity0).
-    Tiled(AssetId<Image>, AssetId<Image>, u32, u32),
+    /// Colour repeated at a scale, mask over the box, the box material's
+    /// opacity (the node's static Intensity0) and specular (MatSpecularIntensity).
+    Tiled(AssetId<Image>, AssetId<Image>, u32, u32, u32),
     /// The box material's merged texture over the box (no dsor_decal extras).
     Stretched(AssetId<StandardMaterial>),
 }
@@ -272,7 +272,8 @@ fn project_decals(
         let (look, scale) = match &volume.tiling {
             Some(t) => {
                 let alpha = std_materials.get(&material.0).map(|m| m.base_color.alpha()).unwrap_or(1.0);
-                (Look::Tiled(t.color.id(), t.mask.id(), t.scale.to_bits(), alpha.to_bits()), Some(t.scale))
+                let specular = std_materials.get(&material.0).map(|m| m.specular_tint.to_linear().red).unwrap_or(1.0);
+                (Look::Tiled(t.color.id(), t.mask.id(), t.scale.to_bits(), alpha.to_bits(), specular.to_bits()), Some(t.scale))
             }
             None => (Look::Stretched(material.0.id()), None),
         };
@@ -281,6 +282,7 @@ fn project_decals(
             .or_insert_with(|| match &volume.tiling {
                 Some(t) => {
                     let alpha = std_materials.get(&material.0).map(|m| m.base_color.alpha()).unwrap_or(1.0);
+                    let specular_tint = std_materials.get(&material.0).map(|m| m.specular_tint).unwrap_or(Color::WHITE);
                     let m = decal_materials.add(DecalMaterial {
                         base: StandardMaterial {
                             base_color: Color::srgba(1.0, 1.0, 1.0, alpha),
@@ -289,6 +291,7 @@ fn project_decals(
                             depth_bias: DECAL_DEPTH_BIAS,
                             perceptual_roughness: 0.8,
                             metallic: 0.0,
+                            specular_tint,
                             ..default()
                         },
                         extension: DecalMask { mask: t.mask.clone() },

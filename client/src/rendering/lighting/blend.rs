@@ -176,6 +176,7 @@ pub(super) struct GpuAmbience {
     ambient_gamma: Vec4,
     /// x 1: surfaces write gamma colours to the scene target (ambience.wgsl
     /// encode_scene), blending in gamma as the original; 0 in the inactive buffer.
+    /// y 1: no sun specular (DSOR_FLAGS=nospecular, diagnostics).
     output: Vec4,
 }
 // CONTRACT: the field order above is ambience.wgsl's `Ambience` struct order
@@ -236,7 +237,7 @@ impl GpuAmbience {
             super::AoMode::Original => 4.0,
         };
         self.ambient_gamma = ambient.max(Vec3::ZERO).powf(1.0 / 2.2).extend(ao);
-        self.output = Vec4::new(if switches.gamma_scene { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0);
+        self.output = Vec4::new(if switches.gamma_scene { 1.0 } else { 0.0 }, if crate::flag("nospecular") { 1.0 } else { 0.0 }, 0.0, 0.0);
         self
     }
 

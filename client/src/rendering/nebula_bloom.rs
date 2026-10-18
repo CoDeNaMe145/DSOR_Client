@@ -3,7 +3,7 @@
 //! EVIDENCE: export_win32/frame/default.xml: `DownscaleScene` (pe_downsample2x2 of
 //!   the ColorBuffer) runs right after the opaque passes, BEFORE the `ColorAlpha`
 //!   pass draws the transparent world (effects, particles, additive surfaces);
-//!   `BrightPassFilter` and the four `Bloom` blurs work on that SceneScaled, and
+//!   `BrightPassFilter` and the five `Bloom` blurs (V H V H V) work on that SceneScaled, and
 //!   pe_compose adds the result to the final colour x BloomScale. Effects never
 //!   bloom in the 2018 client. bevy's bloom took the whole final image, effects
 //!   included: they glared ("toujours trop d'emissive").
@@ -289,10 +289,14 @@ fn bloom_scene(
     if !ok {
         return;
     }
+    // The frame shader's Bloom1 / Bloom2 / Bloom3 / Bloom2 / Bloom3: vertical,
+    // horizontal, vertical, horizontal, vertical, ending in Bloom1 (here b),
+    // which pe_compose reads. Each pass keeps its x 1.1.
     for _ in 0..2 {
         pass(&mut ctx, &cache, &pipeline, ids.blur, &t.a.default_view, &t.a.default_view, &t.b.default_view, params(Vec2::Y));
         pass(&mut ctx, &cache, &pipeline, ids.blur, &t.b.default_view, &t.b.default_view, &t.a.default_view, params(Vec2::X));
     }
+    pass(&mut ctx, &cache, &pipeline, ids.blur, &t.a.default_view, &t.a.default_view, &t.b.default_view, params(Vec2::Y));
 }
 
 /// Before FXAA: add bloom, then apply the active bubble's colour and vignette.
@@ -311,5 +315,5 @@ fn bloom_compose(
     }
     let post = target.post_process_write();
     let params = b.params(Vec2::ZERO, Vec2::ZERO);
-    pass(&mut ctx, &cache, &pipeline, ids.compose, post.source, &t.a.default_view, post.destination, params);
+    pass(&mut ctx, &cache, &pipeline, ids.compose, post.source, &t.b.default_view, post.destination, params);
 }

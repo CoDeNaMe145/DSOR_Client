@@ -33,7 +33,8 @@ struct Ambience {
     // linear, 3 none, 4 the original's estimate squared (pe_ssao.wgsl, the default).
     ambient_gamma: vec4<f32>,
     // x 1: the scene target holds gamma colours (encode_scene), so alpha and
-    // additive surfaces blend in gamma space as D3D9 without sRGB does.
+    // additive surfaces blend in gamma space as D3D9 without sRGB does;
+    // y 1 leaves the sun's specular out (DSOR_FLAGS=nospecular, diagnostics).
     output: vec4<f32>,
 }
 @group(1) @binding(0) var<uniform> ambience: Ambience;
@@ -91,6 +92,9 @@ fn apply_ambience_gamma(input: ptr<function, LightingInput>, enable_diffuse: boo
         if any(front > vec3(0.0)) {
             specular += ambience_directional_light(term.direction.xyz, front, input, false);
         }
+    }
+    if ambience.output.y != 0.0 {
+        specular = vec3(0.0);
     }
     if !enable_diffuse {
         return specular;

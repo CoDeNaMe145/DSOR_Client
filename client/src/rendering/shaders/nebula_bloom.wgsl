@@ -5,7 +5,7 @@
 //                (c the 8-bit scene, encoded x 0.5: 2c is what is shown)
 //   Bloom0       BrightPass at quarter size                           pe_downsample2x2
 //   Bloom1..     (W0 s(0) + W1 (s(+o1) + s(-o1)) + 2 W2 s(+o2)) x 1.1, vertical
-//                then horizontal, twice                               pe_bloomvert/hori
+//                horizontal, vertical, horizontal, vertical           pe_bloomvert/hori
 //   compose      shown + bloom, saturation, balance, vignette          pe_compose
 // The intermediate targets are 8-bit, as the client's.
 #import bevy_core_pipeline::fullscreen_vertex_shader::FullscreenVertexOutput
