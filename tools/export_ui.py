@@ -398,6 +398,10 @@ for source in sorted((Path(root) / "textures" / "ui").glob("icon_map_*.*")):
 # (UI::NotificationWidget, 2018 client 0x6CAE52).
 for source in sorted((Path(root) / "textures" / "ui").glob("icon_notifications_*.*")):
     tex.get("ui/" + source.stem)
+# The bottom bar's resource gauge per class, set at run time (release261
+# 0x1403ACD74): rage, mana, adrenaline, steam.
+for name in ("rage", "mana", "adrenaline", "steam"):
+    tex.get("ui/statusbar_bottombar_" + name)
 for table in ("_Template_NPC", "_Template_StateObject"):
     for (brush,) in con.execute(f"SELECT DISTINCT LocationMapIcon FROM {table}"):
         if brush:

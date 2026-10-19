@@ -63,15 +63,13 @@ fn dark_zones_fade_out_shadow_contrast_and_authored_strength_is_respected() {
     let half = LightBlend::from(&preset(Vec3::X, 1., 0.5));
     near(sample(&half, Vec3::X, 0.), sample(&half, Vec3::X, 1.) * 0.5);
 
-    // An interior can reduce ambient and direct light together. Its shadow
-    // contrast still weakens relative to the map's daylight, instead of leaving
-    // black outdoor shadow bands across the dimmer preset.
+    // A dim interior's shadow still takes its whole sun, as the original's
+    // shadowDarkeningFactor is 0 in every Kingshill zone (throne room, church).
     let dim = preset(Vec3::X, 0.2, 1.);
     let blend = LightBlend::from(&a).mix(&dim, 1.);
     let lit = sample(&blend, Vec3::X, 1.);
-    let contrast = lit - sample(&blend, Vec3::X, 0.);
-    near(contrast, lit * (dim.sun_luminance() / a.sun_luminance()));
-    assert!(contrast.length() < lit.length() * 0.1);
+    near(sample(&blend, Vec3::X, 0.), Vec3::ZERO);
+    assert!(lit.length() > 0.);
 }
 
 #[test]
@@ -135,8 +133,8 @@ fn entering_exiting_and_retargeting_never_move_the_shadow_sun() {
 #[test]
 fn uniform_layout_matches_wgsl_and_remains_within_webgl_limits() {
     assert_eq!(GpuTerm::min_size().get(), 64);
-    // counts, the terms, the height fog colour and heights, the rim colour and direction.
-    assert_eq!(GpuAmbience::min_size().get(), 16 + 64 * MAX_TERMS as u64 + 32 + 32 + 16);
+    // counts, the terms, height fog colour and heights, rim colour and direction, fog colour and distances, gamma light and ambient, output.
+    assert_eq!(GpuAmbience::min_size().get(), 16 + 64 * MAX_TERMS as u64 + 32 + 32 + 32 + 32 + 16);
     assert!(GpuAmbience::min_size().get() <= 16384);
     let disabled = GpuAmbience::default();
     assert_eq!(disabled.counts.x, 0);
@@ -178,20 +176,18 @@ fn back_light_factor_reaches_the_gpu_and_fades_with_the_zone() {
 #[test]
 fn pbr_patch_adds_height_fog_after_distance_fog_on_fogged_materials_only() {
     let source = r#"
-    var direct_light: vec3<f32> = vec3<f32>(0.0);
+    // Point lights (direct)
+    for (var i: u32 = 0u; i < 1u; i = i + 1u) {
         let light_contrib = lighting::point_light(light_id, &lighting_input, enable_diffuse, true);
         direct_light += light_contrib * shadow;
-        let light_contrib = lighting::spot_light(light_id, &lighting_input, enable_diffuse);
-        direct_light += light_contrib * shadow;
+    }
+    // directional lights (direct)
+    let n_directional_lights = view_bindings::lights.n_directional_lights;
         var light_contrib = lighting::directional_light(i, &lighting_input, enable_diffuse);
         direct_light += light_contrib * shadow;
         let transmitted_light_contrib =
             lighting::directional_light(i, &transmissive_lighting_input, enable_diffuse);
         transmitted_light += transmitted_light_contrib * transmitted_shadow;
-    output_color = vec4<f32>(
-        (view_bindings::view.exposure * (transmitted_light + direct_light + indirect_light)) + emissive_light,
-        output_color.a
-    );
     if ((pbr_input.material.flags & pbr_types::STANDARD_MATERIAL_FLAGS_FOG_ENABLED_BIT) != 0u) {
         output_color = apply_fog(
             view_bindings::fog,
@@ -202,29 +198,37 @@ fn pbr_patch_adds_height_fog_after_distance_fog_on_fogged_materials_only() {
         );
     }
 #endif  // DISTANCE_FOG
+#ifdef PREMULTIPLY_ALPHA
+    output_color = premultiply_alpha(pbr_input.material.flags, output_color);
+#endif
+    return output_color;
 "#;
     let patched = blend_function(source).expect("anchors present");
     let fog = patched.find("output_color = apply_fog(").unwrap();
     let height = patched.find("output_color = apply_height_fog(output_color, pbr_input.world_position.xyz);").unwrap();
     let fogged_block_end = patched.find("#endif  // DISTANCE_FOG").unwrap();
     assert!(fog < height && height < fogged_block_end, "height fog follows distance fog inside its block");
-    assert!(patched.contains("apply_distance_fog(output_color, pbr_input.world_position.xyz)"));
-    assert!(patched.contains("nebula_diffuse += local_irradiance"));
-    assert!(patched.contains("compose_lighting(in.material.base_color.rgb, nebula_diffuse"));
+    assert!(patched.contains("#import dsor::ambience::{ambience, apply_ambience, apply_height_fog, apply_nebula_fog, apply_points_gamma, encode_scene, nebula_point_light}"));
+    // The gamma scene target: encoded after the fogs, before the premultiplication.
+    let encoded = patched.find("output_color = encode_scene(output_color);").unwrap();
+    assert!(height < encoded && encoded < patched.find("output_color = premultiply_alpha(").unwrap());
+    // Point lights join the gamma sum before the sun term reads it; Bevy's
+    // point light stays for the linear sum and without DSOR_AMBIENCE.
+    let declared = patched.find("var dsor_point_gamma = vec3<f32>(0.0);").unwrap();
+    let gathered = patched.find("dsor_point_gamma += nebula_point_light(light_id, &lighting_input);").unwrap();
+    let alone = patched.find("direct_light += apply_points_gamma(&lighting_input, dsor_point_gamma);").unwrap();
+    let summed = patched.find("apply_ambience(&lighting_input, enable_diffuse, shadow, dsor_occlusion, dsor_point_gamma)").unwrap();
+    // The original's AO estimate is read as written, not Bevy's multi-bounce.
+    assert!(patched.find("var dsor_occlusion = diffuse_occlusion;").unwrap() < summed);
+    assert!(declared < gathered && gathered < alone && alone < summed);
+    assert_eq!(patched.matches("lighting::point_light(light_id, &lighting_input, enable_diffuse, true)").count(), 2);
+    // Nebula's distance fog replaces Bevy's where the level's look is active;
+    // Bevy's stays for the inactive buffer and without DSOR_AMBIENCE.
+    let nebula = patched.find("output_color = apply_nebula_fog(output_color, pbr_input.world_position.xyz);").unwrap();
+    assert!(nebula < fog && fog < height, "Nebula fog first, Bevy's as the fallback, then height fog");
+    assert_eq!(patched.matches("output_color = apply_fog(").count(), 2, "fallback under the ambience and without it");
     // A Bevy version without this fog block must fail loudly, never silently skip.
     assert!(blend_function(&source.replace("#endif  // DISTANCE_FOG", "#endif")).is_none());
-}
-
-#[test]
-fn diffuse_light_reaches_gpu_in_authored_display_units() {
-    let bubble = Bubble { light_color: [0.5, 0.25, 0.1, 1.], light_intensity: 2.,
-        light_opposite_color: [0.1, 0.2, 0.3, 1.], light_ambient: [0.15, 0.25, 0.35, 1.], ..default() };
-    let controls = Lighting::default();
-    let gpu = LightBlend::from(&bubble).gpu(&controls).with_ambient(&bubble, &controls);
-    near(gpu.terms[0].front.truncate(), Vec3::new(1., 0.5, 0.2));
-    near(gpu.terms[0].back.truncate(), Vec3::new(0.2, 0.4, 0.6));
-    near(gpu.ambient.truncate(), Vec3::new(0.15, 0.25, 0.35));
-    assert_eq!(GpuAmbience::default().ambient, Vec4::ZERO);
 }
 
 #[test]
@@ -242,4 +246,82 @@ fn rim_light_reaches_the_gpu_in_gamma_with_the_engine_direction() {
     assert_eq!(gpu.rim_dir_spec.w, 4.);
     let off = GpuAmbience::default().with_rim_light(&Bubble { rim_light_intensity: 0., ..wild });
     assert_eq!(off.rim_color, Vec4::ZERO);
+}
+
+#[test]
+fn the_back_light_is_not_scaled_by_the_sun_intensity() {
+    // As the running client sends globalBackLightColor: LightOppositeColor as is,
+    // while the sun's colour is scaled by LightIntensity (Kingshill 1.4).
+    let at = |intensity: f32| LightBlend::from(&Bubble { light_intensity: intensity, light_opposite_color: [0.298, 0.3373, 0.3647, 1.], ..preset(Vec3::Y, intensity, 1.) });
+    near(at(1.4).0[0].back, at(0.25).0[0].back);
+    let c = Color::srgb(0.298, 0.3373, 0.3647).to_linear();
+    near(at(1.4).0[0].back, Vec3::new(c.red, c.green, c.blue));
+    assert!(at(1.4).0[0].front.x > at(0.25).0[0].front.x);
+}
+
+#[test]
+fn uniform_fields_follow_the_wgsl_order() {
+    // The GPU reads the uniform by position: GpuAmbience's Rust field order must
+    // be the WGSL struct's. FAILURE (2026-10-17): the fog fields were added before
+    // rim_dir_spec in Rust and after it in WGSL; the fog read its enable flag
+    // from fog_dist.w (0) and the rim its direction from the fog colour.
+    let rust = include_str!("blend.rs");
+    let wgsl = include_str!("ambience.wgsl");
+    let fields = |src: &str, start: &str, sep: &str| -> Vec<String> {
+        let body = &src[src.find(start).unwrap() + start.len()..];
+        let body = &body[..body.find('}').unwrap()];
+        body.lines().map(str::trim).filter(|l| !l.starts_with("//") && l.contains(sep))
+            .map(|l| l.split(sep).next().unwrap().trim().to_string()).collect()
+    };
+    assert_eq!(fields(rust, "pub(super) struct GpuAmbience {", ":"), fields(wgsl, "struct Ambience {", ":"));
+}
+
+#[test]
+fn nebula_fog_takes_the_zones_distances_from_the_camera_and_intensity_as_its_most() {
+    // Kingshill's gate zone: FogIntensity 0.8, the running client sends fogColor.w
+    // = 0.2 (the clear floor) and fogDistances 25 / 75, unshifted.
+    let gate = Bubble { fog_color: [0.749, 0.9059, 1.0, 1.0], fog_intensity: 0.8, fog_near_dist: 25.0, fog_far_dist: 75.0, ..default() };
+    let gpu = GpuAmbience::default().with_fog(&gate, &Lighting::default());
+    assert_eq!(gpu.fog_color, Vec4::new(0.749, 0.9059, 1.0, 1.0));
+    near(gpu.fog_dist.truncate(), Vec3::new(25.0, 75.0, 0.8));
+    // The panel's Fog x scales the most fog, Fog range x the distances.
+    let half = GpuAmbience::default().with_fog(&gate, &Lighting { fog: 0.5, fog_range: 2.0, ..default() });
+    near(half.fog_dist.truncate(), Vec3::new(50.0, 150.0, 0.4));
+    // The inactive buffer keeps Bevy's fog.
+    assert_eq!(GpuAmbience::default().fog_color.w, 0.0);
+}
+
+#[test]
+fn full_shadow_keeps_half_the_light_as_the_blurred_shadow_buffer_does() {
+    // Shadow pass 0, then two blurs of 1 - 0.8 x 0.883 x (1 - x): 1 - 0.7063^2.
+    assert!((super::shadow_floor(1.0) - 0.5011).abs() < 1e-3);
+    // Beyond 1 the darkening cannot go below the pass's 0.
+    assert_eq!(super::shadow_floor(3.0), super::shadow_floor(1.0));
+    // Softer shadows for lower intensities (mapping UNVERIFIED), none at 0.
+    assert!(super::shadow_floor(0.25) > super::shadow_floor(0.5));
+    assert_eq!(super::shadow_floor(0.0), 1.0);
+}
+
+#[test]
+fn render_switches_reach_the_gpu_the_frame_they_change() {
+    use super::super::{AoMode, RenderSwitches};
+    let mut app = App::new();
+    app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default()))
+        .init_asset::<Ambience>().init_resource::<GpuAmbience>()
+        .init_resource::<Lighting>().init_resource::<GlobalAmbientLight>()
+        .insert_resource(RenderSwitches { gamma_light: true, ao: AoMode::Linear, shadow_floor: false, rim: true, gamma_scene: true })
+        .insert_resource(Level::default())
+        .add_systems(Update, apply_look);
+    app.update();
+    let gpu = app.world().resource::<GpuAmbience>().clone();
+    assert_eq!((gpu.gamma_light.x, gpu.gamma_light.w, gpu.ambient_gamma.w), (1.0, 0.0, 0.0));
+    assert_eq!(gpu.output.x, 1.0, "the gamma scene target");
+    *app.world_mut().resource_mut::<RenderSwitches>() = RenderSwitches { gamma_light: false, ao: AoMode::Clamped, shadow_floor: true, rim: false, gamma_scene: false };
+    app.update();
+    let gpu = app.world().resource::<GpuAmbience>().clone();
+    assert_eq!((gpu.gamma_light.x, gpu.gamma_light.w, gpu.ambient_gamma.w), (0.0, 1.0, 2.0));
+    assert_eq!(gpu.output.x, 0.0, "Bevy's linear target");
+    assert_eq!(gpu.rim_color, Vec4::ZERO);
+    // Linear: Bevy's ambient light is back on, as before the gamma sum.
+    assert!(app.world().resource::<GlobalAmbientLight>().brightness > 0.0);
 }

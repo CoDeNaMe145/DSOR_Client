@@ -103,6 +103,19 @@ fn dsor_label(material_label: &str) -> String {
 }
 
 /// bevy_pbr's own conversion is private; these are the fields our materials use.
+/// The node's MatSpecularIntensity, when it is not 1: the original adds its
+/// highlight as specMap x MatSpecularIntensity x the light buffer's specular, so
+/// 0 (Kingshill's cobblestones, many ground tiles) shows none. Bevy's default
+/// 4% sheen on every surface laid a whitish film over sunlit ground (the market
+/// cobbles' sun term 1.17 / 1.20 / 1.22 against the data's 0.97 / 0.97 / 0.95,
+/// exactly the data without it).
+/// EVIDENCE: shaders_sm30 standard Solid ps (`texld r2, v0, s1` specMap,
+///   `mul r2.xyz, r2, c1.x` MatSpecularIntensity, added x pow(light.w, power)).
+/// UNVERIFIED: the highlight's size for intensities above 0 (Bevy's GGX scaled).
+pub(crate) fn specular_scale(node_intensity: Option<f32>) -> Option<f32> {
+    node_intensity.filter(|v| (v - 1.0).abs() > 1e-4).map(|v| v.max(0.0))
+}
+
 fn standard_material(m: &GltfMaterial) -> StandardMaterial {
     StandardMaterial {
         base_color: m.base_color,
@@ -659,6 +672,9 @@ impl GltfExtensionHandler for NebulaStates {
             let f = |k: &str, d: f32| node.get(k).unwrap_or(d);
             match kind {
                 Kind::Environment | Kind::Layer => {
+                    if let Some(v) = specular_scale(node.get("MatSpecularIntensity")) {
+                        base.specular_tint = Color::LinearRgba(LinearRgba::rgb(v, v, v));
+                    }
                     params.p0.y = f("Amplitude", 0.5);
                     params.p0.w = material_asset.metallic_roughness_texture.is_some() as u32 as f32;
                     if let Some((c, m, tiling)) = layer_of(&self.textures, &extras) {
@@ -694,6 +710,10 @@ impl GltfExtensionHandler for NebulaStates {
                     base.base_color = Color::WHITE;
                 }
                 Kind::Character => {
+                    // The node's MatSpecularIntensity, as on every other lit surface.
+                    if let Some(v) = specular_scale(node.get("MatSpecularIntensity")) {
+                        base.specular_tint = Color::LinearRgba(LinearRgba::rgb(v, v, v));
+                    }
                     mask = dye_mask(&self.textures, &extras);
                     // The rim light is in shd:character and characterfalloff only.
                     let rim = ["character", "characterfalloff"].iter()
@@ -715,6 +735,17 @@ impl GltfExtensionHandler for NebulaStates {
             Some(State::Decal) => {
                 m.alpha_mode = AlphaMode::Blend;
                 m.depth_bias = crate::rendering::decals::DECAL_DEPTH_BIAS;
+                // The node's MatSpecularIntensity, as on lit surfaces (specular_scale):
+                // the decal ps adds specMap x MatSpecularIntensity x the light
+                // buffer's highlight, none at 0. With Bevy's default sheen every
+                // decal took a film of the sun's colour: Wildherz Caverns' brown
+                // path decals (mat_ground_02, 68/53/41) came out blue under its low
+                // moon, 31/27/28 against the original's 35/23/16.
+                // EVIDENCE: shaders_sm30 decal ps (`mul r1.xyz, r1, c12.x`,
+                //   MatSpecularIntensity, added x pow(light.w, power)).
+                if let Some(v) = specular_scale(node.get("MatSpecularIntensity")) {
+                    m.specular_tint = Color::LinearRgba(LinearRgba::rgb(v, v, v));
+                }
                 // An effect's decal (tools/embed_animators.py dsor_decal_effect):
                 // the colour map with its own alpha, lit, plus its second map as
                 // light x MatEmissiveIntensity -- not the map decals' merged mask.
@@ -745,8 +776,12 @@ impl GltfExtensionHandler for NebulaStates {
             None => {
                 let unlit = gltf_material.extras().as_ref().is_some_and(|e| e.get().contains("\"dsor_unlit\":true"));
                 let emissive = self.scale_lit && material_asset.emissive_texture.is_some();
-                if !unlit && !emissive && !extras.contains("\"dsor_alpha\"") && !extras.contains("\"dsor_scroll\"") {
+                let specular = specular_scale(node.get("MatSpecularIntensity"));
+                if !unlit && !emissive && specular.is_none() && !extras.contains("\"dsor_alpha\"") && !extras.contains("\"dsor_scroll\"") {
                     return;
+                }
+                if let Some(v) = specular {
+                    m.specular_tint = Color::LinearRgba(LinearRgba::rgb(v, v, v));
                 }
                 // Drawn without lighting, as its Nebula state or shader says
                 // (AlphaUnlit, PostAlphaUnlit, shd:unlit...): the sun no longer

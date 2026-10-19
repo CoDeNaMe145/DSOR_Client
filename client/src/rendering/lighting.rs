@@ -10,9 +10,9 @@
 //! EVIDENCE: shaders_sm30 "lightsources" GlobalLight / PointLight ps_3_0, the
 //!   "standard" Solid ps_3_0 (lit colour = light buffer x DiffMap0) and "pe_compose"
 //!   (no curve, only saturation, balance, bloom, vignette and fade).
-//! Map views sum diffuse light and multiply albedo in Nebula's display space,
-//! then convert once to Bevy's linear render target. Material specular remains
-//! Bevy's approximation; source specular maps/powers are not all exported.
+//! Bevy lights linearly and divides the diffuse by pi, so each term becomes its
+//! linear value in Bevy's units (see `UNIT`): what the 2018 renderer shows as `v`
+//! Bevy shows as `v` too once the camera is not tonemapped.
 //!
 //! Camera colour, bloom and vignette come directly from the active bubble.
 //! F2 scales scene lighting and fog (Shift: ten steps at once). Those factors
@@ -42,11 +42,17 @@ const UNIT: f32 = 1.2 * 831.746; // 1.2 x 2^9.7
 /// Bevy's diffuse ambient is `EnvBRDFApprox(albedo, F_AB(1, NdotV))` x ambient:
 /// 0.452 x albedo at roughness 1 (Karis' fit); Nebula's is albedo x ambient.
 const AMBIENT_BRDF: f32 = 0.452;
-/// The light that follows the player (LocalLightColor x LocalLightIntensity):
-/// `_Template_RemotePlayer.PlayerLightOffset` (1, 1, -0.5) from the player.
-/// UNVERIFIED: its range (the data has none).
-const PLAYER_LIGHT_OFFSET: Vec3 = Vec3::new(1.0, 1.0, -0.5);
-const PLAYER_LIGHT_RANGE: f32 = 8.0;
+/// The light that follows the player (LocalLightColor x LocalLightIntensity),
+/// 4 m above the player with a range of 6 m.
+/// EVIDENCE: the running release261_192 client's point light pass
+///   (lighting-work/captures/kingshill-*.txt, all four spots): lightPosRange
+///   view (0.0..0.1, 2.5..2.75, -22.05) with w 0.1667 (1 / range), against the
+///   player at (0, 0, -25) on the camera's centre ray; with the garden's invView
+///   that is world (103.0, 14.99, -126.16) over ground at y 11.0. lightColor
+///   = (0.25, 0.238, 0.212), the zone's LocalLightColor x 0.25.
+///   `_Template_RemotePlayer.PlayerLightOffset` (1, 1, -0.5) is not what it draws.
+const PLAYER_LIGHT_OFFSET: Vec3 = Vec3::new(0.0, 4.0, 0.0);
+const PLAYER_LIGHT_RANGE: f32 = 6.0;
 
 /// Gamma value -> linear, per channel (the sRGB curve, also above 1).
 fn linear(c: [f32; 3], k: f32) -> LinearRgba {
@@ -54,10 +60,13 @@ fn linear(c: [f32; 3], k: f32) -> LinearRgba {
     LinearRgba::rgb(l.red, l.green, l.blue)
 }
 
-/// Transport authored colour/intensity through Bevy's clustered light buffer.
-/// Map diffuse shaders recover the display colour by dividing by pi*UNIT before
-/// decoding sRGB, then apply N.L and sat(1 - d/r) in display space. This avoids
-/// an inverse-square hot spot. Non-map PBR views use the fallback below.
+/// A Nebula point light: gamma colour x intensity, falling off linearly to its
+/// range. Bevy's falloff is replaced by Nebula's (`NebulaFalloff`: sat(1 - d/r),
+/// ^2.2 as the light is added in gamma space), so the light is its colour x
+/// intensity at the centre and nothing at its range, with no inverse-square hot
+/// spot near it: matched at half range with bevy's 1/d^2, a lamp lit the wall
+/// beside it ~9 times too bright ("trop emissive les lights").
+/// E / pi x exposure = linear(colour x intensity) x f: intensity / (4 pi) = pi x UNIT.
 pub fn point_light(color: [f32; 3], intensity: f32, range: f32) -> PointLight {
     PointLight {
         color: Color::LinearRgba(linear(color, intensity)),
@@ -68,8 +77,8 @@ pub fn point_light(color: [f32; 3], intensity: f32, range: f32) -> PointLight {
     }
 }
 
-/// Approximate Nebula falloff for the retained PBR fallback/transmission path.
-/// Map diffuse uses ambience.wgsl's exact display-space falloff instead.
+/// Bevy's `getDistanceAttenuation` (bevy_pbr::lighting) replaced, once the module
+/// is loaded, by Nebula's linear point light falloff. Point and spot lights only.
 /// EVIDENCE: the frame's Lights batch (b_empty, default.xml) and docs/fx.md
 ///   ("Nebula's linear falloff").
 fn nebula_falloff(mut shaders: ResMut<Assets<bevy::shader::Shader>>, mut done: Local<bool>) {
@@ -90,6 +99,86 @@ fn nebula_falloff(mut shaders: ResMut<Assets<bevy::shader::Shader>>, mut done: L
     let patched = src.replace(old, new);
     shader.source = bevy::shader::Source::Wgsl(patched.into());
     info!("point lights: Nebula's linear falloff");
+}
+
+/// Bevy's screen-space ambient occlusion pass, adapted:
+/// - its GTAO (AoMode Linear / Squared / Clamped, to compare) with the
+///   original's radius, 0.4 units around each point (Bevy's: 0.73);
+///   DSOR_AO_RADIUS overrides it;
+/// - the original's own estimate (AoMode::Original), lighting/pe_ssao.wgsl,
+///   when the view's ScreenSpaceAmbientOcclusion has a negative
+///   constant_object_thickness (ORIGINAL_SSAO): Bevy's depth preprocessing,
+///   normal prepass and spatial denoiser stay, the per-pixel estimate is
+///   pe_ssao's.
+/// EVIDENCE: shaders_sm30 pe_ssao (occlusionConstants c23 = (0.4, 0.05, 0.4,
+///   1.3) captured, lighting-work/captures/kingshill-*.txt: `mul r6.xyz, r6,
+///   c23.x` scales the offsets, `add r0.y, r0.x, -c23.z` / `-r0.x, c23.y` bound
+///   the depth test).
+fn patch_ssao(mut shaders: ResMut<Assets<bevy::shader::Shader>>, mut done: Local<[bool; 2]>) {
+    if done.iter().all(|d| *d) {
+        return;
+    }
+    let radius = std::env::var("DSOR_AO_RADIUS").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.4);
+    let dispatch = "    pixel_depth += 0.00001; // Avoid depth precision issues
+";
+    let original = format!("{dispatch}    if thickness < 0.0 {{
+        textureStore(ambient_occlusion, pixel_coordinates, vec4<f32>(dsor_pe_ssao(pixel_coordinates, pixel_depth), 0.0, 0.0, 0.0));
+        return;
+    }}
+");
+    let compute = "@compute
+@workgroup_size(8, 8, 1)
+fn ssao(";
+    let targets: [(&str, Vec<(&str, String)>); 2] = [
+        ("ssao/ssao.wgsl", vec![
+            ("let effect_radius = 0.5 * 1.457;", format!("let effect_radius = {radius:?};")),
+            (dispatch, original),
+            (compute, format!("{}
+{compute}", include_str!("lighting/pe_ssao.wgsl"))),
+        ]),
+        ("ssao/preprocess_depth.wgsl", vec![
+            ("let effect_radius = depth_range_scale_factor * 0.5 * 1.457;", format!("let effect_radius = depth_range_scale_factor * {radius:?};")),
+        ]),
+    ];
+    for (i, (path, edits)) in targets.iter().enumerate() {
+        if done[i] {
+            continue;
+        }
+        let Some(id) = shaders.iter().find(|(_, s)| s.path.ends_with(path)).map(|(id, _)| id) else { continue };
+        done[i] = true;
+        let Some(mut shader) = shaders.get_mut(id) else { continue };
+        let bevy::shader::Source::Wgsl(src) = &shader.source else { continue };
+        if let Some((old, _)) = edits.iter().find(|(old, _)| src.matches(old).count() != 1) {
+            warn!("bevy_pbr {path}: {old:?} not as expected; ambient occlusion keeps Bevy's own");
+            continue;
+        }
+        let mut patched = src.to_string();
+        for (old, new) in edits {
+            patched = patched.replace(old, new);
+        }
+        shader.source = bevy::shader::Source::Wgsl(patched.into());
+        info!("ambient occlusion: the original's radius {radius} and pe_ssao ({path})");
+    }
+}
+
+/// ScreenSpaceAmbientOcclusion::constant_object_thickness meaning "the
+/// original's estimate" to the patched pass (patch_ssao).
+#[cfg(not(target_arch = "wasm32"))]
+const ORIGINAL_SSAO: f32 = -1.0;
+
+/// Whether SSAO runs, and at what quality, is the player's graphics setting
+/// (crate::rendering::graphics, which inserts and removes the component); the
+/// lighting only picks the algorithm in it: the original's estimate
+/// (AoMode::Original) or Bevy's GTAO with Bevy's thickness.
+#[cfg(not(target_arch = "wasm32"))]
+fn ao_algorithm(switches: Option<Res<RenderSwitches>>, mut cameras: Query<&mut bevy::pbr::ScreenSpaceAmbientOcclusion>) {
+    let original = switches.is_none_or(|s| s.ao == AoMode::Original);
+    let thickness = if original { ORIGINAL_SSAO } else { 0.25 };
+    for mut ssao in &mut cameras {
+        if ssao.constant_object_thickness != thickness {
+            ssao.constant_object_thickness = thickness;
+        }
+    }
 }
 
 /// An ambience bubble's settings (the fields the client uses; names as in the
@@ -518,11 +607,85 @@ pub struct Lighting {
     pub ambient: f32,
     pub lights: f32,
     pub fog: f32,
-    /// Scale authored camera-forward fog distances (1 preserves the map data).
+    /// Scale the authored fog distances (measured from the camera).
     pub fog_range: f32,
     pub shadows: bool,
 }
 
+/// How the light is put together: the original's way by default, the others
+/// kept to compare against it. Switchable live from the Lighting Menu, starting
+/// from DSOR_FLAGS (linearlight, noao, aolinear, aosquared, ao13, noshadowfloor,
+/// norim, linearscene). Not saved.
+#[derive(Resource, Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RenderSwitches {
+    /// The original's gamma-space light sum (false: Bevy's linear sum).
+    pub(crate) gamma_light: bool,
+    pub(crate) ao: AoMode,
+    /// Full shadow keeps half the whole light, as the original's blurred shadow
+    /// buffer (false: shadow removes the sun's share only).
+    /// MEASURED (2026-10-18, Kingshill church, offline, away from the
+    /// original's player light): pillars 13/11/14 vs the original's 13/11/14,
+    /// floor 26/19/20 vs 28/21/22 and 18/16/19 vs 19/19/23; without it 17/17/21,
+    /// 29/26/31, 20/23/29 (too bright and blue). The earlier "too dark" was the
+    /// player light in the original's frame and Bevy's AO on top.
+    pub(crate) shadow_floor: bool,
+    /// The characters' rim light.
+    pub(crate) rim: bool,
+    /// Surfaces write gamma colours to the scene target and the compose pass
+    /// shows them as they are, so blending (decals, alpha surfaces, particles,
+    /// glows) mixes shown colours as the original's 8-bit targets do
+    /// (lighting/ambience.wgsl encode_scene). false: Bevy's linear target.
+    pub(crate) gamma_scene: bool,
+}
+
+/// The ambient occlusion and how it darkens the sun pass's sum.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AoMode {
+    /// The original's: pe_ssao's estimate (lighting/pe_ssao.wgsl, in Bevy's SSAO
+    /// pass), the sun pass's light x its visibility squared. The running
+    /// release261_192 client drew pe_ssao once per frame in Kingshill's garden,
+    /// church and throne room (its default frame shader declares the effect
+    /// disabled; the game turns it on), not at the gate.
+    Original,
+    /// None: the light ignores the SSAO (whether the pass runs at all is the
+    /// player's graphics setting, crate::rendering::graphics).
+    Off,
+    /// Bevy's GTAO (0.4 radius), once, in linear.
+    Linear,
+    /// Bevy's GTAO squared in the gamma sum. FAILURE: a dark mat between
+    /// Kingshill's tall grass blades (2026-10-18), where the original's
+    /// contact-only estimate finds almost nothing.
+    Squared,
+    /// Bevy's GTAO x 1.3 clamped to 1, then squared.
+    Clamped,
+}
+
+impl Default for RenderSwitches {
+    fn default() -> Self {
+        Self {
+            gamma_light: !crate::flag("linearlight"),
+            ao: if crate::flag("ao13") {
+                AoMode::Clamped
+            } else if crate::flag("aolinear") {
+                AoMode::Linear
+            } else if crate::flag("aosquared") || crate::flag("aogamma") {
+                AoMode::Squared
+            } else if crate::flag("noao") {
+                AoMode::Off
+            } else {
+                AoMode::Original
+            },
+            shadow_floor: !crate::flag("noshadowfloor"),
+            rim: !crate::flag("norim"),
+            gamma_scene: !crate::flag("linearscene"),
+        }
+    }
+}
+
+/// Neutral: the original has no such multipliers. The earlier tuned values
+/// (back 0.9 / 0.35, lights 1.75 / 1.05, fog 0.55, fog range 0.5) compensated
+/// the back light scaled by LightIntensity and the fog started behind the player;
+/// both now follow the running client's values (crate::rendering::lighting::blend).
 impl Default for Lighting {
     fn default() -> Self {
         Self {
@@ -531,7 +694,7 @@ impl Default for Lighting {
             ambient: 1.0,
             lights: 1.0,
             fog: 1.0,
-            fog_range: 1.5,
+            fog_range: 1.0,
             shadows: true,
         }
     }
@@ -562,40 +725,23 @@ pub(crate) const FIELDS: &[Field] = &[
 
 const STORAGE_KEY: &str = "dsor.look";
 
-fn decode_saved(raw: &str) -> Option<Lighting> {
-    let mut value: serde_json::Value = serde_json::from_str(raw).ok()?;
-    let object = value.as_object_mut()?;
-    if object.get("color_pipeline").and_then(|v| v.as_u64()).unwrap_or(0) < 2 {
-        // These old defaults compensated for linear-space light/fog. Retaining
-        // a half fog range now would put the player inside dense fog. Preserve
-        // other values the user tuned, and version new saves so opting back in
-        // to one of these numbers is never migrated again.
-        for (field, previous) in [("back", 0.9), ("ambient", 0.9), ("lights", 1.75), ("fog", 0.55), ("fog_range", 0.5)] {
-            if object.get(field).and_then(|v| v.as_f64()).is_some_and(|v| (v - previous).abs() < 1e-5) {
-                object.remove(field); // Use the current default for this field.
-            }
-        }
-    }
-    serde_json::from_value(value).ok()
-}
-
 fn load_saved() -> Option<Lighting> {
     #[cfg(target_arch = "wasm32")]
     {
         let raw = web_sys::window()?.local_storage().ok()??.get_item(STORAGE_KEY).ok()??;
-        decode_saved(&raw)
+        serde_json::from_str(&raw).ok()
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
         let _ = STORAGE_KEY;
-        decode_saved(&std::fs::read_to_string("look.json").ok()?)
+        serde_json::from_slice(&std::fs::read("look.json").ok()?).ok()
     }
 }
 
 pub(crate) fn save(l: &Lighting) {
-    let Ok(mut value) = serde_json::to_value(l) else { return };
-    value["color_pipeline"] = serde_json::json!(2);
-    let Ok(raw) = serde_json::to_string(&value) else { return };
+    // Tests (the Lighting Menu's) must not write the working copy's look.json.
+    if cfg!(test) { return; }
+    let Ok(raw) = serde_json::to_string(l) else { return };
     #[cfg(target_arch = "wasm32")]
     if let Some(Ok(Some(store))) = web_sys::window().map(|w| w.local_storage()) {
         let _ = store.set_item(STORAGE_KEY, &raw);
@@ -623,7 +769,8 @@ impl Plugin for EditorLightingPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(BlendPlugin).init_resource::<Level>().init_resource::<EditorLook>()
             .insert_resource(load_saved().unwrap_or_default())
-            .add_systems(Update, nebula_falloff)
+            .init_resource::<RenderSwitches>()
+            .add_systems(Update, (nebula_falloff, patch_ssao))
             .add_systems(Update, (copy_editor_look, apply_look, flicker).chain().in_set(ApplyEditorLighting))
             .add_systems(PostUpdate, shift_fog.after(bevy::transform::TransformSystems::Propagate));
     }
@@ -642,7 +789,8 @@ impl Plugin for LightingPlugin {
             .init_asset_loader::<AmbienceLoader>()
             .init_resource::<Level>()
             .insert_resource(load_saved().unwrap_or_default())
-            .add_systems(Update, nebula_falloff)
+            .init_resource::<RenderSwitches>()
+            .add_systems(Update, (nebula_falloff, patch_ssao))
             // The Lighting Menu replaces this panel when it is on (crate::diagnostics::lighting_menu).
             .add_systems(Startup, spawn_panel.run_if(|| !crate::diagnostics::lighting_menu::enabled()))
             .add_systems(
@@ -658,6 +806,8 @@ impl Plugin for LightingPlugin {
                     .chain().after(bevy::transform::TransformSystems::Propagate)
                     .after(crate::rendering::graphics::ApplyGraphics)
                     .before(bevy::light::cascade::build_directional_light_cascades));
+        #[cfg(not(target_arch = "wasm32"))]
+        app.add_systems(PostUpdate, ao_algorithm.after(crate::rendering::graphics::ApplyGraphics));
     }
 }
 
@@ -724,7 +874,14 @@ fn follow_level(
         // offsets, zoom, and whether a camera is available during map handoff.
         // A free camera must enter the volume too: its ground focus moves when
         // looking around and can cross a doorway while the camera is outside.
-        let position = observer_position(players.single().ok().map(|p| p.translation()), cameras.iter());
+        let mut position = observer_position(players.single().ok().map(|p| p.translation()), cameras.iter());
+        // DSOR_FLAGS=camfocus (offline comparisons only): without a player, the
+        // zone where the game camera's player would stand, 25 m ahead of it.
+        if players.is_empty() && crate::flag("camfocus") {
+            if let Some((_, at)) = cameras.iter().find(|(c, _)| c.is_active) {
+                position = Some(at.translation() + at.forward() * 25.0);
+            }
+        }
         let inside = match preview {
             Some(target) => target.filter(|&i| i < ambience.bubbles.len()),
             None => position.and_then(|p| ambience.bubble_at(p)),
@@ -757,6 +914,7 @@ fn follow_level(
 fn apply_look(
     mut commands: Commands,
     lighting: Res<Lighting>,
+    switches: Option<Res<RenderSwitches>>,
     graphics: Option<Res<crate::rendering::graphics::GraphicsSettings>>,
     level: Res<Level>,
     mut suns: Query<(&mut DirectionalLight, &mut Transform, &mut GlobalTransform), With<Sun>>,
@@ -766,14 +924,22 @@ fn apply_look(
     mut fresh: Local<Vec<Entity>>,
 ) {
     let new_camera = cameras.iter().any(|e| !fresh.contains(&e));
-    if !lighting.is_changed() && !level.is_changed() && !new_camera && !graphics.as_ref().is_some_and(|g| g.is_changed()) {
+    if !lighting.is_changed() && !level.is_changed() && !new_camera && !switches.as_ref().is_some_and(|s| s.is_changed())
+        && !graphics.as_ref().is_some_and(|g| g.is_changed()) {
         return;
     }
+    let switches = switches.map(|s| *s).unwrap_or_default();
     fresh.clear();
     fresh.extend(cameras.iter());
     let (l, b) = (&*lighting, &level.bubble);
     let rgb = |c: [f32; 4]| [c[0], c[1], c[2]];
-    *gpu_ambience = level.blend.gpu(l).with_height_fog(b).with_rim_light(b).with_ambient(b, l);
+    let a = linear(rgb(b.light_ambient), 1.0);
+    // The light is summed in gamma space as the original's sun pass does, the
+    // ambient joining that sum instead of Bevy's ambient light.
+    // RenderSwitches (the Lighting Menu, DSOR_FLAGS): the other ways, to compare.
+    let gamma_light = switches.gamma_light;
+    *gpu_ambience = level.blend.gpu(l).with_height_fog(b).with_rim_light(b).with_rim_enabled(switches.rim).with_fog(b, l)
+        .with_gamma_light(&switches, Vec3::new(a.red, a.green, a.blue) * l.ambient, b.light_shadow_intensity);
     let toward = level.shadow_dir.normalize_or(blend::direction(None));
     for (mut sun, mut tf, mut global_tf) in &mut suns {
         // The single real sun supplies the fixed shadow map. The fragment
@@ -787,9 +953,9 @@ fn apply_look(
         // This unparented light must reach cascade construction this frame.
         *global_tf = GlobalTransform::from(*tf);
     }
-    let a = linear(rgb(b.light_ambient), 1.0);
     ambient.color = Color::LinearRgba(a);
-    ambient.brightness = UNIT / AMBIENT_BRDF * l.ambient;
+    // In the gamma sum the ambient is the ambience shader's; Bevy's would add it twice.
+    ambient.brightness = if gamma_light { 0.0 } else { UNIT / AMBIENT_BRDF * l.ambient };
 
     // Fog: Nebula's factor is clamp((far - z) / (far - near), FogColor.w, 1).
     // UNVERIFIED: FogIntensity as the fog's opacity.
@@ -811,9 +977,10 @@ fn apply_look(
                 saturation: b.saturation,
                 balance: Vec4::from_array(b.balance),
                 vignette_color: Vec4::from_array(b.vignette_color),
-                vignette_intensity: if graphics.as_ref().is_none_or(|g| !g.vignette) { 0.0 } else { b.vignette_intensity },
+                vignette_intensity: if graphics.as_ref().is_some_and(|g| !g.vignette) { 0.0 } else { b.vignette_intensity },
                 vignette_size: b.vignette_size,
                 death_fade: 0.0,
+                gamma_scene: switches.gamma_scene,
             }));
         cam.remove::<(Bloom, Vignette)>();
     }
@@ -980,8 +1147,14 @@ fn refresh_values(lighting: Res<Lighting>, mut texts: Query<(&ValueText, &mut Te
     }
 }
 
-/// Original fog thresholds are measured from the camera. Adding focus distance
-/// makes zoom change the authored fog and incorrectly pushes it away from the player.
+/// Bevy's fog (what particles and glows read, and the fallback without the
+/// level's look) uses the authored range from the camera, as Nebula's does.
+/// Earlier the range started beyond the camera's focus (the camera-to-player
+/// distance added) because the fog "washed out the upper half of the view";
+/// the original does measure from the camera (shaders_sm30's view-space fog
+/// depth, fogDistances = FogNearDist/FogFarDist as the running client sends
+/// them): Kingshill's teal haze over the far half of the view is its fog.
+/// Nebula's own fog (crate::rendering::lighting::blend `with_fog`) draws it.
 fn shift_fog(
     level: Res<Level>,
     lighting: Res<Lighting>,

@@ -3,6 +3,14 @@
 //! material instance gets a soft, dithered cutout; shared materials and whole
 //! merged cells stay intact. The depth/normal prepass uses the same hole, while
 //! shadow views retain the building's original silhouette.
+//!
+//! The map's visibility groups (crate::world::map::MapGroup, type 0) are the
+//! original's way: a group standing between the camera and the player fades
+//! out as a whole (fade_groups), the same dithered discard over all of it,
+//! shadows kept. Their surfaces never get the hole, and the hole itself is now
+//! only with DSOR_FLAGS=playerhole: what is left hides the character, as in the
+//! original (a glow through it, crate::rendering::hidden_pixels, is
+//! DSOR_FLAGS=hiddenglow).
 
 use std::collections::HashSet;
 
@@ -57,6 +65,14 @@ type CutoutSurfaceMaterial = ExtendedMaterial<NebulaMaterial, SurfaceCutout>;
 #[derive(Component)]
 struct Candidate;
 
+/// A surface of a map visibility group (crate::world::map::MapGroup type 0).
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct VisibilityGroup(pub u32);
+
+/// Each visibility group's fade: amount (1 = gone) and hold time.
+#[derive(Resource, Default)]
+struct GroupFades(std::collections::HashMap<u32, (f32, f32)>);
+
 enum MaterialPair {
     Standard(Handle<StandardMaterial>, Handle<CutoutMaterial>),
     Surface(Handle<NebulaMaterial>, Handle<CutoutSurfaceMaterial>),
@@ -80,8 +96,9 @@ impl Plugin for OcclusionPlugin {
         bevy::shader::load_shader_library!(app, "shaders/occlusion.wgsl");
         app.add_plugins((MaterialPlugin::<CutoutMaterial>::default(), MaterialPlugin::<CutoutSurfaceMaterial>::default()))
             .init_resource::<ShadersReady>()
+            .init_resource::<GroupFades>()
             .add_systems(Update, prepare_shaders)
-            .add_systems(PostUpdate, (mark_candidates, reveal_player).chain()
+            .add_systems(PostUpdate, (mark_candidates, reveal_player, fade_groups).chain()
                 .after(TransformSystems::Propagate)
                 .after(VisibilitySystems::VisibilityPropagate));
         #[cfg(not(target_arch = "wasm32"))]
@@ -176,13 +193,18 @@ fn advance_fade(amount: f32, hold: &mut f32, hit: bool, dt: f32) -> f32 {
 fn reveal_player(mut commands: Commands, ready: Res<ShadersReady>, time: Res<Time>,
     players: Query<&GlobalTransform, With<crate::network::net::LocalPlayer>>,
     cameras: Query<(&Camera, &GlobalTransform), (With<Camera3d>, Without<crate::rendering::highlight::HighlightCamera>, Without<crate::rendering::lighting::NoLevelLook>)>,
-    candidates: Query<(Entity, Option<&MeshMaterial3d<StandardMaterial>>, Option<&MeshMaterial3d<NebulaMaterial>>, Has<Occluded>), With<Candidate>>,
-    mut occluded: Query<(Entity, &mut Occluded)>, mut raycast: MeshRayCast,
+    candidates: Query<(Entity, Option<&MeshMaterial3d<StandardMaterial>>, Option<&MeshMaterial3d<NebulaMaterial>>, Has<Occluded>), (With<Candidate>, Without<VisibilityGroup>)>,
+    mut occluded: Query<(Entity, &mut Occluded), Without<VisibilityGroup>>, mut raycast: MeshRayCast,
     standard: Res<Assets<StandardMaterial>>, surfaces: Res<Assets<NebulaMaterial>>,
     mut cutouts: ResMut<Assets<CutoutMaterial>>, mut surface_cutouts: ResMut<Assets<CutoutSurfaceMaterial>>) {
     let _profile = crate::diagnostics::hud::FrameSpan::new("occlusion::reveal_player");
+    // The hole is no longer the default: the original fades its visibility groups
+    // (fade_groups) and lets the rest hide the character.
     if !ready.0 || crate::flag("noocclusion") { return; }
+    // Without it nothing opens; what is open still closes and is restored.
+    let hole = crate::flag("playerhole");
     let view = players.single().ok().zip(cameras.single().ok().filter(|(cam, _)| cam.is_active))
+        .filter(|_| hole)
         .map(|(player, (_, camera))| (player.translation(), camera.translation(), camera.right().as_vec3()));
     let mut hits = HashSet::new();
     let mut params = None;
@@ -233,6 +255,84 @@ fn reveal_player(mut commands: Commands, ready: Res<ShadersReady>, time: Res<Tim
         } else { continue };
         entity.insert(Occluded { material, amount: params.target.w, hold: HOLD_SECONDS, params });
     }
+}
+
+/// A ray from the camera to the player's torso or head blocked by a group
+/// surface hides that whole group, as the original's point-of-interest test
+/// against its visibility-group collides. The group keeps fading while hit and
+/// HOLD_SECONDS after, then comes back.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn fade_groups(mut commands: Commands, ready: Res<ShadersReady>, time: Res<Time>, mut fades: ResMut<GroupFades>,
+    players: Query<&GlobalTransform, With<crate::network::net::LocalPlayer>>,
+    cameras: Query<(&Camera, &GlobalTransform), (With<Camera3d>, Without<crate::rendering::highlight::HighlightCamera>, Without<crate::rendering::lighting::NoLevelLook>)>,
+    mut members: Query<(Entity, &VisibilityGroup, Option<&MeshMaterial3d<StandardMaterial>>, Option<&MeshMaterial3d<NebulaMaterial>>, Option<&mut Occluded>)>,
+    mut raycast: MeshRayCast,
+    standard: Res<Assets<StandardMaterial>>, surfaces: Res<Assets<NebulaMaterial>>,
+    mut cutouts: ResMut<Assets<CutoutMaterial>>, mut surface_cutouts: ResMut<Assets<CutoutSurfaceMaterial>>) {
+    if !ready.0 || crate::flag("noocclusion") { return; }
+    let view = players.single().ok().zip(cameras.single().ok().filter(|(cam, _)| cam.is_active))
+        .map(|(player, (_, camera))| (player.translation(), camera.translation()));
+    let mut hit = HashSet::new();
+    if let Some((feet, origin)) = view {
+        let groups: std::collections::HashMap<Entity, u32> = members.iter().map(|(e, g, ..)| (e, g.0)).collect();
+        let filter = |entity| groups.contains_key(&entity);
+        let settings = MeshRayCastSettings::default().with_filter(&filter)
+            .with_visibility(RayCastVisibility::Any).never_early_exit();
+        for target in [feet + Vec3::Y, feet + Vec3::Y * 1.75] {
+            let delta = target - origin;
+            let Ok(direction) = Dir3::new(delta) else { continue };
+            for (entity, h) in raycast.cast_ray(Ray3d::new(origin, direction), &settings) {
+                if blocks_player(h.distance, delta.length(), h.point, feet) {
+                    if let Some(g) = groups.get(entity) { hit.insert(*g); }
+                }
+            }
+        }
+    }
+    let dt = time.delta_secs();
+    for g in &hit { fades.0.entry(*g).or_insert((0.0, 0.0)); }
+    for (g, (amount, hold)) in fades.0.iter_mut() {
+        *amount = advance_fade(*amount, hold, hit.contains(g), dt);
+    }
+    let origin = view.map(|(_, o)| o).unwrap_or(Vec3::ZERO);
+    for (entity, group, std, neb, state) in &mut members {
+        let amount = fades.0.get(&group.0).map(|f| f.0).unwrap_or(0.0);
+        // limits.z 1: the whole surface (shaders/occlusion.wgsl); the camera
+        // position keeps shadow views out of it.
+        let params = CutoutParams { camera: origin.extend(RADIUS), target: Vec3::ZERO.extend(amount), limits: Vec4::new(f32::MIN, 0.0, 1.0, 0.0) };
+        match state {
+            Some(state) if amount == 0.0 => {
+                let mut entity = commands.entity(entity);
+                match &state.material {
+                    MaterialPair::Standard(original, _) => { entity.remove::<MeshMaterial3d<CutoutMaterial>>().insert(MeshMaterial3d(original.clone())); }
+                    MaterialPair::Surface(original, _) => { entity.remove::<MeshMaterial3d<CutoutSurfaceMaterial>>().insert(MeshMaterial3d(original.clone())); }
+                }
+                entity.remove::<Occluded>();
+            }
+            Some(mut state) => {
+                state.amount = amount;
+                state.params = params;
+                match &state.material {
+                    MaterialPair::Standard(_, handle) => { if let Some(mut m) = cutouts.get_mut(handle) { m.extension.params = params; } }
+                    MaterialPair::Surface(_, handle) => { if let Some(mut m) = surface_cutouts.get_mut(handle) { m.extension.params = params; } }
+                }
+            }
+            None if amount > 0.0 => {
+                let mut entity = commands.entity(entity);
+                let material = if let Some((handle, base)) = std.and_then(|h| standard.get(&h.0).map(|m| (h.0.clone(), m.clone()))) {
+                    let cutout = cutouts.add(CutoutMaterial { base, extension: Cutout { params } });
+                    entity.remove::<MeshMaterial3d<StandardMaterial>>().insert(MeshMaterial3d(cutout.clone()));
+                    MaterialPair::Standard(handle, cutout)
+                } else if let Some((handle, base)) = neb.and_then(|h| surfaces.get(&h.0).map(|m| (h.0.clone(), m.clone()))) {
+                    let cutout = surface_cutouts.add(CutoutSurfaceMaterial { base, extension: SurfaceCutout { params } });
+                    entity.remove::<MeshMaterial3d<NebulaMaterial>>().insert(MeshMaterial3d(cutout.clone()));
+                    MaterialPair::Surface(handle, cutout)
+                } else { continue };
+                entity.insert(Occluded { material, amount, hold: 0.0, params });
+            }
+            None => {}
+        }
+    }
+    fades.0.retain(|_, (amount, _)| *amount > 0.0);
 }
 
 #[cfg(not(target_arch = "wasm32"))]

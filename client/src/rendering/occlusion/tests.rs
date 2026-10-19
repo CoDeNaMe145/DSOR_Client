@@ -157,3 +157,40 @@ fn surface_shader_can_be_extended_without_changing_its_lighting() {
         "in.world_position.xyz", "test.wgsl").is_some());
     assert!(cutout_shader("unknown entry point", "missing anchor", "in.world_position.xyz", "test.wgsl").is_none());
 }
+
+#[test]
+fn a_blocking_visibility_group_fades_as_a_whole_and_others_stay() {
+    bevy::tasks::ComputeTaskPool::get_or_init(bevy::tasks::TaskPool::new);
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins).insert_resource(ShadersReady(true)).init_resource::<GroupFades>()
+        .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(std::time::Duration::from_millis(50)))
+        .init_resource::<Assets<Mesh>>().init_resource::<Assets<StandardMaterial>>()
+        .init_resource::<Assets<NebulaMaterial>>().init_resource::<Assets<CutoutMaterial>>()
+        .init_resource::<Assets<CutoutSurfaceMaterial>>()
+        .add_systems(Update, fade_groups);
+    app.world_mut().spawn((Camera3d::default(), GlobalTransform::from_translation(TEST_CAMERA)));
+    app.world_mut().spawn((GlobalTransform::IDENTITY, crate::network::net::LocalPlayer::default()));
+    let material = app.world_mut().resource_mut::<Assets<StandardMaterial>>().add(StandardMaterial::default());
+    let mut member = |center: Vec3, group: u32| {
+        let world = app.world_mut();
+        let entity = obstacle(world, Vec3::new(4.0, 4.0, 0.2), center);
+        world.entity_mut(entity).insert((VisibilityGroup(group), MeshMaterial3d(material.clone())));
+        entity
+    };
+    let blocking = member(Vec3::new(0.0, 2.0, 5.0), 1);
+    let same_group_aside = member(Vec3::new(20.0, 2.0, 5.0), 1);
+    let other_group = member(Vec3::new(-20.0, 2.0, 5.0), 2);
+    for _ in 0..10 { app.update(); }
+    for entity in [blocking, same_group_aside] {
+        assert!(app.world().get::<MeshMaterial3d<CutoutMaterial>>(entity).is_some(), "the whole group fades");
+    }
+    assert_eq!(app.world().get::<MeshMaterial3d<StandardMaterial>>(other_group).unwrap().0, material);
+    // The camera moves away from behind the wall: the group comes back.
+    let camera = app.world_mut().query_filtered::<Entity, With<Camera3d>>().single(app.world()).unwrap();
+    app.world_mut().entity_mut(camera).insert(GlobalTransform::from_xyz(0.0, 3.0, -10.0));
+    for _ in 0..20 { app.update(); }
+    for entity in [blocking, same_group_aside] {
+        assert_eq!(app.world().get::<MeshMaterial3d<StandardMaterial>>(entity).unwrap().0, material);
+        assert!(app.world().get::<Occluded>(entity).is_none());
+    }
+}

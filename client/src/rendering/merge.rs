@@ -56,6 +56,11 @@ pub struct BatchKey {
     pub cell: (i32, i32),
     pub material: UntypedAssetId,
     pub casts_shadow: bool,
+    /// Map decals land on it (crate::rendering::decals::DecalReceiver).
+    pub decal_receiver: bool,
+    /// Its visibility group, merged only with the group's own surfaces: the
+    /// group fades as a whole (crate::rendering::occlusion::VisibilityGroup).
+    pub group: Option<u32>,
     pub layout: Layout,
 }
 

@@ -281,7 +281,15 @@ pub(crate) fn asset_root() -> String {
 }
 
 /// Diagnostic switches: the web page's `flag=a,b` or DSOR_FLAGS=a,b natively.
-/// noanim (no character animation), noshadows, nonpcs-shadow, noparticles, norim.
+/// noanim (no character animation), noshadows, nonpcs-shadow, noparticles, norim,
+/// linearlight (the light summed in linear space instead of the original's gamma sum),
+/// noshadowfloor (shadow removes the sun's share only, not half the whole light as the original),
+/// noao (no ambient occlusion), aolinear / aosquared / ao13 (Bevy's GTAO instead of the original's pe_ssao),
+/// linearscene (Bevy's linear scene target instead of the original's gamma blending),
+/// nospecular (no sun specular), playerhole (the old dithered hole around the player behind walls),
+/// hiddenglow (the player behind walls drawn as a glow; the original showed none behind the palace wall),
+/// camfocus (offline viewer: the ambience zone at the game camera's focus, not the camera),
+/// shadowcull (sun shadows from front faces only, as Bevy draws them by default).
 pub static FLAGS: std::sync::OnceLock<std::collections::HashSet<String>> = std::sync::OnceLock::new();
 
 pub fn flag(name: &str) -> bool {
@@ -328,6 +336,11 @@ fn main() {
     }
     let opts = options();
     let mut app = App::new();
+    // Outside debug builds a command on an entity already despawned (an effect
+    // ending the frame its actor goes) is logged, not fatal: one such race
+    // crashed the game (2026-10-18). Debug builds keep panicking to show them.
+    #[cfg(not(debug_assertions))]
+    app.set_error_handler(bevy::ecs::error::warn);
     rendering::graphics::configure_native_dlss(&mut app);
     app.register_asset_source(bevy::asset::io::AssetSourceId::Default, model_variant::source(asset_root()));
     if let Some(config) = opts.net.as_ref().filter(|_| !opts.login_screen) {
@@ -414,7 +427,7 @@ fn main() {
         .add_plugins(loading::LoadingPlugin)
         .add_plugins(selection::SelectionPlugin)
         .add_plugins((anim_cull::AnimCullPlugin, refraction::RefractionPlugin, surfaces::SurfacesPlugin, exits::ExitsPlugin, monsters::MonstersPlugin, crate::actors::mounts::MountsPlugin, combat_text::CombatTextPlugin, debug::DebugPlugin, stats::StatsPlugin, clamp::ClampPlugin, nebula_bloom::NebulaBloomPlugin, occlusion::OcclusionPlugin))
-        .add_plugins((highlight::HighlightPlugin, picking::PickingPlugin, chat::ChatPlugin, props::PropsPlugin, drops::DropsPlugin))
+        .add_plugins((highlight::HighlightPlugin, picking::PickingPlugin, chat::ChatPlugin, props::PropsPlugin, drops::DropsPlugin, rendering::hidden_pixels::HiddenPixelsPlugin))
         .insert_resource(ClearColor(Color::srgb(0.05, 0.06, 0.08)))
         // The sun's one shadow cascade covers 60 units: 1 024 texels in the
         // browser (half bevy's default) is ~6 cm a texel.

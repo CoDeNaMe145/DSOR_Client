@@ -351,7 +351,13 @@ impl Plugin for MonstersPlugin {
             .add_systems(Startup, load)
             .add_systems(Update, (spawn_monsters, setup_models, monster_health, hits_and_kills, start_deaths)
                 .chain().in_set(MonsterSystems).before(crate::network::net::NetSystems))
-            .add_systems(PostUpdate, remove_corpses.after(bevy::app::AnimationSystems))
+            // Before the lights' bounds: a corpse takes its effects' lights with it
+            // (ChildOf), and update_point_light_bounding_spheres inserting a Sphere
+            // on one despawned in the same command flush panicked the game
+            // ("Entity despawned ... insert<Sphere>", a0400_deadlands, 2026-10-18).
+            // Ordered, the despawn is applied first and the light is not queried.
+            .add_systems(PostUpdate, remove_corpses.after(bevy::app::AnimationSystems)
+                .before(bevy::light::SimulationLightSystems::UpdateBounds))
             .add_systems(Update, patrol_test_monster);
     }
 }

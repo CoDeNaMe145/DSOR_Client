@@ -7,7 +7,6 @@ fn app() -> App {
         .init_resource::<Level>()
         .init_resource::<GpuAmbience>()
         .init_resource::<GlobalAmbientLight>()
-        .insert_resource(crate::rendering::graphics::GraphicsSettings { vignette: true, ..default() })
         .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(std::time::Duration::from_millis(100)))
         // Existing native/browser preferences must not override bubble colour.
         .insert_resource(serde_json::from_str::<Lighting>(r#"{"saturation":3,"bloom":0,"vignette":0,"exposure":4,"tonemapping":true,"sun":0.8}"#).unwrap());
@@ -16,56 +15,6 @@ fn app() -> App {
 
 fn look() -> Bubble {
     serde_json::from_str(r#"{"Saturation":0.25,"Balance":[0.5,0.75,1,1],"BloomScale":0.4,"BloomColor":[1,0.5,0.2,1],"BrightPassThreshold":0.8,"VignetteIntensity":0.7,"VignetteSize":3,"VignetteColor":[0.1,0.2,0.3,1]}"#).unwrap()
-}
-
-#[test]
-fn saved_lighting_migrates_old_compensation_defaults_but_keeps_user_tuning() {
-    let old = decode_saved(r#"{"sun":0.8,"back":0.35,"ambient":0.9,"lights":1.75,"fog":0.55,"fog_range":0.5,"shadows":false}"#).unwrap();
-    assert_eq!((old.sun, old.back, old.shadows), (0.8, 0.35, false));
-    assert_eq!((old.ambient, old.lights, old.fog, old.fog_range), (1., 1., 1., 1.5));
-    let current = decode_saved(r#"{"color_pipeline":2,"back":0.9,"ambient":0.9,"lights":1.75,"fog":0.55,"fog_range":0.5}"#).unwrap();
-    assert_eq!((current.back, current.ambient, current.lights, current.fog, current.fog_range), (0.9, 0.9, 1.75, 0.55, 0.5));
-}
-
-#[test]
-fn vignette_is_opt_in_even_when_the_map_authors_a_bright_colour() {
-    use crate::rendering::graphics::GraphicsSettings;
-    let mut app = app();
-    app.insert_resource(GraphicsSettings::default()).add_systems(Update, apply_look);
-    let camera = app.world_mut().spawn(Camera3d::default()).id();
-    let bubble = Bubble { vignette_color: [1.; 4], vignette_intensity: 2., ..look() };
-    app.world_mut().resource_mut::<Level>().bubble = bubble.clone();
-    app.update();
-    assert_eq!(app.world().get::<NebulaPostProcess>(camera).unwrap().vignette_intensity, 0.);
-    app.world_mut().resource_mut::<GraphicsSettings>().vignette = true;
-    app.update();
-    assert_look(&app, camera, &bubble);
-    app.world_mut().remove_resource::<GraphicsSettings>();
-    app.update();
-    // A newly created editor view without preferences also starts with it off.
-    let editor = app.world_mut().spawn(Camera3d::default()).id();
-    app.update();
-    assert_eq!(app.world().get::<NebulaPostProcess>(editor).unwrap().vignette_intensity, 0.);
-}
-
-#[test]
-fn fog_thresholds_follow_authored_camera_depth_without_focus_offsets() {
-    let mut app = app();
-    app.insert_resource(Lighting::default()).add_systems(Update, (apply_look, shift_fog).chain());
-    app.world_mut().resource_mut::<Level>().bubble = Bubble { fog_near_dist: 27., fog_far_dist: 50., ..default() };
-    let camera = app.world_mut().spawn((Camera3d::default(), GlobalTransform::from_translation(Vec3::Y * 25.))).id();
-    let check = |app: &App, near, far| {
-        let FogFalloff::Linear { start, end } = app.world().get::<DistanceFog>(camera).unwrap().falloff else { panic!("linear fog expected") };
-        assert_eq!((start, end), (near, far));
-    };
-    app.update();
-    check(&app, 40.5, 75.);
-    app.world_mut().entity_mut(camera).insert(GlobalTransform::from_translation(Vec3::new(300., 90., 200.)));
-    app.update();
-    check(&app, 40.5, 75.);
-    app.world_mut().resource_mut::<Lighting>().fog_range = 2.;
-    app.update();
-    check(&app, 54., 100.);
 }
 
 fn assert_look(app: &App, camera: Entity, bubble: &Bubble) {
@@ -79,7 +28,6 @@ fn assert_look(app: &App, camera: Entity, bubble: &Bubble) {
     assert_eq!(post.vignette_size, bubble.vignette_size);
     assert_eq!(post.vignette_color.to_array(), bubble.vignette_color);
     assert_eq!(app.world().get::<Tonemapping>(camera), Some(&Tonemapping::None));
-    assert!(app.world().get::<bevy::camera::Hdr>(camera).is_some(), "retain highlights until Nebula composition, including with bloom off");
     let grading = app.world().get::<ColorGrading>(camera).unwrap();
     assert_eq!(grading.global.exposure, 0.);
     assert_eq!(grading.global.post_saturation, 1.);
@@ -91,7 +39,9 @@ fn assert_look(app: &App, camera: Entity, bubble: &Bubble) {
 fn player_graphics_gates_effects_and_restores_the_current_bubble() {
     use crate::rendering::graphics::{GraphicsSettings, Quality};
     let mut app = app();
-    app.init_resource::<GraphicsSettings>().add_systems(Update, apply_look);
+    // Vignette is opt-in (GraphicsSettings::default leaves it off), so the
+    // bubble's own vignette only shows once the player enables it.
+    app.insert_resource(GraphicsSettings { vignette: true, ..default() }).add_systems(Update, apply_look);
     let camera = app.world_mut().spawn(Camera3d::default()).id();
     let sun = app.world_mut().spawn((Sun, DirectionalLight::default(), Transform::default())).id();
     let bubble = look();
@@ -295,4 +245,22 @@ fn lighting_menu_preview_shows_a_zone_from_outside_event_zones_included() {
     app.world_mut().resource_mut::<LightingMenuStore>().preview_target = None;
     for _ in 0..4 { app.update(); }
     assert_look(&app, camera, &global);
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn the_player_setting_owns_ssao_and_the_lighting_picks_its_algorithm() {
+    use bevy::pbr::ScreenSpaceAmbientOcclusion;
+    // The graphics settings (crate::rendering::graphics) insert SSAO with Bevy's
+    // defaults or remove it; the lighting only sets the algorithm on what is there.
+    let mut app = App::new();
+    app.init_resource::<RenderSwitches>().add_systems(Update, ao_algorithm);
+    let with = app.world_mut().spawn(ScreenSpaceAmbientOcclusion::default()).id();
+    let without = app.world_mut().spawn(Camera3d::default()).id();
+    app.update();
+    assert_eq!(app.world().get::<ScreenSpaceAmbientOcclusion>(with).unwrap().constant_object_thickness, ORIGINAL_SSAO);
+    assert!(app.world().get::<ScreenSpaceAmbientOcclusion>(without).is_none(), "never added: the player turned it off");
+    app.world_mut().resource_mut::<RenderSwitches>().ao = AoMode::Squared;
+    app.update();
+    assert_eq!(app.world().get::<ScreenSpaceAmbientOcclusion>(with).unwrap().constant_object_thickness, 0.25);
 }

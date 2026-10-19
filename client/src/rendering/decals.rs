@@ -3,8 +3,9 @@
 //! inside it -- stone patches, sand, paths. Drawing the box itself gave flat
 //! squares; projecting needs the depth buffer, which WebGL2 cannot sample.
 //!
-//! So the projection is done once, on the CPU: once the map is in, every opaque
-//! ground triangle inside a box is clipped to it. The mask is laid over the box
+//! So the projection is done once, on the CPU: once the map is in, every ground
+//! triangle of a DecalReceiveSolid surface (DecalReceiver) inside a box is
+//! clipped to it. The mask is laid over the box
 //! (uv_b = box x + 0.5, z + 0.5); the colour repeats over the ground at the n3
 //! node's `Scale` (uv = world x, z * Scale; 0.2 in Kingshill, so the stones keep
 //! their size however big the box). All decals sharing textures end up in one
@@ -65,6 +66,19 @@ pub const DECAL_DEPTH_BIAS: f32 = -1000.0;
 #[derive(Component)]
 struct Projected;
 
+/// A map surface whose node pass is DecalReceiveSolid (crate::world::map): the
+/// only surfaces map decals land on. The original's Color pass draws those
+/// first with b_decalreceive, which writes stencil 100 where they are the
+/// visible surface (ZFunc EQUAL after the depth pass), and b_decal draws only
+/// where the stencil is 100: ground tiles take the decal, the stairs, crates,
+/// walls and props standing in its box do not.
+/// EVIDENCE: export_win32/frame/default.xml (Color pass batches);
+///   shaders_sm30 b_decalreceive (StencilEnable, StencilRef 100, StencilFunc
+///   ALWAYS, StencilPass REPLACE, ZFunc EQUAL) and b_decal (StencilRef 100,
+///   StencilFunc EQUAL, SrcBlend SRCALPHA, DestBlend INVSRCALPHA).
+#[derive(Component)]
+pub struct DecalReceiver;
+
 pub struct DecalPlugin;
 
 impl Plugin for DecalPlugin {
@@ -87,9 +101,9 @@ struct Batch {
 /// What a batch is drawn with.
 #[derive(Clone, PartialEq, Eq, Hash)]
 enum Look {
-    /// Colour repeated at a scale, mask over the box, and the box material's
-    /// opacity (the node's static Intensity0).
-    Tiled(AssetId<Image>, AssetId<Image>, u32, u32),
+    /// Colour repeated at a scale, mask over the box, the box material's
+    /// opacity (the node's static Intensity0) and specular (MatSpecularIntensity).
+    Tiled(AssetId<Image>, AssetId<Image>, u32, u32, u32),
     /// The box material's merged texture over the box (no dsor_decal extras).
     Stretched(AssetId<StandardMaterial>),
 }
@@ -152,8 +166,8 @@ fn project_decals(
     std_materials: Res<Assets<StandardMaterial>>,
     pending: Query<(Entity, &GlobalTransform, &DecalVolume, &MeshMaterial3d<StandardMaterial>), Without<Projected>>,
     ground: Query<
-        (&Mesh3d, &GlobalTransform, &Aabb),
-        (Without<DecalVolume>, Without<NotShadowCaster>, Without<SkinnedMesh>),
+        (&Mesh3d, &GlobalTransform, &Aabb, Option<&MeshMaterial3d<StandardMaterial>>),
+        (With<DecalReceiver>, Without<DecalVolume>, Without<SkinnedMesh>),
     >,
     mut settled: Local<u32>,
     parents: Query<&ChildOf>,
@@ -226,7 +240,14 @@ fn project_decals(
     // Index the ground by world bounds.
     let mut grid: HashMap<(i32, i32), Vec<u32>> = HashMap::new();
     let mut entries = Vec::new();
-    for (mesh, gt, aabb) in &ground {
+    for (mesh, gt, aabb, material) in &ground {
+        // Not alpha-tested surfaces (tall grass, leaves): projected onto their
+        // whole cards, the decal painted the cut-out parts too, dark slabs over
+        // Kingshill's market grass. The original projects through the depth
+        // buffer, which only holds the blades.
+        if material.and_then(|m| std_materials.get(&m.0)).is_some_and(|m| matches!(m.alpha_mode, AlphaMode::Mask(_))) {
+            continue;
+        }
         let affine = gt.affine();
         let (lo, hi) = world_aabb(&affine, Vec3::from(aabb.min()), Vec3::from(aabb.max()));
         let i = entries.len() as u32;
@@ -251,7 +272,8 @@ fn project_decals(
         let (look, scale) = match &volume.tiling {
             Some(t) => {
                 let alpha = std_materials.get(&material.0).map(|m| m.base_color.alpha()).unwrap_or(1.0);
-                (Look::Tiled(t.color.id(), t.mask.id(), t.scale.to_bits(), alpha.to_bits()), Some(t.scale))
+                let specular = std_materials.get(&material.0).map(|m| m.specular_tint.to_linear().red).unwrap_or(1.0);
+                (Look::Tiled(t.color.id(), t.mask.id(), t.scale.to_bits(), alpha.to_bits(), specular.to_bits()), Some(t.scale))
             }
             None => (Look::Stretched(material.0.id()), None),
         };
@@ -260,6 +282,7 @@ fn project_decals(
             .or_insert_with(|| match &volume.tiling {
                 Some(t) => {
                     let alpha = std_materials.get(&material.0).map(|m| m.base_color.alpha()).unwrap_or(1.0);
+                    let specular_tint = std_materials.get(&material.0).map(|m| m.specular_tint).unwrap_or(Color::WHITE);
                     let m = decal_materials.add(DecalMaterial {
                         base: StandardMaterial {
                             base_color: Color::srgba(1.0, 1.0, 1.0, alpha),
@@ -268,6 +291,7 @@ fn project_decals(
                             depth_bias: DECAL_DEPTH_BIAS,
                             perceptual_roughness: 0.8,
                             metallic: 0.0,
+                            specular_tint,
                             ..default()
                         },
                         extension: DecalMask { mask: t.mask.clone() },

@@ -71,6 +71,14 @@ impl AssetReader for VariantReader {
                 let bytes = crate::rendering::model_compact::compact_glb(&bytes).map_err(std::io::Error::other)?;
                 return Ok(Box::new(VecReader::new(bytes)));
             }
+            if path.extension().is_some_and(|e| e == "glb") {
+                let mut bytes = Vec::new();
+                self.inner.read(path).await?.read_to_end(&mut bytes).await?;
+                if json_mentions(&bytes, b"shd:envvertexanim") {
+                    bytes = rewrite_glb(&bytes, |doc| { drop_wind_weights(doc); Ok(()) }).map_err(std::io::Error::other)?;
+                }
+                return Ok(Box::new(VecReader::new(bytes)));
+            }
             return self.inner.read(path).await;
         };
         let model_path = format!("{model}.glb");
@@ -103,6 +111,31 @@ impl AssetReader for VariantReader {
 
 fn filter_glb(bytes: &[u8], skins: &HashSet<&str>) -> Result<Vec<u8>, String> {
     rewrite_glb(bytes, |doc| filter_document(doc, skins))
+}
+
+/// Whether a GLB's JSON chunk contains `needle` (cheap pre-check before a rewrite).
+fn json_mentions(bytes: &[u8], needle: &[u8]) -> bool {
+    let len = bytes.get(12..16).and_then(|b| b.try_into().ok()).map(u32::from_le_bytes).unwrap_or(0) as usize;
+    bytes.get(20..20 + len).is_some_and(|json| json.windows(needle.len()).any(|w| w == needle))
+}
+
+/// Nebula's envvertexanim (grass, leaves, bushes) reads its vertex colour only
+/// as the wind's wave weight (`v3.y`) and never passes it on: the colour is not
+/// tinted. Bevy multiplies the base colour by COLOR_0, which darkened the blades
+/// where the weight is low (Kingshill's market grass, weights 0 to 1).
+/// EVIDENCE: shaders_sm30 envvertexanim vertex shaders (`dcl_color v3`, only
+///   `v3.y` used, no colour output).
+fn drop_wind_weights(doc: &mut Value) {
+    let wind: Vec<bool> = doc["materials"].as_array().map(|m| m.iter()
+        .map(|m| m["extras"]["nebula_shader"].as_str() == Some("shd:envvertexanim")).collect()).unwrap_or_default();
+    for mesh in doc["meshes"].as_array_mut().into_iter().flatten() {
+        for primitive in mesh["primitives"].as_array_mut().into_iter().flatten() {
+            let material = primitive["material"].as_u64().map(|v| v as usize);
+            if material.is_some_and(|m| wind.get(m).copied().unwrap_or(false)) {
+                if let Some(attributes) = primitive["attributes"].as_object_mut() { attributes.remove("COLOR_0"); }
+            }
+        }
+    }
 }
 
 fn rewrite_glb(bytes: &[u8], filter: impl FnOnce(&mut Value) -> Result<(), String>) -> Result<Vec<u8>, String> {
@@ -294,6 +327,19 @@ fn filter_scene(doc: &mut Value, keep: impl Fn(&Value) -> bool) -> Result<(), St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn envvertexanim_vertex_colours_are_wind_weights_not_tints() {
+        let mut doc = serde_json::json!({
+            "materials": [{"extras": {"nebula_shader": "shd:envvertexanim"}}, {"extras": {"nebula_shader": "shd:standard"}}],
+            "meshes": [{"primitives": [
+                {"material": 0, "attributes": {"POSITION": 0, "COLOR_0": 1}},
+                {"material": 1, "attributes": {"POSITION": 2, "COLOR_0": 3}}]}]});
+        drop_wind_weights(&mut doc);
+        assert!(doc["meshes"][0]["primitives"][0]["attributes"].get("COLOR_0").is_none());
+        assert_eq!(doc["meshes"][0]["primitives"][1]["attributes"]["COLOR_0"], 3);
+        assert_eq!(doc["meshes"][0]["primitives"][0]["attributes"]["POSITION"], 0);
+    }
     use serde_json::json;
 
     #[test]
