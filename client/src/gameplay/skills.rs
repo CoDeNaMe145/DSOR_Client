@@ -514,6 +514,7 @@ impl Plugin for EditorSequencesPlugin {
 impl Plugin for SkillsPlugin {
     fn build(&self, app: &mut App) {
         app.init_asset::<SkillTable>()
+            .init_resource::<SkillCooldowns>()
             .init_asset::<SequenceTable>()
             .init_asset::<StatusTable>()
             .register_asset_loader(StatusTableLoader)
@@ -803,6 +804,28 @@ pub fn skill_cost(skill: &SkillDef, resource_max: f32) -> f32 {
 }
 
 /// What the skill named `id` costs, once the skill table is in.
+/// When each skill, or its cooldown category, is ready again: (start, ready) on
+/// the real clock (Time<Real>). cast_input writes it; the quick slots draw it
+/// (crate::ui, a dark sweep over the icon while it runs).
+#[derive(Resource, Default)]
+pub struct SkillCooldowns(HashMap<String, (f64, f64)>);
+
+impl SkillCooldowns {
+    /// The share of a skill's cooldown still to run (1 just cast, 0 ready).
+    pub fn remaining(&self, data: &SkillData, tables: &Assets<SkillTable>, id: &str, now: f64) -> f32 {
+        let Some(skill) = data.by_id.get(id).and_then(|wire| tables.get(&data.skills).and_then(|t| t.0.get(wire))) else { return 0.0 };
+        match self.0.get(cooldown_key(skill)) {
+            Some(&(start, ready)) if now < ready && ready > start => ((ready - now) / (ready - start)) as f32,
+            _ => 0.0,
+        }
+    }
+}
+
+/// Skills of one cooldown category share their cooldown.
+fn cooldown_key(skill: &SkillDef) -> &str {
+    if skill.cooldown_category.is_empty() { &skill.id } else { &skill.cooldown_category }
+}
+
 pub fn skill_cost_by_id(data: &SkillData, tables: &Assets<SkillTable>, id: &str, resource_max: f32) -> Option<f32> {
     let wire = data.by_id.get(id)?;
     tables.get(&data.skills)?.0.get(wire).map(|s| skill_cost(s, resource_max))
@@ -822,7 +845,7 @@ fn cast_input(
     navmeshes: Res<Assets<NavMesh>>,
     time: Res<Time<Real>>,
     mut players: Query<(Entity, &mut Transform, &mut LocalPlayer, &Character)>,
-    mut cooldowns: Local<HashMap<String, f64>>,
+    mut cooldowns: ResMut<SkillCooldowns>,
     (hovered, monsters, mut debug_monsters, ui, mut ui_skills, settings, stats, resource_max): (
         Res<crate::actors::monsters::Hovered>,
         Query<(&GlobalTransform, &crate::actors::monsters::Monster, &CharacterAnim)>,
@@ -890,8 +913,8 @@ fn cast_input(
     // them anyway made skills seem to fire twice or into nothing (server.log:
     // "refused: mage_fireball_default costs 40.0 and only 28.0 is left").
     let now = time.elapsed_secs_f64();
-    let key = if skill.cooldown_category.is_empty() { skill.id.clone() } else { skill.cooldown_category.clone() };
-    if cooldowns.get(&key).is_some_and(|ready| now < *ready) {
+    let key = cooldown_key(skill).to_owned();
+    if cooldowns.0.get(&key).is_some_and(|&(_, ready)| now < ready) {
         return;
     }
     // ResourceCost is a fraction of the maximum (rage, mana, focus, steam alike):
@@ -904,7 +927,10 @@ fn cast_input(
     }
     let (Ok(window), Ok((camera, cam_tf))) = (windows.single(), cameras.single()) else { return };
     let mesh = nav.as_ref().and_then(|n| navmeshes.get(&n.0));
-    let Some(mut point) = aimed.map(|(_, at, _, _, _)| at).or_else(|| cursor_ground(window, camera, cam_tf, mesh, tf.translation)) else { return };
+    let Some(mut point) = aimed.map(|(_, at, _, _, _)| at).or_else(|| cursor_ground(window, camera, cam_tf, mesh, tf.translation))
+        // DSOR_TEST_SLOT without a cursor over the window (offline screenshots):
+        // 3 m ahead.
+        .or_else(|| std::env::var("DSOR_TEST_SLOT").is_ok().then(|| tf.translation + Quat::from_rotation_y(player.facing) * Vec3::Z * 3.0)) else { return };
     // A target skill on a monster beyond its reach walks there first, as the 2018
     // client does (ClientSkillValidator 0x5E3C61 answers 17, out of range; its
     // caller 0x4C1553 casts after approaching, 0x4BDEC4).
@@ -974,7 +1000,7 @@ fn cast_input(
         _ => ClientCommand::Skill(combat::Skill { base, server: None }),
     };
     net.send(&command);
-    cooldowns.insert(key, now + skill.cooldown as f64);
+    cooldowns.0.insert(key, (now, now + skill.cooldown as f64));
     if let Some(r) = net.resource.as_mut() {
         *r -= cost;
     }
@@ -2584,6 +2610,35 @@ fn hold_for_status(
             player.target = None;
             player.casting = player.casting.max(seconds);
         }
+    }
+}
+
+#[cfg(test)]
+mod cooldown_tests {
+    use super::*;
+
+    #[test]
+    fn a_cooldown_is_shared_by_its_category_and_runs_down() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default())).init_asset::<SkillTable>();
+        let skill = |id: &str, category: &str| -> SkillDef { serde_json::from_value(serde_json::json!({
+            "id": id, "type": "Teleport", "hit_frame": 1, "loop_start": 0, "unblock": 2, "motion_unblock": 2,
+            "range": 10.0, "cooldown": 5.0, "cooldown_category": category, "execute": {}, "impact": ""
+        })).unwrap() };
+        let table = SkillTable(HashMap::from([(1, skill("teleport", "Skill07")), (2, skill("blink", "Skill07")), (3, skill("bolt", ""))]));
+        let mut data = SkillData::for_test(default());
+        data.skills = app.world_mut().resource_mut::<Assets<SkillTable>>().add(table);
+        data.by_id = HashMap::from([("teleport".into(), 1), ("blink".into(), 2), ("bolt".into(), 3)]);
+        let tables = app.world().resource::<Assets<SkillTable>>();
+        let mut cooldowns = SkillCooldowns::default();
+        cooldowns.0.insert("Skill07".into(), (10.0, 15.0));
+        assert_eq!(cooldowns.remaining(&data, tables, "teleport", 12.5), 0.5);
+        assert_eq!(cooldowns.remaining(&data, tables, "blink", 12.5), 0.5);
+        assert_eq!(cooldowns.remaining(&data, tables, "bolt", 12.5), 0.0);
+        assert_eq!(cooldowns.remaining(&data, tables, "teleport", 15.0), 0.0);
+        assert_eq!(cooldowns.remaining(&data, tables, "unknown", 12.5), 0.0);
+        cooldowns.0.insert("bolt".into(), (12.0, 17.0));
+        assert_eq!(cooldowns.remaining(&data, tables, "bolt", 13.0), 0.8);
     }
 }
 
