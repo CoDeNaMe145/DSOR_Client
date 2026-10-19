@@ -1300,6 +1300,8 @@ const COOLDOWN_STEPS: u32 = 64;
 /// The part of a slot still cooling down: a dark sector from 12 o'clock,
 /// clockwise, over `remaining` of the turn (it shrinks clockwise as the cooldown
 /// runs), cut to the slot's square. `rect` is l, t, r, b with t at the top.
+/// Alpha 0.75 (blended as in gamma, ui.wgsl): a quarter of the icon shows, so
+/// dark icons (teleport) still read as cooling down; 0.6 was hard to see there.
 /// UNVERIFIED: the original's own look (its Slot widget draws it in code).
 fn cooldown_sweep(rect: [f32; 4], remaining: f32) -> Art {
     use std::f32::consts::{FRAC_PI_4, TAU};
@@ -1319,7 +1321,7 @@ fn cooldown_sweep(rect: [f32; 4], remaining: f32) -> Art {
     }
     let n = (pos.len() / 2) as u32;
     let idx = (1..n - 1).flat_map(|i| [0, i, i + 1]).collect();
-    Art { tex: None, uv: vec![0.0; pos.len()], color: [0.0, 0.0, 0.0, 0.6].repeat(n as usize), pos, idx }
+    Art { tex: None, uv: vec![0.0; pos.len()], color: [0.0, 0.0, 0.0, 0.75].repeat(n as usize), pos, idx }
 }
 
 /// The hovered monster's info window, shown while one is under the cursor.

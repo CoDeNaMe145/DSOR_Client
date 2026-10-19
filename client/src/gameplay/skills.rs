@@ -927,7 +927,10 @@ fn cast_input(
     }
     let (Ok(window), Ok((camera, cam_tf))) = (windows.single(), cameras.single()) else { return };
     let mesh = nav.as_ref().and_then(|n| navmeshes.get(&n.0));
-    let Some(mut point) = aimed.map(|(_, at, _, _, _)| at).or_else(|| cursor_ground(window, camera, cam_tf, mesh, tf.translation)) else { return };
+    let Some(mut point) = aimed.map(|(_, at, _, _, _)| at).or_else(|| cursor_ground(window, camera, cam_tf, mesh, tf.translation))
+        // DSOR_TEST_SLOT without a cursor over the window (offline screenshots):
+        // 3 m ahead.
+        .or_else(|| std::env::var("DSOR_TEST_SLOT").is_ok().then(|| tf.translation + Quat::from_rotation_y(player.facing) * Vec3::Z * 3.0)) else { return };
     // A target skill on a monster beyond its reach walks there first, as the 2018
     // client does (ClientSkillValidator 0x5E3C61 answers 17, out of range; its
     // caller 0x4C1553 casts after approaching, 0x4BDEC4).
