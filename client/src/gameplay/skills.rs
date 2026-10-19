@@ -831,6 +831,22 @@ pub fn skill_cost_by_id(data: &SkillData, tables: &Assets<SkillTable>, id: &str,
     tables.get(&data.skills)?.0.get(wire).map(|s| skill_cost(s, resource_max))
 }
 
+/// Whether a targeted cast must walk closer first. Targeted melee as the release261
+/// client measures it (Skills::ClientSkillValidator::Validate 0x14032bed0, range
+/// check 0x140a1b750, DSOR_Server docs/MELEE_TARGETING.md): the 3D centre distance
+/// minus the target's navigation footprint against AttackRange; with the capsule
+/// (0.3 for most monsters) it walked up to a medium monster from 2.8 m though the
+/// hit reached from there. A shape-less monster keeps its capsule, as the server.
+/// Ranged targets keep the flat distance plus the capsule (the server measures
+/// those against the capsule; UNVERIFIED against the original).
+fn beyond_reach(skill: &SkillDef, caster: Vec3, target: Vec3, capsule: f32, footprint: Option<f32>) -> bool {
+    if skill.kind == "MeleeTarget" {
+        caster.distance(target) - footprint.unwrap_or(capsule) > skill.range
+    } else {
+        Vec2::new(target.x - caster.x, target.z - caster.z).length() > skill.range + capsule
+    }
+}
+
 fn cast_input(
     mut commands: Commands,
     net: Option<NonSendMut<Net>>,
@@ -896,7 +912,7 @@ fn cast_input(
         },
     };
     // A dead or vanished monster is no target.
-    let aimed = aimed.and_then(|e| monsters.get(e).ok().filter(|(_, m, a)| m.is_alive(a)).map(|(at, m, _)| (e, at.translation(), m.actor, m.radius, m.height)));
+    let aimed = aimed.and_then(|e| monsters.get(e).ok().filter(|(_, m, a)| m.is_alive(a)).map(|(at, m, _)| (e, at.translation(), m.actor, m.radius, m.height, m.footprint)));
     if aimed.is_none() {
         *queued = None;
     }
@@ -927,19 +943,17 @@ fn cast_input(
     }
     let (Ok(window), Ok((camera, cam_tf))) = (windows.single(), cameras.single()) else { return };
     let mesh = nav.as_ref().and_then(|n| navmeshes.get(&n.0));
-    let Some(mut point) = aimed.map(|(_, at, _, _, _)| at).or_else(|| cursor_ground(window, camera, cam_tf, mesh, tf.translation))
+    let Some(mut point) = aimed.map(|(_, at, ..)| at).or_else(|| cursor_ground(window, camera, cam_tf, mesh, tf.translation))
         // DSOR_TEST_SLOT without a cursor over the window (offline screenshots):
         // 3 m ahead.
         .or_else(|| std::env::var("DSOR_TEST_SLOT").is_ok().then(|| tf.translation + Quat::from_rotation_y(player.facing) * Vec3::Z * 3.0)) else { return };
     // A target skill on a monster beyond its reach walks there first, as the 2018
     // client does (ClientSkillValidator 0x5E3C61 answers 17, out of range; its
-    // caller 0x4C1553 casts after approaching, 0x4BDEC4).
-    // UNVERIFIED: the reach is AttackRange plus the target's capsule radius.
+    // caller 0x4C1553 casts after approaching, 0x4BDEC4); see beyond_reach.
     let targeted = matches!(skill.kind.as_str(), "MeleeTarget" | "RangedTarget");
-    let target_actor = if targeted { aimed.map(|(_, _, a, _, _)| a) } else { None };
-    if let (true, Some((e, at, _, radius, _))) = (targeted, aimed) {
-        let gap = Vec2::new(at.x - tf.translation.x, at.z - tf.translation.z).length();
-        if gap > skill.range + radius {
+    let target_actor = if targeted { aimed.map(|(_, _, a, ..)| a) } else { None };
+    if let (true, Some((e, at, _, radius, _, footprint))) = (targeted, aimed) {
+        if beyond_reach(skill, tf.translation, at, radius, footprint) {
             player.target = Some(at);
             *queued = Some((slot, e));
             return;
@@ -1006,12 +1020,12 @@ fn cast_input(
     }
     info!("cast {} (wire {wire}, {}) at {point:?}", skill.id, skill.kind);
     if net.offline {
-        offline_landing(&mut net, &mut debug_monsters, skill, tf.translation, facing, point, aimed.map(|(_, _, a, _, _)| a));
+        offline_landing(&mut net, &mut debug_monsters, skill, tf.translation, facing, point, aimed.map(|(_, _, a, ..)| a));
     }
     // A bullet aimed at a monster dips or climbs to its chest (fly_bullets).
-    let aim = aimed.filter(|_| skill.bullet.is_some()).map(|(_, at, _, _, height)| at + Vec3::Y * height * 0.5);
+    let aim = aimed.filter(|_| skill.bullet.is_some()).map(|(_, at, _, _, height, _)| at + Vec3::Y * height * 0.5);
     let me = Some(net.local_actor.unwrap_or(crate::network::net::OFFLINE_ACTOR));
-    perform(&mut commands, skill, sequences, entity, Some(character), tf.translation, facing, point, me, aim, aimed.map(|(_, _, actor, _, _)| actor), rate);
+    perform(&mut commands, skill, sequences, entity, Some(character), tf.translation, facing, point, me, aim, aimed.map(|(_, _, actor, ..)| actor), rate);
 }
 
 /// Offline nobody answers a cast: it lands at its hit frame (and after the
@@ -2610,6 +2624,38 @@ fn hold_for_status(
             player.target = None;
             player.casting = player.casting.max(seconds);
         }
+    }
+}
+
+#[cfg(test)]
+mod reach_tests {
+    use super::*;
+
+    fn skill(kind: &str, range: f32) -> SkillDef {
+        serde_json::from_value(serde_json::json!({
+            "id": "test", "type": kind, "hit_frame": 1, "loop_start": 0, "unblock": 2, "motion_unblock": 2,
+            "range": range, "cooldown": 0.0, "execute": {}, "impact": ""
+        })).unwrap()
+    }
+
+    #[test]
+    fn targeted_melee_reaches_to_the_navigation_footprint_in_3d() {
+        // Rage Attack (angrystrike) 1.75: a small monster (0.525) from 2.275, a
+        // medium one (1.053) from 2.803; the 0.3 capsule stopped it at 2.05.
+        let angry = skill("MeleeTarget", 1.75);
+        let at = |d: f32| Vec3::new(d, 0.0, 0.0);
+        assert!(!beyond_reach(&angry, Vec3::ZERO, at(2.27), 0.3, Some(0.525)));
+        assert!(beyond_reach(&angry, Vec3::ZERO, at(2.28), 0.3, Some(0.525)));
+        assert!(!beyond_reach(&angry, Vec3::ZERO, at(2.8), 0.3, Some(1.053)));
+        // Height counts (the native distance helper is 3D).
+        assert!(beyond_reach(&angry, Vec3::ZERO, Vec3::new(2.2, 1.0, 0.0), 0.3, Some(0.525)));
+        // No footprint (older assets, a shape the table lacks): the capsule.
+        assert!(beyond_reach(&angry, Vec3::ZERO, at(2.1), 0.3, None));
+        assert!(!beyond_reach(&angry, Vec3::ZERO, at(2.0), 0.3, None));
+        // Ranged targets as before: flat distance plus the capsule.
+        let ranged = skill("RangedTarget", 10.0);
+        assert!(!beyond_reach(&ranged, Vec3::ZERO, Vec3::new(10.2, 5.0, 0.0), 0.3, Some(4.0)));
+        assert!(beyond_reach(&ranged, Vec3::ZERO, at(10.4), 0.3, Some(4.0)));
     }
 }
 

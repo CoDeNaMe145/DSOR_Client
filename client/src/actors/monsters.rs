@@ -84,6 +84,11 @@ pub struct MonsterTemplate {
     pub radius: f32,
     #[serde(default)]
     pub height: f32,
+    /// Its navigation footprint's radius (ActorShapeId, tools/nav_shapes.py):
+    /// what a targeted melee cast measures its reach to. None in assets exported
+    /// before it, or for a shape the table lacks: the capsule then, as the server.
+    #[serde(default)]
+    pub footprint: Option<f32>,
 }
 
 #[derive(Asset, TypePath, Deserialize, Debug)]
@@ -187,6 +192,8 @@ pub struct Monster {
     /// variation's root scale once the model is in: what the cursor picks.
     pub radius: f32,
     pub height: f32,
+    /// Its navigation footprint (MonsterTemplate::footprint), not scaled.
+    pub footprint: Option<f32>,
     /// Per row and instance: the hit tick it last played and its sequence player.
     hits: [[(Option<u32>, Option<Entity>); INSTANCES]; 7],
     heavy: Option<Entity>,
@@ -500,6 +507,7 @@ fn spawn_monsters(
                 level: spawn.level,
                 radius: t.radius.max(0.3),
                 height: t.height.max(1.0),
+                footprint: t.footprint,
                 hits: Default::default(),
                 heavy: None,
             },

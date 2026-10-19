@@ -28,6 +28,7 @@ import xml.etree.ElementTree as ET
 
 sys.path.insert(0, os.path.dirname(__file__))
 from fix_materials_io import read_glb, write_glb  # noqa: E402
+from nav_shapes import shape_radii  # noqa: E402
 
 export, assets = sys.argv[1], sys.argv[2]
 chars = os.path.join(assets, "characters")
@@ -46,7 +47,8 @@ HIT = {
 COLS = ["Id", "Graphics", "CharacterSet", "AnimSet", "StartAnimationState", "LoopStartAnimation",
         "CriticalHitSequence", "HeavyHitSequence", "DeathSequence", "DeathDuration",
         "DespawnSequence", "DespawnDuration", "CapsuleRadius", "CapsuleHeight",
-        "PrimaryColor", "SecondaryColor", "SummonSequence", "MinionType"] + list(HIT.values())
+        "PrimaryColor", "SecondaryColor", "SummonSequence", "MinionType", "ActorShapeId"] + list(HIT.values())
+footprints = shape_radii(export)
 db = sqlite3.connect(f"file:{os.path.join(export, 'db', 'static.db4')}?mode=ro", uri=True)
 templates = {}
 for row in db.execute(f"select {','.join(COLS)} from _Template_Monster"):
@@ -73,6 +75,9 @@ for row in db.execute(f"select {','.join(COLS)} from _Template_Monster"):
         "radius": float(r["CapsuleRadius"] or 0.0),
         "height": float(r["CapsuleHeight"] or 0.0),
     }
+    # Its navigation footprint (ActorShapeId), the targeted-melee reach (nav_shapes.py).
+    if str(r["ActorShapeId"]) in footprints:
+        templates[r["Id"]]["footprint"] = round(footprints[str(r["ActorShapeId"])], 4)
 with open(os.path.join(chars, "monster_templates.json"), "w", encoding="utf-8") as f:
     json.dump(templates, f, separators=(",", ":"), ensure_ascii=False)
 

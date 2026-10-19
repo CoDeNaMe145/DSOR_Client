@@ -5,7 +5,7 @@ use std::time::Duration;
 
 pub(crate) fn monster(actor: u32, health: u32) -> Monster {
     Monster { actor, template: "test".into(), health, max_health: 100, level: 1,
-        radius: 0.5, height: 2.0, hits: default(), heavy: None }
+        radius: 0.5, height: 2.0, footprint: None, hits: default(), heavy: None }
 }
 
 fn app() -> App {
