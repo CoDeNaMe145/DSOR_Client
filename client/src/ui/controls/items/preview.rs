@@ -32,7 +32,7 @@ pub(super) fn card(d: &DisplayItem, catalog: &Catalog, layout: Option<&Layout>, 
         .unwrap_or_else(||meta.map_or("Item",|m|m.rarity.as_str()));
     let tint = match rarity { "Unique" => Color::srgb(1.0,0.9,0.0), "Set" => GREEN, "Magic" => BLUE,
         "Extraordinary" => Color::srgb(0.75,0.4,1.0), "Legendary" => Color::srgb(1.0,0.65,0.15), _ => color(catalog,d.item) };
-    card.title(meta.map_or(d.template,|m|m.name.as_str()),None,tint);
+    card.title(catalog.name(d.template,d.item),None,tint);
     card.text(&format!("{rarity} Item"),tint);
     if let Some(m) = meta.filter(|m|!m.category.is_empty()) { card.text(&format!("<i>({})</>",m.category),MUTED); }
     if let Some(i) = d.item { card.text(&format!("Item level: {}",i.durability),Color::srgb(0.85,0.75,0.5)); }

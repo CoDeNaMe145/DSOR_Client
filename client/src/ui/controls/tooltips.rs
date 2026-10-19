@@ -79,7 +79,7 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
                         if *index >= hotbar::PRIMARY_ESSENCE {
                             if let Some(item) = hotbar::essence(&net.inventory,*index) {
                                 if let Some(catalog) = catalog {
-                                    let name = catalog.items.get(&item.template).map_or(item.template.as_str(), |d| d.name.as_str());
+                                    let name = catalog.name(&item.template, Some(item));
                                     body = format!("{name}\nQuantity: {}",item.third);
                                     icon = catalog.icon(&item.template,Some(item)).0.map(str::to_owned);
                                     detail = Some(items::preview_card(catalog,template,&item.template,Some(item),item.third,settings.current.advanced_tooltips(&keys,pointer.focus.is_some())));
@@ -94,7 +94,7 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
                                 let item = hotbar::item(slot,&net.inventory);
                                 let template = item.map_or(id.as_str(),|i| i.template.as_str());
                                 if let Some(meta) = catalog.items.get(template) {
-                                    heading = meta.name.clone(); body = clean_text(&meta.description);
+                                    heading = catalog.name(template, item).to_owned(); body = clean_text(&meta.description);
                                     icon = catalog.icon(template,item).0.map(str::to_owned);
                                     if slot.kind == 1 { body.push_str(&format!("\nQuantity: {}",item.map_or(0,|i| i.third))); }
                                     detail = Some(items::preview_card(catalog,layouts.get(&data.tooltip),template,item,item.map_or(0,|i|i.third),settings.current.advanced_tooltips(&keys,pointer.focus.is_some())));

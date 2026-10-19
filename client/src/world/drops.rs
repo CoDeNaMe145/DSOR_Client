@@ -63,9 +63,18 @@ struct ItemTemplate {
     drop_sequence: String,
 }
 
+/// A rolled appearance's name (crate::ui::controls::items::Catalog::name).
+#[derive(Deserialize, Debug, Clone, Default)]
+struct AppearanceName {
+    #[serde(default)]
+    name: String,
+}
+
 #[derive(Asset, TypePath, Deserialize, Debug)]
 struct ItemCatalog {
     items: HashMap<String, ItemTemplate>,
+    #[serde(default)]
+    appearances: HashMap<String, AppearanceName>,
 }
 
 #[derive(Default, TypePath)]
@@ -187,7 +196,10 @@ fn spawn_drops(
         let graphics = if template.graphics.is_empty() { "dropitems/all_drop_bag_01".to_owned() } else { template.graphics.clone() };
         let path = crate::map::model_path(&graphics);
         let gltf: Handle<Gltf> = assets.load(path.clone());
-        let name = if template.name.is_empty() { item.template.clone() } else { template.name.clone() };
+        // A rolled piece is named by its appearance, as in the bags.
+        let name = table.appearances.get(&item.appearance).map(|a| a.name.clone()).filter(|n| !n.is_empty())
+            .or_else(|| (!template.name.is_empty()).then(|| template.name.clone()))
+            .unwrap_or_else(|| item.template.clone());
         debug!("item {} {} ({}) at {at:?}", item.id, item.template, rarity_name(rarity));
         let e = commands
             .spawn((

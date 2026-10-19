@@ -64,8 +64,12 @@ def export_inventory(db, textures, loca, assets):
     def texture(brush):
         brush = (brush or '').replace('\\', '/')
         return 'textures/' + brush + '.png' if brush and textures.get(brush) else ''
+    # ... and its name: a rolled piece is named by its appearance
+    # (db.itemappearance.table_<id>Title: all_amulet_02 "Medallion"), its
+    # template's name being the generic one ("Headband" for every hat).
     for app_id, brush, config in db.execute('SELECT Id, Icon, IconConfiguration FROM _Template_ItemAppearance'):
-        result['appearances'][app_id] = dict(icon=texture(brush), config=config or '')
+        result['appearances'][app_id] = dict(icon=texture(brush), config=config or '',
+            name=local('db.itemappearance.table_' + app_id + 'Title'))
     for cid, rarity, background, frame in db.execute('SELECT Id, RarityControlled, BackgroundTexture, FrameTexture FROM _Template_IconConfig'):
         result['icon_configs'][cid] = dict(rarity=bool(rarity), background=texture(background), frame=texture(frame))
     # RarityControlled configurations take the background of the item's rarity
