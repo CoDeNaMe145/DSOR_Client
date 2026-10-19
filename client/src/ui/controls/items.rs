@@ -16,7 +16,7 @@ pub struct Definition {
 }
 /// A rolled appearance's icon and icon configuration (_Template_ItemAppearance).
 #[derive(Deserialize)]
-pub struct Appearance { pub icon: String, pub config: String }
+pub struct Appearance { pub icon: String, pub config: String, #[serde(default)] pub name: String }
 /// _Template_IconConfig: the background follows the item's rarity, or is fixed.
 #[derive(Deserialize)]
 pub struct IconConfig { pub rarity: bool, pub background: String, #[serde(default)] pub frame: String }
@@ -46,6 +46,16 @@ impl Catalog {
     /// icons_toolkit/frame_slim_basic, _unique, _set, _mythic).
     /// FAILURE (2026-10-16): without it the icon covered the whole cell, border
     ///   included ("les images sont pas bien dans les slots").
+    /// What an item is called: its rolled appearance's name (all_amulet_02
+    /// "Medallion"), else its template's. A generated piece's template name is
+    /// the generic one ("Headband" for every hat).
+    /// FAILURE (2026-10-20): "j'ai recupere un item qui n'est pas un headband mais
+    ///   un autre chapeau et c'est ecrit headband meme si il a le bon skin".
+    pub fn name<'a>(&'a self, template: &'a str, item: Option<&ItemInfo>) -> &'a str {
+        item.and_then(|i| self.appearances.get(&i.appearance)).map(|a| a.name.as_str()).filter(|n| !n.is_empty())
+            .or_else(|| self.items.get(template).map(|d| d.name.as_str()).filter(|n| !n.is_empty()))
+            .unwrap_or(template)
+    }
     pub fn icon_parts(&self, template: &str, item: Option<&ItemInfo>) -> (Option<&str>, Option<&str>, Option<&str>) {
         let def = self.items.get(template);
         let look = item.and_then(|i| self.appearances.get(if i.fourth_name.is_empty() { &i.appearance } else { &i.fourth_name }));
