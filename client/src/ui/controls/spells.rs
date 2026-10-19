@@ -72,11 +72,13 @@ pub(super) struct DragSpell {
     bar: usize,
 }
 
+#[cfg_attr(test, derive(Clone))]
 pub(super) struct DropSpell {
     spell: Spell,
     source: Option<usize>,
     bar: usize,
-    target: usize,
+    /// The slot it lands on; None: dragged off the bar, its source slot clears.
+    target: Option<usize>,
 }
 
 /// Returns true when release belongs to a drag, so it cannot also cast a spell.
@@ -117,13 +119,18 @@ pub(super) fn drag(pointer: &mut Pointer, windows: &Windows, mouse: &ButtonInput
     if mouse.just_released(MouseButton::Left) {
         if let Some(d) = pointer.spell_drag.take() {
             if d.active {
-                if let Some((root, button)) = hit {
+                let target = hit.and_then(|(root, button)| {
                     let (_, name, c, _, _) = windows.get(root).unwrap();
-                    if name.0 == "bottombar" && editable {
-                        if let Action::Skill(target) = c.buttons[button].action {
-                            pointer.spell_drop = Some(DropSpell { spell: d.spell, source: d.source, target, bar: d.bar });
-                        }
+                    match c.buttons[button].action {
+                        Action::Skill(target) if name.0 == "bottombar" => Some(target),
+                        _ => None,
                     }
+                });
+                // Onto a slot: placed or swapped. A spell taken from the bar and
+                // let go anywhere else leaves it (its slot clears), as in the
+                // game; one from the spell book dropped off the bar does nothing.
+                if editable && (target.is_some() || d.source.is_some()) {
+                    pointer.spell_drop = Some(DropSpell { spell: d.spell, source: d.source, target, bar: d.bar });
                 }
                 pointer.down = None;
                 return true;
@@ -137,13 +144,18 @@ pub(super) fn drag(pointer: &mut Pointer, windows: &Windows, mouse: &ButtonInput
 /// Refuse incomplete snapshots and stale source slots rather than replacing
 /// unseen item/essence slots with guessed empty entries.
 fn edited_bar(slots: &[Slot], drop: &DropSpell) -> Option<Vec<Slot>> {
-    if slots.len() != BAR_SIZE || drop.target >= VISIBLE_SLOTS { return None; }
+    if slots.len() != BAR_SIZE || drop.target.is_some_and(|t| t >= VISIBLE_SLOTS) { return None; }
     let mut edited = slots.to_vec();
-    if let Some(source) = drop.source {
-        if source >= VISIBLE_SLOTS || slots[source].kind != 0 || slots[source].id.as_ref() != Some(&drop.spell.id) { return None; }
-        edited.swap(source, drop.target);
-    } else {
-        edited[drop.target] = Slot { kind: 0, id: Some(drop.spell.id.clone()) };
+    match (drop.source, drop.target) {
+        (Some(source), target) => {
+            if source >= VISIBLE_SLOTS || slots[source].kind != 0 || slots[source].id.as_ref() != Some(&drop.spell.id) { return None; }
+            match target {
+                Some(target) => edited.swap(source, target),
+                None => edited[source] = Slot { kind: Slot::EMPTY, id: None },
+            }
+        }
+        (None, Some(target)) => edited[target] = Slot { kind: 0, id: Some(drop.spell.id.clone()) },
+        (None, None) => return None,
     }
     (edited != slots).then_some(edited)
 }
@@ -233,17 +245,26 @@ mod tests {
         slots[0] = Slot { kind: 0, id: Some("magicmissile".into()) };
         slots[2] = Slot { kind: 1, id: Some("healing_potion".into()) };
         slots[16] = Slot { kind: 2, id: Some("essence".into()) };
-        let drop = DropSpell { bar: 0, spell: spell(), source: None, target: 3 };
+        let drop = DropSpell { bar: 0, spell: spell(), source: None, target: Some(3) };
         let edited = edited_bar(&slots, &drop).unwrap();
         assert_eq!(edited[3], slots[0]);
         for i in 0..BAR_SIZE { if i != 3 { assert_eq!(edited[i], slots[i]); } }
-        let swap = DropSpell { source: Some(0), target: 2, ..drop };
+        let swap = DropSpell { source: Some(0), target: Some(2), ..drop.clone() };
         let edited = edited_bar(&slots, &swap).unwrap();
         assert_eq!(edited[0], slots[2]);
         assert_eq!(edited[2], slots[0]);
         assert_eq!(edited[16], slots[16]);
         assert!(edited_bar(&edited, &swap).is_none());
         assert!(edited_bar(&slots[..7], &swap).is_none());
+        // Dragged off the bar: only its own slot clears; a stale source or a
+        // book spell with nowhere to go changes nothing.
+        let off = DropSpell { source: Some(0), target: None, ..drop.clone() };
+        let edited = edited_bar(&slots, &off).unwrap();
+        assert_eq!(edited[0], Slot { kind: Slot::EMPTY, id: None });
+        for i in 1..BAR_SIZE { assert_eq!(edited[i], slots[i]); }
+        assert!(edited_bar(&edited, &off).is_none());
+        assert!(edited_bar(&slots, &DropSpell { source: Some(2), target: None, ..drop.clone() }).is_none());
+        assert!(edited_bar(&slots, &DropSpell { source: None, target: None, ..drop }).is_none());
     }
 
     #[test]
@@ -255,7 +276,7 @@ mod tests {
         slots[16] = Slot { kind: 2, id: Some("essence".into()) };
         let other = vec![Slot { kind: 1, id: Some("item".into()) }; BAR_SIZE];
         app.world_mut().non_send_resource_mut::<crate::network::net::Net>().quickbars.bars = vec![slots.clone(), other.clone()];
-        app.world_mut().resource_mut::<Pointer>().spell_drop = Some(DropSpell { bar: 0, spell: spell(), source: None, target: 3 });
+        app.world_mut().resource_mut::<Pointer>().spell_drop = Some(DropSpell { bar: 0, spell: spell(), source: None, target: Some(3) });
         app.update();
         let net = app.world().non_send_resource::<crate::network::net::Net>();
         assert_eq!(net.bar[3].as_deref(), Some("magicmissile"));
