@@ -437,9 +437,9 @@ struct QuickSlot {
     slot: usize,
     k: f32,
     rect: [f32; 4],
-    /// The icon and count drawn, and whether greyed (its skill costs more than
-    /// the resource there is).
-    shown: Option<(String, u32, bool)>,
+    /// The icon and count drawn, whether greyed (its skill costs more than
+    /// the resource there is), and the cooldown sweep's step (0: ready).
+    shown: Option<(String, u32, bool, u8)>,
 }
 
 /// The figures the interface shows (from the server when online).
@@ -1247,21 +1247,28 @@ fn update_slots(
     catalogs: Res<Assets<Catalog>>,
     screen: Res<Screen>,
     (skill_data, skill_tables, resource_max): (Res<crate::gameplay::skills::SkillData>, Res<Assets<crate::gameplay::skills::SkillTable>>, Res<crate::gameplay::stats::ResourceMax>),
+    (cooldowns, time): (Res<crate::gameplay::skills::SkillCooldowns>, Res<Time<Real>>),
 ) {
     let Some(table) = icon_table.get(&loaded.icons) else { return };
     let catalog = catalogs.get(&data.catalog);
     let resource = net.as_ref().and_then(|n| n.resource);
+    let now = time.elapsed_secs_f64();
     for (e, mut s) in &mut slots {
+        let skill = controls::hotbar::skill_id(s.slot, hotbar.active, net.as_deref(), &figures);
         // A skill the resource does not cover is greyed, as it cannot be cast
         // (crate::gameplay::skills cast_input refuses it), for every class.
-        let dim = resource.is_some_and(|r| controls::hotbar::skill_id(s.slot, hotbar.active, net.as_deref(), &figures)
-            .and_then(|id| crate::gameplay::skills::skill_cost_by_id(&skill_data, &skill_tables, &id, resource_max.0))
+        let dim = resource.is_some_and(|r| skill.as_deref()
+            .and_then(|id| crate::gameplay::skills::skill_cost_by_id(&skill_data, &skill_tables, id, resource_max.0))
             .is_some_and(|cost| r + 1e-3 < cost));
+        // A skill cooling down (cast_input refuses it until then) gets a dark
+        // sweep over its icon, redrawn in COOLDOWN_STEPS steps as it turns.
+        let cool = skill.as_deref().map_or(0.0, |id| cooldowns.remaining(&skill_data, &skill_tables, id, now));
+        let step = (cool * COOLDOWN_STEPS as f32).ceil().min(COOLDOWN_STEPS as f32) as u8;
         let want = controls::hotbar::appearance(s.slot, hotbar.active, net.as_deref(), &figures, catalog, table)
-            .map(|(path, count)| (path, count, dim));
+            .map(|(path, count)| (path, count, dim, step));
         if want == s.shown && !screen.is_changed() { continue; }
         commands.entity(e).despawn_related::<Children>();
-        if let Some((path, count, dim)) = &want {
+        if let Some((path, count, dim, step)) = &want {
             let [l, t, r, b] = s.rect;
             let shade = if *dim { [0.35, 0.35, 0.35, 1.0] } else { [1.0; 4] };
             let art = Art { tex: None, pos: vec![l,t,r,t,r,b,l,b],
@@ -1269,6 +1276,12 @@ fn update_slots(
             let mut run = Run { k:s.k, ..default() }; run.push(&art,0.0);
             let m = materials.add(material(Some(assets.load(path.clone()))));
             commands.spawn((Mesh2d(meshes.add(run.mesh())), MeshMaterial2d(m), Transform::IDENTITY, RenderLayers::layer(LAYER), ChildOf(e)));
+            if *step > 0 {
+                let mut run = Run { k: s.k, ..default() };
+                run.push(&cooldown_sweep(s.rect, *step as f32 / COOLDOWN_STEPS as f32), 0.0);
+                commands.spawn((Mesh2d(meshes.add(run.mesh())), MeshMaterial2d(materials.add(material(None))),
+                    Transform::from_xyz(0.0, 0.0, 0.5), RenderLayers::layer(LAYER), ChildOf(e)));
+            }
             // This parent is y-flipped for the artwork; text flips back.
             if *count > 0 {
                 commands.spawn((Text2d::new(count.to_string()), TextFont { font: assets.load("fonts/tahoma.ttf").into(),
@@ -1279,6 +1292,34 @@ fn update_slots(
         }
         s.shown = want;
     }
+}
+
+/// Steps of the cooldown sweep: a redraw every 1/64 of the cooldown.
+const COOLDOWN_STEPS: u32 = 64;
+
+/// The part of a slot still cooling down: a dark sector from 12 o'clock,
+/// clockwise, over `remaining` of the turn (it shrinks clockwise as the cooldown
+/// runs), cut to the slot's square. `rect` is l, t, r, b with t at the top.
+/// UNVERIFIED: the original's own look (its Slot widget draws it in code).
+fn cooldown_sweep(rect: [f32; 4], remaining: f32) -> Art {
+    use std::f32::consts::{FRAC_PI_4, TAU};
+    let [l, t, r, b] = rect;
+    let (cx, cy) = ((l + r) * 0.5, (t + b) * 0.5);
+    // Signed half sizes: + towards 3 o'clock and towards 12 o'clock.
+    let (hw, hh) = ((r - l) * 0.5, (t - b) * 0.5);
+    let start = (1.0 - remaining.clamp(0.0, 1.0)) * TAU;
+    // The fan's rim: where the sweep starts, the corners after it, 12 o'clock.
+    // Between them the rim is one straight edge, so the fan is exact.
+    let corners = [1.0, 3.0, 5.0, 7.0].map(|i| i * FRAC_PI_4).into_iter().filter(|&c| c > start);
+    let mut pos = vec![cx, cy];
+    for a in std::iter::once(start).chain(corners).chain([TAU]) {
+        let (u, v) = (a.sin(), a.cos());
+        let s = 1.0 / u.abs().max(v.abs());
+        pos.extend([cx + u * s * hw, cy + v * s * hh]);
+    }
+    let n = (pos.len() / 2) as u32;
+    let idx = (1..n - 1).flat_map(|i| [0, i, i + 1]).collect();
+    Art { tex: None, uv: vec![0.0; pos.len()], color: [0.0, 0.0, 0.0, 0.6].repeat(n as usize), pos, idx }
 }
 
 /// The hovered monster's info window, shown while one is under the cursor.
@@ -1316,6 +1357,35 @@ fn death_dialog(net: Option<NonSend<crate::network::net::Net>>, mut windows: Que
 #[cfg(test)]
 mod residency_tests {
     use super::*;
+
+    /// The area a fan covers, and whether every rim point is in the box.
+    fn fan(art: &Art) -> (f32, Vec<[f32; 2]>) {
+        let p = |i: u32| [art.pos[2 * i as usize], art.pos[2 * i as usize + 1]];
+        let area = art.idx.chunks(3).map(|t| {
+            let ([ax, ay], [bx, by], [cx, cy]) = (p(t[0]), p(t[1]), p(t[2]));
+            ((bx - ax) * (cy - ay) - (cx - ax) * (by - ay)).abs() * 0.5
+        }).sum();
+        (area, (0..(art.pos.len() / 2) as u32).map(p).collect())
+    }
+
+    #[test]
+    fn cooldown_sweep_covers_what_is_left_clockwise_from_twelve() {
+        // Art coordinates: y down, so the slot's top is t = 0.
+        let rect = [0.0, 0.0, 20.0, 20.0];
+        let (full, _) = fan(&cooldown_sweep(rect, 1.0));
+        assert!((full - 400.0).abs() < 1e-3, "{full}");
+        // A quarter left: the part from 9 to 12 o'clock, the top-left quarter.
+        let (quarter, points) = fan(&cooldown_sweep(rect, 0.25));
+        assert!((quarter - 100.0).abs() < 1e-3, "{quarter}");
+        assert!(points.iter().all(|&[x, y]| x <= 10.0 + 1e-4 && y <= 10.0 + 1e-4), "{points:?}");
+        // An eighth: the triangle from the top-left corner to 12 o'clock.
+        let (eighth, _) = fan(&cooldown_sweep(rect, 0.125));
+        assert!((eighth - 50.0).abs() < 1e-3, "{eighth}");
+        // Half: 6 to 12 o'clock, the left half.
+        let (half, points) = fan(&cooldown_sweep(rect, 0.5));
+        assert!((half - 200.0).abs() < 1e-3, "{half}");
+        assert!(points.iter().all(|&[x, _]| x <= 10.0 + 1e-4), "{points:?}");
+    }
 
     #[test]
     fn unopened_menu_has_no_art_and_first_open_builds_it_once() {
