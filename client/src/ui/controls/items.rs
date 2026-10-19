@@ -385,6 +385,7 @@ pub(super) fn frame(commands:&mut Commands,assets:&AssetServer,meshes:&mut Asset
 
 mod preview;
 mod values;
+pub(in crate::ui) mod pins;
 
 pub(super) fn preview_card(catalog:&Catalog, layout:Option<&Layout>, template:&str, item:Option<&ItemInfo>, amount:u32, advanced:bool)->tooltips::card::Card {
     preview::card(&DisplayItem { item,template,amount,unlock:0,read_only:false,waiting:false },catalog,layout,advanced)

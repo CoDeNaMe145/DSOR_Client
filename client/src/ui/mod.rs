@@ -497,6 +497,7 @@ impl Plugin for UiPlugin {
             .init_resource::<SkillClicks>()
             .init_resource::<controls::social::SocialUi>()
             .init_resource::<controls::trade::TradeUi>()
+            .init_resource::<controls::items::pins::Pins>()
             .init_resource::<Settings>()
             .init_resource::<controls::hotbar::Hotbar>()
             .insert_resource(local_map::MapSettings::load())
@@ -511,7 +512,7 @@ impl Plugin for UiPlugin {
                 .before(bevy::sprite_render::check_entities_needing_specialization::<UiMaterial>))
             .add_systems(
                 Update,
-                ((dialogue::sync, spawn_windows, controls::sync_chat).chain(), controls::spells::sync, controls::items::sync, controls::keyboard, controls::interact, (controls::settings::sync, controls::settings::sliders, controls::hotbar::input, controls::spells::apply_drop).chain(), read_figures, controls::edit_text, controls::items::input, controls::order_windows, (update_fills, update_values, update_slots, (local_map::update, local_map::update_markers, local_map::appearance).chain()), controls::chat_rows, controls::sheet::rows, controls::paint, controls::items::render, (controls::spells::overlay, controls::items::overlay, controls::tooltips), show_hover_window, death_dialog, (controls::trade::sync, controls::social::column, controls::social::context_menu, controls::social::answer, controls::social::dialogs, controls::trade::render).chain()).chain().before(crate::network::net::NetSystems).run_if(crate::screens::loading::gameplay_ready),
+                ((dialogue::sync, spawn_windows, controls::sync_chat).chain(), controls::spells::sync, controls::items::sync, (controls::items::pins::update, controls::keyboard).chain(), controls::interact, (controls::settings::sync, controls::settings::sliders, controls::hotbar::input, controls::spells::apply_drop).chain(), read_figures, controls::edit_text, controls::items::input, controls::order_windows, (update_fills, update_values, update_slots, (local_map::update, local_map::update_markers, local_map::appearance).chain()), controls::chat_rows, controls::sheet::rows, controls::paint, controls::items::render, (controls::spells::overlay, controls::items::overlay, controls::tooltips), show_hover_window, death_dialog, (controls::trade::sync, controls::social::column, controls::social::context_menu, controls::social::answer, controls::social::dialogs, controls::trade::render).chain()).chain().before(crate::network::net::NetSystems).run_if(crate::screens::loading::gameplay_ready),
             );
         #[cfg(not(target_arch = "wasm32"))]
         app.add_systems(PreUpdate, replay::run.after(bevy::input::InputSystems)
