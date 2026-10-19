@@ -12,6 +12,10 @@
 //!   SetColor).
 //! UNVERIFIED: the colour and strength (set at runtime by RenderHiddenPixels,
 //!   not in the data); the original also blurs the glow (pe_highlight*).
+//! OFF unless DSOR_FLAGS=hiddenglow. EVIDENCE: the user's release261_192 shot
+//!   (2026-10-10) behind Kingshill's palace west wall shows no silhouette at
+//!   all, only the name; the wall hides the character. When the original does
+//!   draw the pass is not known.
 
 use bevy::camera::visibility::NoFrustumCulling;
 use bevy::mesh::skinning::SkinnedMesh;
@@ -93,7 +97,7 @@ fn add_ghosts(
     players: Query<(), With<crate::network::net::LocalPlayer>>,
 ) {
     let Some(material) = material else { return };
-    if crate::flag("playerhole") || crate::flag("nohiddenpixels") {
+    if !crate::flag("hiddenglow") || crate::flag("playerhole") {
         return;
     }
     for (entity, mesh, skin) in &meshes {

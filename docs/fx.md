@@ -27,7 +27,7 @@ client draws it. Every claim about the 2018 client comes from its files:
 | SSAO | pe_ssao: 16 fixed samples within 0.4 above the surface, counted 0.05-0.4 behind it, x 1.3 / 16, subtracted from the shadow buffer's y (the game enables it; the frame file says disabled) | `pe_ssao.wgsl` in bevy's SSAO pass (`AoMode::Original`) |
 | BrightPass, Bloom x5 | bright pass of the half-res opaque scene, blurred at quarter res (V H V H V) | `nebula_bloom`, including the bubble's `BloomColor`, threshold and scale |
 | HighlightSilhouette, GatherOutline | outline of the hovered / targeted actor | **missing** |
-| HiddenCharacterColor | characters behind walls as a silhouette | crate::rendering::hidden_pixels: the local character more than 1.5 behind the visible surface, added in a highlight colour (colour UNVERIFIED, not blurred) |
+| HiddenCharacterColor | characters behind walls as a silhouette | crate::rendering::hidden_pixels, only with DSOR_FLAGS=hiddenglow (the original showed none behind the palace wall): the local character more than 1.5 behind the visible surface, added in a highlight colour (colour UNVERIFIED, not blurred) |
 | Refraction | refraction surfaces, over everything drawn | crate::rendering::refraction over bevy's copy of the opaque scene (gap: transparent surfaces drawn after it are not refracted) |
 | pe_compose | colour x 2 + bloom x BloomScale, saturation, balance, gamma, highlight, vignette x VignetteColor, fade | bubble-driven bloom, saturation, RGB balance and vignette in one display-space pass before FXAA; neutral brightness/gamma and no tonemapping |
 
@@ -148,10 +148,11 @@ The original's way, the default:
   the player's torso and head; a group surface on them dissolves the whole
   group (the cutout's dithered discard over all of it, 0.16 s in, held 0.12 s,
   0.25 s out). Shadow views keep it.
-- **The hidden character.** Where the local character is still behind map
-  geometry (more than 1.5 units behind the visible surface), it is added over
-  the frame in a highlight colour (`hidden_pixels.rs`, the original's
-  HiddenCharacterColor pass).
+- **The hidden character.** What is left hides the character, as the original
+  does behind Kingshill's palace west wall (the user's release261_192 shot: no
+  silhouette, only the name). A glow over the hidden parts (`hidden_pixels.rs`,
+  the original's HiddenCharacterColor pass, colour unknown) is
+  `DSOR_FLAGS=hiddenglow`; when the original draws that pass is not known.
 
 The older dithered hole below is kept behind `DSOR_FLAGS=playerhole`.
 

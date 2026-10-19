@@ -8,8 +8,9 @@
 //! original's way: a group standing between the camera and the player fades
 //! out as a whole (fade_groups), the same dithered discard over all of it,
 //! shadows kept. Their surfaces never get the hole, and the hole itself is now
-//! only with DSOR_FLAGS=playerhole: the character shows through what is left
-//! as the original's glow (crate::rendering::hidden_pixels).
+//! only with DSOR_FLAGS=playerhole: what is left hides the character, as in the
+//! original (a glow through it, crate::rendering::hidden_pixels, is
+//! DSOR_FLAGS=hiddenglow).
 
 use std::collections::HashSet;
 
@@ -198,8 +199,7 @@ fn reveal_player(mut commands: Commands, ready: Res<ShadersReady>, time: Res<Tim
     mut cutouts: ResMut<Assets<CutoutMaterial>>, mut surface_cutouts: ResMut<Assets<CutoutSurfaceMaterial>>) {
     let _profile = crate::diagnostics::hud::FrameSpan::new("occlusion::reveal_player");
     // The hole is no longer the default: the original fades its visibility groups
-    // (fade_groups) and shows the character through the rest
-    // (crate::rendering::hidden_pixels).
+    // (fade_groups) and lets the rest hide the character.
     if !ready.0 || crate::flag("noocclusion") { return; }
     // Without it nothing opens; what is open still closes and is restored.
     let hole = crate::flag("playerhole");
