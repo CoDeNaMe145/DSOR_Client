@@ -22,11 +22,12 @@ client draws it. Every claim about the 2018 client comes from its files:
 | CollectShadows, BlurShadows | the global light's shadow, blurred | bevy cascaded shadow map, one cascade |
 | Prelight | light buffer: global light, point lights | bevy forward lighting: the level's global light, its back light, ambient and placed lights (crate::rendering::lighting) |
 | Color | Solid, AlphaTest, DecalReceive | opaque / alpha-mask surfaces; cull mode from the n3 |
-| ColorAlphaDecals | ground decals, SequenceAlpha | crate::rendering::decals (projected on the CPU once) |
+| ColorAlphaDecals | ground decals (only on DecalReceiveSolid surfaces: b_decalreceive writes stencil 100, b_decal tests it), SequenceAlpha | crate::rendering::decals (projected on the CPU once, onto DecalReceiver surfaces only) |
 | ColorAlpha | AlphaLit, AlphaUnlit, PreAdditive, ParticleLit, PostAlphaUnlit, Alpha, Additive, in that batch order | bevy's transparent pass, sorted back to front whatever the batch (gap: no batch order) |
-| BrightPass, Bloom x4 | bright pass of the half-res opaque scene, blurred at quarter res | `nebula_bloom`, including the bubble's `BloomColor`, threshold and scale |
+| SSAO | pe_ssao: 16 fixed samples within 0.4 above the surface, counted 0.05-0.4 behind it, x 1.3 / 16, subtracted from the shadow buffer's y (the game enables it; the frame file says disabled) | `pe_ssao.wgsl` in bevy's SSAO pass (`AoMode::Original`) |
+| BrightPass, Bloom x5 | bright pass of the half-res opaque scene, blurred at quarter res (V H V H V) | `nebula_bloom`, including the bubble's `BloomColor`, threshold and scale |
 | HighlightSilhouette, GatherOutline | outline of the hovered / targeted actor | **missing** |
-| HiddenCharacterColor | characters behind walls as a silhouette | **missing** |
+| HiddenCharacterColor | characters behind walls as a silhouette | crate::rendering::hidden_pixels, only with DSOR_FLAGS=hiddenglow (the original showed none behind the palace wall): the local character more than 1.5 behind the visible surface, added in a highlight colour (colour UNVERIFIED, not blurred) |
 | Refraction | refraction surfaces, over everything drawn | crate::rendering::refraction over bevy's copy of the opaque scene (gap: transparent surfaces drawn after it are not refracted) |
 | pe_compose | colour x 2 + bloom x BloomScale, saturation, balance, gamma, highlight, vignette x VignetteColor, fade | bubble-driven bloom, saturation, RGB balance and vignette in one display-space pass before FXAA; neutral brightness/gamma and no tonemapping |
 
@@ -36,17 +37,37 @@ client draws it. Every claim about the 2018 client comes from its files:
 applies it, converting Nebula's gamma-space light units to bevy's (`UNIT`, the
 inverse of the camera's exposure: what Nebula shows as `v`, bevy shows as `v`):
 
-- global light: `sat(N.L) x LightColor x LightIntensity` from the bubble's z axis,
-  plus `LightOppositeColor x LightIntensity` from the other side (a second
-  directional light, approximating `sat(BackLightFactor - N.L)`), plus
-  `LightAmbient` (bevy's ambient divided by its 0.452 diffuse BRDF factor);
-- fog: linear between `FogNearDist` and `FogFarDist` (25 and 50 in Kingshill: the
-  game camera sits 25 units from the player, so the fog starts at the player),
-  `FogColor`, opacity `FogIntensity` (UNVERIFIED mapping);
-- bloom (threshold `BrightPassThreshold / 2` in gamma, intensity x `BloomScale`,
-  tint `BloomColor`), saturation, RGB `Balance`, and vignette colour/intensity/size;
-- the light that follows the player (`LocalLightColor x LocalLightIntensity` at
-  `PlayerLightOffset`; UNVERIFIED range);
+- global light, summed in gamma space as the original's sun pass does (D3D9, no
+  sRGB): `LightColor x LightIntensity x sat(N.L)` from the bubble's z axis, plus
+  `LightAmbient`, plus `LightOppositeColor x sat(BackLightFactor - N.L)` (not
+  scaled by the intensity); the albedo is multiplied by that sum, so in linear
+  terms by its 2.2 power. Point lights add `colour x sat(N.L) x sat(1 - d/range)`
+  into the same sum, diffuse only. The original's SSAO estimate (pe_ssao.wgsl)
+  darkens the sun's sum by its visibility squared. Full shadow keeps half of
+  the whole light (sun, ambient and back light), as the original's blurred
+  shadow buffer does. Specular is scaled by each node's MatSpecularIntensity
+  (none at 0), map decals and dyed characters included.
+  Every surface writes gamma colours to the scene target and the compose pass
+  shows them as they are, so decals, alpha surfaces, particles and glows blend
+  in gamma space as the original's 8-bit targets do.
+  `DSOR_FLAGS=linearlight` sums in linear instead (the old look), `noao`,
+  `aolinear`, `aosquared`, `ao13` use none or Bevy's GTAO (`DSOR_AO_RADIUS` its
+  radius), `noshadowfloor` lets shadow remove the sun's share only,
+  `linearscene` blends in Bevy's linear target, `nospecular` drops the sun's
+  specular (diagnostics). The Lighting Menu's RENDER SWITCHES flip these live;
+- sun shadows: full strength in every zone (`LightShadowIntensity` only; the
+  original's shadowDarkeningFactor is 0 in Kingshill's interiors as outdoors),
+  and the shadow map draws both faces of every caster, so downward-facing
+  shadow-only meshes (`t011_kingshill/palace_shadowobject` over the throne
+  room) shade the rooms below (`DSOR_FLAGS=shadowcull` for back-face culling);
+- fog: Nebula's own, depth measured from the camera along its view, clear share
+  `clamp((FogFarDist - depth) / (FogFarDist - FogNearDist), 1 - FogIntensity, 1)`,
+  `FogColor` mixed in gamma space (from the shaders and the running client's
+  `fogColor.w = 1 - FogIntensity`);
+- bloom (pe_brightpassfilter: `2c x BloomColor x lum(max(2c - BrightPassThreshold, 0))`,
+  added x `BloomScale`), saturation, RGB `Balance`, and vignette colour/intensity/size;
+- the light that follows the player (`LocalLightColor x LocalLightIntensity`),
+  4 m above the player with a 6 m range, as the running client draws it;
 - the other bubbles (714 permanent ones in 149 levels: caves, interiors): inside
   one (box or sphere through its transform), the highest priority's look fades in
   over its `PEFadeTime`;
@@ -116,6 +137,24 @@ of each box moves; its other bounds and lighting settings are retained. Reapply
 these overrides after conversion with `tools/apply_level_overrides.py`.
 
 ## Keeping the player visible indoors
+
+The original's way, the default:
+
+- **Visibility groups.** A map group of type 0 (`maps/<map>.map.json` `groups`)
+  is a visibility group: church wall tops and towers, palace roofs, the crypt's
+  upper walls. The original's map manager hides a group that stands between
+  the camera and the player (`Map::ClientMapManager::HideGroups`,
+  `HandleGroupFade`). `occlusion.rs` `fade_groups` casts rays from the camera to
+  the player's torso and head; a group surface on them dissolves the whole
+  group (the cutout's dithered discard over all of it, 0.16 s in, held 0.12 s,
+  0.25 s out). Shadow views keep it.
+- **The hidden character.** What is left hides the character, as the original
+  does behind Kingshill's palace west wall (the user's release261_192 shot: no
+  silhouette, only the name). A glow over the hidden parts (`hidden_pixels.rs`,
+  the original's HiddenCharacterColor pass, colour unknown) is
+  `DSOR_FLAGS=hiddenglow`; when the original draws that pass is not known.
+
+The older dithered hole below is kept behind `DSOR_FLAGS=playerhole`.
 
 `client/src/rendering/occlusion.rs` casts five rays from the active game camera to the local
 player's torso, head, lower body and sides. A reveal starts only when all five

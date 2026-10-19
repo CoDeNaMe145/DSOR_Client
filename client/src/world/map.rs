@@ -47,10 +47,32 @@ pub struct Placement {
     pub p: [f32; 3],
     pub r: [f32; 4],
     pub s: [f32; 3],
+    /// Its map group (`groups[g]`), -1 for none.
+    #[serde(default = "no_group")]
+    pub g: i32,
 }
 
-/// A whole `.map.json` manifest. Fields the renderer does not use yet (groups,
-/// nav blockers) are skipped by serde.
+fn no_group() -> i32 {
+    -1
+}
+
+/// A map group. Type 0 is the original's visibility group: walls, roofs and
+/// tower tops that fade out as a whole while they stand between the camera and
+/// the player (crate::rendering::occlusion::VisibilityGroup): Kingshill's church
+/// walls and palace roofs, the crypt's upper walls. Type 1 only files
+/// placements for the level editor.
+/// EVIDENCE: dro_client64.exe Map::ClientMapManager::SetupVisibilityGroupCollides,
+///   HideGroups, HandleGroupFade (AlphaBlendFactor), "no valid point of interest
+///   set at time of OnFrame()"; the .map GROP section (DSO_Godot dsomap.py) has
+///   only name, type, parent and members.
+#[derive(Debug, Deserialize)]
+pub struct MapGroup {
+    #[serde(rename = "type")]
+    pub kind: u32,
+}
+
+/// A whole `.map.json` manifest. Fields the renderer does not use yet (nav
+/// blockers, events) are skipped by serde.
 #[derive(Asset, TypePath, Debug, Deserialize)]
 pub struct MapManifest {
     pub map: String,
@@ -61,6 +83,16 @@ pub struct MapManifest {
     /// (`t001_hub/tile_wall_corner_02` -> `t001_hub/tile_wall_corner_02.glb`).
     pub models: Vec<String>,
     pub instances: Vec<Placement>,
+    #[serde(default)]
+    pub groups: Vec<MapGroup>,
+}
+
+impl MapManifest {
+    /// The visibility group (type 0) a placement belongs to.
+    pub fn visibility_group(&self, placement: &Placement) -> Option<u32> {
+        let index = usize::try_from(placement.g).ok()?;
+        (self.groups.get(index)?.kind == 0).then_some(index as u32)
+    }
 }
 
 #[derive(Default, TypePath)]
@@ -358,6 +390,7 @@ fn stream_models(
         let mut flat_cache = HashMap::new();
         for &i in &placements {
             let inst = &manifest.instances[i];
+            let group = manifest.visibility_group(inst);
             let Some(gltf) = gltfs.get(&current.models[&inst.m]) else { continue };
             let flat = flat_cache.entry(inst.m).or_insert_with(|| flat_surfaces(gltf, &nodes, &meshes, &materials, &mesh_assets_mut, &asset_server));
             let mesh_assets = &*mesh_assets_mut;
@@ -403,7 +436,7 @@ fn stream_models(
                         };
                         let merged = mesh_assets.get(&s.mesh).and_then(|mesh| {
                             let layout = crate::rendering::merge::layout_of(mesh)?;
-                            let key = crate::rendering::merge::BatchKey { cell: key, material: material.id(), casts_shadow, layout };
+                            let key = crate::rendering::merge::BatchKey { cell: key, material: material.id(), casts_shadow, decal_receiver: s.decal_receiver, group, layout };
                             current.batches.batch(key, &material).push(mesh, &world, layout).then_some(())
                         });
                         if merged.is_none() {
@@ -412,6 +445,12 @@ fn stream_models(
                             s.material.insert(&mut e);
                             if !casts_shadow {
                                 e.insert(bevy::light::NotShadowCaster);
+                            }
+                            if s.decal_receiver {
+                                e.insert(crate::rendering::decals::DecalReceiver);
+                            }
+                            if let Some(g) = group {
+                                e.insert(crate::rendering::occlusion::VisibilityGroup(g));
                             }
                         }
                     }
@@ -433,6 +472,8 @@ fn stream_models(
         let mut e = commands.spawn((Mesh3d(mesh_assets_mut.add(mesh)), Transform::IDENTITY, ChildOf(cell)));
         material.insert(&mut e);
         if !key.casts_shadow { e.insert(bevy::light::NotShadowCaster); }
+        if key.decal_receiver { e.insert(crate::rendering::decals::DecalReceiver); }
+        if let Some(g) = key.group { e.insert(crate::rendering::occlusion::VisibilityGroup(g)); }
     }
     let ready = current.wanted_cells.iter().all(|k| current.contents.contains_key(k));
     if ready && !current.spawned {
@@ -545,6 +586,9 @@ pub(crate) struct FlatSurface {
     pub(crate) material: MapMaterial,
     pub(crate) local: bevy::math::Affine3A,
     pub(crate) no_shadow: bool,
+    /// The node's pass is DecalReceiveSolid: map decals land on it
+    /// (crate::rendering::decals::DecalReceiver).
+    pub(crate) decal_receiver: bool,
     /// Largest extent of the surface in the model's space (its mesh bounds
     /// through `local`).
     size: f32,
@@ -609,7 +653,18 @@ pub(crate) fn flat_surfaces(
             // static alpha factor, and lit surfaces with an emissive map, whose
             // emission is scaled to the node's intensity.
             let emissive = materials.get(gm).is_some_and(|m| m.emissive_texture.is_some());
-            let adjusted = state.contains("\"dsor_unlit\":true") || state.contains("\"dsor_alpha\"");
+            // The node's MatSpecularIntensity other than 1 also has a material of
+            // ours (crate::rendering::materials::specular_scale).
+            let specular = node.extras.as_ref()
+                .and_then(|e| serde_json::from_str::<serde_json::Value>(&e.value).ok())
+                .and_then(|v| v["dsor_shader"]["MatSpecularIntensity"].as_f64())
+                .and_then(|v| crate::rendering::materials::specular_scale(Some(v as f32)));
+            // Only when the loader made it: it pairs materials with nodes by name,
+            // which some models share or name differently, and a missing label
+            // never loads (deco_banner_mound_01 held Kingshill at 346/347 models).
+            let specular = specular.is_some()
+                && asset_server.get_handle::<StandardMaterial>(path.clone().with_label(format!("{label}/dsor"))).is_some();
+            let adjusted = state.contains("\"dsor_unlit\":true") || state.contains("\"dsor_alpha\"") || specular;
             let material = match ours {
                 Some("refr") => MapMaterial::Refraction(asset_server.load(path.clone().with_label(format!("{label}/refr")))),
                 Some(_) => MapMaterial::Surface(asset_server.load(path.clone().with_label(format!("{label}/neb")))),
@@ -624,8 +679,33 @@ pub(crate) fn flat_surfaces(
                 .and_then(|m| m.compute_aabb())
                 .map(|b| (local.matrix3 * Vec3A::from(b.half_extents * 2.0)).abs().max_element())
                 .unwrap_or(f32::MAX);
-            out.push(FlatSurface { mesh: prim.mesh.clone(), material, local, no_shadow: additive || !opaque, size });
+            let decal_receiver = node.extras.as_ref()
+                .and_then(|e| serde_json::from_str::<serde_json::Value>(&e.value).ok())
+                .is_some_and(|v| v["dsor_pass"].as_str() == Some("DecalReceiveSolid"));
+            out.push(FlatSurface { mesh: prim.mesh.clone(), material, local, no_shadow: additive || !opaque, decal_receiver, size });
         }
     }
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn visibility_groups_are_the_type_0_groups() {
+        // a0202_kingscrypt01: group 207 (type 0) holds the upper walls over its
+        // corridors; type 1 groups only file placements.
+        let manifest: MapManifest = serde_json::from_str(r#"{
+            "map": "m", "center": [0, 0, 0], "extents": [1, 1, 1], "models": ["a"],
+            "groups": [{"name": "x", "parent": -1, "type": 1}, {"name": "y", "parent": -1, "type": 0}],
+            "instances": [
+                {"m": 0, "p": [0, 0, 0], "r": [0, 0, 0, 1], "s": [1, 1, 1], "g": 1},
+                {"m": 0, "p": [0, 0, 0], "r": [0, 0, 0, 1], "s": [1, 1, 1], "g": 0},
+                {"m": 0, "p": [0, 0, 0], "r": [0, 0, 0, 1], "s": [1, 1, 1], "g": -1},
+                {"m": 0, "p": [0, 0, 0], "r": [0, 0, 0, 1], "s": [1, 1, 1]}
+            ]}"#).unwrap();
+        let groups: Vec<_> = manifest.instances.iter().map(|p| manifest.visibility_group(p)).collect();
+        assert_eq!(groups, [Some(1), None, None, None]);
+    }
 }

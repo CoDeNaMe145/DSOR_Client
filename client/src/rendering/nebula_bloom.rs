@@ -3,7 +3,7 @@
 //! EVIDENCE: export_win32/frame/default.xml: `DownscaleScene` (pe_downsample2x2 of
 //!   the ColorBuffer) runs right after the opaque passes, BEFORE the `ColorAlpha`
 //!   pass draws the transparent world (effects, particles, additive surfaces);
-//!   `BrightPassFilter` and the four `Bloom` blurs work on that SceneScaled, and
+//!   `BrightPassFilter` and the five `Bloom` blurs (V H V H V) work on that SceneScaled, and
 //!   pe_compose adds the result to the final colour x BloomScale. Effects never
 //!   bloom in the 2018 client. bevy's bloom took the whole final image, effects
 //!   included: they glared ("toujours trop d'emissive").
@@ -39,6 +39,9 @@ pub struct NebulaPostProcess {
     pub vignette_intensity: f32,
     pub vignette_size: f32,
     pub death_fade: f32,
+    /// The scene target holds gamma colours (crate::rendering::lighting's
+    /// RenderSwitches::gamma_scene): shown as they are, no 1/2.2 power.
+    pub gamma_scene: bool,
 }
 
 pub struct NebulaBloomPlugin;
@@ -263,7 +266,7 @@ impl NebulaPostProcess {
         let b = self.balance;
         let v = self.vignette_color;
         [self.threshold, self.scale, pixel.x, pixel.y,
-            c.x, c.y, c.z, c.w, dir.x, dir.y, 0.0, 0.0,
+            c.x, c.y, c.z, c.w, dir.x, dir.y, if self.gamma_scene { 1.0 } else { 0.0 }, 0.0,
             b.x, b.y, b.z, b.w, v.x, v.y, v.z, v.w,
             self.saturation * (1.0 - 0.9 * self.death_fade),
             self.vignette_intensity, self.vignette_size,
@@ -288,10 +291,14 @@ fn bloom_scene(
     if !ok {
         return;
     }
+    // The frame shader's Bloom1 / Bloom2 / Bloom3 / Bloom2 / Bloom3: vertical,
+    // horizontal, vertical, horizontal, vertical, ending in Bloom1 (here b),
+    // which pe_compose reads. Each pass keeps its x 1.1.
     for _ in 0..2 {
         pass(&mut ctx, &cache, &pipeline, ids.blur, &t.a.default_view, &t.a.default_view, &t.b.default_view, params(Vec2::Y));
         pass(&mut ctx, &cache, &pipeline, ids.blur, &t.b.default_view, &t.b.default_view, &t.a.default_view, params(Vec2::X));
     }
+    pass(&mut ctx, &cache, &pipeline, ids.blur, &t.a.default_view, &t.a.default_view, &t.b.default_view, params(Vec2::Y));
 }
 
 /// Before FXAA: add bloom, then apply the active bubble's colour and vignette.
@@ -310,5 +317,5 @@ fn bloom_compose(
     }
     let post = target.post_process_write();
     let params = b.params(Vec2::ZERO, Vec2::ZERO);
-    pass(&mut ctx, &cache, &pipeline, ids.compose, post.source, &t.a.default_view, post.destination, params);
+    pass(&mut ctx, &cache, &pipeline, ids.compose, post.source, &t.b.default_view, post.destination, params);
 }

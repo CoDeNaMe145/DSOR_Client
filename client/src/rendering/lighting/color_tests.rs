@@ -244,3 +244,21 @@ fn lighting_menu_preview_shows_a_zone_from_outside_event_zones_included() {
     for _ in 0..4 { app.update(); }
     assert_look(&app, camera, &global);
 }
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn the_player_setting_owns_ssao_and_the_lighting_picks_its_algorithm() {
+    use bevy::pbr::ScreenSpaceAmbientOcclusion;
+    // The graphics settings (crate::rendering::graphics) insert SSAO with Bevy's
+    // defaults or remove it; the lighting only sets the algorithm on what is there.
+    let mut app = App::new();
+    app.init_resource::<RenderSwitches>().add_systems(Update, ao_algorithm);
+    let with = app.world_mut().spawn(ScreenSpaceAmbientOcclusion::default()).id();
+    let without = app.world_mut().spawn(Camera3d::default()).id();
+    app.update();
+    assert_eq!(app.world().get::<ScreenSpaceAmbientOcclusion>(with).unwrap().constant_object_thickness, ORIGINAL_SSAO);
+    assert!(app.world().get::<ScreenSpaceAmbientOcclusion>(without).is_none(), "never added: the player turned it off");
+    app.world_mut().resource_mut::<RenderSwitches>().ao = AoMode::Squared;
+    app.update();
+    assert_eq!(app.world().get::<ScreenSpaceAmbientOcclusion>(with).unwrap().constant_object_thickness, 0.25);
+}

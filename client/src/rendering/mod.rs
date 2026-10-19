@@ -6,6 +6,7 @@ pub(crate) mod clamp;
 pub(crate) mod decals;
 pub(crate) mod draw_mode;
 pub(crate) mod graphics;
+pub(crate) mod hidden_pixels;
 pub(crate) mod highlight;
 pub(crate) mod lighting;
 pub(crate) mod materials;
