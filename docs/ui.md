@@ -436,9 +436,15 @@ when WebGL2's optional depth prepass is enabled). Shadow maps use 512/1024/2048
 texels; WebGL2 keeps fast hardware shadow filtering. Browser SSAO is unavailable.
 Bloom and vignette switches gate the authored map effects without replacing
 their colors or strengths. Diagnostic `noao`, `noshadows`, `lowshadows` and
-`nobloom` flags still take precedence. DLSS/DLAA and FSR/XeSS have read-only
-"Not supported" rows: none is integrated in this client. SMAA/FXAA smooth edges
-at the current resolution, and CAS sharpens; these options do not upscale.
+`nobloom` flags still take precedence. Native builds with the optional `dlss`
+feature offer Off, DLAA (native resolution), and DLSS Quality/Balanced/Performance.
+The control requires an NVIDIA RTX GPU, Vulkan, and a working DLSS runtime;
+unsupported devices and builds show a read-only availability explanation.
+DLSS/DLAA replaces spatial AA while enabled. The saved spatial AA choice remains
+the fallback when DLSS is disabled or the same preferences are loaded on an
+unsupported device. CAS remains available. FSR/XeSS is not integrated.
+SMAA/FXAA smooth edges at the current resolution, and CAS sharpens; these options
+do not upscale. See [native DLSS setup](getting-started.md#optional-native-dlss--dlaa).
 Percentage settings use draggable sliders with exact percentage labels. Track
 clicks and thumb drags update the draft until Apply.
 Audio explains that playback is not implemented in this client.

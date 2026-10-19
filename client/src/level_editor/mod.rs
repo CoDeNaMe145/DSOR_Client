@@ -186,6 +186,7 @@ fn run_app(directory: PathBuf, desktop: Option<desktop::State>) {
         scene_stamp: None, controls_stamp: None, poll_at: -1., status_at: -1., controls: default(),
         placed: default(), models: default(), events: 0, drag: None, focus_serial: 0, needs_frame: true, error: String::new(), ambience: None, shadow: None };
     let mut app = App::new();
+    crate::rendering::graphics::configure_native_dlss(&mut app);
     app
         .add_plugins(DefaultPlugins.set(AssetPlugin { file_path: crate::asset_root(), meta_check: bevy::asset::AssetMetaCheck::Never, ..default() })
             .set(WindowPlugin { primary_window: Some({ let mut window = Window { title: if is_desktop { "DSOR • Level Editor".into() } else { title }, resolution: (1600, 960).into(),

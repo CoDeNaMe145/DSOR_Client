@@ -17,6 +17,7 @@
 use bevy::core_pipeline::core_3d::{main_opaque_pass_3d, main_transparent_pass_3d};
 use bevy::core_pipeline::schedule::{Core3d, Core3dSystems};
 use bevy::core_pipeline::FullscreenShader;
+use bevy::camera::MainPassResolutionOverride;
 use bevy::prelude::*;
 use bevy::render::camera::ExtractedCamera;
 use bevy::render::extract_component::{ExtractComponent, ExtractComponentPlugin};
@@ -149,6 +150,7 @@ struct BloomTargets {
     a: CachedTexture,
     b: CachedTexture,
     quarter: UVec2,
+    source_uv: Vec4,
 }
 
 #[derive(Component)]
@@ -163,10 +165,16 @@ fn prepare_textures(
     mut commands: Commands,
     mut cache: ResMut<TextureCache>,
     device: Res<RenderDevice>,
-    views: Query<(Entity, &ExtractedCamera), With<NebulaPostProcess>>,
+    views: Query<(Entity, &ExtractedCamera, Option<&MainPassResolutionOverride>), With<NebulaPostProcess>>,
 ) {
-    for (e, camera) in &views {
-        let Some(size) = camera.physical_viewport_size else { continue };
+    for (e, camera, resolution) in &views {
+        let Some(viewport_size) = camera.physical_viewport_size else { continue };
+        let Some(target_size) = camera.physical_target_size else { continue };
+        let size = resolution.map_or(viewport_size, |resolution| resolution.0);
+        // DLSS game views cover the whole output target. Keep the existing full
+        // texture sampling for ordinary/editor cameras (including offset views).
+        let scale = resolution.map_or(Vec2::ONE, |resolution| resolution.0.as_vec2() / target_size.as_vec2());
+        let source_uv = Vec4::new(scale.x, scale.y, 0.0, 0.0);
         let tex = |cache: &mut TextureCache, s: UVec2, label: &'static str| {
             cache.get(
                 &device,
@@ -189,6 +197,7 @@ fn prepare_textures(
             a: tex(&mut cache, quarter, "nebula_bloom_a"),
             b: tex(&mut cache, quarter, "nebula_bloom_b"),
             quarter,
+            source_uv,
         });
     }
 }
@@ -222,7 +231,7 @@ fn pass(
     source: &TextureView,
     second: &TextureView,
     dest: &TextureView,
-    params: [f32; 24],
+    params: [f32; 28],
 ) -> bool {
     let Some(render_pipeline) = cache.get_render_pipeline(id) else { return false };
     let buffer = ctx.render_device().create_buffer_with_data(&BufferInitDescriptor {
@@ -254,14 +263,14 @@ fn pass(
     true
 }
 
-fn bytemuck_bytes(v: &[f32; 24]) -> &[u8] {
+fn bytemuck_bytes(v: &[f32; 28]) -> &[u8] {
     // SAFETY: an array of f32 is plain old data, without padding.
     unsafe { std::slice::from_raw_parts(v.as_ptr() as *const u8, std::mem::size_of_val(v)) }
 }
 
 impl NebulaPostProcess {
-    /// Six vec4s, matching Params in nebula_bloom.wgsl for every pass.
-    fn params(&self, pixel: Vec2, dir: Vec2) -> [f32; 24] {
+    /// Seven vec4s, matching Params in nebula_bloom.wgsl for every pass.
+    fn params(&self, pixel: Vec2, dir: Vec2) -> [f32; 28] {
         let c = self.color;
         let b = self.balance;
         let v = self.vignette_color;
@@ -270,7 +279,7 @@ impl NebulaPostProcess {
             b.x, b.y, b.z, b.w, v.x, v.y, v.z, v.w,
             self.saturation * (1.0 - 0.9 * self.death_fade),
             self.vignette_intensity, self.vignette_size,
-            (-0.7 * self.death_fade).exp2()]
+            (-0.7 * self.death_fade).exp2(), 1.0, 1.0, 0.0, 0.0]
     }
 }
 
@@ -286,7 +295,11 @@ fn bloom_scene(
     let scene = target.main_texture_view();
     let q = Vec2::new(1.0 / t.quarter.x as f32, 1.0 / t.quarter.y as f32);
     let params = |dir: Vec2| b.params(q, dir);
-    let ok = pass(&mut ctx, &cache, &pipeline, ids.bright, scene, scene, &t.half.default_view, params(Vec2::ZERO))
+    // DLSS renders only part of the full-size scene texture before upscaling.
+    // Bloom captures opaque lighting here, so sample that active rectangle.
+    let mut bright_params = params(Vec2::ZERO);
+    bright_params[24..28].copy_from_slice(&t.source_uv.to_array());
+    let ok = pass(&mut ctx, &cache, &pipeline, ids.bright, scene, scene, &t.half.default_view, bright_params)
         && pass(&mut ctx, &cache, &pipeline, ids.down, &t.half.default_view, &t.half.default_view, &t.a.default_view, params(Vec2::ZERO));
     if !ok {
         return;

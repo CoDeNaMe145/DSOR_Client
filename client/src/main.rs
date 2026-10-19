@@ -341,6 +341,7 @@ fn main() {
     // crashed the game (2026-10-18). Debug builds keep panicking to show them.
     #[cfg(not(debug_assertions))]
     app.set_error_handler(bevy::ecs::error::warn);
+    rendering::graphics::configure_native_dlss(&mut app);
     app.register_asset_source(bevy::asset::io::AssetSourceId::Default, model_variant::source(asset_root()));
     if let Some(config) = opts.net.as_ref().filter(|_| !opts.login_screen) {
         app.insert_resource(config.clone());

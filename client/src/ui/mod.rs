@@ -341,15 +341,16 @@ struct Follows {
 #[derive(Component)]
 struct UiCamera;
 
-/// The interface camera takes the scene camera's HDR and MSAA, so both share
+/// The interface camera takes the scene camera's format, MSAA and texture usages, so both share
 /// their target textures (see setup).
 #[allow(clippy::type_complexity)]
 fn match_scene_camera(
     mut commands: Commands,
-    scene: Query<(Has<Hdr>, &Msaa), (With<Camera3d>, Without<crate::rendering::highlight::HighlightCamera>, Without<UiCamera>)>,
-    mut ui: Query<(Entity, Has<Hdr>, &mut Msaa), With<UiCamera>>,
+    scene: Query<(Has<Hdr>, &Msaa, &bevy::camera::CameraMainTextureUsages), (With<Camera3d>, Without<crate::rendering::highlight::HighlightCamera>, Without<UiCamera>)>,
+    mut ui: Query<(Entity, Has<Hdr>, &mut Msaa, &mut bevy::camera::CameraMainTextureUsages), With<UiCamera>>,
 ) {
-    let (Some((hdr, msaa)), Ok((e, ui_hdr, mut ui_msaa))) = (scene.iter().next(), ui.single_mut()) else { return };
+    let (Some((hdr, msaa, usages)), Ok((e, ui_hdr, mut ui_msaa, mut ui_usages))) = (scene.iter().next(), ui.single_mut()) else { return };
+    if ui_usages.0 != usages.0 { ui_usages.0 = usages.0; }
     if *ui_msaa != *msaa {
         *ui_msaa = *msaa;
     }
@@ -500,7 +501,8 @@ impl Plugin for UiPlugin {
             .init_resource::<controls::hotbar::Hotbar>()
             .insert_resource(local_map::MapSettings::load())
             .add_systems(Startup, (setup, controls::items::setup, dialogue::setup))
-            .add_systems(Update, (match_scene_camera, follow_screen).chain())
+            .add_systems(Update, follow_screen)
+            .add_systems(PostUpdate, match_scene_camera.after(crate::rendering::graphics::ApplyGraphics))
             .add_systems(PostUpdate, npc_hover::show
                 .after(crate::rendering::highlight::pick)
                 .before(TransformSystems::Propagate))
@@ -1387,6 +1389,25 @@ mod residency_tests {
         let (half, points) = fan(&cooldown_sweep(rect, 0.5));
         assert!((half - 200.0).abs() < 1e-3, "{half}");
         assert!(points.iter().all(|&[x, _]| x <= 10.0 + 1e-4), "{points:?}");
+    }
+
+    #[test]
+    fn overlay_tracks_scene_texture_usages_and_format() {
+        use bevy::camera::CameraMainTextureUsages;
+        use bevy::render::render_resource::TextureUsages;
+        let mut app = App::new();
+        app.add_systems(Update, match_scene_camera);
+        let usages = CameraMainTextureUsages::default().with(TextureUsages::STORAGE_BINDING);
+        let scene = app.world_mut().spawn((Camera3d::default(), Hdr, Msaa::Off, usages)).id();
+        let overlay = app.world_mut().spawn((Camera2d, UiCamera, Msaa::Sample4)).id();
+        app.update();
+        assert!(app.world().get::<Hdr>(overlay).is_some());
+        assert_eq!(app.world().get::<Msaa>(overlay), Some(&Msaa::Off));
+        assert_eq!(app.world().get::<CameraMainTextureUsages>(overlay).unwrap().0, usages.0);
+        app.world_mut().entity_mut(scene).remove::<Hdr>().insert(CameraMainTextureUsages::default());
+        app.update();
+        assert!(app.world().get::<Hdr>(overlay).is_none());
+        assert_eq!(app.world().get::<CameraMainTextureUsages>(overlay).unwrap().0, CameraMainTextureUsages::default().0);
     }
 
     #[test]

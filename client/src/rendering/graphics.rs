@@ -4,6 +4,45 @@ use bevy::light::{DirectionalLightShadowMap, ShadowFilteringMethod};
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
+#[cfg(all(feature = "dlss", any(target_os = "windows", target_os = "linux")))]
+mod dlss;
+
+/// Call before DefaultPlugins, including in the standalone level editor.
+pub(crate) fn configure_native_dlss(_app: &mut App) {
+    #[cfg(all(feature = "dlss", any(target_os = "windows", target_os = "linux")))]
+    dlss::configure(_app);
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum DlssMode { #[default] Off, Dlaa, Quality, Balanced, Performance }
+
+impl DlssMode {
+    fn next(self) -> Self { match self { Self::Off => Self::Dlaa, Self::Dlaa => Self::Quality,
+        Self::Quality => Self::Balanced, Self::Balanced => Self::Performance, Self::Performance => Self::Off } }
+    fn label(self) -> &'static str { match self { Self::Off => "Off", Self::Dlaa => "DLAA (native resolution)",
+        Self::Quality => "DLSS - Quality", Self::Balanced => "DLSS - Balanced", Self::Performance => "DLSS - Performance" } }
+}
+
+#[derive(Resource, Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DlssAvailability { Available, DesktopOnly, NotCompiled, Unsupported }
+
+impl Default for DlssAvailability {
+    fn default() -> Self {
+        if !cfg!(any(target_os = "windows", target_os = "linux")) { Self::DesktopOnly }
+        else if cfg!(feature = "dlss") { Self::Unsupported }
+        else { Self::NotCompiled }
+    }
+}
+
+impl DlssAvailability {
+    fn active(self, mode: DlssMode) -> bool { self == Self::Available && mode != DlssMode::Off }
+    fn label(self, mode: DlssMode) -> &'static str { match self {
+        Self::Available => mode.label(), Self::DesktopOnly => "Windows / Linux only",
+        Self::NotCompiled => "Not in this build", Self::Unsupported => "Unavailable on this device",
+    } }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum AntiAliasing { #[default] Auto, Off, Fxaa, SmaaLow, SmaaHigh }
@@ -45,6 +84,7 @@ impl ShadowFilter {
 #[serde(default)]
 pub(crate) struct GraphicsSettings {
     pub anti_aliasing: AntiAliasing,
+    pub dlss: DlssMode,
     pub shadows: Quality,
     pub shadow_filter: ShadowFilter,
     pub ambient_occlusion: Quality,
@@ -55,7 +95,7 @@ pub(crate) struct GraphicsSettings {
 
 impl Default for GraphicsSettings {
     fn default() -> Self {
-        Self { anti_aliasing: AntiAliasing::Auto,
+        Self { anti_aliasing: AntiAliasing::Auto, dlss: DlssMode::Off,
             shadows: if crate::WEBGL2 { Quality::Medium } else { Quality::High },
             shadow_filter: ShadowFilter::Auto, ambient_occlusion: Quality::Medium,
             sharpening: 0, bloom: true, vignette: true }
@@ -63,10 +103,11 @@ impl Default for GraphicsSettings {
 }
 
 impl GraphicsSettings {
-    pub(crate) fn rows(&self) -> Vec<(&'static str, &'static str, String)> {
+    pub(crate) fn rows(&self, dlss: DlssAvailability) -> Vec<(&'static str, &'static str, String)> {
         let on = |v| if v { "On" } else { "Off" }.to_owned();
         vec![
-            ("anti_aliasing", "Anti-aliasing", self.anti_aliasing.label().into()),
+            (if dlss.active(self.dlss) { "unavailable" } else { "anti_aliasing" }, "Anti-aliasing",
+                if dlss.active(self.dlss) { "Handled by DLSS / DLAA" } else { self.anti_aliasing.label() }.into()),
             ("shadows", "Sun shadow quality", self.shadows.label().into()),
             (if crate::WEBGL2 { "unavailable" } else { "shadow_filter" }, "Shadow filtering",
                 if crate::WEBGL2 { "Fast (WebGL2)" } else { self.shadow_filter.label() }.into()),
@@ -75,14 +116,15 @@ impl GraphicsSettings {
             ("sharpening", "Sharpening (CAS)", format!("{}%", self.sharpening)),
             ("bloom", "Bloom", on(self.bloom)),
             ("vignette", "Vignette", on(self.vignette)),
-            ("unavailable", "DLSS / DLAA", "Not supported".into()),
+            (if dlss == DlssAvailability::Available { "dlss" } else { "unavailable" }, "NVIDIA DLSS / DLAA", dlss.label(self.dlss).into()),
             ("unavailable", "FSR / XeSS upscaling", "Not supported".into()),
         ]
     }
 
-    pub(crate) fn action(&mut self, id: &str) {
+    pub(crate) fn action(&mut self, id: &str, dlss: DlssAvailability) {
         match id {
-            "anti_aliasing" => self.anti_aliasing = self.anti_aliasing.next(),
+            "anti_aliasing" if !dlss.active(self.dlss) => self.anti_aliasing = self.anti_aliasing.next(),
+            "dlss" if dlss == DlssAvailability::Available => self.dlss = self.dlss.next(),
             "shadows" => self.shadows = self.shadows.next(),
             "shadow_filter" if !crate::WEBGL2 => self.shadow_filter = self.shadow_filter.next(),
             "ambient_occlusion" if !cfg!(target_arch = "wasm32") => self.ambient_occlusion = self.ambient_occlusion.next(),
@@ -104,17 +146,30 @@ pub(crate) struct GraphicsPlugin;
 impl Plugin for GraphicsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<GraphicsSettings>()
+            .init_resource::<DlssAvailability>()
             .add_systems(PostUpdate, (sync_preferences, apply_cameras).chain().in_set(ApplyGraphics));
+        #[cfg(all(feature = "dlss", any(target_os = "windows", target_os = "linux")))]
+        {
+            app.add_systems(PreUpdate, dlss::prepare_shaders)
+                .add_systems(PostUpdate, dlss::apply.in_set(ApplyGraphics).after(apply_cameras).after(bevy::transform::TransformSystems::Propagate));
+            dlss::install_cleanup(app);
+        }
+    }
+    fn finish(&self, _app: &mut App) {
+        #[cfg(all(feature = "dlss", any(target_os = "windows", target_os = "linux")))]
+        dlss::detect(_app);
     }
 }
 
-fn sync_preferences(settings: Res<crate::ui::Settings>, mut graphics: ResMut<GraphicsSettings>) {
+fn sync_preferences(mut settings: ResMut<crate::ui::Settings>, mut graphics: ResMut<GraphicsSettings>, dlss: Res<DlssAvailability>) {
+    if settings.dlss_availability != *dlss { settings.dlss_availability = *dlss; }
     if *graphics != settings.current.graphics { *graphics = settings.current.graphics.clone(); }
 }
 
 fn apply_cameras(
     mut commands: Commands,
     graphics: Res<GraphicsSettings>,
+    dlss: Res<DlssAvailability>,
     mut shadows: ResMut<DirectionalLightShadowMap>,
     cameras: Query<(Entity, Ref<GameGraphics>), With<Camera3d>>,
 ) {
@@ -122,7 +177,7 @@ fn apply_cameras(
         shadows.size = if crate::flag("lowshadows") { 512 } else { graphics.shadows.shadow_size() };
     }
     for (entity, marker) in &cameras {
-        if !graphics.is_changed() && !marker.is_added() { continue; }
+        if !graphics.is_changed() && !dlss.is_changed() && !marker.is_added() { continue; }
         let mut camera = commands.entity(entity);
         camera.remove::<(Fxaa, Smaa, ContrastAdaptiveSharpening)>();
         // SSAO and the WebGL depth prepass require single-sample depth. Spatial
@@ -130,7 +185,7 @@ fn apply_cameras(
         let browser_msaa = cfg!(target_arch = "wasm32") && graphics.anti_aliasing == AntiAliasing::Auto
             && !(crate::WEBGL2 && crate::depth_prepass());
         camera.insert(if browser_msaa { Msaa::Sample4 } else { Msaa::Off });
-        match graphics.anti_aliasing {
+        match if dlss.active(graphics.dlss) { AntiAliasing::Off } else { graphics.anti_aliasing } {
             AntiAliasing::Auto if !cfg!(target_arch = "wasm32") => { camera.insert(Fxaa::default()); }
             AntiAliasing::Fxaa => { camera.insert(Fxaa::default()); }
             AntiAliasing::SmaaLow => { camera.insert(Smaa { preset: SmaaPreset::Low }); }

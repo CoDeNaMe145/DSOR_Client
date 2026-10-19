@@ -6,15 +6,39 @@ fn preferences_migrate_and_round_trip() {
     assert_eq!(old, GraphicsSettings::default());
     let changed = GraphicsSettings { anti_aliasing: AntiAliasing::SmaaHigh, shadows: Quality::Low,
         shadow_filter: ShadowFilter::Fast, ambient_occlusion: Quality::Off, sharpening: 63,
-        bloom: false, vignette: false };
+        bloom: false, vignette: false, dlss: DlssMode::Quality };
     let restored: GraphicsSettings = serde_json::from_str(&serde_json::to_string(&changed).unwrap()).unwrap();
     assert_eq!(restored, changed);
 }
 
 #[test]
+fn dlss_preferences_require_runtime_support_and_keep_fallback_aa() {
+    let mut graphics = GraphicsSettings::default();
+    graphics.action("dlss", DlssAvailability::Unsupported);
+    assert_eq!(graphics.dlss, DlssMode::Off);
+    graphics.action("dlss", DlssAvailability::Available);
+    assert_eq!(graphics.dlss, DlssMode::Dlaa);
+    assert!(graphics.rows(DlssAvailability::Available).iter().any(|row|
+        row.1 == "Anti-aliasing" && row.0 == "unavailable"));
+    graphics.action("anti_aliasing", DlssAvailability::Available);
+    assert_eq!(graphics.anti_aliasing, AntiAliasing::Auto);
+    graphics.action("dlss", DlssAvailability::Available);
+    assert_eq!(graphics.dlss, DlssMode::Quality);
+    assert!(graphics.rows(DlssAvailability::Unsupported).iter().any(|row|
+        row.0 == "anti_aliasing" && row.2 == "Default (FXAA)"));
+    let mut app = App::new();
+    app.insert_resource(graphics).insert_resource(DlssAvailability::Unsupported)
+        .init_resource::<DirectionalLightShadowMap>().add_systems(Update, apply_cameras);
+    let camera = app.world_mut().spawn((Camera3d::default(), GameGraphics)).id();
+    app.update();
+    assert!(app.world().get::<Fxaa>(camera).is_some());
+    assert_eq!(app.world().resource::<GraphicsSettings>().dlss, DlssMode::Quality);
+}
+
+#[test]
 fn camera_switches_remove_old_effects_and_preserve_auxiliary_views() {
     let mut app = App::new();
-    app.init_resource::<GraphicsSettings>().init_resource::<DirectionalLightShadowMap>()
+    app.init_resource::<DlssAvailability>().init_resource::<GraphicsSettings>().init_resource::<DirectionalLightShadowMap>()
         .add_systems(Update, apply_cameras);
     let camera = app.world_mut().spawn((Camera3d::default(), GameGraphics)).id();
     let auxiliary = app.world_mut().spawn((Camera3d::default(), Fxaa::default(), Msaa::Sample4)).id();

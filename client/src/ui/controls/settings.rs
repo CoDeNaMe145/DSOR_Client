@@ -2,7 +2,7 @@
 //! until Apply succeeds; shortcuts, captions and tooltips share one binding map.
 use super::*;
 use serde::Serialize;
-use crate::rendering::graphics::GraphicsSettings;
+use crate::rendering::graphics::{GraphicsSettings, DlssAvailability};
 
 pub(crate) const WINDOW: &str = "settingswindow2";
 pub(super) const ROWS: usize = 7;
@@ -127,6 +127,7 @@ impl Preferences {
 #[derive(Resource)]
 pub(crate) struct Settings {
     pub current: Preferences,
+    pub(crate) dlss_availability: DlssAvailability,
     draft: Preferences,
     pub(crate) open: bool,
     tab: u8,
@@ -138,7 +139,7 @@ impl Default for Settings {
     fn default() -> Self {
         let current = Preferences::load();
         let open = std::env::var("DSOR_UI_OPEN").is_ok_and(|v| v.split(',').any(|w| w == WINDOW));
-        Self { draft: current.clone(), current, open, tab: 0, page: 0, listening: None, notice: "Changes take effect when you choose Apply.".into() }
+        Self { draft: current.clone(), current, dlss_availability: default(), open, tab: 0, page: 0, listening: None, notice: "Changes take effect when you choose Apply.".into() }
     }
 }
 
@@ -195,7 +196,7 @@ impl Settings {
                         "classic_cursor" => self.draft.classic_cursor ^= true,
                         "lock_bar" => self.draft.lock_bar ^= true, "fullscreen" => self.draft.fullscreen ^= true,
                         "vsync" => self.draft.vsync ^= true,
-                        _ if self.tab == 1 => self.draft.graphics.action(&id),
+                        _ if self.tab == 1 => self.draft.graphics.action(&id, self.dlss_availability),
                         _ if self.tab == 3 => { self.listening = Some(id); self.notice = "Press a key (modifiers supported). Delete clears; Esc cancels.".into(); }
                         _ => {}
                     }
@@ -212,7 +213,7 @@ impl Settings {
                 ("other_names", "Display other names", on(p.other_names)), ("map_transparency", "Map transparency", format!("{}%", p.map_transparency))],
             1 => {
                 let mut rows = vec![("fullscreen", "Fullscreen", on(p.fullscreen)), ("vsync", "Vertical sync", on(p.vsync))];
-                rows.extend(p.graphics.rows());
+                rows.extend(p.graphics.rows(self.dlss_availability));
                 rows.push(("map_transparency", "Map transparency", format!("{}%", p.map_transparency)));
                 rows
             },
@@ -436,7 +437,7 @@ mod tests {
     fn graphics_pages_edit_only_the_draft_and_reset_all_options() {
         let p: Preferences = serde_json::from_str(r#"{"vsync":true}"#).unwrap();
         assert_eq!(p.graphics, GraphicsSettings::default());
-        let mut s = Settings { current:p.clone(), draft:p.clone(), open:true, tab:1, page:0, listening:None, notice:String::new() };
+        let mut s = Settings { dlss_availability: default(), current:p.clone(), draft:p.clone(), open:true, tab:1, page:0, listening:None, notice:String::new() };
         let click = |s: &mut Settings, id: &str| {
             let index = s.rows().iter().position(|row| row.0 == id).unwrap();
             s.page = index / ROWS;
@@ -499,7 +500,7 @@ mod tests {
     #[test]
     fn percentage_rows_use_drafts_and_never_cycle_on_click() {
         let p = Preferences::default();
-        let mut s = Settings { current:p.clone(), draft:p.clone(), open:true, tab:0, page:0, listening:None, notice:String::new() };
+        let mut s = Settings { dlss_availability: default(), current:p.clone(), draft:p.clone(), open:true, tab:0, page:0, listening:None, notice:String::new() };
         for tab in ["general", "graphics", "audio"] {
             s.action(tab);
             for row in 0..s.rows().len() {
@@ -519,7 +520,7 @@ mod tests {
     fn slider_drag_tracks_scaled_moved_window_and_stays_captured_outside_row() {
         let mut app = App::new();
         let p = Preferences::default();
-        app.insert_resource(Settings { current:p.clone(), draft:p, open:true, tab:1, page:0, listening:None, notice:String::new() })
+        app.insert_resource(Settings { dlss_availability: default(), current:p.clone(), draft:p, open:true, tab:1, page:0, listening:None, notice:String::new() })
             .init_resource::<ButtonInput<MouseButton>>().init_resource::<Pointer>()
             .init_resource::<SkillClicks>().init_resource::<crate::network::net::RespawnChoice>()
             .init_resource::<crate::network::chat::ChatLog>().init_resource::<crate::gameplay::dialogue::Dialogue>()
@@ -577,7 +578,7 @@ mod tests {
         // Settings written before the cursor option retain the current style.
         let p: Preferences = serde_json::from_str(r#"{"tooltips":true}"#).unwrap();
         assert!(!p.classic_cursor);
-        let mut s = Settings { current:p.clone(), draft:p, open:false, tab:0, page:0, listening:None, notice:String::new() };
+        let mut s = Settings { dlss_availability: default(), current:p.clone(), draft:p, open:false, tab:0, page:0, listening:None, notice:String::new() };
         s.begin(); s.action("cursor");
         let row = s.rows().iter().position(|r| r.0 == "classic_cursor").unwrap();
         assert_eq!(s.rows()[row].2, "Off");
@@ -606,7 +607,7 @@ mod tests {
         keys.release(KeyCode::KeyY);
         assert!(p.advanced_tooltips(&keys,false));
         assert!(p.advanced_tooltips(&keys,true));
-        let mut s = Settings {current:p.clone(),draft:p,open:false,tab:0,page:0,listening:None,notice:String::new()};
+        let mut s = Settings {dlss_availability: default(), current:p.clone(),draft:p,open:false,tab:0,page:0,listening:None,notice:String::new()};
         s.begin();
         let row=s.rows().iter().position(|r|r.0=="advanced_tooltips").unwrap();
         s.action(&format!("row{row}"));
@@ -628,7 +629,7 @@ mod tests {
     #[test]
     fn cancel_and_reset_never_change_applied_preferences() {
         let p = Preferences::default();
-        let mut s = Settings { current:p.clone(), draft:p.clone(), open:false, tab:0, page:0, listening:None, notice:String::new() };
+        let mut s = Settings { dlss_availability: default(), current:p.clone(), draft:p.clone(), open:false, tab:0, page:0, listening:None, notice:String::new() };
         s.begin(); s.action("row0"); assert!(!s.draft.tooltips); s.action("cancel"); assert!(s.current.tooltips);
         s.begin(); assert!(s.draft.tooltips); s.action("revert"); assert!(s.open); assert_eq!(s.current.bindings, p.bindings);
         let raw = serde_json::to_string(&s.current).unwrap(); assert_eq!(serde_json::from_str::<Preferences>(&raw).unwrap().bindings, p.bindings);
