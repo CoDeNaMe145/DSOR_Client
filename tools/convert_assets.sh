@@ -17,7 +17,8 @@
 # Then puts back what glTF cannot carry (step 5, this repository's tools), in
 # this order: Nebula render states, emitters, animators / render states / cull
 # modes, cube maps and second layers, decal tiling, character colours, the
-# client's tables (skills, NPCs, exits, ambience) and the interface windows. The navigation meshes need the
+# client's tables (skills, NPCs, exits, ambience) and the interface windows;
+# last, the models' textures as KTX2 (step 6). The navigation meshes need the
 # server repository: DSOR_SERVER=<DSOR_Server> (or EXPERIMENTAL) enables them.
 #
 # Needs python3 with Pillow and numpy, a C++ compiler and curl (the .crn
@@ -131,6 +132,13 @@ tail -n 14 "$logs/post.log"
 # derived DB4 files from one effective map; conflicts must fail the conversion.
 sh "$tools/level-tool.sh" apply --assets "$out" --source-root "$root"
 sh "$tools/level-tool.sh" props --assets "$out" --source-root "$root" --static-db "$root/db/static.db4"
+
+# 6. The models' textures as KTX2 beside their PNGs (the game's DXT blocks and
+#    mips, or BC7): what a GPU that samples BC loads (crates/texture-pack).
+echo "[convert] KTX2 textures (log: $logs/ktx2.log)"
+cargo run --quiet --locked --release --manifest-path "$tools/../Cargo.toml" -p dsor-texture-pack --bin dsor-ktx2 -- \
+    "$root" "$out" > "$logs/ktx2.log" 2>&1
+tail -n 1 "$logs/ktx2.log"
 
 du -sh "$out"
 echo "[convert] done -> $out"

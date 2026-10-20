@@ -403,6 +403,7 @@ fn main() {
                     ..default()
                 }),
         )
+        .add_plugins(model_variant::BlockTexturesPlugin)
         .add_plugins((
             FrameTimeDiagnosticsPlugin::default(),
             EntityCountDiagnosticsPlugin::default(),

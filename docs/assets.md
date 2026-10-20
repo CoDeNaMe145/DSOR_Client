@@ -142,6 +142,24 @@ and source banks. Change the main playlist cutoff with `--min-seconds`.
 The collection uses hard links where supported, so it needs no second copy of
 the audio; edits to a linked WAV also affect its original sample.
 
+### Block-compressed textures (KTX2)
+
+The last conversion step (`dsor-ktx2`, crates/texture-pack) writes beside every
+PNG a model references a `.ktx2`: the game's own DXT1/DXT3/DXT5 blocks and
+mipmaps when the PNG is still that DDS decoded, otherwise BC7 with a mip chain
+(normal maps rebuilt from bump maps, roughness maps, dye masks), zstd
+compressed. `textures/ktx2.list` names the packed PNGs. Textures whose size is
+not a multiple of 4 stay PNG only.
+
+The client points a model at the `.ktx2` only when the GPU samples BC (every
+native backend, desktop WebGPU and WebGL2); other GPUs keep the PNGs, and
+`DSOR_FLAGS=pngtextures` forces them for comparison. Rerun it alone after a
+tool rewrites textures (a `.ktx2` older than its PNG is redone):
+
+```sh
+cargo run --release -p dsor-texture-pack --bin dsor-ktx2 -- <export_win32> <assets>
+```
+
 ### Updating model and character data
 
 `tools/restore_pivots.py <export_win32>/models <assets> <DSO_Godot>` restores

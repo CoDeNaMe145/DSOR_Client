@@ -1,0 +1,22 @@
+[package]
+name = "dsor-texture-pack"
+description = "Model textures as KTX2 (BC blocks, mipmaps, zstd) beside their PNGs"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "dsor-ktx2"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1"
+image = { version = "0.25", default-features = false, features = ["png"] }
+texpresso = "2"
+intel_tex_2 = "0.5"
+zstd = "0.13"
+rayon = "1"
+
+[dev-dependencies]
+# The reader bevy_image uses for .ktx2 (bevy 0.19).
+ktx2 = "0.5"
