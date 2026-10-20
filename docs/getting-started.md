@@ -190,7 +190,9 @@ until the compatibility fix is reviewed.
 Running `dsor-client.exe` without arguments opens its built-in login screen.
 On Windows, `Play.cmd` first runs `tools/Build-Client.ps1` (the same release
 build; cargo rebuilds only what changed, so an up-to-date client starts at
-once, and after source changes the build takes a few minutes), then opens the
+once; after a code change or a new commit the client crate compiles as one
+unit with link-time optimisation, about ten minutes with the progress bar
+resting on `dsor-client(bin)`), then opens the
 executable. A client still running is renamed aside so the new build can
 replace it. Sign in or create an account,
 then choose a character and press **Play Now** to enter the game in the same window. The client uses the

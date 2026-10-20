@@ -32,7 +32,10 @@ if (Test-Path -LiteralPath $binary) {
 Push-Location $workspace
 try {
     $ErrorActionPreference = 'Continue'
-    Write-Host 'Building the client (after source changes this takes a few minutes)...'
+    # The client crate itself is compiled as one unit with link-time
+    # optimisation: after a code change or a new commit that step alone takes
+    # about ten minutes and shows no progress (it sits at "dsor-client(bin)").
+    Write-Host 'Building the client (unchanged: a few seconds; after code changes or a new commit: about 10 minutes)...'
     cargo build --locked --release -p dsor-client
     if ($LASTEXITCODE -ne 0) { throw "Client build failed with code $LASTEXITCODE." }
     # DLSS loads its runtime from the executable's directory (when the SDK is installed).
