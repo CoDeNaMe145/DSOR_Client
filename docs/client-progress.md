@@ -832,3 +832,16 @@ reads it (the desk pick is covered by the unit tests only), scroll handles
 cannot be dragged, and the first client run
 after a build sometimes holds the loading screen at 75 % of the effect
 preload (unrelated to these windows; the next run loads).
+
+### Follow-up: the quest tracker no longer blocks the game bar (2026-10-21)
+
+Once anchored to the right edge, the quest tracker covered the game bar's
+buttons above it (Premium, autoplay, fullscreen, the game menu): none could be
+hovered or clicked. Its `LabelFull` / `LabelCompact` containers are invisible
+(no texture, alpha 0) yet span x 720..1024 from the top of the screen
+(y 0..325), and the tracker (depth 46) is drawn over the game bar (30), so
+those empty rectangles took the pointer. Invisible artwork now leaves the
+pointer to what lies under it in the tracker, as it already did in the chat
+windows (`ui::passes_pointer`); the visible frame (from y 71) still takes it.
+Test: `the_quest_tracker_leaves_the_game_bar_above_it_to_the_pointer` (fails
+without the fix); 103 UI tests passed with the converted assets.

@@ -957,12 +957,7 @@ fn spawn_windows(
             }
             let gate = controls.gate(&layout.window, w);
             if let Some(art) = &w.art {
-                // The chat windows' invisible containers span far above the visible
-                // log: they must not take the world's clicks there.
-                let invisible = art.tex.is_none() && art.color.chunks(4).all(|c| c.get(3).is_some_and(|a| *a <= 0.0));
-                // The NPC quest backdrop shades the world but is explicitly
-                // click-through; walking outside the conversation still works.
-                if !(npc_window && w.click_through) && !(invisible && matches!(layout.window.as_str(), CHAT_WINDOW | CHAT_MENU)) {
+                if !passes_pointer(&layout.window, w, art) {
                     controls.region(w.k, bounds(&art.pos), gate.clone());
                 }
                 depth += depth_step;
@@ -1118,6 +1113,21 @@ fn spawn_windows(
         }
         commands.entity(root).insert((controls, crate::ui::input::UiRegions::default()));
     }
+}
+
+/// Whether a widget's artwork leaves the pointer to what lies under it.
+/// The chat windows' and the quest tracker's invisible containers (no texture,
+/// fully transparent) span far beyond what they show: the chat's above its log,
+/// the tracker's LabelFull / LabelCompact from the top of the screen down over
+/// the game bar's buttons. The NPC quest backdrop shades the world but is
+/// explicitly click-through; walking outside the conversation still works.
+/// FAILURE (2026-10-21): with the tracker's containers taking the pointer (the
+///   tracker is drawn over the game bar), the Premium, autoplay, fullscreen and
+///   game menu buttons above it could not be hovered or clicked.
+fn passes_pointer(window: &str, w: &Widget, art: &Art) -> bool {
+    let invisible = art.tex.is_none() && art.color.chunks(4).all(|c| c.get(3).is_some_and(|a| *a <= 0.0));
+    (dialogue::WINDOWS.contains(&window) && w.click_through)
+        || (invisible && matches!(window, CHAT_WINDOW | CHAT_MENU | controls::quests::TRACKER))
 }
 
 /// The widgets' drawing order: as authored, except a button state's captions,

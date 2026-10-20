@@ -1287,6 +1287,36 @@ mod tests {
     }
 
     #[test]
+    fn the_quest_tracker_leaves_the_game_bar_above_it_to_the_pointer() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default()))
+            .init_asset::<Layout>().init_asset::<Mesh>().init_asset::<UiMaterial>()
+            .init_asset::<Image>().init_asset::<Font>().init_asset::<crate::ui::dialogue::Catalog>()
+            .init_resource::<Loaded>().init_resource::<Screen>().init_resource::<crate::ui::dialogue::Presentation>()
+            .init_resource::<party::Party>().init_resource::<crate::gameplay::quests::QuestUi>().init_resource::<systems::Views>()
+            .insert_resource(quests::Quests { list: vec![quests::QuestView::default()], ..default() })
+            .add_systems(Update, spawn_windows);
+        let art = |[l, t, r, b]: [f32; 4], alpha: f32| {
+            let color = [1.0, 1.0, 1.0, alpha].repeat(4);
+            serde_json::json!({"tex": null, "pos": [l, t, r, t, r, b, l, b], "uv": vec![0.0; 8], "color": color, "idx": [0, 1, 2, 0, 2, 3]})
+        };
+        // As exported: LabelFull is invisible and spans from the top of the
+        // screen; the frame it holds starts under the game bar's buttons.
+        let layout: Layout = serde_json::from_value(serde_json::json!({"window": quests::TRACKER, "widgets": [
+            {"id": "Canvas/ActiveQuestLabel/LabelFull", "k": 1.0, "rect": [720, 0, 1024, 325], "hidden": false, "art": art([720.0, 0.0, 1024.0, 325.0], 0.0)},
+            {"id": "Canvas/ActiveQuestLabel/LabelFull/FrameLabel", "k": 1.0, "rect": [731, 76, 1027, 325], "hidden": false, "art": art([731.0, 76.0, 1027.0, 325.0], 0.5)},
+        ]})).unwrap();
+        let handle = app.world_mut().resource_mut::<Assets<Layout>>().add(layout);
+        app.world_mut().resource_mut::<Loaded>().layouts.push((handle, 46.0, None));
+        app.world_mut().resource_mut::<Loaded>().spawned.push(false);
+        app.update();
+        let controls = app.world_mut().query_filtered::<&WindowControls, With<Window2018>>().single(app.world()).unwrap();
+        // gamebar's Premium button (843, 1 .. 886, 44), anchored right as the tracker.
+        assert!(!controls.covers(Vec2::new(864.0, 20.0), BASE_W), "the game bar's buttons stay reachable");
+        assert!(controls.covers(Vec2::new(850.0, 120.0), BASE_W), "the tracker's frame still takes the pointer");
+    }
+
+    #[test]
     fn dragging_a_window_moves_its_gauge_clip_without_changing_the_fill() {
         let mut app = App::new();
         app.init_resource::<Figures>().init_resource::<party::Party>().init_resource::<quests::Quests>().init_resource::<crate::gameplay::quests::QuestUi>()
@@ -1384,8 +1414,7 @@ mod tests {
             let mut controls = WindowControls::new(&layout);
             for w in layout.widgets.iter().filter(|w| !w.hidden) {
                 if let Some(art) = &w.art {
-                    let invisible = art.tex.is_none() && art.color.chunks(4).all(|c| c.get(3).is_some_and(|a| *a <= 0.0));
-                    if !invisible { controls.region(w.k, bounds(&art.pos), controls.gate(name, w)); }
+                    if !passes_pointer(name, w, art) { controls.region(w.k, bounds(&art.pos), controls.gate(name, w)); }
                 }
             }
             let root = app.world_mut().spawn((Window2018(name.into()), controls,
