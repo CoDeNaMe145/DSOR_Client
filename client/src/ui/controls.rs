@@ -560,6 +560,13 @@ pub(super) struct Pointer {
     slider: Option<settings::SliderDrag>,
 }
 
+impl Pointer {
+    /// The (bar, slot) a spell is being dragged from (spells::DragSpell::lifted).
+    pub(super) fn lifted_slot(&self) -> Option<(usize, usize)> {
+        self.spell_drag.as_ref().and_then(|d| d.lifted())
+    }
+}
+
 #[derive(Component)]
 pub(super) struct EntryLabel(pub String);
 

@@ -72,6 +72,15 @@ pub(super) struct DragSpell {
     bar: usize,
 }
 
+impl DragSpell {
+    /// The bar and slot a spell is being carried from, once the drag is under
+    /// way: that slot shows empty until it is let go (crate::ui update_slots).
+    pub(super) fn lifted(&self) -> Option<(usize, usize)> {
+        if !self.active { return None; }
+        Some((self.bar, self.source?))
+    }
+}
+
 #[cfg_attr(test, derive(Clone))]
 pub(super) struct DropSpell {
     spell: Spell,
@@ -237,6 +246,14 @@ mod tests {
         model.offline = true;
         model.class = 2;
         assert!(!model.available(&spell()));
+    }
+
+    #[test]
+    fn a_spell_carried_from_the_bar_lifts_its_slot_once_the_drag_starts() {
+        let drag = |active, source| DragSpell { root: Entity::PLACEHOLDER, button: 0, origin: Vec2::ZERO, active, spell: spell(), source, bar: 1 };
+        assert_eq!(drag(false, Some(4)).lifted(), None);
+        assert_eq!(drag(true, Some(4)).lifted(), Some((1, 4)));
+        assert_eq!(drag(true, None).lifted(), None);
     }
 
     #[test]
