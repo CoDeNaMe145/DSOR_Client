@@ -20,7 +20,7 @@
 
 use super::*;
 use crate::network::chat::Kind;
-use dsor_proto::commands::social::{GroupInvitationResponse, GroupInvite, Notification, NotificationEntry};
+use dsor_proto::commands::social::{Foundation, GroupInvitationResponse, GroupInvite, Leave, Notification, NotificationEntry};
 use dsor_proto::commands::ClientCommand;
 use bevy::text::Justify;
 
@@ -58,6 +58,8 @@ const CONTENT_Z: f32 = 7.5;
 /// NotificationType: groupinvite and its join-request twin, the login reward, the
 /// bookings (_Template_Notifications order; 0x6CAE52's switch).
 const GROUP_INVITE: [u8; 2] = [1, 2];
+/// A guild invitation (DSOR_Server services/social.py: kind 3).
+const GUILD_INVITE: u8 = 3;
 const LOGIN_REWARD: u8 = 6;
 const BOOKING: [u8; 2] = [16, 18];
 /// Game::NotificationResponse::Code (crate's Notification doc).
@@ -76,7 +78,9 @@ const LOGIN_DAYS: usize = 5;
 const MENU_ROW: f32 = 22.5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Social { Confirm, Cancel, Whisper, Befriend, InviteToParty, Ignore, Trade, TradeMine(usize), TradeReady }
+pub(super) enum Social { Confirm, Cancel, Whisper, Befriend, InviteToParty, Ignore, Trade, TradeMine(usize), TradeReady,
+    /// The social window's group and guild buttons.
+    LeaveGroup, FoundGroup, LeaveGuild, FoundGuild }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Motion { Waiting, Moving, Placed }
@@ -135,7 +139,7 @@ fn icon(kind: u8) -> &'static str {
 
 /// The dialog a notification type opens, if any.
 fn dialog(kind: u8) -> Option<&'static str> {
-    if GROUP_INVITE.contains(&kind) || kind == trade::TRADE_INVITE { Some(GROUP_DIALOG) }
+    if GROUP_INVITE.contains(&kind) || kind == GUILD_INVITE || kind == trade::TRADE_INVITE { Some(GROUP_DIALOG) }
     else if BOOKING.contains(&kind) { Some(BOOKING_DIALOG) }
     else if kind == LOGIN_REWARD { Some(LOGIN_DIALOG) }
     else { None }
@@ -402,6 +406,16 @@ pub(in crate::ui) fn dialogs(
         label(&mut commands, &assets, &screen, group, text, screen.world(w.k, l, t).extend(0.1), 12.0, Color::srgb(0.92, 0.87, 0.76), r - l, Justify::Center);
         return;
     }
+    if window == GROUP_DIALOG && note.note_type == GUILD_INVITE {
+        // gui.window.guild_confirmJoinGuild: the same dialog names the guild.
+        let class = ["Warrior", "Mage", "Ranger", "Dwarf", "Niwalk"].get(p["playerClass"].as_u64().unwrap_or(9) as usize).copied().unwrap_or("");
+        let text = format!("{}\n({} Level: {})\nhas invited you to join their guild:\n{}\n\nWould you like to join?",
+            p["playerName"].as_str().unwrap_or("?"), class, p["playerLevel"].as_u64().unwrap_or(1), p["guildName"].as_str().unwrap_or(""));
+        let Some(w) = widget("/InviteDialog/Invitetext") else { return };
+        let [l, t, r, _] = w.rect;
+        label(&mut commands, &assets, &screen, group, text, screen.world(w.k, l, t).extend(0.1), 12.0, Color::srgb(0.92, 0.87, 0.76), r - l, Justify::Center);
+        return;
+    }
     if window == GROUP_DIALOG {
         // gui.window.grouping_confirmJoinGroup, its rank line empty (titleType 0).
         let class = ["Warrior", "Mage", "Ranger", "Dwarf", "Niwalk"].get(p["playerClass"].as_u64().unwrap_or(9) as usize).copied().unwrap_or("");
@@ -528,6 +542,30 @@ pub(in crate::ui) fn answer(
             c => format!("{name}: group invitation answer {c}."),
         });
     }
+    // The inviter's answer to a guild invitation (171; DSOR_Server services/social.py).
+    for (code, name) in std::mem::take(&mut net.guild_answers) {
+        chat.push(Kind::System, match code {
+            0 => format!("{name} has joined your guild."),
+            1 => format!("{name} declined the guild invitation."),
+            2 => format!("{name} is already in a guild."),
+            4 => format!("{name} could not be found."),
+            5 => "Only the guild leader and its officers may invite.".to_owned(),
+            6 => "You are not in a guild.".to_owned(),
+            c => format!("{name}: guild invitation answer {c}."),
+        });
+    }
+    for line in std::mem::take(&mut net.social_notes) { chat.push(Kind::System, line); }
+    // The game menu's switch character: the server's only logout moves us to the
+    // character screen, after a countdown outside towns (PlayerLogoutInfo).
+    if std::mem::take(&mut pointer.logout) {
+        net.send(&ClientCommand::Logout(dsor_proto::commands::player::Logout { cancel: false, plain: false }));
+        chat.push(Kind::System, "Returning to the character screen...".into());
+    }
+    // The travel map's destination: the server moves us when the map is discovered.
+    if let Some(map) = pointer.travel.take() {
+        net.send(&ClientCommand::Travel(dsor_proto::commands::player::Travel::to_map(&map)));
+        chat.push(Kind::System, format!("Travelling to {}.", map.replace('_', " ")));
+    }
     let Some(clicked) = social.clicked.take() else { return };
     let me = net.local_name.clone().unwrap_or_default();
     match clicked {
@@ -552,7 +590,14 @@ pub(in crate::ui) fn answer(
                 // against our own (DSOR_Server services/social.py
                 // _handle_invitation_response).
                 net.send(&ClientCommand::GroupInvitationResponse(GroupInvitationResponse {
-                    code: if confirm { 0 } else { 1 }, a: note.inviter_id, b: note.group_id, name: me,
+                    code: if confirm { 0 } else { 1 }, a: note.inviter_id, b: note.group_id, name: me.clone(),
+                }));
+            }
+            if note.note_type == GUILD_INVITE {
+                // The same answer, to the guild command (171): the server joins on 0,
+                // declines on 1, and refuses every other code.
+                net.send(&ClientCommand::GuildInvitationResponse(GroupInvitationResponse {
+                    code: if confirm { 0 } else { 1 }, a: note.inviter_id, b: note.group_id, name: me.clone(),
                 }));
             }
             net.send(&ClientCommand::Notification(Notification::response(if confirm { CONFIRM } else { CANCEL }, note.clone())));
@@ -560,6 +605,19 @@ pub(in crate::ui) fn answer(
             for (_, w, _, mut v, _) in &mut windows {
                 if DIALOGS.contains(&w.0.as_str()) { *v = Visibility::Hidden; }
             }
+        }
+        // The social window's buttons (DSOR_Server services/social.py: a GroupStatus or
+        // GuildStatus answers the leave, a foundation response the founding).
+        Social::LeaveGroup => net.send(&ClientCommand::GroupLeave(Leave { unknown_u32_0: 0 })),
+        Social::LeaveGuild => net.send(&ClientCommand::GuildLeave(Leave { unknown_u32_0: 0 })),
+        Social::FoundGroup => net.send(&ClientCommand::GroupFoundation(Foundation { unknown_u32_0: 0, source_name: me.clone(), name: format!("{me}'s group"), unknown_bool_1: false })),
+        Social::FoundGuild => {
+            // The guild's name (3 to 32 letters): what the window's search field holds.
+            let name = windows.iter().find(|(_, w, _, _, _)| w.0 == "socialscreen")
+                .and_then(|(_, _, c, _, _)| c.entries.iter().find(|(id, _)| id.ends_with("/InputQuery")).map(|(_, e)| e.text.trim().to_owned()))
+                .unwrap_or_default();
+            if name.chars().count() < 3 { chat.push(Kind::Local, "Type the guild's name in the social window's search field, then press Found Guild.".into()); }
+            else { net.send(&ClientCommand::GuildFoundation(Foundation { unknown_u32_0: 0, source_name: me.clone(), name, unknown_bool_1: false })); }
         }
         Social::InviteToParty | Social::Whisper | Social::Befriend | Social::Ignore | Social::Trade => {
             for (_, w, _, mut v, _) in &mut windows {
@@ -625,11 +683,11 @@ pub(in crate::ui) fn context_menu(
     let Some((name, p)) = picked else { return };
     social.target = Some(name);
     // The menu's top-left corner at the cursor, kept on the screen. Its Canvas:
-    // [512, 364, 730, 476], k 0.5 (cmdmodecontextmenu.ui.json).
+    // [512, 364, 730, 476], k 0 (prepare_menu).
     let (w, h) = (730.0 - 512.0, 476.0 + MENU_ROW - 364.0);
     let left = p.x.min(screen.width - w).max(0.0);
     let top = p.y.min(BASE_H - h).max(0.0);
-    let anchor = 512.0 + 0.5 * (screen.width - BASE_W);
+    let anchor = 512.0;
     for (_, win, mut c, mut v, mut tf) in &mut windows {
         if win.0 != CONTEXT_MENU { continue; }
         tf.translation.x = left - anchor;
@@ -672,6 +730,8 @@ fn pick(
 /// one row through its middle (its points below the buttons' middle move down).
 pub(in crate::ui) fn prepare_menu(layout: &Layout) -> Layout {
     let mut out = layout.clone();
+    // Placed at the cursor from the screen's left edge (context_menu).
+    for w in &mut out.widgets { w.k = 0.0; }
     const SPLIT: f32 = 430.0;
     let stretch = |w: &mut Widget| {
         if w.rect[3] > SPLIT { w.rect[3] += MENU_ROW; }
@@ -684,6 +744,7 @@ pub(in crate::ui) fn prepare_menu(layout: &Layout) -> Layout {
     const IGNORE: &str = "Canvas/LabelDropDownMenu/TextButtonIgnore";
     let trade: Vec<Widget> = layout.widgets.iter().filter(|w| w.id == IGNORE || w.id.starts_with(&format!("{IGNORE}/"))).map(|w| {
         let mut w = w.clone();
+        w.k = 0.0;
         w.id = w.id.replacen("TextButtonIgnore", "TextButtonTrade", 1);
         if let Some(b) = &mut w.button { *b = b.replacen("TextButtonIgnore", "TextButtonTrade", 1); }
         if w.event == "ButtonIgnore" { w.event = "ButtonTrade".into(); }

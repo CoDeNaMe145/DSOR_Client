@@ -128,8 +128,8 @@ const RESPAWN_COST: u32 = 40;
 const INSTANT_RESPAWN_COST: u32 = 120;
 
 fn is_menu(name: &str) -> bool {
-    MENU_WINDOWS.iter().any(|(n, _, _)| *n == name) || NAV_WINDOWS.contains(&name) || dialogue::WINDOWS.contains(&name) || name == "unstackwindow" || name == DEATH_WINDOW || name == CHAT_MENU || name == controls::settings::WINDOW
-        || SOCIAL_WINDOWS.iter().any(|(n, _)| *n == name)
+    MENU_WINDOWS.iter().any(|(n, _, _)| *n == name) || NAV_WINDOWS.contains(&name) || dialogue::WINDOWS.contains(&name) || name == "unstackwindow" || name == controls::items::DESTROY_DIALOG || name == DEATH_WINDOW || name == CHAT_MENU || name == controls::settings::WINDOW
+        || SOCIAL_WINDOWS.iter().any(|(n, _)| *n == name) || controls::systems::DESKS.iter().any(|(n, _)| *n == name)
 }
 
 /// The notification dialogs and the player menu (controls::social): closed until
@@ -216,6 +216,9 @@ struct Label {
     bold: bool,
     #[serde(default)]
     word_break: bool,
+    /// TextEffect 1: an outline of [size, r, g, b, a] (drawn by outline copies, OutlineCopy).
+    #[serde(default)]
+    outline: Vec<f32>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -388,6 +391,24 @@ enum Gauge {
     HealthBar,
     ResourceBar,
     Wisdom,
+    /// A party member's health (groupwindow row n; controls::party).
+    Group(u8),
+}
+
+impl Gauge {
+    /// One number per gauge, for the rectangles' map.
+    fn key(self) -> u8 {
+        match self {
+            Self::Health => 0,
+            Self::Resource => 1,
+            Self::Xp => 2,
+            Self::TargetHealth => 3,
+            Self::HealthBar => 4,
+            Self::ResourceBar => 5,
+            Self::Wisdom => 6,
+            Self::Group(n) => 16 + n,
+        }
+    }
 }
 
 /// A text the game sets: what it shows.
@@ -407,6 +428,10 @@ enum ValueKind {
     Silver,
     Copper,
     Andermant,
+    /// The currency bar's honour, event (draken) and crafting (glyphs) counters.
+    Honor,
+    Draken,
+    Glyphs,
     Level,
     XpPercent,
     WisdomLevel,
@@ -459,6 +484,10 @@ struct Figures {
     /// Wallet slot 1, copper; slot 0, Andermant.
     gold: Option<u64>,
     andermant: Option<u32>,
+    /// Wallet slots 2 and 4, and CurrencyChanged's u64.
+    honor: Option<u32>,
+    draken: Option<u32>,
+    glyphs: Option<u64>,
 }
 
 #[derive(Resource, Default)]
@@ -487,6 +516,12 @@ impl Plugin for UiPlugin {
             .init_asset_loader::<SkillIconsLoader>()
             .init_asset::<dialogue::Catalog>()
             .init_asset_loader::<dialogue::CatalogLoader>()
+            .init_asset::<crate::gameplay::quests::QuestCatalog>()
+            .init_asset_loader::<crate::gameplay::quests::QuestCatalogLoader>()
+            .init_asset::<crate::gameplay::systems::SystemsCatalog>()
+            .init_asset_loader::<crate::gameplay::systems::SystemsCatalogLoader>()
+            .init_resource::<controls::systems::State>()
+            .init_resource::<controls::systems::Views>()
             .init_resource::<crate::gameplay::dialogue::Dialogue>()
             .init_asset::<controls::items::Catalog>()
             .init_asset_loader::<controls::items::CatalogLoader>()
@@ -497,12 +532,16 @@ impl Plugin for UiPlugin {
             .init_resource::<SkillClicks>()
             .init_resource::<controls::social::SocialUi>()
             .init_resource::<controls::trade::TradeUi>()
+            .init_resource::<controls::party::Party>()
+            .init_resource::<controls::quests::Quests>()
+            .init_resource::<crate::gameplay::quests::QuestUi>()
             .init_resource::<controls::items::pins::Pins>()
             .init_resource::<Settings>()
             .init_resource::<controls::hotbar::Hotbar>()
             .insert_resource(local_map::MapSettings::load())
             .add_systems(Startup, (setup, controls::items::setup, dialogue::setup))
             .add_systems(Update, follow_screen)
+            .add_systems(Update, follow_outlines.after(follow_screen))
             .add_systems(PostUpdate, match_scene_camera.after(crate::rendering::graphics::ApplyGraphics))
             .add_systems(PostUpdate, npc_hover::show
                 .after(crate::rendering::highlight::pick)
@@ -512,7 +551,7 @@ impl Plugin for UiPlugin {
                 .before(bevy::sprite_render::check_entities_needing_specialization::<UiMaterial>))
             .add_systems(
                 Update,
-                ((dialogue::sync, spawn_windows, controls::sync_chat).chain(), controls::spells::sync, controls::items::sync, (controls::items::pins::update, controls::keyboard).chain(), controls::interact, (controls::settings::sync, controls::settings::sliders, controls::hotbar::input, controls::spells::apply_drop).chain(), read_figures, controls::edit_text, controls::items::input, controls::order_windows, (update_fills, update_values, update_slots, (local_map::update, local_map::update_markers, local_map::appearance).chain()), controls::chat_rows, controls::sheet::rows, controls::paint, controls::items::render, (controls::spells::overlay, controls::items::overlay, controls::tooltips), show_hover_window, death_dialog, (controls::trade::sync, controls::social::column, controls::social::context_menu, controls::social::answer, controls::social::dialogs, controls::trade::render).chain()).chain().before(crate::network::net::NetSystems).run_if(crate::screens::loading::gameplay_ready),
+                ((dialogue::sync, controls::party::sync, controls::quests::sync, controls::systems::sync, spawn_windows, controls::sync_chat).chain(), controls::spells::sync, controls::items::sync, (controls::items::pins::update, controls::keyboard).chain(), controls::interact, (controls::settings::sync, controls::settings::sliders, controls::hotbar::input, controls::spells::apply_drop).chain(), read_figures, controls::edit_text, controls::items::input, controls::order_windows, (update_fills, update_values, update_slots, (local_map::update, local_map::update_markers, local_map::appearance).chain()), controls::chat_rows, controls::sheet::rows, controls::paint, (controls::items::render, controls::items::destroy_dialog), (controls::spells::overlay, controls::items::overlay, controls::tooltips), show_hover_window, death_dialog, (controls::trade::sync, controls::social::column, controls::social::context_menu, controls::social::answer, controls::systems::send, controls::social::dialogs, controls::trade::render).chain()).chain().after(crate::actors::monsters::MonsterHoverInfo).before(crate::network::net::NetSystems).run_if(crate::screens::loading::gameplay_ready),
             );
         #[cfg(not(target_arch = "wasm32"))]
         app.add_systems(PreUpdate, replay::run.after(bevy::input::InputSystems)
@@ -531,7 +570,7 @@ fn refresh_mesh_order(mut meshes: Query<&mut Mesh2d, (With<MeshMaterial2d<UiMate
     for mut mesh in &mut meshes { mesh.set_changed(); }
 }
 
-fn setup(mut commands: Commands, assets: Res<AssetServer>) {
+fn setup(mut commands: Commands, assets: Res<AssetServer>, mut quest_ui: ResMut<crate::gameplay::quests::QuestUi>, mut systems: ResMut<controls::systems::State>) {
     commands.spawn((
         Camera2d,
         // Drawn into the 3D camera's own target textures, not cleared: that needs
@@ -551,6 +590,7 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>) {
     ));
     let mut loaded = Loaded { icons: assets.load("interface/skills.icons.json"), map_names: assets.load("interface/maps.names.json"), ..default() };
     loaded.layouts.push((assets.load("interface/unstackwindow.ui.json"), 600.0, None));
+    loaded.layouts.push((assets.load(format!("interface/{}.ui.json", controls::items::DESTROY_DIALOG)), 610.0, None));
     loaded.layouts.push((assets.load("interface/settingswindow2.ui.json"), 550.0, None));
     loaded.layouts.push((assets.load(format!("interface/{CHAT_WINDOW}.ui.json")), CHAT_DEPTH, None));
     loaded.layouts.push((assets.load(format!("interface/{CHAT_MENU}.ui.json")), CHAT_DEPTH + 3.0, None));
@@ -567,6 +607,15 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>) {
     loaded.layouts.push((assets.load(format!("interface/{DEATH_WINDOW}.ui.json")), 700.0, None));
     for name in dialogue::WINDOWS { loaded.layouts.push((assets.load(format!("interface/{name}.ui.json")), 380.0, None)); }
     for (name, z) in SOCIAL_WINDOWS { loaded.layouts.push((assets.load(format!("interface/{name}.ui.json")), z, None)); }
+    // The party frames: a HUD window, drawn only while grouped (controls::party).
+    loaded.layouts.push((assets.load(format!("interface/{}.ui.json", controls::party::WINDOW)), 45.0, None));
+    // The quest tracker (top right) and the quest data its rows and the log read.
+    loaded.layouts.push((assets.load(format!("interface/{}.ui.json", controls::quests::TRACKER)), 46.0, None));
+    quest_ui.catalog = assets.load("interface/quests.catalog.json");
+    // The NPC desks (controls::systems), opened from an NPC's menu, and the
+    // systems' data their windows and the quest log's pages read.
+    for (name, z) in controls::systems::DESKS { loaded.layouts.push((assets.load(format!("interface/{name}.ui.json")), z, None)); }
+    systems.catalog = assets.load("interface/systems.catalog.json");
     loaded.spawned = vec![false; loaded.layouts.len()];
     commands.insert_resource(loaded);
 }
@@ -574,6 +623,7 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>) {
 /// Which dynamic part a widget is, if any.
 fn gauge_of(id: &str) -> Option<Gauge> {
     if id.contains("/WisdomLabel/") && id.ends_with("/LevelBar") { return Some(Gauge::Wisdom); }
+    if let Some(member) = controls::party::gauge_of(id) { return Some(Gauge::Group(member)); }
     let parent = id.rsplit('/').nth(1).unwrap_or("");
     if parent == "Healthbar" && id.ends_with("/progress") {
         return Some(Gauge::TargetHealth);
@@ -642,6 +692,9 @@ fn value_of(id: &str) -> Option<ValueKind> {
         "silver_display" => ValueKind::Silver,
         "copper_display" => ValueKind::Copper,
         "andermant_display" => ValueKind::Andermant,
+        "honor_display" => ValueKind::Honor,
+        "event_display" => ValueKind::Draken,
+        "cr_display" => ValueKind::Glyphs,
         "Level" if id.contains("ProgressBar_xp") || id.contains("/bottombar_xp_bar/") => ValueKind::Level,
         "XP" if id.contains("/bottombar_xp_bar/") => ValueKind::XpPercent,
         "Level" if id.contains("/bottombar_wisdom_bar/") => ValueKind::WisdomLevel,
@@ -736,6 +789,9 @@ fn spawn_windows(
     players: Query<&crate::actors::character::Character, With<crate::network::net::LocalPlayer>>,
     dialogue: Res<dialogue::Presentation>,
     dialogue_catalogs: Res<Assets<dialogue::Catalog>>,
+    party: Res<controls::party::Party>,
+    quests: Res<controls::quests::Quests>,
+    views: Res<controls::systems::Views>,
     mut windows: Query<(Entity, &Window2018, &Visibility, &mut WindowControls)>,
 ) {
     let known = players.iter().next().map(|c| c.desc.class);
@@ -776,6 +832,16 @@ fn spawn_windows(
         } else if matches!(layout.window.as_str(), CHAT_WINDOW | CHAT_MENU) {
             prepared = prepare_chat(layout);
             &prepared
+        } else if let Some(filled) = controls::systems::prepare(layout, &views, &quests) {
+            prepared = filled; &prepared
+        } else if layout.window == controls::quests::TRACKER {
+            prepared = controls::quests::prepare_tracker(layout, &quests);
+            if prepared.widgets.is_empty() { loaded.spawned[i] = true; continue; }
+            &prepared
+        } else if layout.window == controls::party::WINDOW {
+            prepared = controls::party::prepare(layout, &party);
+            if prepared.widgets.is_empty() { loaded.spawned[i] = true; continue; }
+            &prepared
         } else if layout.window == controls::social::CONTEXT_MENU {
             prepared = controls::social::prepare_menu(layout);
             &prepared
@@ -783,6 +849,8 @@ fn spawn_windows(
             prepared = controls::settings::prepare(layout); &prepared
         } else if layout.window == "bottombar" {
             prepared = class_resource_gauge(controls::hotbar::prepare(layout), class); &prepared
+        } else if layout.window == controls::items::DESTROY_DIALOG {
+            prepared = controls::items::prepare_destroy(layout); &prepared
         } else { layout };
         // DSOR_UI_OPEN=inventory,...: menus open from the start (screenshots).
         let open = npc_window || std::env::var("DSOR_UI_OPEN").is_ok_and(|v| v.split(',').any(|w| w == layout.window));
@@ -793,7 +861,10 @@ fn spawn_windows(
         let existing = windows.iter_mut().find(|(_, w, _, _)| w.0 == layout.window);
         let (root, mut controls) = if let Some((root, _, visibility, mut controls)) = existing {
             if *visibility == Visibility::Hidden { continue; }
-            (root, std::mem::replace(&mut *controls, WindowControls::new(layout)))
+            // Rebuilt (its rows changed): the new buttons, the player's settings.
+            let mut fresh = WindowControls::new(layout);
+            fresh.carry(std::mem::replace(&mut *controls, WindowControls::new(layout)));
+            (root, fresh)
         } else {
         let root = commands
             .spawn((
@@ -863,11 +934,11 @@ fn spawn_windows(
                     continue;
                 }
                 let b = bounds(&art.pos);
-                let e = gauge_rects.entry((g as u8, w.k.to_bits())).or_insert(b);
+                let e = gauge_rects.entry((g.key(), w.k.to_bits())).or_insert(b);
                 *e = [e[0].min(b[0]), e[1].min(b[1]), e[2].max(b[2]), e[3].max(b[3])];
             }
         }
-        for w in layout.widgets.iter().filter(|w| !w.hidden) {
+        for w in draw_order(&layout.widgets).into_iter().map(|i| &layout.widgets[i]).filter(|w| !w.hidden) {
             if layout.window == HOVER_WINDOW && !hover_part(&w.id) {
                 continue;
             }
@@ -902,7 +973,7 @@ fn spawn_windows(
                     let mut r = Run { k, tex: art.tex.clone(), ..default() };
                     r.push(art, depth);
                     let m = materials.add(material(atlas(&art.tex)));
-                    let rect = gauge_rects.get(&(which as u8, k.to_bits())).copied().unwrap_or_else(|| bounds(&art.pos));
+                    let rect = gauge_rects.get(&(which.key(), k.to_bits())).copied().unwrap_or_else(|| bounds(&art.pos));
                     commands.spawn((
                         Mesh2d(meshes.add(r.mesh())),
                         MeshMaterial2d(m),
@@ -967,7 +1038,7 @@ fn spawn_windows(
             if let Some(label) = &w.text {
                 // Dialogue owns these labels, including the trading page
                 // counter. Do not bind them to inventory/global HUD values.
-                let value = if label.key == "gui.runtime.dialogue" { None } else { value_of(&w.id) };
+                let value = if label.key.starts_with("gui.runtime") { None } else { value_of(&w.id) };
                 // The stickerbook's authored empty-state labels are literal
                 // English text, unlike the usual gui.* localization keys.
                 let stickerbook_text = layout.window == "collectorsalbum"
@@ -984,6 +1055,7 @@ fn spawn_windows(
                     match label.align[0] { 0 => -0.5, 2 => 0.5, _ => 0.0 },
                     match label.align[1] { 0 => 0.5, 2 => -0.5, _ => 0.0 },
                 ));
+                let bound = value.is_some();
                 let mut e = commands.spawn((
                     Text2d::new(if value.is_some() { String::new() } else { label.text.clone() }),
                     // Every label of the 2018 layouts is font "tahoma", drawn thin
@@ -1005,13 +1077,38 @@ fn spawn_windows(
                 if let Some(v) = value {
                     e.insert(Value(v));
                 }
-                if label.word_break {
-                    e.insert((bevy::text::TextBounds::new_horizontal((r - l) * screen.scale),
-                        TextLayout::justify(match label.align[0] { 0 => Justify::Left, 2 => Justify::Right, _ => Justify::Center })));
-                }
+                let wrap = label.word_break.then(|| (bevy::text::TextBounds::new_horizontal((r - l) * screen.scale),
+                    TextLayout::justify(match label.align[0] { 0 => Justify::Left, 2 => Justify::Right, _ => Justify::Center })));
+                if let Some(wrap) = wrap.clone() { e.insert(wrap); }
                 if w.kind == "TextEntry" { e.insert(controls::EntryLabel(w.id.clone())); }
                 if layout.window == controls::settings::WINDOW && w.id.contains("/Runtime/") {
                     e.insert(controls::settings::Caption(w.id.rsplit('/').next().unwrap_or("").to_owned()));
+                }
+                // The outline: copies of the text behind it in the outline's colour
+                // (follow_outlines keeps them on the label's text, size and colour).
+                if let Some((radius, raw)) = outline_of(label) {
+                    let main = e.id();
+                    let color = raw.with_alpha(raw.alpha() * label.color[3]);
+                    for (offset, shadow) in outline_copies(radius) {
+                        let copy = OutlineCopy { offset, shadow, dz: -depth_step * 0.25, color: raw };
+                        let mut c = commands.spawn((
+                            Text2d::new(if bound { String::new() } else { label.text.clone() }),
+                            TextFont {
+                                font: assets.load("fonts/tahoma.ttf").into(),
+                                font_size: bevy::text::FontSize::Px(label.size * FONT_SCALE * screen.scale),
+                                ..default()
+                            },
+                            TextColor(color),
+                            anchor,
+                            copy.transform(screen.scale),
+                            bevy::sprite::Text2dShadow { offset: shadow * screen.scale, color },
+                            RenderLayers::layer(LAYER),
+                            ChildOf(main),
+                            Visibility::Inherited,
+                            copy,
+                        ));
+                        if let Some(wrap) = wrap.clone() { c.insert(wrap); }
+                    }
                 }
             }
         }
@@ -1020,6 +1117,85 @@ fn spawn_windows(
             flush(&mut commands, run.take(), p, &mut meshes, &mut materials);
         }
         commands.entity(root).insert((controls, crate::ui::input::UiRegions::default()));
+    }
+}
+
+/// The widgets' drawing order: as authored, except a button state's captions,
+/// which the game draws over the state's artwork (its relief shading and
+/// frame follow the caption in the layouts and would darken it).
+fn draw_order(widgets: &[Widget]) -> Vec<usize> {
+    let mut keys: Vec<(f64, usize)> = Vec::with_capacity(widgets.len());
+    for (i, w) in widgets.iter().enumerate() {
+        let mut key = i as f64;
+        if w.state.is_some() && w.text.is_some() && w.art.is_none() {
+            if let Some((parent, _)) = w.id.rsplit_once('/') {
+                let prefix = format!("{parent}/");
+                let end = widgets[i + 1..].iter().take_while(|n| n.id.starts_with(&prefix)).count();
+                key = (i + end) as f64 + 0.5 + i as f64 * 1e-7;
+            }
+        }
+        keys.push((key, i));
+    }
+    keys.sort_by(|a, b| a.0.total_cmp(&b.0));
+    keys.into_iter().map(|(_, i)| i).collect()
+}
+
+/// A label's outline (TextEffect 1): its radius in reference pixels (following
+/// the outline's size) and its colour.
+fn outline_of(label: &Label) -> Option<(f32, Color)> {
+    let [size, r, g, b, a] = label.outline[..] else { return None };
+    if size <= 0.0 || a <= 0.0 { return None; }
+    Some(((0.5 + 0.35 * size).min(1.5), Color::srgba(r, g, b, a)))
+}
+
+/// The outline's copies: each drawn at an offset and, by its shadow, at the
+/// opposite one -- eight directions around the glyphs from four copies
+/// (reference pixels).
+fn outline_copies(radius: f32) -> [(Vec2, Vec2); 4] {
+    let d = radius * std::f32::consts::FRAC_1_SQRT_2;
+    [(Vec2::new(-radius, 0.0), Vec2::new(2.0 * radius, 0.0)), (Vec2::new(0.0, -radius), Vec2::new(0.0, 2.0 * radius)),
+        (Vec2::new(-d, -d), Vec2::new(2.0 * d, 2.0 * d)), (Vec2::new(-d, d), Vec2::new(2.0 * d, -2.0 * d))]
+}
+
+/// A copy of an outlined label (its child): where it sits and its shadow falls
+/// (reference pixels), how far behind the label (world), the outline's colour.
+#[derive(Component, Clone, Copy)]
+struct OutlineCopy {
+    offset: Vec2,
+    shadow: Vec2,
+    dz: f32,
+    color: Color,
+}
+
+impl OutlineCopy {
+    /// Its transform under the label (scaled by 1 / scale).
+    fn transform(&self, scale: f32) -> Transform {
+        Transform::from_translation((self.offset * scale).extend(self.dz * scale))
+    }
+}
+
+/// The outline copies follow their label: its text, size, wrap width and
+/// colour's alpha (a resize, a bound value, a faded label).
+#[allow(clippy::type_complexity)]
+fn follow_outlines(
+    screen: Res<Screen>,
+    labels: Query<(&Text2d, &TextFont, &TextColor, &bevy::text::TextBounds, &Children),
+        (Without<OutlineCopy>, Or<(Changed<Text2d>, Changed<TextFont>, Changed<TextColor>, Changed<bevy::text::TextBounds>)>)>,
+    mut copies: Query<(&OutlineCopy, &mut Text2d, &mut TextFont, &mut TextColor, &mut bevy::text::TextBounds, &mut Transform, &mut bevy::sprite::Text2dShadow)>,
+) {
+    for (text, font, color, bounds, children) in &labels {
+        for child in children.iter() {
+            let Ok((copy, mut t, mut f, mut c, mut b, mut tf, mut shadow)) = copies.get_mut(child) else { continue };
+            if t.0 != text.0 { t.0.clone_from(&text.0); }
+            f.font_size = font.font_size;
+            *b = *bounds;
+            let faded = copy.color.with_alpha(copy.color.alpha() * color.0.alpha());
+            if c.0 != faded { c.0 = faded; shadow.color = faded; }
+            let placed = copy.transform(screen.scale);
+            if tf.translation != placed.translation { *tf = placed; }
+            let offset = copy.shadow * screen.scale;
+            if shadow.offset != offset { shadow.offset = offset; }
+        }
     }
 }
 
@@ -1043,7 +1219,7 @@ fn follow_screen(
     mut resized: MessageReader<WindowResized>,
     mut screen: ResMut<Screen>,
     mut follows: Query<(&Follows, &mut Transform), Without<Text2d>>,
-    mut texts: Query<(&mut TextFont, &mut Transform, &ChildOf, &mut bevy::text::TextBounds), With<Text2d>>,
+    mut texts: Query<(&mut TextFont, &mut Transform, &ChildOf, &mut bevy::text::TextBounds, Option<&mut bevy::sprite::Text2dShadow>), With<Text2d>>,
     labels: Query<(), With<Follows>>,
     mut fills: Query<&mut Fill>,
     mut first: Local<bool>,
@@ -1061,13 +1237,14 @@ fn follow_screen(
         *tf = follow_transform(&new, f.k, f.flip);
     }
     if (old_scale - new.scale).abs() > 1e-3 {
-        for (mut font, mut tf, parent, mut bounds) in &mut texts {
+        for (mut font, mut tf, parent, mut bounds, shadow) in &mut texts {
             if labels.contains(parent.parent()) {
                 if let bevy::text::FontSize::Px(px) = font.font_size {
                     font.font_size = bevy::text::FontSize::Px(px / old_scale * new.scale);
                 }
                 tf.scale = Vec3::splat(1.0 / new.scale);
                 if let Some(width) = &mut bounds.width { *width *= new.scale / old_scale; }
+                if let Some(mut shadow) = shadow { shadow.offset *= new.scale / old_scale; }
             }
         }
     }
@@ -1132,10 +1309,14 @@ fn read_figures(net: Option<NonSend<crate::network::net::Net>>, mut figures: Res
         }
     }
     if let Some(w) = net.wallet {
-        if (figures.andermant, figures.gold) != (Some(w[0] as u32), Some(w[1])) {
-            figures.andermant = Some(w[0] as u32);
-            figures.gold = Some(w[1]);
+        // Andermant, gold (copper), badges of honour, (legacy progression), draken.
+        let next = (Some(w[0] as u32), Some(w[1]), Some(w[2] as u32), Some(w[4] as u32));
+        if (figures.andermant, figures.gold, figures.honor, figures.draken) != next {
+            (figures.andermant, figures.gold, figures.honor, figures.draken) = next;
         }
+    }
+    if figures.glyphs != net.glyphs {
+        figures.glyphs = net.glyphs;
     }
     if figures.bar != net.bar {
         figures.bar = net.bar.clone();
@@ -1153,6 +1334,7 @@ fn fraction(v: (f32, f32)) -> f32 {
 
 fn update_fills(
     figures: Res<Figures>,
+    party: Res<controls::party::Party>,
     hover: Res<crate::actors::monsters::HoverInfo>,
     screen: Res<Screen>,
     mut fills: Query<(&mut Fill, &MeshMaterial2d<UiMaterial>, &Element)>,
@@ -1167,6 +1349,7 @@ fn update_fills(
             Gauge::Xp => figures.xp.clamp(0.0, 1.0),
             Gauge::Wisdom => figures.wisdom.1.clamp(0.0, 1.0),
             Gauge::TargetHealth => hover.0.as_ref().map(|h| fraction((h.2 as f32, h.3 as f32))).unwrap_or(0.0),
+            Gauge::Group(n) => party.health(n as usize),
         };
         if (v - f.shown).abs() < 1e-3 && !root.is_changed() {
             continue;
@@ -1211,6 +1394,9 @@ fn update_values(
             ValueKind::Silver => (copper / 100 % 100).to_string(),
             ValueKind::Copper => (copper % 100).to_string(),
             ValueKind::Andermant => figures.andermant.unwrap_or(0).to_string(),
+            ValueKind::Honor => figures.honor.unwrap_or(0).to_string(),
+            ValueKind::Draken => figures.draken.unwrap_or(0).to_string(),
+            ValueKind::Glyphs => figures.glyphs.unwrap_or(0).to_string(),
             ValueKind::Level => figures.level.map(|l| l.to_string()).unwrap_or_else(|| "-".to_owned()),
             ValueKind::XpPercent => format!("{:.0}%", figures.xp * 100.0),
             ValueKind::WisdomLevel => figures.wisdom.0.to_string(),
@@ -1360,6 +1546,20 @@ fn death_dialog(net: Option<NonSend<crate::network::net::Net>>, mut windows: Que
 }
 
 #[cfg(test)]
+mod outline_tests {
+    use super::*;
+
+    #[test]
+    fn outline_copies_cover_eight_directions_at_the_radius() {
+        let mut points: Vec<Vec2> = outline_copies(1.0).iter().flat_map(|(offset, shadow)| [*offset, *offset + *shadow]).collect();
+        assert!(points.iter().all(|p| (p.length() - 1.0).abs() < 1e-5));
+        points.sort_by(|a, b| a.to_angle().total_cmp(&b.to_angle()));
+        for pair in points.windows(2) { assert!((pair[1].to_angle() - pair[0].to_angle() - std::f32::consts::FRAC_PI_4).abs() < 1e-4); }
+        assert_eq!(points.len(), 8);
+    }
+}
+
+#[cfg(test)]
 mod residency_tests {
     use super::*;
 
@@ -1417,7 +1617,7 @@ mod residency_tests {
         app.add_plugins((MinimalPlugins,bevy::asset::AssetPlugin::default()))
             .init_asset::<Layout>().init_asset::<Mesh>().init_asset::<UiMaterial>()
             .init_asset::<Image>().init_asset::<Font>().init_asset::<dialogue::Catalog>()
-            .init_resource::<Loaded>().init_resource::<Screen>().init_resource::<dialogue::Presentation>()
+            .init_resource::<Loaded>().init_resource::<Screen>().init_resource::<dialogue::Presentation>().init_resource::<controls::party::Party>().init_resource::<controls::quests::Quests>().init_resource::<crate::gameplay::quests::QuestUi>().init_resource::<controls::systems::Views>()
             .add_systems(Update,spawn_windows);
         let layout: Layout=serde_json::from_value(serde_json::json!({"window":"inventory","widgets":[{
             "id":"Canvas/background","k":0.0,"rect":[0,0,20,20],"hidden":false,

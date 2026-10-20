@@ -125,6 +125,7 @@ pub(super) fn update(mut commands: Commands, mut previews: ResMut<Previews>, mut
         let mut animation = crate::actors::character::CharacterAnim::default();
         animation.state = crate::actors::character::AnimState::Named(character.state);
         let desc = crate::actors::character::CharacterDesc { look: Some(crate::actors::character::NpcLook {
+            sound_profile: String::new(),
             skeleton: character.skeleton, parts: character.parts, anim_set: character.anim_set,
             variation: character.variation.into_iter().map(|v| (v.bone, Vec3::from(v.t), Vec3::from(v.s))).collect(),
         }), ..default() };

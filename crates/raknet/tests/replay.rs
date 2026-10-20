@@ -22,8 +22,10 @@ fn field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
 
 #[test]
 fn a_captured_map_session_yields_the_same_messages() {
+    // Windows has no HOME; fall back to USERPROFILE, and skip rather than panic without either.
+    let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).unwrap_or_default();
     let path = std::env::var("DSOR_SESSION").unwrap_or_else(|_| {
-        format!("{}/Documents/Drakensang/logs/session-walk4.jsonl", std::env::var("HOME").unwrap())
+        format!("{home}/Documents/Drakensang/logs/session-walk4.jsonl")
     });
     let Ok(text) = std::fs::read_to_string(&path) else {
         eprintln!("skipped: no capture at {path}");

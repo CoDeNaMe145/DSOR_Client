@@ -24,7 +24,7 @@ impl Plugin for HudPlugin {
             .add_systems(Update, update_hud)
             .add_systems(Last, render_audit::snapshot.run_if(|| crate::flag("renderaudit")))
             .add_systems(First, cpu_frame_start)
-            .add_systems(First, frame_profile::sample.run_if(|| crate::flag("frameprofile")))
+            .add_systems(First, frame_profile::sample.run_if(frame_profile::enabled))
             .add_systems(Last, cpu_main_end);
         if let Some(render) = app.get_sub_app_mut(bevy::render::RenderApp) {
             render.add_systems(bevy::render::Render, cpu_render_end.in_set(bevy::render::RenderSystems::Cleanup));

@@ -31,7 +31,7 @@ pub(super) struct MenuRoot;
 struct MenuAccentSurface;
 
 #[derive(Component, Clone, Copy)]
-struct MenuOpacityStep(f32);
+struct MenuOpacitySlider;
 
 #[derive(Component, Clone, Copy)]
 struct MenuThemeChoice(MenuTheme);
@@ -113,10 +113,7 @@ struct MenuWindowState {
 }
 
 fn update_menu_appearance(
-    opacity_buttons: Query<
-        (&Interaction, &MenuOpacityStep),
-        Changed<Interaction>,
-    >,
+    mut opacity_sliders: Query<(&mut crate::ui::slider::PercentSlider, &InheritedVisibility), With<MenuOpacitySlider>>,
     theme_buttons: Query<
         (&Interaction, &MenuThemeChoice),
         Changed<Interaction>,
@@ -135,10 +132,10 @@ fn update_menu_appearance(
         return;
     };
 
-    for (interaction, step) in &opacity_buttons {
-        if *interaction == Interaction::Pressed {
-            appearance.opacity = (appearance.opacity + step.0).clamp(0.4, 1.0);
-        }
+    for (mut slider, visible) in &mut opacity_sliders {
+        if slider.edited && visible.get() { appearance.opacity = slider.value.clamp(40, 100) as f32 / 100.0; }
+        slider.edited = false;
+        slider.value = (appearance.opacity * 100.0).round() as u8;
     }
 
     for (interaction, choice) in &theme_buttons {
@@ -770,29 +767,8 @@ fn spawn_menu(commands: &mut Commands, starts_open: bool) {
                                 Color::srgb(0.91, 0.93, 0.96),
                             ));
 
-                            row.spawn((
-                                Button,
-                                MenuOpacityStep(-0.1),
-                                Node {
-                                    width: Val::Px(32.0),
-                                    min_height: Val::Px(30.0),
-                                    flex_shrink: 0.0,
-                                    justify_content: JustifyContent::Center,
-                                    align_items: AlignItems::Center,
-                                    ..default()
-                                },
-                                BackgroundColor(Color::srgb(0.20, 0.23, 0.29)),
-                            ))
-                            .with_children(|button| {
-                                button.spawn((
-                                    Text::new("-"),
-                                    TextFont {
-                                        font_size: bevy::text::FontSize::Px(15.0),
-                                        ..default()
-                                    },
-                                    TextColor(Color::srgb(0.94, 0.95, 0.97)),
-                                ));
-                            });
+                            let slider = crate::ui::slider::spawn(row, 132., 80, 40, 100);
+                            row.commands().entity(slider).insert(MenuOpacitySlider);
 
                             row.spawn((
                                 MenuOpacityLabel,
@@ -809,29 +785,6 @@ fn spawn_menu(commands: &mut Commands, starts_open: bool) {
                                 },
                             ));
 
-                            row.spawn((
-                                Button,
-                                MenuOpacityStep(0.1),
-                                Node {
-                                    width: Val::Px(32.0),
-                                    min_height: Val::Px(30.0),
-                                    flex_shrink: 0.0,
-                                    justify_content: JustifyContent::Center,
-                                    align_items: AlignItems::Center,
-                                    ..default()
-                                },
-                                BackgroundColor(Color::srgb(0.20, 0.23, 0.29)),
-                            ))
-                            .with_children(|button| {
-                                button.spawn((
-                                    Text::new("+"),
-                                    TextFont {
-                                        font_size: bevy::text::FontSize::Px(15.0),
-                                        ..default()
-                                    },
-                                    TextColor(Color::srgb(0.94, 0.95, 0.97)),
-                                ));
-                            });
                         });
 
                         for themes in [
@@ -1153,7 +1106,7 @@ pub(super) struct WindowPlugin;
 impl Plugin for WindowPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn).add_systems(Update, (
-            (open_requested_page, update_menu_navigation, update_menu_appearance).chain(),
+            (open_requested_page, update_menu_navigation, update_menu_appearance).chain().after(crate::ui::slider::SliderInput),
             update_menu_window,
             scroll_menu_pages,
         ));

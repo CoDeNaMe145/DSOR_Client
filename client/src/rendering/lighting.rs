@@ -829,7 +829,7 @@ fn follow_level(
     ambiences: Res<Assets<Ambience>>,
     time: Res<Time>,
     cameras: Query<(&Camera, &GlobalTransform), (With<Camera3d>, Without<crate::rendering::highlight::HighlightCamera>, Without<NoLevelLook>)>,
-    players: Query<&GlobalTransform, With<crate::network::net::LocalPlayer>>,
+    players: Query<&GlobalTransform, crate::diagnostics::debug::FollowedPlayer>,
     menu: Option<Res<crate::diagnostics::lighting_menu::presets::LightingMenuStore>>,
 ) {
     let Some(current) = current else { return };

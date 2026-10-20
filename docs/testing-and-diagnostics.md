@@ -53,6 +53,13 @@ diagnostics, including directional/shared shadow passes, and logs the twelve lar
 GPU timestamp spans when the backend supports them. These spans can nest, so do not
 sum them. Both flags add profiling overhead;
 use them to locate costs, then disable them for final A/B frame-time comparisons.
+For combat drops near 60 FPS, use `DSOR_FLAGS=combatprofile,stageprofile`.
+`combatprofile` includes frame profiling, lowers the individual frame report
+threshold to 16.67 ms, and reports five-second mean/max system wall times for
+casts, projectiles, sequences, hit reactions, material flashes, corpse removal,
+combat text, stats, audio, and the existing movement/particle/occlusion spans.
+System times can overlap on worker threads; do not add them into a CPU total.
+This is opt-in diagnostic accounting; normal play does not collect these samples.
 The older HUD CPU total uses a shared main/render clock and is not reliable for
 attributing costs between pipelined native frames.
 On Windows, `python tools/profile_native_maps.py kingscity baseline --flags stageprofile`

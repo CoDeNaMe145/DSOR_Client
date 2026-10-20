@@ -169,6 +169,7 @@ struct DecoSeq {
 struct Deco {
     file: Option<(String, Handle<DecoFile>)>,
     spawned: HashMap<usize, Entity>,
+    pending: bool,
 }
 
 #[derive(Resource)]
@@ -187,6 +188,7 @@ pub struct OfflineNpcs {
     pub queued: Vec<crate::network::net::NpcSpawn>,
     done_for: Option<String>,
     resident: std::collections::HashSet<u32>,
+    pending: bool,
 }
 
 fn offline_npcs(
@@ -197,7 +199,7 @@ fn offline_npcs(
     current: Option<Res<CurrentMap>>,
     manifests: Res<Assets<crate::world::map::MapManifest>>,
     cameras: Query<&GlobalTransform, (With<Camera3d>, Without<crate::rendering::highlight::HighlightCamera>)>,
-    players: Query<&GlobalTransform, With<crate::network::net::LocalPlayer>>,
+    players: Query<&GlobalTransform, crate::diagnostics::debug::FollowedPlayer>,
     existing: Query<(Entity, &Npc)>,
 ) {
     let Some(mut offline) = offline else { return };
@@ -205,6 +207,7 @@ fn offline_npcs(
     if offline.done_for.as_ref() != Some(map) {
         offline.resident.clear();
         offline.queued.clear();
+        offline.pending = false;
         offline.done_for = Some(map.clone());
     }
     let Some(placed) = placements.get(handle) else { return };
@@ -212,6 +215,7 @@ fn offline_npcs(
     let ground = current.as_ref().and_then(|c| manifests.get(&c.manifest)).map(|m| m.center[1]).unwrap_or(0.0);
     let focus = crate::world::map::camera_focus(cam, players.iter().next().map(|p| p.translation()), ground);
     let mut added = 0;
+    offline.pending = false;
     // Diagnostic comparison with the historical viewer population, which
     // included every event at once. The default obeys authored event rules.
     let all_placements = crate::flag("allnpcplacements");
@@ -229,7 +233,8 @@ fn offline_npcs(
             }
             continue;
         }
-        if !enabled || distance > crate::world::map::LOAD_DISTANCE || added >= 4 { continue; }
+        if !enabled || distance > crate::world::map::LOAD_DISTANCE { continue; }
+        if added >= 4 { offline.pending = true; continue; }
         offline.queued.push(crate::network::net::NpcSpawn {
             actor,
             template: p.id.clone(),
@@ -281,6 +286,9 @@ pub(crate) struct NpcVisualSystems;
 
 pub struct NpcPlugin;
 
+mod loading;
+pub(crate) use loading::NpcLoading;
+
 impl Plugin for NpcPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(super::npc_markers::NpcMarkersPlugin)
@@ -295,6 +303,9 @@ impl Plugin for NpcPlugin {
             .init_asset::<DecoFile>()
             .register_asset_loader(DecoLoader)
             .init_resource::<Deco>()
+            .init_resource::<NpcLoading>()
+            .add_systems(PostUpdate, loading::check.after(TransformSystems::Propagate)
+                .before(crate::screens::loading::readiness::check))
             .add_systems(Startup, load)
             .add_systems(Update, (follow_map, offline_npcs, spawn_npcs, stream_online_npcs, spawn_deco,
                 animate_models, finish_online_visuals, cull_actors, npc_no_shadow)
@@ -410,7 +421,7 @@ fn spawn_npcs(
                 .map(|shape| shape.iter().map(|j| (j.bone.clone(), Vec3::from(j.t), Vec3::from(j.s))).collect())
                 .unwrap_or_default();
             NpcVisualRecipe::Character(CharacterDesc {
-                look: Some(NpcLook { skeleton, parts: outfit.parts.clone(), anim_set: template.anim_set.clone(), variation }),
+                look: Some(NpcLook { sound_profile: template.outfit.clone(), skeleton, parts: outfit.parts.clone(), anim_set: template.anim_set.clone(), variation }),
                 ..default()
             })
         } else if std::env::var("DSOR_NPC_SKIP").is_ok_and(|v| template.graphics.contains(&v)) {
@@ -473,7 +484,7 @@ fn stream_online_npcs(
     current: Option<Res<CurrentMap>>,
     manifests: Res<Assets<crate::world::map::MapManifest>>,
     cameras: Query<&GlobalTransform, (With<Camera3d>, Without<crate::rendering::highlight::HighlightCamera>)>,
-    players: Query<&GlobalTransform, With<crate::network::net::LocalPlayer>>,
+    players: Query<&GlobalTransform, crate::diagnostics::debug::FollowedPlayer>,
     mut npcs: Query<(Entity, &Transform, &Npc, &mut OnlineNpcVisual, Option<&mut CharacterAnim>)>,
     children: Query<&Children>,
     visuals: Query<(), With<CharacterVisual>>,
@@ -575,9 +586,12 @@ fn animate_models(
         };
         info!("npc model {:?}: playing {:?}", npc.gltf.path(), clip.path());
         let (graph, node) = AnimationGraph::from_clip(clip.clone());
+        let sound_clips = gltf.named_animations.iter().find(|(_, h)| *h == clip)
+            .map(|(name, _)| (node, name.to_string())).into_iter().collect();
         let mut anim = AnimationPlayer::default();
         anim.play(node).repeat().set_speed(npc.speed);
         commands.entity(player).insert((AnimationGraphHandle(graphs.add(graph)), anim,
+            crate::audio::AnimationAudio::new(entity, &npc.gltf.path().unwrap().path().to_string_lossy(), "", sound_clips),
             crate::rendering::anim_cull::PendingFirstPose::default()));
     }
 }
@@ -589,7 +603,7 @@ fn cull_actors(
     current: Option<Res<CurrentMap>>,
     manifests: Res<Assets<crate::world::map::MapManifest>>,
     cameras: Query<&GlobalTransform, (With<Camera3d>, Without<crate::rendering::highlight::HighlightCamera>)>,
-    players: Query<&GlobalTransform, With<crate::network::net::LocalPlayer>>,
+    players: Query<&GlobalTransform, crate::diagnostics::debug::FollowedPlayer>,
     mut actors: Query<(&GlobalTransform, &mut Visibility, Option<&NpcVisualPending>), (Or<(With<Npc>, With<crate::network::net::RemotePlayer>)>, Without<crate::gameplay::skills::SequenceHidden>)>,
 ) {
     let Ok(cam) = cameras.single() else { return };
@@ -639,7 +653,7 @@ fn spawn_deco(
     assets: Res<AssetServer>,
     (skill_data, seqs): (Option<Res<crate::gameplay::skills::SkillData>>, Res<Assets<crate::gameplay::skills::SequenceTable>>),
     cameras: Query<&GlobalTransform, (With<Camera3d>, Without<crate::rendering::highlight::HighlightCamera>)>,
-    players: Query<&GlobalTransform, With<crate::network::net::LocalPlayer>>,
+    players: Query<&GlobalTransform, crate::diagnostics::debug::FollowedPlayer>,
     manifests: Res<Assets<crate::world::map::MapManifest>>,
 ) {
     let Some(current) = current else { return };
@@ -648,6 +662,7 @@ fn spawn_deco(
             commands.entity(e).try_despawn();
         }
         deco.file = Some((current.name.clone(), assets.load(format!("maps/{}.deco.json", current.name))));
+        deco.pending = true;
     }
     if std::env::var("DSOR_NO_DECO").is_ok() {
         return;
@@ -667,15 +682,17 @@ fn spawn_deco(
     });
     let ready = data.outfits.values().all(|h| outfits.get(h).is_some() || assets.load_state(h).is_failed())
         && data.variations.values().all(|h| variations.get(h).is_some() || assets.load_state(h).is_failed());
-    let Some(table) = skill_data.as_ref().and_then(|d| seqs.get(d.sequences())) else { return };
+    let table = skill_data.as_ref().and_then(|d| seqs.get(d.sequences()));
+    if table.is_none() && !skill_data.as_ref().is_some_and(|d| assets.load_state(d.sequences()).is_failed()) { return; }
     if !ready {
         return;
     }
     // Bound actor hierarchy creation when entering a populated area.
     let mut spawned = 0;
+    deco.pending = false;
     for (i, c) in file.chars.iter().enumerate() {
-        if spawned >= 4 { break; }
         if deco.spawned.contains_key(&i) || !near(&c.m, crate::world::map::LOAD_DISTANCE) { continue; }
+        if spawned >= 4 { deco.pending = true; break; }
         // As the NPCs: the level faces them down -Z, the models face +Z.
         let m = Mat4::from_cols_array(&c.m);
         let (scale, rotation, at) = m.to_scale_rotation_translation();
@@ -693,7 +710,7 @@ fn spawn_deco(
                 .and_then(|v| data.variations.get(skeleton.as_str()).and_then(|h| variations.get(h)).and_then(|all| all.variations.get(v)))
                 .map(|shape| shape.iter().map(|j| (j.bone.clone(), Vec3::from(j.t), Vec3::from(j.s))).collect())
                 .unwrap_or_default();
-            let desc = CharacterDesc { look: Some(NpcLook { skeleton, parts: outfit.parts.clone(), anim_set: c.set.clone(), variation }), ..default() };
+            let desc = CharacterDesc { look: Some(NpcLook { sound_profile: c.outfit.clone(), skeleton, parts: outfit.parts.clone(), anim_set: c.set.clone(), variation }), ..default() };
             let e = spawn_character(&mut commands, desc, transform);
             if c.speed != 1.0 {
                 let mut anim = CharacterAnim::default();
@@ -731,7 +748,7 @@ fn spawn_deco(
     for (i, s) in file.seqs.iter().enumerate() {
         let key = file.chars.len() + i;
         if deco.spawned.contains_key(&key) || !near(&s.m, crate::world::map::LOAD_DISTANCE) { continue; }
-        let Some(seq) = table.0.get(&s.seq) else { continue };
+        let Some(seq) = table.and_then(|t| t.0.get(&s.seq)) else { continue };
         let anchor = commands.spawn((Transform::from_matrix(Mat4::from_cols_array(&s.m)), Visibility::default())).id();
         crate::gameplay::skills::play(&mut commands, seq.clone(), None, anchor, true);
         deco.spawned.insert(key, anchor);

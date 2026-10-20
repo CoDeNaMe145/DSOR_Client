@@ -26,18 +26,16 @@ pub(super) fn section(window: &str, parts: &[&str]) -> Option<Section> {
     if !super::NAV_WINDOWS.contains(&window) && !matches!(window, "skilltalentswindow" | "collectorsalbum") { return None; }
     let has = |name: &str| parts.contains(&name);
     // These rows/cards are cloned when data arrives, not sample player data.
-    if parts.iter().any(|p| p.contains("Template") || p.starts_with("RecentAchievement") || *p == "LoadingLabel") {
+    // The recent achievements' slots (RecentAchievement0..6), not their panel.
+    let recent_slot = |p: &str| p.strip_prefix("RecentAchievement").is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
+    if parts.iter().any(|p| p.contains("Template") || recent_slot(p) || *p == "LoadingLabel") {
         return Some(Section::Hidden);
     }
     match window {
         "collectorsalbum" => {
-            if parts.iter().any(|p| matches!(*p, "Categorypage" | "AnimUnlock" | "AnimUse" | "AnimIconGlow"
-                | "AdvertisedItems" | "DealsCounterLabel" | "FlagLabelCategory" | "FlagLabelSubcategory")) {
+            // controls::systems::album shows the front page or a book's page.
+            if parts.iter().any(|p| matches!(*p, "AnimUnlock" | "AnimUse" | "AnimIconGlow" | "FlagLabelCategory" | "FlagLabelSubcategory")) {
                 return Some(Section::Hidden);
-            }
-            if has("Firstpage") { return Some(page("album", 0)); }
-            if let Some(index) = parts.iter().find_map(|p| p.strip_prefix("AlbumPage").and_then(|s| s.parse().ok())) {
-                return Some(page("album", index));
             }
         }
         "skilltalentswindow" => {
@@ -76,7 +74,9 @@ pub(super) fn section(window: &str, parts: &[&str]) -> Option<Section> {
             if has("MenuBackground") || has("DummyScrollbarDown") || has("DummyScrollbarUp") { return Some(Section::Hidden); }
         }
         "leaderboards" => {
-            if parts.iter().any(|p| matches!(*p, "TimerBackgroundLabel" | "PlayerLabelTop")) { return Some(Section::Hidden); }
+            // PlanarFissure: the October 2026 client's fourth board (no group
+            // button, no server board); exported hidden.
+            if parts.iter().any(|p| matches!(*p, "TimerBackgroundLabel" | "PlayerLabelTop" | "PlanarFissure")) { return Some(Section::Hidden); }
             for (i, name) in ["PvP", "PvE", "Event"].iter().enumerate() {
                 if has(name) {
                     if has("HeaderOverallRanking") { return Some(Section::Ranking(i as u8, true)); }
@@ -89,23 +89,21 @@ pub(super) fn section(window: &str, parts: &[&str]) -> Option<Section> {
             }
         }
         "shopwindow" => {
-            if has("FlagLabelCategory") || has("AdvertisementArtwork") { return Some(Section::Hidden); }
-            for (name, index) in [("DealsPage", 0), ("OffersPage", 1), ("VoucherLabel", 2)] {
-                if has(name) { return Some(page("shop", index)); }
-            }
-            if parts.iter().any(|p| matches!(*p, "CinemaBackground" | "TieredSpenderLabel" | "PaymentMethodSettingsLabel"
+            // controls::systems::shop shows the open category's page and banner.
+            if parts.iter().any(|p| matches!(*p, "FlagLabelCategory" | "CinemaBackground" | "TieredSpenderLabel" | "PaymentMethodSettingsLabel"
                 | "SteamPaymentButton" | "ExternalPaymentButton" | "HighlightSale" | "MoreOffersIndicator")) {
                 return Some(Section::Hidden);
             }
         }
         "eventwindow" => {
-            // No event payload has arrived. The authored no-event panel is the
-            // correct empty state; active/upcoming art must not stack over it.
-            if parts.iter().any(|p| matches!(*p, "BottomActiveEvent" | "BottomUpcomingEvent" | "TabBarLabel" | "TabBarLabel_UpcomingEvents"
-                | "ProgressbarLabel" | "BannerLabel" | "LabelArtwork")) { return Some(Section::Hidden); }
+            // controls::systems::boards shows the running events' parts; the
+            // upcoming ones' (not scheduled by this server) and the banner stay out.
+            if parts.iter().any(|p| matches!(*p, "BottomUpcomingEvent" | "TabBarLabel_UpcomingEvents")) { return Some(Section::Hidden); }
         }
         "matchmakingwindow" => {
-            if has("LeaderboardSeason") || has("NextBattlemode") { return Some(Section::Hidden); }
+            // No season and no mode rotation: their timers stay out, the join
+            // button (controls::systems) stays.
+            if has("LeaderboardSeason") || (has("NextBattlemode") && (has("TimerBackgroundLabel1") || has("TimeNextModeText"))) { return Some(Section::Hidden); }
         }
         "locationmap" => {
             if has("marker") || has("marker2") || has("markerdesc") || has("minimapcorner") { return Some(Section::Hidden); }
@@ -120,11 +118,6 @@ pub(super) fn action(window: &str, widget: &Widget) -> Option<Action> {
     let event = widget.event.as_str();
     let tab = |group, index| Some(Action::Tab(group, index as u8));
     match window {
-        "collectorsalbum" => {
-            if let Some(category) = event.strip_prefix("AlbumCategory:").and_then(|s| s.parse().ok()) {
-                return tab("album", category);
-            }
-        }
         "skilltalentswindow" => {
             if let Some(i) = ["ExperienceTab", "KnowledgeTab", "GroupTab", "FameTab"].iter().position(|s| *s == leaf) { return tab("talents", i); }
             if let Some(i) = leaf.strip_prefix("PresetButton").and_then(|s| s.parse::<usize>().ok()) { return tab("preset", i.saturating_sub(1)); }
@@ -134,9 +127,32 @@ pub(super) fn action(window: &str, widget: &Widget) -> Option<Action> {
             if let Some(i) = ["QuestTabSelected", "CompendiumTabSelected", "AchievementsTabSelected", "DailyAchievementTabSelected", "WantedMissionsSelected"].iter().position(|e| *e == event) {
                 return tab("quest", i);
             }
+            // The rows super::quests::prepare_log clones.
+            if let Some(id) = event.strip_prefix("QuestSelect:") { return Some(Action::QuestSelect(id.to_owned())); }
+            if let Some(id) = event.strip_prefix("QuestCancel:") { return Some(Action::QuestCancel(id.to_owned())); }
+            if let Some(kind) = event.strip_prefix("QuestGroup:") { return Some(Action::QuestGroup(kind.to_owned())); }
+        }
+        "activequestwindow" => {
+            match event {
+                "PreviousQuest" => return Some(Action::QuestTrack(-1)),
+                "NextQuest" => return Some(Action::QuestTrack(1)),
+                "SwitchToCompact" => return Some(Action::QuestCompact(true)),
+                "SwitchToFull" => return Some(Action::QuestCompact(false)),
+                "OpenQuestlog" => return Some(Action::Window("questlog")),
+                _ => return None,
+            }
         }
         "socialscreen" => {
             if let Some(i) = leaf.strip_prefix("TabButton").and_then(|name| SOCIAL_TABS.iter().position(|s| *s == name)) { return tab("social", i); }
+            // The group and guild buttons send their requests (controls::social::answer).
+            let social = match event {
+                "LeaveGroup" => Some(super::social::Social::LeaveGroup),
+                "FoundGroup" => Some(super::social::Social::FoundGroup),
+                "LeaveGuild" => Some(super::social::Social::LeaveGuild),
+                "FoundGuild" => Some(super::social::Social::FoundGuild),
+                _ => None,
+            };
+            if let Some(social) = social { return Some(Action::Social(social)); }
             match event {
                 "ShowGroupFinder" => return tab("social", 6),
                 "GroupInviteNearbyPlayers" | "GroupInviteFriends" => return tab("social_overlay", 1),
@@ -146,7 +162,8 @@ pub(super) fn action(window: &str, widget: &Widget) -> Option<Action> {
         }
         "travelmap" => {
             if event == "ReturnToOverviewMap" { return tab("region", 0); }
-            if widget.id.contains("/map_buttons/") { return Some(Action::Choose("destination", widget.id.clone())); }
+            // A destination's button is named by its map id (a0200_kingscity).
+            if widget.id.contains("/map_buttons/") { return Some(Action::Travel(leaf.to_owned())); }
             if widget.id.contains("/RegionButtons/") {
                 if let Some(i) = REGIONS.iter().position(|s| *s == leaf) { return tab("region", i + 1); }
             }
@@ -170,6 +187,11 @@ pub(super) fn action(window: &str, widget: &Widget) -> Option<Action> {
             if matches!(event, "OpenShop" | "OpenEventShop" | "OpenRealMoneyShop") { return Some(Action::Window("shopwindow")); }
             if event == "OpenLeaderboards" { return Some(Action::Window("leaderboards")); }
             if event == "OpenAchievements" { return Some(Action::Window("questlog")); }
+        }
+        // The membership page's shop buttons.
+        "charactersheet" => {
+            if matches!(event, "OpenShop" | "OpenRealMoneyShop" | "ShowPremiumBenefits") { return Some(Action::Window("shopwindow")); }
+            return None;
         }
         _ => return None,
     }

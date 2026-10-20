@@ -8,9 +8,90 @@ use bevy::{
     prelude::*,
     world_serialization::{WorldAssetRoot, WorldInstance, WorldInstanceSpawner},
 };
-use dsor_proto::commands::{actors::PropEntry, ServerCommand};
+use bevy::window::PrimaryWindow;
+use dsor_proto::commands::{actors::{self, PropEntry}, ClientCommand, ServerCommand};
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
+
+/// A prop the server announced: its id and the operation string to echo when it
+/// is used (PropInteractionCommand 57; the server checks the prop is live for us).
+/// SOURCE: dso-server-production services/map_events.py _handle_prop_interaction,
+///   docs/PROP_AND_TRIGGER_COMMANDS.md (:305-345).
+#[derive(Component, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Interactive {
+    pub prop_id: u32,
+    pub operation: String,
+}
+
+/// The prop we walk to, to use it on arrival: its entity, where it stands, the
+/// point we walk to.
+#[derive(Resource, Default)]
+pub(crate) struct PropTarget {
+    pending: Option<(Entity, Vec3, Vec3)>,
+}
+
+/// How close a prop is used from (the NPC talk distance, with some slack).
+const USE_DISTANCE: f32 = 2.4;
+/// A prop's pick cylinder: levers, chests and shrines are about this wide.
+const PICK_RADIUS: f32 = 1.2;
+
+fn cylinder_hit(ray: Ray3d, base: Vec3) -> Option<f32> {
+    let o = ray.origin - base;
+    let d = *ray.direction;
+    let a = d.x * d.x + d.z * d.z;
+    if a < 1e-6 { return None; }
+    let t = (-(o.x * d.x + o.z * d.z) / a).max(0.0);
+    let p = o + d * t;
+    (p.x * p.x + p.z * p.z <= PICK_RADIUS * PICK_RADIUS && (-0.5..=2.5).contains(&p.y)).then_some(t)
+}
+
+/// A left click on a live prop walks to it and uses it; another click, or
+/// stopping short, forgets it. Runs after the NPC and ground clicks: an NPC or a
+/// monster under the cursor wins.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn interact(
+    buttons: Res<ButtonInput<MouseButton>>,
+    keys: Res<ButtonInput<KeyCode>>,
+    ui: Res<crate::ui::input::UiInput>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    cameras: Query<(&Camera, &GlobalTransform), (With<Camera3d>, Without<crate::rendering::highlight::HighlightCamera>)>,
+    props: Query<(Entity, &Interactive, &GlobalTransform, &InheritedVisibility)>,
+    mut players: Query<(&Transform, &mut crate::network::net::LocalPlayer)>,
+    hovered: Option<Res<crate::actors::monsters::Hovered>>,
+    item: Option<Res<crate::world::drops::ItemHover>>,
+    mut dialogue: ResMut<crate::gameplay::dialogue::Dialogue>,
+    mut target: ResMut<PropTarget>,
+    mut net: NonSendMut<crate::network::net::Net>,
+) {
+    let Ok((tf, mut player)) = players.single_mut() else { target.pending = None; return };
+    if let Some((entity, at, approach)) = target.pending {
+        let Ok((_, prop, _, _)) = props.get(entity) else { target.pending = None; return };
+        if tf.translation.xz().distance(at.xz()) <= USE_DISTANCE {
+            player.target = None;
+            if !net.offline {
+                net.send(&ClientCommand::PropInteraction(actors::PropInteraction { prop_id: prop.prop_id, interaction: prop.operation.clone() }));
+            }
+            info!("prop: used {} ({:?})", prop.prop_id, prop.operation);
+            target.pending = None;
+        } else if player.target.is_none_or(|t| t.xz().distance(approach.xz()) > 0.5) {
+            target.pending = None;
+        }
+    }
+    if ui.blocks(MouseButton::Left) || !buttons.just_pressed(MouseButton::Left) || keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) { return; }
+    if dialogue.target.is_some() || net.death.dead || hovered.is_some_and(|h| h.0.is_some()) || item.is_some_and(|i| i.0.is_some()) { return; }
+    let Ok(window) = windows.single() else { return };
+    let ray = window.cursor_position().zip(cameras.single().ok()).and_then(|(p, (c, t))| c.viewport_to_world(t, p).ok());
+    let Some(ray) = ray else { return };
+    let hit = props.iter().filter(|(_, _, _, visible)| visible.get())
+        .filter_map(|(e, _, t, _)| cylinder_hit(ray, t.translation()).map(|d| (d, e, t.translation())))
+        .min_by(|a, b| a.0.total_cmp(&b.0));
+    let Some((_, entity, at)) = hit else { return };
+    let approach = crate::gameplay::dialogue::approach_point(tf.translation, at);
+    player.target = (tf.translation.xz().distance(at.xz()) > USE_DISTANCE).then_some(approach);
+    // Holding the click must not resume ground walking (as an NPC click).
+    dialogue.held = true;
+    target.pending = Some((entity, at, approach));
+}
 
 #[derive(Clone, Debug, Deserialize)]
 struct Row {
@@ -169,7 +250,7 @@ impl NetworkProps {
         }
         self.revision += 1;
     }
-    fn event_enabled(&self, event: i32, sets: &BTreeMap<i32, String>) -> bool {
+    pub(crate) fn event_enabled(&self, event: i32, sets: &BTreeMap<i32, String>) -> bool {
         if event == -1 {
             return true;
         }
@@ -205,6 +286,8 @@ struct Desired {
     transform: Transform,
     state: String,
     map_icon: String,
+    /// The server's prop id and interaction, when it announced this one.
+    interactive: Option<(u32, String)>,
 }
 fn desired(map: &MapProps, templates: &MapProps, net: &NetworkProps) -> Vec<Desired> {
     let by_guid: HashMap<_, _> = net
@@ -236,6 +319,7 @@ fn desired(map: &MapProps, templates: &MapProps, net: &NetworkProps) -> Vec<Desi
             transform,
             state: remote.map_or_else(|| row.state.to_lowercase(), |p| p.visual.clone()),
             map_icon: row.map_icon.clone(),
+            interactive: remote.map(|p| (p.entry.prop_id, p.entry.interaction.clone())),
         });
     }
     for p in net
@@ -253,6 +337,7 @@ fn desired(map: &MapProps, templates: &MapProps, net: &NetworkProps) -> Vec<Desi
                 .with_rotation(Quat::from_rotation_y(p.entry.rotation)),
             state: p.visual.clone(),
             map_icon: templates.map_icons.get(&p.entry.template).cloned().unwrap_or_default(),
+            interactive: Some((p.entry.prop_id, p.entry.interaction.clone())),
         });
     }
     result.retain(|p| {
@@ -314,13 +399,15 @@ impl Plugin for PropsPlugin {
         app.init_asset::<MapProps>()
             .init_asset_loader::<Loader>()
             .init_resource::<PropScene>()
+            .init_resource::<PropTarget>()
             .add_systems(
                 Update,
                 (load, reconcile, apply_states)
                     .chain()
                     .after(crate::network::net::NetSystems)
                     .run_if(resource_exists::<CurrentMap>),
-            );
+            )
+            .add_systems(Update, interact.after(crate::network::net::NetSystems).run_if(crate::screens::loading::gameplay_ready));
     }
 }
 fn load(
@@ -355,7 +442,7 @@ fn reconcile(
     net: Option<NonSend<crate::network::net::Net>>,
     manifests: Res<Assets<MapManifest>>,
     cameras: Query<&GlobalTransform, (With<Camera3d>, Without<crate::rendering::highlight::HighlightCamera>)>,
-    players: Query<&GlobalTransform, With<crate::network::net::LocalPlayer>>,
+    players: Query<&GlobalTransform, crate::diagnostics::debug::FollowedPlayer>,
 ) {
     let Some(root) = current.root else { return };
     let Some(map) = maps.get(&scene.data) else {
@@ -395,6 +482,12 @@ fn reconcile(
         if let Some(placed) = scene.placed.get_mut(&wanted.key) {
             if placed.desired != wanted {
                 commands.entity(placed.entity).insert((wanted.transform, crate::ui::MapIcon(wanted.map_icon.clone())));
+                if placed.desired.interactive != wanted.interactive {
+                    match &wanted.interactive {
+                        Some((prop_id, operation)) => { commands.entity(placed.entity).insert(Interactive { prop_id: *prop_id, operation: operation.clone() }); }
+                        None => { commands.entity(placed.entity).remove::<Interactive>(); }
+                    }
+                }
                 if placed.desired.graphics != wanted.graphics || placed.desired.state != wanted.state {
                     if let Some(visual) = placed.visual.take() { commands.entity(visual).try_despawn(); }
                 }
@@ -404,6 +497,9 @@ fn reconcile(
             let entity = commands.spawn((Name::new(format!("prop {}", wanted.key)),
                 crate::ui::MapIcon(wanted.map_icon.clone()), wanted.transform,
                 Visibility::Inherited, ChildOf(root))).id();
+            if let Some((prop_id, operation)) = &wanted.interactive {
+                commands.entity(entity).insert(Interactive { prop_id: *prop_id, operation: operation.clone() });
+            }
             scene.placed.insert(wanted.key.clone(), Placed { entity, desired: wanted.clone(), visual: None });
         }
         let placed = &scene.placed[&wanted.key];
@@ -519,11 +615,14 @@ fn apply_states(
             ) {
                 if let Some(clip) = gltf.animations.first() {
                     let (graph, node) = AnimationGraph::from_clip(clip.clone());
+                    let sound_clips = gltf.named_animations.iter().find(|(_, h)| *h == clip)
+                        .map(|(name, _)| (node, name.to_string())).into_iter().collect();
                     let mut animation = AnimationPlayer::default();
                     animation.play(node).repeat();
                     commands
                         .entity(player)
-                        .insert((AnimationGraphHandle(graphs.add(graph)), animation));
+                        .insert((AnimationGraphHandle(graphs.add(graph)), animation,
+                            crate::audio::AnimationAudio::new(entity, &state.model.path().unwrap().path().to_string_lossy(), "", sound_clips)));
                 }
             }
         }

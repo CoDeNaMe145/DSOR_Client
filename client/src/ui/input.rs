@@ -32,35 +32,39 @@ impl UiRegions {
 pub struct UiInput {
     pub over_ui: bool,
     pub typing: bool,
+    /// Debug camera owns world controls while detached from the character.
+    pub free_look: bool,
     /// A tool window (crate::diagnostics::lighting_menu) is taking text: kept
     /// in `typing` until it lets go, whatever the chat's focus, and the chat
     /// leaves the keyboard alone (including the Enter that ends the text).
     pub hold_keys: bool,
     captured: HashSet<MouseButton>,
-    /// A world-origin left hold keeps moving even when the cursor crosses UI.
-    world_left: bool,
+    /// World-origin holds keep moving/casting when the cursor crosses UI.
+    world_held: HashSet<MouseButton>,
 }
 
 impl UiInput {
     pub fn blocks(&self, button: MouseButton) -> bool {
-        self.typing || self.captured.contains(&button) || (self.over_ui && !(button == MouseButton::Left && self.world_left))
+        self.free_look || self.typing || self.captured.contains(&button) || (self.over_ui && !self.world_held.contains(&button))
     }
 
     fn update(&mut self, over_ui: bool, buttons: &ButtonInput<MouseButton>) {
         self.over_ui = over_ui;
-        if buttons.just_pressed(MouseButton::Left) {
-            self.world_left = !over_ui;
-        } else if !buttons.pressed(MouseButton::Left) && !buttons.just_released(MouseButton::Left) {
-            self.world_left = false;
+        self.world_held.retain(|button| {
+            !buttons.just_pressed(*button) && (buttons.pressed(*button) || buttons.just_released(*button))
+        });
+        if !over_ui {
+            self.world_held.extend(buttons.get_just_pressed().copied());
         }
         self.captured.retain(|button| {
             !buttons.just_pressed(*button) && (buttons.pressed(*button) || buttons.just_released(*button))
         });
         // Keep UI-origin presses captured through release, including title-bar
-        // drags off a panel. A world-origin left hold must never be recaptured.
+        // drags off a panel. World-origin holds must never be recaptured: doing
+        // so latched right-click casting off until the player released it.
         if over_ui {
             self.captured.extend(buttons.get_pressed().chain(buttons.get_just_pressed()).copied()
-                .filter(|b| *b != MouseButton::Left || !self.world_left));
+                .filter(|b| !self.world_held.contains(b)));
         }
     }
 }
@@ -72,7 +76,8 @@ pub struct UiInputPlugin;
 
 impl Plugin for UiInputPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<UiInput>()
+        app.add_plugins(super::slider::SliderPlugin)
+            .init_resource::<UiInput>()
             .add_systems(PreUpdate, capture.in_set(CaptureUiInput).after(bevy::ui::UiSystems::Focus));
     }
 }

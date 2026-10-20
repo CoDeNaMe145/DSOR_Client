@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export the 2018 client's interface windows for client/src/ui.
+"""Export the client's interface windows (export_win32/ui) for client/src/ui.
 
 Usage: export_ui.py <export_win32> <assets> <DSO_Godot> [window ...] [--database static.db4]
 
@@ -288,7 +288,15 @@ def export(name):
                 stats["texts"] += 1
             widgets.append(entry)
             stats["widgets"] += 1
-            walk(c, wid, (l, t, r, b), ks, hidden, owner, visual_state)
+            # A window's root Canvas lays its children out against the whole
+            # screen, whatever its own rect: a panel aligned Left or Right
+            # follows that screen edge (the character sheet, the recipe book
+            # and the chat on the left; the social screen, the party frames
+            # and the quest tracker on the right), HCenter its centre.
+            # FAILURE (2026-10-20): with the canvas's own (centred) k, the
+            # quest tracker stood 170 px from the right edge of a 16:9 screen.
+            child_k = (0.0, 1.0) if c.tag == "Canvas" and not prefix else ks
+            walk(c, wid, (l, t, r, b), child_k, hidden, owner, visual_state)
 
     walk(doc, "", (0.0, 0.0, BASE_W, BASE_H), (0.0, 1.0), False)
     if name == "inventory":
@@ -309,9 +317,8 @@ def export(name):
                 w["text"].update(text="—", key="—")
     if name == "skilltalentswindow": widgets = spell_grid(widgets, catalog, tex, loca)
     if name == "leaderboards": widgets = ranking_categories(widgets, catalog, loca)
-    if name == "collectorsalbum":
-        from collector_catalog import collector_pages
-        widgets = collector_pages(widgets, catalog, tex, loca)
+    # collectorsalbum: the client fills Categorypage and the category list
+    # (controls::systems::album); no pages are added.
     if name == "locationmap": widgets = local_map_controls(widgets)
     if name == "shopwindow":
         # The game assigns these labels along with its catalogue. Keep the

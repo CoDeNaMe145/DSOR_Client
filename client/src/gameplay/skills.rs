@@ -181,7 +181,7 @@ pub enum Track {
     },
     Shake { intensity: f32, range: f32, start: i32, end: i32 },
     Hide { start: i32, end: i32 },
-    Sound { start: i32, end: i32 },
+    Sound { #[serde(default)] name: String, #[serde(default = "sound_volume")] volume: f32, start: i32, end: i32 },
     /// CharacterTrackBar: a character a level's sequence places (guards, pigeons),
     /// drawn by crate::actors::npc from maps/<map>.deco.json; nothing for the player.
     Character { start: i32, end: i32 },
@@ -200,6 +200,8 @@ pub enum Track {
     },
 }
 
+fn sound_volume() -> f32 { 100. }
+
 impl Track {
     fn span(&self) -> (i32, i32) {
         match self {
@@ -209,7 +211,7 @@ impl Track {
             | Track::Light { start, end, .. }
             | Track::Shake { start, end, .. }
             | Track::Hide { start, end }
-            | Track::Sound { start, end }
+            | Track::Sound { start, end, .. }
             | Track::Character { start, end }
             | Track::Color { start, end, .. } => (*start, *end),
         }
@@ -340,8 +342,8 @@ pub struct SequencePlayer {
     follow: bool,
     /// Set to end the sequence now (its effects retire gracefully).
     pub stop: bool,
-    /// A newer skill sequence took over the same actor's animation: this one
-    /// neither starts nor ends an animation any more.
+    /// Movement or a newer skill took over the actor's animation: this sequence
+    /// neither starts nor ends an animation any more, but its effects play out.
     superseded: bool,
     /// Per track: started, and what it spawned.
     started: Vec<bool>,
@@ -356,7 +358,7 @@ pub struct SequencePlayer {
 
 impl SequencePlayer {
     pub(crate) fn has_pending_animation(&self) -> bool {
-        !self.stop && self.seq.tracks.iter().enumerate().any(|(i, t)| {
+        !self.stop && !self.superseded && self.seq.tracks.iter().enumerate().any(|(i, t)| {
             matches!(t, Track::Anim { end, .. } if !self.started[i] && self.t * FPS < *end as f32)
         })
     }
@@ -476,7 +478,7 @@ enum PendingKind {
 
 /// An effect model: its node animation is started once it is in.
 #[derive(Component)]
-struct FxModel {
+pub(crate) struct FxModel {
     gltf: Handle<Gltf>,
     started: bool,
     /// Its node animation repeats only in a looping sequence (a bullet in flight);
@@ -523,12 +525,13 @@ impl Plugin for SkillsPlugin {
             .init_resource::<CameraShake>()
             .init_resource::<TestCastClock>()
             .init_resource::<StatusHolds>()
-            .init_resource::<FxPreload>()
-            .add_systems(Update, preload_effects)
+            .init_resource::<preload::FxPreload>()
+            .add_systems(Startup, preload::setup)
+            .add_systems(Update, preload::update.after(crate::network::net::NetSystems))
             .add_systems(Startup, load)
             .add_systems(
                 Update,
-                (index_skills, cast_input.run_if(crate::screens::loading::gameplay_ready), remote_skills, status_visuals, hold_for_status, test_cast, run_pending, carry_casters, fly_bullets, play_sequences, start_fx_animations, retire_effects, shake_camera, test_shot, test_view, debug_fx_positions)
+                (index_skills, cast_input.run_if(crate::screens::loading::gameplay_ready), remote_skills, status_visuals, trap_visuals, hold_for_status, test_cast, run_pending, carry_casters, fly_bullets, play_sequences, start_fx_animations, retire_effects, shake_camera, test_shot, test_view, debug_fx_positions)
                     .chain()
                     .after(crate::network::net::NetSystems).after(crate::actors::npc::NpcVisualSystems)
                     .before(crate::actors::character::drive_animations),
@@ -538,55 +541,10 @@ impl Plugin for SkillsPlugin {
     }
 }
 
-/// The effect models of the local player's class, loaded ahead: a skill's first
-/// cast then draws at once and whole (see start_fx_animations).
-#[derive(Resource, Default)]
-struct FxPreload {
-    class: Option<u8>,
-    models: Vec<Handle<Gltf>>,
-}
+pub(crate) mod preload;
 
-/// Every effect model the class's skills draw: their execute, impact, shifted
-/// and bullet sequences' graphics, kept loaded while the class plays.
-fn preload_effects(
-    mut preload: ResMut<FxPreload>,
-    data: Option<Res<SkillData>>,
-    tables: Res<Assets<SkillTable>>,
-    sequences: Res<Assets<SequenceTable>>,
-    assets: Res<AssetServer>,
-    locals: Query<&Character, With<LocalPlayer>>,
-    others: Query<&Character>,
-) {
-    let Some(class) = locals.iter().next().or_else(|| others.iter().next()).map(|c| c.desc.class) else { return };
-    if preload.class == Some(class) {
-        return;
-    }
-    let Some(data) = data else { return };
-    let (Some(table), Some(seqs)) = (tables.get(&data.skills), sequences.get(&data.sequences)) else { return };
-    let class_name = crate::actors::character::CLASSES.get(class as usize).copied().unwrap_or("mage");
-    // The class's skills: CharClass (release 261 names them "arcanevortex", ...),
-    // or the 2018 "<class>_" id prefix.
-    let prefix = format!("{class_name}_");
-    let mut names: Vec<&String> = Vec::new();
-    for skill in table.0.values().filter(|s| s.class == class_name || s.id.starts_with(&prefix)) {
-        names.extend(skill.execute.values());
-        names.extend([&skill.impact, &skill.shifted]);
-        if let Some(b) = &skill.bullet {
-            names.extend([&b.loop_seq, &b.impact, &b.death]);
-        }
-    }
-    let mut paths = std::collections::BTreeSet::new();
-    for name in names {
-        for track in seqs.0.get(name).map(|s| s.tracks.as_slice()).unwrap_or(&[]) {
-            if let Track::Fx { graphics, .. } = track {
-                paths.insert(format!("{graphics}.glb"));
-            }
-        }
-    }
-    info!("preloading {} effect models of the {class_name} skills", paths.len());
-    preload.models = paths.into_iter().map(|p| assets.load(p)).collect();
-    preload.class = Some(class);
-}
+#[cfg(test)]
+mod regression_tests;
 
 fn load(mut commands: Commands, assets: Res<AssetServer>) {
     commands.insert_resource(SkillData {
@@ -860,7 +818,9 @@ fn cast_input(
     // the walk brings it in reach.
     mut queued: Local<Option<(usize, Entity)>>,
 ) {
+    let _profile = crate::diagnostics::hud::FrameSpan::new("skills::cast_input");
     let clicked_slot = ui_skills.0.take();
+    if ui.free_look { *queued = None; return; }
     if ui.typing { return; }
     let Some(mut net) = net else { return };
     // Dead: no casting until revived (the server refuses it anyway).
@@ -1104,13 +1064,13 @@ fn remote_skills(
         if anim.dead { continue; }
         let facing = aim_to_facing(ev.heading);
         r.facing = facing;
-        // Movement off until its unblock frame, where it stands now: its records
-        // are ignored up to the skill's start tick plus the unblock frames
-        // (RemotePlayer::held_until_tick); `held` keeps its body still meanwhile.
-        let unblock = skill.unblock.max(skill.motion_unblock);
+        // The server locks motion until MotionUnblockFrame; SkillUnblockFrame
+        // gates the next cast, and can be longer (or motion can stay unlocked).
+        // Keep the preceding stop record's target: freezing at the rendered
+        // position stranded attacking monsters behind their actual hit capsule.
+        let unblock = skill.motion_unblock;
         r.held = unblock as f32 / FPS;
         r.held_until_tick = Some(ev.start_tick.wrapping_add(unblock));
-        r.target = tf.translation;
         // Standing from here: when the hold ends before the animation (a melee
         // swing's unblock frame comes before its last frame), a body that walked up
         // to strike must not read as just stopped -- the run took over and cut the
@@ -1145,6 +1105,7 @@ fn run_pending(
     anims: Query<&CharacterAnim>,
     monsters: Query<(), With<crate::monsters::Monster>>,
 ) {
+    let _profile = crate::diagnostics::hud::FrameSpan::new("skills::run_pending");
     let Some(sequences) = seqs.get(&data.sequences) else { return };
     for (e, mut p) in &mut pending {
         let caster = match &p.what {
@@ -1330,6 +1291,7 @@ fn fly_bullets(
     // The server's blows not matched to a bullet yet: attacker, victim, when.
     mut strikes: Local<Vec<(u32, u32, f32)>>,
 ) {
+    let _profile = crate::diagnostics::hud::FrameSpan::new("skills::fly_bullets");
     let mesh = nav.as_ref().and_then(|n| navmeshes.get(&n.0));
     let now = time.elapsed_secs();
     let dt = time.delta_secs();
@@ -1618,6 +1580,7 @@ pub(crate) fn play_sequences(
     // to cast).
     bodies: Query<&Transform, (With<Character>, Without<PointLight>)>,
 ) {
+    let _profile = crate::diagnostics::hud::FrameSpan::new("skills::play_sequences");
     let eye = cameras.iter().next().map(|c| c.translation());
     let mut lights_to_set: Vec<(Entity, [f32; 3], f32, f32, Transform)> = Vec::new();
     // A new skill sequence on an actor takes its animation over from the older
@@ -1636,16 +1599,16 @@ pub(crate) fn play_sequences(
         }
     }
     for (e, mut p) in &mut players {
-        // Walking away interrupts the skill, as in the game: its effects go with it
-        // (they stayed on the running player for seconds otherwise).
-        // Only a skill's own sequence on its caster: hits and deaths carried by the
-        // body (`follow`, play_death) play out on a creature that runs -- a chasing
-        // monster's blood splash was cut after 0.1 s ("pas de sang quand je tape").
-        let interrupted = !p.on_death && p.actor.is_some_and(|a| {
-            anims.get(a).is_ok_and(|a| a.dead)
-                || (!p.follow && p.t > 0.1 && (locals.get(a).is_ok_and(|l| l.target.is_some() && l.casting <= 0.0)
-                    || remotes.get(a).is_ok_and(|r| r.still_for <= 0.0)))
-        });
+        // Walking gives the body back to locomotion, not the whole sequence:
+        // world effects such as Frostwind must keep their authored lifetime.
+        // Attached hit/status sequences and death sequences keep their animation.
+        if !p.on_death && !p.follow && p.t > 0.1 && p.actor.is_some_and(|a| {
+            locals.get(a).is_ok_and(|l| l.target.is_some() && l.casting <= 0.0)
+                || remotes.get(a).is_ok_and(|r| r.still_for <= 0.0)
+        }) {
+            p.superseded = true;
+        }
+        let interrupted = !p.on_death && p.actor.is_some_and(|a| anims.get(a).is_ok_and(|a| a.dead));
         let anchor_alive = exists.contains(p.anchor) && !interrupted;
         // Keep real sequence time while an NPC rig is absent/loading, but defer
         // attachment. One-shot bursts must expire rather than replay much later
@@ -1788,7 +1751,18 @@ pub(crate) fn play_sequences(
                             commands.entity(a).try_insert(SequenceHidden);
                         }
                     }
-                    Track::Phase { .. } | Track::Sound { .. } | Track::Anim { .. } | Track::Color { .. } | Track::Character { .. } => {}
+                    Track::Sound { name, volume, start, end } => {
+                        let position = bodies.get(p.anchor).map(|t| t.translation)
+                            .or_else(|_| transforms.get(p.anchor).map(|t| t.translation())).unwrap_or(Vec3::ZERO);
+                        let (name, volume, anchor) = (name.clone(), *volume, p.anchor);
+                        let duration = (*end - *start).max(1) as f32 / FPS / p.rate.max(0.01);
+                        commands.queue(move |world: &mut World| {
+                            if let Some(mut audio) = world.get_resource_mut::<crate::audio::AudioRequests>() {
+                                audio.effect(name, position, anchor, e, volume, duration);
+                            }
+                        });
+                    }
+                    Track::Phase { .. } | Track::Anim { .. } | Track::Color { .. } | Track::Character { .. } => {}
                 }
             }
             // Animated values (bezier curves over the sequence's frames).
@@ -1926,6 +1900,7 @@ fn start_fx_animations(
     mut graphs: ResMut<Assets<AnimationGraph>>,
     mut clips: ResMut<Assets<AnimationClip>>,
 ) {
+    let _profile = crate::diagnostics::hud::FrameSpan::new("skills::start_fx_animations");
     for (e, mut m) in &mut fx {
         if m.started {
             continue;
@@ -2287,6 +2262,7 @@ fn status_visuals(
     mut holds: ResMut<StatusHolds>,
     monsters: Query<(&crate::monsters::Monster, &CharacterAnim)>,
 ) {
+    let _profile = crate::diagnostics::hud::FrameSpan::new("skills::status_visuals");
     let (Some(table), Some(sequences)) = (statuses.get(&data.status), seqs.get(&data.sequences)) else { return };
     if by_name.is_empty() {
         *by_name = table.0.iter().map(|(i, d)| (d.id.clone(), *i)).collect();
@@ -2415,6 +2391,70 @@ fn status_visuals(
                 }
                 commands.entity(e).despawn();
             }
+        }
+    }
+}
+
+/// A trap's model by its _Template_Trap id (the server sends the id, never the
+/// Graphics column), and the sequence its trip plays.
+/// SOURCE: dso-server-production data/db/static.db4 _Template_Trap (dwarf_mine,
+///   dwarf_mine1..10: effects_dwarf/dwarf_tripmine; skill_trap_normal;
+///   BeastmanFox_trap), status_effects.json skill_mine_explosion_aura's done.
+fn trap_graphics(template: &str) -> Option<(&'static str, Option<&'static str>)> {
+    if template.starts_with("dwarf_mine") { Some(("effects_dwarf/dwarf_tripmine", Some("dwarf_tripmine_explode"))) }
+    else if template == "skill_trap_normal" { Some(("effects_playerskills/ranger_trap_bullet", None)) }
+    else if template == "BeastmanFox_trap" { Some(("effects/beastman_fox_skill_02_traploop", None)) }
+    else { None }
+}
+
+/// A trap drawn on the ground: its looping model, where it lies, what its trip plays.
+#[derive(Component)]
+struct TrapVisual {
+    id: u32,
+    player: Entity,
+    anchor: Entity,
+    explosion: Option<&'static str>,
+}
+
+/// The traps the server placed (NewTrap 63), tripped (66) and took away (64):
+/// the mine stays visible until its explosion, half a second after the trip.
+/// SOURCE: dso-server-production services/player_traps.py (:157-271).
+fn trap_visuals(
+    mut commands: Commands,
+    net: Option<NonSendMut<Net>>,
+    data: Res<SkillData>,
+    seqs: Res<Assets<SequenceTable>>,
+    traps: Query<(Entity, &TrapVisual)>,
+    mut players: Query<&mut SequencePlayer>,
+) {
+    let Some(mut net) = net else { return };
+    if net.trap_events.is_empty() && net.traps_tripped.is_empty() && net.traps_gone.is_empty() { return; }
+    let placed = std::mem::take(&mut net.trap_events);
+    let tripped = std::mem::take(&mut net.traps_tripped);
+    let gone = std::mem::take(&mut net.traps_gone);
+    for ev in placed {
+        let Some((graphics, explosion)) = trap_graphics(&ev.template) else { info!("trap {} has no model here", ev.template); continue };
+        debug!("trap {} ({}) at {:?}", ev.id, ev.template, ev.position);
+        let anchor = commands
+            .spawn((Transform::from_translation(ev.position).with_rotation(entity_rotation(aim_to_facing(ev.heading))), Visibility::default()))
+            .id();
+        let seq = Sequence { length: 60, repeat: true, tracks: vec![Track::Fx {
+            graphics: graphics.to_owned(), joint: String::new(), at: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0], start: 0, end: 60, curves: HashMap::new(),
+        }] };
+        let player = play_with(&mut commands, seq, None, anchor, true, true);
+        commands.spawn(TrapVisual { id: ev.id, player, anchor, explosion });
+    }
+    for id in tripped {
+        for (_, v) in traps.iter().filter(|(_, v)| v.id == id) {
+            if let Some(seq) = v.explosion.and_then(|n| seqs.get(&data.sequences).and_then(|t| t.0.get(n))) {
+                play_with(&mut commands, seq.clone(), None, v.anchor, false, true);
+            }
+        }
+    }
+    for id in gone {
+        for (e, v) in traps.iter().filter(|(_, v)| v.id == id) {
+            if let Ok(mut p) = players.get_mut(v.player) { p.stop = true; }
+            commands.entity(e).despawn();
         }
     }
 }
@@ -2753,6 +2793,35 @@ mod npc_residency_tests {
 mod bullet_tests {
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
+
+    #[test]
+    fn remote_cast_preserves_server_stop_and_uses_motion_unlock_frame() {
+        for motion_unblock in [0, 10] {
+            let mut app = App::new();
+            app.init_resource::<Time<Real>>().init_resource::<Assets<SkillTable>>()
+                .init_resource::<Assets<SequenceTable>>();
+            crate::net::start_offline(app.world_mut(), 1, 0);
+            let skill = serde_json::from_value(serde_json::json!({
+                "id": "test_attack", "type": "Melee", "hit_frame": 1, "loop_start": 0,
+                "unblock": 50, "motion_unblock": motion_unblock, "range": 2.0,
+                "cooldown": 0.0, "execute": {}, "impact": ""
+            })).unwrap();
+            let skills = app.world_mut().resource_mut::<Assets<SkillTable>>().add(SkillTable([(1, skill)].into_iter().collect()));
+            let sequences = app.world_mut().resource_mut::<Assets<SequenceTable>>().add(SequenceTable(default()));
+            app.insert_resource(SkillData { skills, sequences, status: default(), by_id: default() });
+            let stop = Vec3::new(2., 0., 1.);
+            let root = app.world_mut().spawn((Transform::default(), CharacterAnim::default(),
+                RemotePlayer { actor: 41, target: stop, last_record: Some((stop, 100)), ..default() })).id();
+            app.world_mut().non_send_mut::<Net>().skill_events.push(crate::net::SkillEvent {
+                actor: 41, wire: 1, heading: 0., points: Vec::new(), target: None, start_tick: 100,
+            });
+            app.world_mut().run_system_once(remote_skills).unwrap();
+            let r = app.world().get::<RemotePlayer>(root).unwrap();
+            assert_eq!(r.target, stop, "a cast must not replace the server stop with an interpolated position");
+            assert_eq!(r.held, motion_unblock as f32 / FPS);
+            assert_eq!(r.held_until_tick, Some(100 + motion_unblock));
+        }
+    }
 
     fn bullet(start: Vec3, velocity: Vec3, radius: f32) -> Bullet {
         Bullet {

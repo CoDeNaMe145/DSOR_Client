@@ -1,0 +1,57 @@
+[
+  {
+    "name": "travel_map",
+    "hex": "8b610000000f0061303230305f6b696e677363697479000000",
+    "bits": 193
+  },
+  {
+    "name": "travel_event",
+    "hex": "8b610000000f0061303230305f6b696e677363697479100061303230305f6661697267726f756e6400",
+    "bits": 321
+  },
+  {
+    "name": "use_travel_item",
+    "hex": "8b790020030000120061303230335f6b696e677363727970743032",
+    "bits": 216
+  },
+  {
+    "name": "logout",
+    "hex": "8b630000",
+    "bits": 26
+  },
+  {
+    "name": "logout_info",
+    "hex": "8447010a000000",
+    "bits": 56
+  },
+  {
+    "name": "select_talent",
+    "hex": "8b17010e00736b696c6c5f6d696e655f6c766c01000000",
+    "bits": 184
+  },
+  {
+    "name": "preselection",
+    "hex": "8b19010200",
+    "bits": 40
+  },
+  {
+    "name": "reset_talents",
+    "hex": "8b1e010102",
+    "bits": 40
+  },
+  {
+    "name": "reset_branch",
+    "hex": "8b1f01010f00776973646f6d5f6272616e63685f6100",
+    "bits": 176
+  },
+  {
+    "name": "talent_points",
+    "hex": "851a01ff0a00000028000000140000001e00000001000000ff1d010300000001000000ff",
+    "bits": 288
+  },
+  {
+    "name": "join_queue",
+    "hex": "8bce00070000000001",
+    "bits": 72
+  }
+]

@@ -19,3 +19,4 @@ pub(crate) mod particles;
 pub(crate) mod refraction;
 pub(crate) mod shadow_views;
 pub(crate) mod surfaces;
+pub(crate) mod warmup;

@@ -190,6 +190,8 @@ pub struct CharacterDesc {
 /// the skeleton's outfits.json, and AnimSet.
 #[derive(Clone, Debug, Default)]
 pub struct NpcLook {
+    /// Authored CharacterSet, also the skin key in audio/hotspots.xml.
+    pub sound_profile: String,
     /// "uniskel" or "uniskel_dwarf".
     pub skeleton: String,
     pub parts: Vec<String>,
@@ -367,6 +369,7 @@ impl AnimLod {
 /// Set `state` (and `speed`) to change what the character plays.
 #[derive(Component, Debug)]
 pub struct CharacterAnim {
+    audio_epoch: u64,
     pub state: AnimState,
     pub speed: f32,
     applied: Option<(AnimState, f32)>,
@@ -396,7 +399,7 @@ pub struct CharacterAnim {
 
 impl Default for CharacterAnim {
     fn default() -> Self {
-        Self { state: AnimState::Idle, speed: 1.0, applied: None, player: None, nodes: HashMap::new(), current: None,
+        Self { audio_epoch: 0, state: AnimState::Idle, speed: 1.0, applied: None, player: None, nodes: HashMap::new(), current: None,
             fading: Vec::new(), fade_elapsed: 0.0, fade_duration: BLEND.as_secs_f32(), clip_nodes: HashMap::new(),
             durations: HashMap::new(), set: None, set_changed: false, combat_remaining: 0.0,
             parked: Vec::new(), parking: false, dead: false }
@@ -404,6 +407,11 @@ impl Default for CharacterAnim {
 }
 
 impl CharacterAnim {
+    /// Audio follows the logical clip even on frames where pose LOD stops Bevy's
+    /// player. This keeps nearby offscreen NPCs audible without evaluating bones.
+    pub(crate) fn audio_clock(&self, lod: Option<&AnimLod>) -> Option<(AnimationNodeIndex, Option<f32>, u64)> {
+        Some((self.current?, lod.and_then(|l| l.held).map(|(at, since)| at + since * self.speed), self.audio_epoch))
+    }
     /// Release a streamed-out rig without losing authoritative status state.
     pub(crate) fn release_rig(&mut self) {
         *self = Self { state: self.state.clone(), speed: self.speed, dead: self.dead,
@@ -475,6 +483,7 @@ impl CharacterAnim {
 
     fn transition(&mut self, player: &mut AnimationPlayer, node: AnimationNodeIndex, looping: bool) {
         let same_state = self.applied.as_ref().is_some_and(|(state, _)| *state == self.state);
+        if !same_state || self.current != Some(node) { self.audio_epoch = self.audio_epoch.wrapping_add(1); }
         let preserve_phase = self.set_changed && same_state;
         let seek = if preserve_phase && self.current != Some(node) {
             self.current.and_then(|old| {
@@ -538,7 +547,14 @@ struct OutfitPart { entity: Entity, name: String, colour: Option<[f32; 4]> }
 struct PendingOutfit { parts: Vec<OutfitPart>, introduced: Vec<Entity>, animation_set: String }
 
 impl Character {
-    pub fn outfit_ready(&self) -> bool { self.built && self.pending_outfit.is_none() && !self.drawn_parts.is_empty() }
+    pub fn outfit_ready(&self) -> bool { self.outfit_wait().is_none() }
+    /// What the outfit still waits for (loading diagnostics); None once it is ready.
+    pub(crate) fn outfit_wait(&self) -> Option<&'static str> {
+        if !self.built { Some("outfit not built") }
+        else if self.pending_outfit.is_some() { Some("outfit change loading") }
+        else if self.drawn_parts.is_empty() { Some("no drawable parts") }
+        else { None }
+    }
     /// A joint of this character's shared skeleton, by name (once it is in).
     pub fn bone(&self, name: &str) -> Option<Entity> {
         self.bones.as_ref()?.get(name).copied()
@@ -740,7 +756,7 @@ fn build_characters(
 /// Publish an outfit atomically after its scene, textures and bindings are ready.
 /// Common body/clothing parts stay on the same skeleton throughout the swap.
 #[derive(bevy::ecs::system::SystemParam)]
-struct OutfitReadiness<'w, 's> {
+pub(crate) struct OutfitReadiness<'w, 's> {
     parts: Query<'w, 's, (&'static bevy::world_serialization::WorldInstance, &'static WorldAssetRoot)>,
     instances: Res<'w, bevy::world_serialization::WorldInstanceSpawner>,
     children: Query<'w, 's, &'static Children>,
@@ -761,7 +777,24 @@ fn material_textures_ready(base: &StandardMaterial, extra: &[&Option<Handle<Imag
 }
 
 impl OutfitReadiness<'_, '_> {
-    fn ready(&self, entity: Entity) -> bool {
+    /// A failed render dependency can be reported separately from one still
+    /// loading, even when the scene's recursive status has not caught up.
+    pub(crate) fn failed(&self, entity: Entity) -> bool {
+        let failed = |id| crate::screens::loading::asset_failed(&self.assets, id);
+        self.children.iter_descendants(entity).any(|e| {
+            let Ok((mesh, standard, surface, refraction, skin)) = self.meshes.get(e) else { return false };
+            failed(mesh.id().untyped())
+                || skin.is_some_and(|s| failed(s.inverse_bindposes.id().untyped()))
+                || standard.is_some_and(|h| failed(h.id().untyped()) || self.standard.get(&h.0)
+                    .is_some_and(|m| !material_textures_ready(m, &[], |id| !failed(id))))
+                || surface.is_some_and(|h| failed(h.id().untyped()) || self.surfaces.get(&h.0)
+                    .is_some_and(|m| !material_textures_ready(&m.base, &[&m.extension.cube, &m.extension.layer, &m.extension.mask], |id| !failed(id))))
+                || refraction.is_some_and(|h| failed(h.id().untyped()) || self.refractions.get(&h.0)
+                    .is_some_and(|m| !material_textures_ready(&m.base, &[&m.extension.dudv], |id| !failed(id))))
+        })
+    }
+
+    pub(crate) fn ready(&self, entity: Entity) -> bool {
         let Ok((instance, _)) = self.parts.get(entity) else { return false };
         if !self.instances.instance_is_ready(**instance) { return false; }
         // A glTF scene's recursive dependency status can stay Loading after all
@@ -985,7 +1018,8 @@ fn on_instance_ready(ready: On<WorldInstanceReady>, skeletons: Query<&SkeletonOf
 /// Append newly needed clips to the existing graph, retaining old clips while
 /// they fade out. Reusing nodes also keeps a common clip's playback uninterrupted.
 fn update_animation_sets(
-    mut characters: Query<(&Character, &mut CharacterAnim)>,
+    mut commands: Commands,
+    mut characters: Query<(Entity, &Character, &mut CharacterAnim)>,
     players: Query<&AnimationGraphHandle>,
     library: Option<Res<CharacterLibrary>>,
     tables: Res<Assets<AnimTable>>,
@@ -994,7 +1028,7 @@ fn update_animation_sets(
     mut graphs: ResMut<Assets<AnimationGraph>>,
 ) {
     let Some(library) = library else { return };
-    for (character, mut anim) in &mut characters {
+    for (entity, character, mut anim) in &mut characters {
         let set = character.riding.as_ref().unwrap_or(&character.displayed_set);
         if anim.set.as_ref() == Some(set) { continue; }
         let Some(player) = anim.player else { continue };
@@ -1016,6 +1050,11 @@ fn update_animation_sets(
         anim.nodes = nodes;
         anim.set = Some(set.clone());
         anim.set_changed = anim.current.is_some();
+        let profile = character.desc.look.as_ref().map(|l| l.sound_profile.clone()).unwrap_or_else(||
+            format!("{}_{}_body_00", character.desc.class_name(), character.desc.gender_name()));
+        commands.entity(player).insert(crate::audio::AnimationAudio::new(entity,
+            &format!("characters/{}", character.desc.skeleton()), &profile,
+            anim.clip_nodes.iter().map(|(name, node)| (*node, name.clone())).collect()));
     }
 }
 
@@ -1352,7 +1391,7 @@ pub(crate) fn drive_animations(
     mut players: Query<&mut AnimationPlayer>,
     mut to_park: Local<Vec<Entity>>,
     cameras: Query<(&Camera, &GlobalTransform, &bevy::camera::RenderTarget), (With<Camera3d>, Without<crate::rendering::highlight::HighlightCamera>)>,
-    me: Query<&GlobalTransform, With<crate::network::net::LocalPlayer>>,
+    me: Query<&GlobalTransform, crate::diagnostics::debug::FollowedPlayer>,
 ) {
     let _profile = crate::diagnostics::hud::FrameSpan::new("character::drive_animations");
     // Distance is a coarse gate; completed camera/shadow visibility additionally

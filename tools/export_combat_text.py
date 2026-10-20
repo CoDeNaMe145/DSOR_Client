@@ -103,6 +103,8 @@ if len(sys.argv) > 3:
 
     walk(doc if hasattr(doc, "children") else doc.root)
 out = os.path.join(assets, "interface", "combat_text.json")
+# A fresh conversion runs this before the interface export makes the folder.
+os.makedirs(os.path.dirname(out), exist_ok=True)
 with open(out, "w") as f:
     json.dump({"types": types, "texts": texts, "labels": labels, "currencies": currencies}, f, ensure_ascii=False, separators=(",", ":"))
 print({"types": len(types), "labels": sorted(labels), "texts": texts})

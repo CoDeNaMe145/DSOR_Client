@@ -27,7 +27,7 @@ fn repeats_label(window: &str, button: &Button, layout: Option<&Layout>) -> bool
     if window == "gamemenu" { return true; }
     match &button.action {
         Action::Skill(_) | Action::Spell | Action::Item(_) => false,
-        Action::NpcChoice(_) | Action::Edit(_) | Action::Choose(_, _) | Action::ChatChannel(_) => true,
+        Action::NpcChoice(_) | Action::Edit(_) | Action::ChatChannel(_) => true,
         Action::Settings(event) => event.starts_with("row") || matches!(event.as_str(), "previous" | "next"),
         _ => layout.is_some_and(|layout| layout.widgets.iter().any(|w|
             !w.hidden && (w.id == button.id || w.id.starts_with(&format!("{}/", button.id)))
@@ -121,6 +121,15 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
                 Action::Fullscreen => heading = "Toggle fullscreen".into(),
                 Action::Membership => { heading = "Membership".into(); body = if net.as_ref().is_some_and(|n| n.inventory.premium) { "Membership active. Open the membership page for details." } else { "Open the membership page." }.into(); }
                 Action::Close => { heading = "Close".into(); body = "Press Esc".into(); }
+                // A row is its own description; the systems' buttons say what they do.
+                Action::QuestSelect(_) | Action::QuestGroup(_) => return,
+                Action::QuestCancel(_) => { heading = "Stop quest".into(); body = "The quest leaves your log; you can take it again.".into(); }
+                Action::QuestCompact(compact) => heading = if *compact { "Hide the objectives" } else { "Show the objectives" }.into(),
+                Action::QuestTrack(delta) => heading = if *delta < 0 { "Previous quest" } else { "Next quest" }.into(),
+                Action::System(request) => match super::systems::tooltip(request) {
+                    Some((title, text)) => { heading = title.into(); body = text; }
+                    None => return,
+                },
                 _ => {
                     // Prefer the source's localized button text, then a readable ID.
                     heading = if w.0 == "tradingscreen" {

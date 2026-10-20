@@ -326,7 +326,7 @@ fn stream_models(
     surface_materials: Res<Assets<crate::rendering::surfaces::NebulaMaterial>>,
     refraction_materials: Res<Assets<crate::rendering::refraction::RefractionMaterial>>,
     cameras: Query<&GlobalTransform, (With<Camera3d>, Without<crate::rendering::highlight::HighlightCamera>)>,
-    players: Query<&GlobalTransform, With<crate::network::net::LocalPlayer>>,
+    players: Query<&GlobalTransform, crate::diagnostics::debug::FollowedPlayer>,
 ) {
     let Some(root) = current.root else { return };
     let Some(manifest) = manifests.get(&current.manifest) else { return };
@@ -538,7 +538,7 @@ pub fn cull_cells(
     current: Res<CurrentMap>,
     manifests: Res<Assets<MapManifest>>,
     cameras: Query<&GlobalTransform, (With<Camera3d>, Without<crate::rendering::highlight::HighlightCamera>)>,
-    players: Query<&GlobalTransform, With<crate::network::net::LocalPlayer>>,
+    players: Query<&GlobalTransform, crate::diagnostics::debug::FollowedPlayer>,
     mut cells: Query<&mut Visibility>,
 ) {
     let Ok(cam) = cameras.single() else { return };

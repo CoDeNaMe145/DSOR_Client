@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare FMOD audio for later client playback (no runtime integration).
+"""Decode FMOD audio for the client (bindings are built by export_audio_runtime.py).
 
 Usage: export_audio.py <export_win32> <assets> [--vgmstream <vgmstream-cli>]
 
@@ -85,6 +85,31 @@ def bank_samples(data):
                 raise ValueError("FMOD sample bank points outside the file")
             total += fsb_samples(data[offset:offset + size])
     return total
+
+
+def empty_bank_identity(data):
+    """Recognize stripped banks, not valid event-only/shared-sample banks."""
+    if data[:4] != b"RIFF":
+        return None
+    chunks = list(riff_chunks(data, 12, struct.unpack_from("<I", data, 4)[0] + 8))
+    if any(payload for tag, payload in chunks if tag not in (b"FMT ", b"BNKI")):
+        return None
+    identity = next((payload[:16] for tag, payload in chunks if tag == b"BNKI"), b"")
+    return identity if len(identity) == 16 else None
+
+
+def fallback_bank(path, relative, data, fallback):
+    identity = empty_bank_identity(data)
+    candidate = fallback / relative
+    if identity is None or not candidate.is_file():
+        return path, data
+    replacement = candidate.read_bytes()
+    if not bank_samples(replacement) or replacement[:4] != b"RIFF":
+        return path, data
+    chunks = dict(riff_chunks(replacement, 12, struct.unpack_from("<I", replacement, 4)[0] + 8))
+    if chunks.get(b"BNKI", b"")[:16] != identity:
+        return path, data  # A same-named bank from a different FMOD project.
+    return candidate, replacement
 
 
 def read_json(path):
@@ -195,24 +220,35 @@ def find_decoder(requested):
                             "DSOR_VGMSTREAM or pass --vgmstream (include its companion libraries).")
 
 
-def export_audio(root, assets, requested=None, workers=4, force=False):
+def export_audio(root, assets, requested=None, workers=4, force=False, fallback_root=None):
     source = (root / "audio").resolve()
     assets = assets.resolve()
     if not source.is_dir():
         raise FileNotFoundError(f"audio directory is missing: {source}")
+    fallback = (fallback_root / "audio").resolve() if fallback_root else None
+    if fallback and not fallback.is_dir():
+        raise FileNotFoundError(f"fallback audio directory is missing: {fallback}")
     output = (assets / "audio").resolve()
-    if output == source or output.is_relative_to(source) or source.is_relative_to(output):
+    if any(output == tree or output.is_relative_to(tree) or tree.is_relative_to(output)
+           for tree in (source, fallback) if tree is not None):
         raise ValueError("source audio and output audio directories must be separate")
     files = sorted(p for p in source.rglob("*") if p.is_file())
     if not files:
         raise ValueError(f"audio directory is empty: {source}")
-    jobs, originals, loose = [], {}, []
+    jobs, originals, loose, selected = [], {}, [], {}
     for path in files:
         relative = path.relative_to(source)
         data = path.read_bytes()
+        primary_digest = hashlib.sha256(data).hexdigest()
+        if fallback and path.suffix.lower() == ".bank" and not bank_samples(data):
+            path, data = fallback_bank(path, relative, data, fallback)
         digest = hashlib.sha256(data).hexdigest()
+        selected[relative.as_posix()] = path
         originals[relative.as_posix()] = {"path": (Path("audio/source") / relative).as_posix(),
                                          "sha256": digest, "bytes": len(data)}
+        if digest != primary_digest:
+            originals[relative.as_posix()]["fallback"] = {"root": str(fallback_root.resolve()),
+                                                         "primary_sha256": primary_digest}
         if path.suffix.lower() in (".bank", ".fsb"):
             try:
                 count = bank_samples(data)
@@ -224,12 +260,14 @@ def export_audio(root, assets, requested=None, workers=4, force=False):
     decoder = find_decoder(requested) if any(job[3] for job in jobs) else None
     print(f"[audio] {len(files)} source files, {len(jobs)} banks, "
           f"{sum(job[3] for job in jobs)} samples", flush=True)
+    restored = sum("fallback" in entry for entry in originals.values())
+    if restored:
+        print(f"[audio] restored {restored} stripped banks from {fallback}", flush=True)
     output.mkdir(parents=True, exist_ok=True)
     previous = read_json(output / "catalog.json")
     previous_banks = previous.get("banks", {}) if previous.get("version") == SCHEMA_VERSION else {}
     # Preserve all authoring metadata, including banks without embedded samples.
-    for path in files:
-        relative = path.relative_to(source).as_posix()
+    for relative, path in selected.items():
         entry = originals[relative]
         destination = assets / entry["path"]
         if not destination.is_file() or hashlib.sha256(destination.read_bytes()).hexdigest() != entry["sha256"]:
@@ -269,11 +307,14 @@ def main():
     parser.add_argument("--vgmstream", help="vgmstream-cli executable (or DSOR_VGMSTREAM)")
     parser.add_argument("--workers", type=int, default=4, help="parallel bank decoders (default: 4)")
     parser.add_argument("--force", action="store_true", help="decode unchanged banks again")
+    parser.add_argument("--fallback-root", type=Path, default=os.environ.get("DSOR_AUDIO_FALLBACK_ROOT"),
+                        help="older export_win32 tree to restore stripped banks with matching GUIDs "
+                             "(or DSOR_AUDIO_FALLBACK_ROOT)")
     args = parser.parse_args()
     if args.workers < 1:
         parser.error("--workers must be positive")
     try:
-        export_audio(args.root, args.assets, args.vgmstream, args.workers, args.force)
+        export_audio(args.root, args.assets, args.vgmstream, args.workers, args.force, args.fallback_root)
     except (OSError, ValueError, RuntimeError) as error:
         parser.exit(1, f"audio export failed: {error}\n")
 

@@ -10,6 +10,10 @@ pub(super) mod items;
 pub(super) mod sheet;
 pub(super) mod social;
 pub(super) mod trade;
+pub(super) mod party;
+pub(super) mod quests;
+pub(super) mod systems;
+pub(super) mod template;
 pub(crate) mod settings;
 pub(super) mod hotbar;
 mod tooltips;
@@ -204,7 +208,6 @@ enum Action {
     Tab(&'static str, u8),
     Toggle(String),
     Edit(String),
-    Choose(&'static str, String),
     Membership,
     Page(i32),
     Fullscreen,
@@ -214,6 +217,8 @@ enum Action {
     Item(items::Cell),
     Split(i32),
     SplitSlider,
+    /// items::DESTROY_DIALOG's answer (items::input): destroy the item or not.
+    Destroy(bool),
     /// Scroll the chat log back (rows; 0: to the newest).
     ChatScroll(i32),
     /// Write on this channel (crate::network::chat::Kind::channel), from the channel menu.
@@ -224,20 +229,41 @@ enum Action {
     Respawn(bool, bool),
     /// A notification dialog's or the player menu's button (social::answer).
     Social(social::Social),
+    /// The quest log's rows (quests::prepare_log): open this quest, drop it.
+    QuestSelect(String),
+    QuestCancel(String),
+    /// The tracker's previous/next quest.
+    QuestTrack(i32),
+    /// Fold or unfold a quest group of the log (its type).
+    QuestGroup(String),
+    /// The tracker's toggle: compact or full.
+    QuestCompact(bool),
+    /// The game menu's switch character / logout (social::answer sends it).
+    Logout,
+    /// A talent card of skilltalentswindow: buy one rank (spells::apply_drop sends it).
+    Talent(String),
+    /// The travel map's destination (social::answer sends it).
+    Travel(String),
+    /// A systems window's request (systems::send carries it out).
+    System(systems::Request),
 }
 
 fn action(window: &str, w: &Widget) -> Action {
     if window == settings::WINDOW { return Action::Settings(w.event.clone()); }
     if window == "gamemenu" && w.event == "Options" { return Action::Settings("open".into()); }
+    // The server has one logout: back to the character screen (after a countdown
+    // outside towns); its two buttons do the same.
+    if window == "gamemenu" && matches!(w.event.as_str(), "SwitchCharacter" | "Logout") { return Action::Logout; }
     if dialogue::WINDOWS.contains(&window) {
         if let Some(index) = w.event.strip_prefix("NpcChoice:").and_then(|s| s.parse().ok()) { return Action::NpcChoice(index); }
     }
     let leaf = w.id.rsplit('/').next().unwrap_or("");
-    if w.spell.is_some() { return Action::Spell; }
+    if let Some(spell) = &w.spell { return if w.event == "InspectTalent" { Action::Talent(spell.id.clone()) } else { Action::Spell }; }
     if w.kind == "TextEntry" { return Action::Edit(w.id.clone()); }
     if w.event == "Close" { return Action::Close; }
     if let Some(action) = social::action(window, w) { return action; }
     if let Some(action) = trade::action(window, w) { return action; }
+    if let Some(action) = systems::action(window, w) { return action; }
     if window == "deathdialog" {
         // DontBuy: back in the last town, free; Buy: on the same map, at the
         // nearest exit (RespawnCost); Buy1: on the spot (InstantRespawnCost). The
@@ -269,6 +295,9 @@ fn action(window: &str, w: &Widget) -> Action {
         return ["Map", "Region", "Party", "Guild", "Whisper"].iter()
             .position(|c| w.event.strip_prefix("SelectChannel") == Some(c))
             .map_or(Action::Unavailable, |i| Action::ChatChannel(i as u8));
+    }
+    if window == items::DESTROY_DIALOG {
+        return match w.event.as_str() { "confirm" => Action::Destroy(true), "cancel" => Action::Destroy(false), _ => Action::Unavailable };
     }
     if window == "unstackwindow" {
         return match w.event.as_str() { "split" => Action::Split(0), "increase" => Action::Split(1), "decrease" => Action::Split(-1),
@@ -385,7 +414,6 @@ pub(super) struct WindowControls {
     toggles: std::collections::HashSet<String>,
     open_windows: Vec<String>,
     entries: HashMap<String, TextEntry>,
-    choices: HashMap<&'static str, String>,
     spells: spells::Model,
     chat_compact: bool,
     chat_channels: [bool; 5],
@@ -405,7 +433,7 @@ impl WindowControls {
                     .filter_map(|s| s.state.as_deref().and_then(State::parse)).fold(0, |bits, state| bits | state.bit()),
             }).collect();
         let mut controls = Self { map_mode: local_map::MapMode::Compact, buttons, regions: Vec::new(), drag_handle: DragHandle::from_layout(layout), inventory: 0, character: 0, bag: 0, bag_pages: 8, premium_bag: false, overflow_page: 0, overflow_pages: 1, ingredient: 0, rarity: 1, locked: false, hovered: None, pressed: None,
-            pages: HashMap::new(), toggles: default(), open_windows: Vec::new(), entries: HashMap::new(), choices: HashMap::new(), spells: default(), chat_compact: false, chat_channels: [false; 5] };
+            pages: HashMap::new(), toggles: default(), open_windows: Vec::new(), entries: HashMap::new(), spells: default(), chat_compact: false, chat_channels: [false; 5] };
         // The chat's entry starts empty, not with its "Enter text" sample.
         // Start unobtrusively at login; screenshots can opt into expanded mode.
         if layout.window == CHAT_WINDOW {
@@ -430,6 +458,29 @@ impl WindowControls {
             }
         }
         controls
+    }
+
+    /// A rebuilt window keeps what its player set: its pages and toggles, its
+    /// texts, its lock; the buttons and regions are the new layout's.
+    pub(super) fn carry(&mut self, old: Self) {
+        self.map_mode = old.map_mode;
+        self.inventory = old.inventory;
+        self.character = old.character;
+        self.bag = old.bag;
+        self.bag_pages = old.bag_pages;
+        self.premium_bag = old.premium_bag;
+        self.overflow_page = old.overflow_page;
+        self.overflow_pages = old.overflow_pages;
+        self.ingredient = old.ingredient;
+        self.rarity = old.rarity;
+        self.locked = old.locked;
+        self.pages = old.pages;
+        self.toggles = old.toggles;
+        self.entries = old.entries;
+        self.spells = old.spells;
+        self.chat_compact = old.chat_compact;
+        self.chat_channels = old.chat_channels;
+        self.open_windows = old.open_windows;
     }
 
     pub(super) fn gate(&self, window: &str, widget: &Widget) -> Gate {
@@ -488,7 +539,6 @@ impl WindowControls {
             Action::Window(name) => self.open_windows.iter().any(|n| n == name),
             Action::Tab(group, page) => self.pages.get(group).copied().unwrap_or(0) == *page,
             Action::Toggle(id) => self.toggles.contains(id),
-            Action::Choose(group, id) => self.choices.get(group) == Some(id),
             Action::Inventory(page) => self.inventory == *page,
             Action::Bag(page) => self.bag == *page,
             Action::Character(page) => self.character == *page,
@@ -557,7 +607,19 @@ pub(super) struct Pointer {
     spell_drag: Option<spells::DragSpell>,
     spell_drop: Option<spells::DropSpell>,
     item_command: Option<i32>,
+    /// The destroy dialog's answer, for items::input.
+    destroy: Option<bool>,
     slider: Option<settings::SliderDrag>,
+    /// The game menu's logout, for social::answer.
+    logout: bool,
+    /// A talent to buy a rank of, and a (preset, category) to switch to, for
+    /// spells::apply_drop.
+    talent: Option<String>,
+    preset: Option<(u8, u8)>,
+    /// The travel map's destination, for social::answer.
+    travel: Option<String>,
+    /// The systems windows' requests, for systems::send.
+    system: Vec<systems::Request>,
 }
 
 #[derive(Component)]
@@ -635,7 +697,7 @@ fn raise(entity: Entity, windows: &mut Windows) {
 }
 
 fn stacked_window(name: &str) -> bool {
-    is_menu(name) && !matches!(name, "gamemenu" | "unstackwindow" | "locationmap" | settings::WINDOW | social::CONTEXT_MENU)
+    is_menu(name) && !matches!(name, "gamemenu" | "unstackwindow" | items::DESTROY_DIALOG | "locationmap" | settings::WINDOW | social::CONTEXT_MENU)
 }
 
 /// Also cover windows opened outside toggle(), including asynchronously loaded
@@ -681,7 +743,7 @@ fn toggle(name: &str, windows: &mut Windows) {
 }
 
 pub(super) fn keyboard(keys: Res<ButtonInput<KeyCode>>, mut windows: Windows, mut pointer: ResMut<Pointer>, mut items: ResMut<items::Interaction>,
-    cameras: Query<(), With<crate::FreeCamera>>, mut players: Query<&mut crate::network::net::LocalPlayer>, mut dialogue: ResMut<crate::gameplay::dialogue::Dialogue>,
+    cameras: Query<Has<crate::diagnostics::debug::DetachedCamera>, With<crate::FreeCamera>>, mut players: Query<&mut crate::network::net::LocalPlayer>, mut dialogue: ResMut<crate::gameplay::dialogue::Dialogue>,
     mut settings: ResMut<settings::Settings>) {
     if settings.keyboard(&keys) { return; }
     if keys.just_pressed(KeyCode::Escape) && items.cancel_drag() { pointer.down = None; return; }
@@ -718,12 +780,12 @@ pub(super) fn keyboard(keys: Res<ButtonInput<KeyCode>>, mut windows: Windows, mu
         } else { toggle("gamemenu", &mut windows); }
         return;
     }
-    // The map viewer owns WASD until a playable character has spawned. Keep
-    // the raw keys available to the camera and other UI shortcuts working.
-    let free_fly = !cameras.is_empty() && players.is_empty();
+    // The viewer and the detached debug camera own their movement keys.
+    // Keep raw input available to the camera and other UI shortcuts working.
+    let free_fly = cameras.iter().any(|detached| detached || players.is_empty());
     for name in MENU_WINDOWS.iter().map(|w| w.0).chain(NAV_WINDOWS) {
         if name == "gamemenu" || name == "locationmap" { continue; }
-        if free_fly && settings.current.bindings.get(name).is_some_and(|k| matches!(k.as_str(), "KeyW" | "KeyA" | "KeyS" | "KeyD")) { continue; }
+        if free_fly && settings.current.bindings.get(name).is_some_and(|k| matches!(k.as_str(), "KeyW" | "KeyA" | "KeyS" | "KeyD" | "KeyQ" | "KeyE")) { continue; }
         if settings.current.pressed(name, &keys) { toggle(name, &mut windows); }
     }
     if settings.current.pressed("locationmap", &keys) { toggle("locationmap", &mut windows); }
@@ -819,13 +881,15 @@ pub(super) fn interact(
     mut social: ResMut<social::SocialUi>,
     mut settings: ResMut<settings::Settings>,
     mut hotbar: ResMut<hotbar::Hotbar>,
+    mut audio: Option<ResMut<crate::audio::AudioRequests>>,
+    mut quest_ui: ResMut<crate::gameplay::quests::QuestUi>,
 ) {
     let Ok(mut window) = primary.single_mut() else { return };
     let blocked = panels.iter().any(|(cursor, visible)| visible.get() && cursor.cursor_over());
     let point = window.cursor_position().filter(|_| window.focused && window.height() > 0.0)
         .map(|p| p * (BASE_H / window.height()));
     let width = BASE_H * window.width() / window.height().max(1.0);
-    let modal = windows.iter().filter(|(_, w, _, v, _)| matches!(w.0.as_str(), "gamemenu" | "unstackwindow" | settings::WINDOW) && *v != Visibility::Hidden)
+    let modal = windows.iter().filter(|(_, w, _, v, _)| matches!(w.0.as_str(), "gamemenu" | "unstackwindow" | items::DESTROY_DIALOG | settings::WINDOW) && *v != Visibility::Hidden)
         .max_by(|a, b| a.4.translation.z.total_cmp(&b.4.translation.z)).map(|(e, _, _, _, _)| e);
     if !window.focused || mouse.just_pressed(MouseButton::Left) { pointer.focus = None; }
 
@@ -895,7 +959,7 @@ pub(super) fn interact(
     let hit = hovered.filter(|(e, index)| windows.get(*e).is_ok_and(|(_, _, c, _, _)| c.enabled(&c.buttons[*index])));
     if !window.focused || blocked || pointer.down.is_some_and(|(e, _)| !windows.get(e).is_ok_and(|(_, _, _, v, _)| *v != Visibility::Hidden)) { pointer.down = None; }
     let mut clicked = pointer.update(hit, mouse.just_pressed(MouseButton::Left), mouse.just_released(MouseButton::Left));
-    if spells::drag(&mut pointer, &windows, &mouse, hit, point, window.focused && !blocked && modal.is_none()) {
+    if spells::drag(&mut pointer, &windows, &mouse, hit, top.map(|(e, _, _)| e), point, window.focused && !blocked && modal.is_none()) {
         clicked = None;
     }
     if settings::drag_slider(&mut pointer, &windows, &mouse, point, width, window.focused && !blocked, &mut settings) {
@@ -909,6 +973,9 @@ pub(super) fn interact(
     let Some((entity, index)) = clicked else { return };
     let Ok((_, name, mut controls, mut visibility, _)) = windows.get_mut(entity) else { return };
     let action = controls.buttons[index].action.clone();
+    if let Some(audio) = audio.as_mut() {
+        audio.ui(if matches!(action, Action::Close) { "ui/general/ui_close_screen" } else { "ui/general/ui_click" });
+    }
     info!("ui {}: {} ({action:?})", name.0, controls.buttons[index].id);
     match action {
         Action::Settings(event) => {
@@ -923,16 +990,17 @@ pub(super) fn interact(
         Action::NpcChoice(index) => dialogue.choice = Some(index),
         Action::Item(_) | Action::SplitSlider => {},
         Action::Split(delta) => pointer.item_command = Some(delta),
+        Action::Destroy(confirm) => pointer.destroy = Some(confirm),
         Action::Close => *visibility = Visibility::Hidden,
         Action::Inventory(page) => controls.inventory = page,
         Action::Character(page) => controls.character = page,
         Action::Tab(group, page) => {
             controls.pages.insert(group, page);
             if group == "rank_group" { controls.pages.insert("rank_category", 0); }
+            if group == "preset" { pointer.preset = Some((page, controls.pages.get("talents").copied().unwrap_or(0))); }
         }
         Action::Toggle(id) => { if !controls.toggles.remove(&id) { controls.toggles.insert(id); } }
         Action::Edit(id) => { controls.entries.entry(id.clone()).or_default(); pointer.focus = Some((entity, id)); }
-        Action::Choose(group, id) => { controls.choices.insert(group, id); }
         Action::Bag(page) => controls.bag = page,
         Action::Ingredient(page) => controls.ingredient = page,
         Action::Rarity(rarity) => controls.rarity = rarity,
@@ -962,6 +1030,15 @@ pub(super) fn interact(
         }
         Action::Spell | Action::Unavailable => {}
         Action::Social(clicked) => social.clicked = Some(clicked),
+        Action::QuestSelect(id) => quest_ui.selected = Some(id),
+        Action::QuestCancel(id) => quest_ui.cancel = Some(id),
+        Action::QuestTrack(delta) => quest_ui.tracked = (quest_ui.tracked as i32 + delta).max(0) as usize,
+        Action::QuestGroup(kind) => quests::fold(&mut quest_ui.folded, &kind),
+        Action::QuestCompact(compact) => quest_ui.compact = compact,
+        Action::Logout => { pointer.logout = true; *visibility = Visibility::Hidden; }
+        Action::Talent(id) => pointer.talent = Some(id),
+        Action::Travel(map) => { pointer.travel = Some(map); *visibility = Visibility::Hidden; }
+        Action::System(request) => { let request = systems::clicked(request, &mut controls); pointer.system.push(request); }
         Action::Respawn(at_exit, on_spot) => {
             respawn.0 = Some((at_exit, on_spot));
             *visibility = Visibility::Hidden;
@@ -1059,7 +1136,7 @@ pub(super) fn paint(
         regions.0.extend(controls.regions.iter().filter(|(_, _, gate)| controls.visible(gate)).map(|(k, rect, _)| (*k, translated(*rect, offset))));
         regions.0.extend(controls.buttons.iter().filter(|b| controls.section_visible(b.section)).map(|b| (b.k, translated(b.rect, offset))));
         if let Some(h) = controls.drag_handle { regions.0.push((h.k, translated(h.rect, offset))); }
-        if matches!(name.0.as_str(), "gamemenu" | "unstackwindow") { regions.0.push((0.0, [-1.0e6, -1.0e6, 1.0e6, 1.0e6])); }
+        if matches!(name.0.as_str(), "gamemenu" | "unstackwindow" | items::DESTROY_DIALOG) { regions.0.push((0.0, [-1.0e6, -1.0e6, 1.0e6, 1.0e6])); }
     }
 }
 
@@ -1189,6 +1266,16 @@ mod tests {
         press(&mut app, KeyCode::KeyS);
         assert_eq!(*app.world().get::<Visibility>(roots["collectorsalbum"]).unwrap(), Visibility::Hidden);
         assert_eq!(*app.world().get::<Visibility>(roots["skilltalentswindow"]).unwrap(), Visibility::Hidden);
+        // A spawned character also reserves movement keys while its camera is detached.
+        app.world_mut().spawn(crate::network::net::LocalPlayer::default());
+        app.world_mut().entity_mut(camera).insert(crate::diagnostics::debug::DetachedCamera);
+        press(&mut app, KeyCode::KeyW);
+        press(&mut app, KeyCode::KeyS);
+        assert_eq!(*app.world().get::<Visibility>(roots["collectorsalbum"]).unwrap(), Visibility::Hidden);
+        assert_eq!(*app.world().get::<Visibility>(roots["skilltalentswindow"]).unwrap(), Visibility::Hidden);
+        app.world_mut().entity_mut(camera).remove::<crate::diagnostics::debug::DetachedCamera>();
+        press(&mut app, KeyCode::KeyW);
+        assert_eq!(*app.world().get::<Visibility>(roots["collectorsalbum"]).unwrap(), Visibility::Inherited);
     }
 
     #[test]
@@ -1202,7 +1289,7 @@ mod tests {
     #[test]
     fn dragging_a_window_moves_its_gauge_clip_without_changing_the_fill() {
         let mut app = App::new();
-        app.init_resource::<Figures>()
+        app.init_resource::<Figures>().init_resource::<party::Party>().init_resource::<quests::Quests>().init_resource::<crate::gameplay::quests::QuestUi>()
             .init_resource::<crate::actors::monsters::HoverInfo>()
             .init_resource::<Screen>()
             .init_resource::<Assets<UiMaterial>>()
@@ -1238,6 +1325,7 @@ mod tests {
             .init_resource::<crate::gameplay::dialogue::Dialogue>()
             .init_resource::<crate::network::net::RespawnChoice>()
             .init_resource::<local_map::MapSettings>()
+            .init_resource::<crate::gameplay::quests::QuestUi>()
             .add_systems(Update, (sync_chat, keyboard, interact, edit_text, order_windows, paint).chain());
         let primary = app.world_mut().spawn((Window { focused: true, resolution: (1024, 768).into(), ..default() }, PrimaryWindow)).id();
         let mut roots = HashMap::new();
@@ -1524,7 +1612,7 @@ mod tests {
         assert!(app.world_mut().resource_mut::<Pointer>().spell_drop.take().is_some());
         assert!(app.world().resource::<SkillClicks>().0.is_none(), "dropping must not cast");
 
-        // Releasing outside the bar must leave the assignment unchanged.
+        // A spell-book drag released outside the bar must leave it unchanged.
         pointer_step(&mut app, start, true, false);
         pointer_step(&mut app, Vec2::new(10.0, 730.0), false, true);
         assert!(app.world().resource::<Pointer>().spell_drop.is_none());
@@ -1621,7 +1709,8 @@ mod tests {
         app.update();
         for (window, suffix, group, page) in [("questlog", "/DailyAchievementsTab", "quest", 3),
             ("skilltalentswindow", "/KnowledgeTab", "talents", 1),
-            ("socialscreen", "/TabButtonFriends", "social", 1), ("shopwindow", "/ShopTab3", "shop", 2),
+            // The shop's tabs are controls::systems::shop's (its own test).
+            ("socialscreen", "/TabButtonFriends", "social", 1),
             ("leaderboards", "/RankGroupButton1", "rank_group", 1), ("matchmakingwindow", "/TabButton02", "matchmaking", 1)] {
             *app.world_mut().get_mut::<Visibility>(roots[window]).unwrap() = Visibility::Inherited;
             app.update();
@@ -1648,26 +1737,18 @@ mod tests {
         for w in &layouts["ingamemenu"].widgets {
             if w.id.contains("/icon/Label_highlight") { assert!(w.hidden, "a common highlight must not stay lit"); }
         }
+        // The album's pages and list are the client's (controls::systems::album);
+        // the converted layout keeps its animations and flags hidden.
         let album = app.world().get::<WindowControls>(roots["collectorsalbum"]).unwrap();
         for w in &layouts["collectorsalbum"].widgets {
-            if w.id.contains("Template") || ["/Categorypage", "/AdvertisedItems", "/DealsCounterLabel", "/AnimUnlock", "/AnimUse"].iter().any(|p| w.id.contains(p)) {
+            if w.id.contains("Template") || ["/AnimUnlock", "/AnimUse", "/AnimIconGlow", "/FlagLabelCategory"].iter().any(|p| w.id.contains(p)) {
                 assert!(!album.visible(&album.gate("collectorsalbum", w)), "stickerbook placeholder leaked: {}", w.id);
             }
+            assert!(!w.id.contains("/AlbumPage") && !w.id.contains("/AlbumCategory"), "an added album page: {}", w.id);
         }
-        for suffix in ["/WindowTitle", "/Firstpage/AdvertisementArtwork", "/Firstpage/background_info/TextLabel_fav", "/Firstpage/background_info/TextLabel_info"] {
+        for suffix in ["/WindowTitle", "/Firstpage/AdvertisementArtwork", "/Firstpage/background_info/TextLabel_fav", "/Categorypage/background_preview"] {
             let widget = layouts["collectorsalbum"].widgets.iter().find(|w| w.id.ends_with(suffix)).unwrap();
             assert!(album.visible(&album.gate("collectorsalbum", widget)), "stickerbook content missing: {suffix}");
-        }
-        let root = roots["collectorsalbum"];
-        *app.world_mut().get_mut::<Visibility>(root).unwrap() = Visibility::Inherited;
-        for category in 1..8 {
-            app.update();
-            click_control(&mut app, primary, root, &format!("/AlbumCategory{category}"));
-            let album = app.world().get::<WindowControls>(root).unwrap();
-            assert_eq!(album.pages.get("album"), Some(&category));
-            for w in layouts["collectorsalbum"].widgets.iter().filter(|w| w.id.ends_with("/Artwork")) {
-                assert_eq!(album.visible(&album.gate("collectorsalbum", w)), w.id.contains(&format!("/AlbumPage{category}/")));
-            }
         }
     }
 

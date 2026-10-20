@@ -23,6 +23,11 @@ pub(crate) struct Preferences {
     pub vsync: bool,
     pub graphics: GraphicsSettings,
     pub map_transparency: u8,
+    pub audio_muted: bool,
+    pub master_volume: u8,
+    pub music_volume: u8,
+    pub ambient_volume: u8,
+    pub effects_volume: u8,
     pub bindings: HashMap<String, String>,
 }
 
@@ -31,6 +36,7 @@ impl Default for Preferences {
         Self { tooltips: true, advanced_tooltips: false, own_name: true, other_names: true, combat_text: true,
             camera_shake: true, attack_hovered: true, classic_cursor: false, lock_bar: false, fullscreen: false,
             vsync: true, graphics: GraphicsSettings::default(), map_transparency: 45,
+            audio_muted: false, master_volume: 80, music_volume: 60, ambient_volume: 60, effects_volume: 80,
             bindings: shortcuts().into_iter().map(|(id, _, key)| (id, key.to_owned())).collect() }
     }
 }
@@ -110,6 +116,7 @@ impl Preferences {
         let mut result: Self = raw.and_then(|r| serde_json::from_str(&r).ok()).unwrap_or_default();
         result.map_transparency = result.map_transparency.min(100);
         result.graphics.sharpening = result.graphics.sharpening.min(100);
+        for volume in [&mut result.master_volume, &mut result.music_volume, &mut result.ambient_volume, &mut result.effects_volume] { *volume = (*volume).min(100); }
         for id in ["slot10", "slot11", "slot12"] { result.bindings.remove(id); }
         for (id, _, key) in shortcuts() { result.bindings.entry(id).or_insert_with(|| key.into()); }
         result
@@ -196,6 +203,7 @@ impl Settings {
                         "classic_cursor" => self.draft.classic_cursor ^= true,
                         "lock_bar" => self.draft.lock_bar ^= true, "fullscreen" => self.draft.fullscreen ^= true,
                         "vsync" => self.draft.vsync ^= true,
+                        "audio_muted" => self.draft.audio_muted ^= true,
                         _ if self.tab == 1 => self.draft.graphics.action(&id, self.dlss_availability),
                         _ if self.tab == 3 => { self.listening = Some(id); self.notice = "Press a key (modifiers supported). Delete clears; Esc cancels.".into(); }
                         _ => {}
@@ -217,7 +225,11 @@ impl Settings {
                 rows.push(("map_transparency", "Map transparency", format!("{}%", p.map_transparency)));
                 rows
             },
-            2 => vec![("unavailable", "Audio playback", "Unavailable".into())],
+            2 => vec![("audio_muted", "Mute all audio", on(p.audio_muted)),
+                ("master_volume", "Master volume", format!("{}%",p.master_volume)),
+                ("music_volume", "Music volume", format!("{}%",p.music_volume)),
+                ("ambient_volume", "Ambience volume", format!("{}%",p.ambient_volume)),
+                ("effects_volume", "Effects volume", format!("{}%",p.effects_volume))],
             3 => return shortcuts().into_iter().map(|(id, title, _)| {
                 let label = if self.listening.as_ref() == Some(&id) { "Press a key...".into() } else { p.label(&id) };
                 (id, title, label)
@@ -236,6 +248,10 @@ impl Settings {
         let value = match id.as_str() {
             "map_transparency" => self.draft.map_transparency,
             "sharpening" => self.draft.graphics.sharpening,
+            "master_volume" => self.draft.master_volume,
+            "music_volume" => self.draft.music_volume,
+            "ambient_volume" => self.draft.ambient_volume,
+            "effects_volume" => self.draft.effects_volume,
             _ => return None,
         };
         Some((id, value))
@@ -245,6 +261,10 @@ impl Settings {
         let target = match id {
             "map_transparency" => &mut self.draft.map_transparency,
             "sharpening" => &mut self.draft.graphics.sharpening,
+            "master_volume" => &mut self.draft.master_volume,
+            "music_volume" => &mut self.draft.music_volume,
+            "ambient_volume" => &mut self.draft.ambient_volume,
+            "effects_volume" => &mut self.draft.effects_volume,
             _ => return,
         };
         *target = value.min(100);
@@ -372,7 +392,7 @@ fn add_widget(layout: &mut Layout, id: &str, rect: [f32;4], button: bool, value:
     layout.widgets.push(Widget { id: format!("Canvas/Runtime/{id}"), kind: if button { "Button" } else { "TextLabel" }.into(),
         event: id.into(), click_through: !button, enabled: true, button: None, state: None, spell: None,
         k: 0.5, rect, hidden: false, art, text: Some(Label { text: value.into(), key: "gui.settings.runtime".into(),
-            size: if id == "notice" { 8.0 } else { 10.0 }, color: [0.9,0.78,0.54,1.0], align: [if button || id == "page" { 1 } else { 0 },1], bold: false, word_break: true }) });
+            size: if id == "notice" { 8.0 } else { 10.0 }, color: [0.9,0.78,0.54,1.0], align: [if button || id == "page" { 1 } else { 0 },1], bold: false, word_break: true, outline: Vec::new() }) });
 }
 
 pub(in crate::ui) fn sync(settings: ResMut<Settings>, mut windows: Query<(&Window2018, &mut WindowControls, &mut Visibility)>,
@@ -424,7 +444,7 @@ pub(in crate::ui) fn sync(settings: ResMut<Settings>, mut windows: Query<(&Windo
         }
         let value = if let Some(row) = row { rows.get(settings.page*ROWS+row).map(|r| if id.starts_with("label") { r.1.clone() } else { r.2.clone() }).unwrap_or_default() }
         else if id == "page" { format!("{}  |  {} / {}", ["General", "Graphics", "Audio", "Hotkeys", "Mouse", "Combat"][settings.tab as usize], settings.page+1, rows.len().max(1).div_ceil(ROWS)) }
-        else if id == "notice" { if settings.tab == 2 { "This client does not yet play audio.".into() } else { settings.notice.clone() } }
+        else if id == "notice" { settings.notice.clone() }
         else { continue; };
         if text.0 != value { text.0 = value; }
     }
@@ -451,7 +471,7 @@ mod tests {
         s.set_percent("sharpening", 62);
         assert!(s.current == p);
         assert!(!s.draft.graphics.bloom);
-        assert!(!s.draft.graphics.vignette);
+        assert!(s.draft.graphics.vignette, "off by default, so one click turns it on");
         assert_eq!(s.draft.graphics.sharpening, 62);
         let edited = s.draft.clone();
         click(&mut s, "unavailable");
@@ -469,7 +489,7 @@ mod tests {
         app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default()))
             .init_asset::<Layout>().init_asset::<Mesh>().init_asset::<UiMaterial>()
             .init_asset::<Image>().init_asset::<Font>().init_asset::<dialogue::Catalog>()
-            .init_resource::<Loaded>().init_resource::<Screen>().init_resource::<dialogue::Presentation>()
+            .init_resource::<Loaded>().init_resource::<Screen>().init_resource::<dialogue::Presentation>().init_resource::<super::party::Party>().init_resource::<super::quests::Quests>().init_resource::<crate::gameplay::quests::QuestUi>().init_resource::<super::systems::Views>()
             .init_resource::<Settings>().add_systems(Update, (spawn_windows, sliders).chain());
         let handle = app.world_mut().resource_mut::<Assets<Layout>>().add(Layout { window: WINDOW.into(), widgets: Vec::new() });
         app.world_mut().resource_mut::<Loaded>().layouts.push((handle, 100., None));
@@ -479,13 +499,13 @@ mod tests {
         *app.world_mut().get_mut::<Visibility>(root).unwrap() = Visibility::Inherited;
         app.update();
         let (mesh, rect) = app.world_mut().query::<(&RowArt, &Mesh2d, &Transform)>().iter(app.world())
-            .find(|(row,_,_)| row.row == 6).map(|(row,mesh,tf)| {
+            .find(|(row,_,_)| row.row == 1).map(|(row,mesh,tf)| {
                 assert!(tf.translation.z > 0.);
                 (mesh.0.clone(), row.rect)
             }).unwrap();
         assert_eq!(app.world().resource::<Assets<Mesh>>().get(&mesh).unwrap().count_vertices(), 8);
-        app.world_mut().resource_mut::<Settings>().action("graphics");
-        app.world_mut().resource_mut::<Settings>().set_percent("sharpening",37);
+        app.world_mut().resource_mut::<Settings>().action("audio");
+        app.world_mut().resource_mut::<Settings>().set_percent("master_volume",37);
         app.update();
         let assets = app.world().resource::<Assets<Mesh>>();
         let mesh = assets.get(&mesh).unwrap();
@@ -520,17 +540,17 @@ mod tests {
     fn slider_drag_tracks_scaled_moved_window_and_stays_captured_outside_row() {
         let mut app = App::new();
         let p = Preferences::default();
-        app.insert_resource(Settings { dlss_availability: default(), current:p.clone(), draft:p, open:true, tab:1, page:0, listening:None, notice:String::new() })
+        app.insert_resource(Settings { dlss_availability: default(), current:p.clone(), draft:p, open:true, tab:2, page:0, listening:None, notice:String::new() })
             .init_resource::<ButtonInput<MouseButton>>().init_resource::<Pointer>()
             .init_resource::<SkillClicks>().init_resource::<crate::network::net::RespawnChoice>()
             .init_resource::<crate::network::chat::ChatLog>().init_resource::<crate::gameplay::dialogue::Dialogue>()
-            .init_resource::<social::SocialUi>().init_resource::<hotbar::Hotbar>()
+            .init_resource::<social::SocialUi>().init_resource::<hotbar::Hotbar>().init_resource::<crate::gameplay::quests::QuestUi>()
             .add_message::<bevy::input::mouse::MouseWheel>().add_systems(Update, interact);
         let primary = app.world_mut().spawn((Window { focused: true, resolution: (1600,900).into(), ..default() }, PrimaryWindow)).id();
         let layout = prepare(&Layout { window: WINDOW.into(), widgets: Vec::new() });
         let mut controls = WindowControls::new(&layout);
         for w in &layout.widgets { controls.region(w.k, w.rect, controls.gate(WINDOW, w)); }
-        let b = controls.buttons.iter().find(|b| b.action == Action::Settings("row6".into())).unwrap();
+        let b = controls.buttons.iter().find(|b| b.action == Action::Settings("row1".into())).unwrap();
         let (left,right) = track(b.rect);
         let y = (b.rect[1]+b.rect[3])*0.5;
         let extra = b.k * (BASE_H*1600.0/900.0 - BASE_W);
@@ -541,16 +561,16 @@ mod tests {
         cursor(&mut app, left+(right-left)*0.37, y);
         app.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(MouseButton::Left);
         app.update();
-        assert_eq!(app.world().resource::<Settings>().draft.graphics.sharpening, 37);
-        assert_eq!(app.world().resource::<Settings>().current.graphics.sharpening, 0);
+        assert_eq!(app.world().resource::<Settings>().draft.master_volume, 37);
+        assert_eq!(app.world().resource::<Settings>().current.master_volume, 80);
         app.world_mut().resource_mut::<ButtonInput<MouseButton>>().clear();
         cursor(&mut app, right+300., y+200.);
         app.update();
-        assert_eq!(app.world().resource::<Settings>().draft.graphics.sharpening, 100);
+        assert_eq!(app.world().resource::<Settings>().draft.master_volume, 100);
         cursor(&mut app, left-300., y-200.);
         app.world_mut().resource_mut::<ButtonInput<MouseButton>>().release(MouseButton::Left);
         app.update();
-        assert_eq!(app.world().resource::<Settings>().draft.graphics.sharpening, 0);
+        assert_eq!(app.world().resource::<Settings>().draft.master_volume, 0);
         assert!(app.world().resource::<Pointer>().slider.is_none());
         app.world_mut().resource_mut::<ButtonInput<MouseButton>>().clear();
         // A press outside the row cannot pick up a slider midway through a hold.
@@ -559,17 +579,17 @@ mod tests {
         app.world_mut().resource_mut::<ButtonInput<MouseButton>>().clear();
         cursor(&mut app, right, y);
         app.update();
-        assert_eq!(app.world().resource::<Settings>().draft.graphics.sharpening, 0);
+        assert_eq!(app.world().resource::<Settings>().draft.master_volume, 0);
         app.world_mut().resource_mut::<ButtonInput<MouseButton>>().reset_all();
         cursor(&mut app, left+(right-left)*0.5, y);
         app.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(MouseButton::Left);
         app.update();
-        assert_eq!(app.world().resource::<Settings>().draft.graphics.sharpening, 50);
+        assert_eq!(app.world().resource::<Settings>().draft.master_volume, 50);
         app.world_mut().resource_mut::<ButtonInput<MouseButton>>().clear();
         app.world_mut().get_mut::<Window>(primary).unwrap().focused = false;
         cursor(&mut app, right, y);
         app.update();
-        assert_eq!(app.world().resource::<Settings>().draft.graphics.sharpening, 50);
+        assert_eq!(app.world().resource::<Settings>().draft.master_volume, 50);
         assert!(app.world().resource::<Pointer>().slider.is_none());
     }
 

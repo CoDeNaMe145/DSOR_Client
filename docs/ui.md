@@ -6,8 +6,8 @@
 settings with the exported game artwork: the chapter-zero castle illustration,
 `struktur` panel texture, `deco_elemente_5` window rails and button states,
 `deco_elemente` recessed inputs, and the character-selection primary button.
-It uses the game's Tahoma font. Atlas regions are sliced or mirrored at
-runtime; no separately generated login textures are required.
+It uses the game's Tahoma font. Game atlas regions are sliced or mirrored at
+runtime.
 
 The artwork preloads behind the shared loading screen. Wide windows place the
 form beside the castle; narrower windows center the form and scale it to keep
@@ -16,6 +16,12 @@ hover/pressed artwork, and pending sign-in uses an indeterminate loading bar.
 Tab / Shift+Tab move between fields, Enter submits, and Escape returns or cancels.
 Show / Hide reveals passwords temporarily; submission and page changes restore
 masking. Passwords and tokens remain in memory only.
+
+The footer identifies the project as non-profit and open-source. Its GitHub
+button opens `https://github.com/DSO-Reconstruction/DSOR_Client` in the default
+browser on release, with a gold glow, lift and brief icon tilt on hover.
+The embedded GitHub mark comes from Octicons; its source and MIT license are in
+`client/src/screens/login/icons/`.
 
 ## Game cursors
 
@@ -74,7 +80,12 @@ updating the localization code: translations are baked into the JSON files.
 interface by the window height and widens the reference screen; widget sizes are
 fixed and only full-screen top-level canvases stretch, so a widget's x is its
 1024 x 768 x plus k x (reference width - 1024). The bottom bar (centred) has
-k = 0.5, the money (top left) 0, the menu buttons (top right) 1.
+k = 0.5, the money (top left) 0, the menu buttons (top right) 1. A window's root
+Canvas lays its children against the whole screen, whatever its own rect: a
+child aligned left gets k = 0, right 1, centred 0.5 (the quest tracker at the
+right edge, the character sheet and the workbench at the left).
+`tools/patch_ui_anchors.py <fresh assets> <assets>` copies only the `k` values
+of a fresh export into converted layouts.
 
 Button state subtrees retain `button` (the owner's widget path) and `state`
 (`normal`, `mouseover`, `pressed`, `mouseoverpressed`, `disabled`). Button
@@ -84,6 +95,11 @@ the mesh as permanently hidden or simultaneously visible artwork.
 Button state backgrounds render before the button's common icon/text children;
 source XML order alone can put an opaque button face over its icon. Glow children
 inside a button state follow that state rather than being suppressed globally.
+Within a state, its captions are drawn after the state's own artwork (the
+client's `draw_order`: relief shading and frames follow the caption in the
+XML). Texts with `TextEffect 1` keep their outline (`text.outline`: size and
+colour); the client draws it with four copies of the text behind it, each
+with a shadow on the opposite side (eight directions).
 
 What the game shows only in other runtime contexts is exported `hidden`:
 cooldown covers, glows, the "buy a slot"
@@ -185,9 +201,12 @@ battle remain disabled until their services are connected.
 
 The navigation button with the legacy `travelmap` widget ID opens the stickerbook.
 Its favorites page is shown initially; data-dependent categories, offers and item
-effects remain hidden. In free flight (a free camera with no local player), WASD
-only moves the camera and cannot toggle UI windows. Pointer navigation and other
-window shortcuts remain available; W and S work normally with a spawned player.
+effects remain hidden. In free flight (the map viewer or F3's Free look mode),
+WASD and Q/E move the camera without toggling UI windows. Pointer navigation and
+other window shortcuts remain available. Free look also blocks character clicks
+and skill casts; disabling it restores character follow and the previous zoom.
+Close F3 to fly; hold right mouse to look and Shift to move faster. Scene streaming,
+actor visibility and fog follow the detached view without relocating the character.
 
 The top-right bar selects the standard background, fullscreen/menu controls,
 and the non-premium badge. Autoplay, membership alternatives and regional
@@ -206,7 +225,10 @@ dots; enemies use red dots, including hostile players after faction updates.
 NPCs and props use their authored `LocationMapIcon`, including the distinct
 normal, golden and cursed amphoras. Quest offers, active tasks and turn-ins
 override NPC icons, with turn-ins taking priority; clearing the quest restores
-the NPC's own icon. Marker positions and lifetimes follow their world entities.
+the NPC's own icon. The player indicator is 20 reference pixels and actor dots
+are 18; service and quest symbols retain their authored size. Marker positions
+follow their world entities. Dead monsters lose map indicators and hover info
+as soon as their death is received, including deaths received while loading.
 NPCs also carry the original additive, camera-facing `t000_general/status_*`
 models above them: profession symbols (including the glowing merchant bag),
 `!` for available quests and `?` for turn-ins or active interaction targets.
@@ -232,8 +254,8 @@ are click-through and have no header or settings controls. A right-aligned
 localized map name sits just below the preview's bottom-right corner; names
 come from the original English `maps.names` localization, matching the rest of
 the current interface. The exporter writes them to `interface/maps.names.json`.
-Settings provides a draggable "Map transparency" slider from 0-100% (default
-45%); the F3 debug menu adjusts it in 5% steps. In both cases,
+The Settings window and F3 debug menu expose a draggable "Map transparency"
+slider from 0-100% (default 45%), while
 all markers and the map name stay visible.
 The setting survives restarts in `map-settings.json` natively or `dsor.map` in
 browser localStorage. Re-export the UI, NPCs and props to generate the localized
@@ -407,17 +429,22 @@ for the selected NPC in offline mode, including categories, prices and buyback.
 
 ## Missing
 
-- Text uses `assets/fonts/tahoma.ttf`; the original bitmap font and text effects
-  are not reproduced.
+- Text uses `assets/fonts/tahoma.ttf`; the original bitmap font is not
+  reproduced (the outline effect is).
 - Inventory sorting, bank access, slot purchases and additional item actions
   (use, sell, repair, identify, sockets and customization) need their controllers.
   Equipment comparison tooltips remain.
 - Character preview render targets and list scrolling are not implemented.
-- Quest-log presentation, catalogue entries, social rosters, event payloads,
-  leaderboard rows and talent allocation are not bound yet; opening their
-  panels and switching their UI pages works independently of those services.
-- Context-specific dialogs outside the top navigation (crafting, etc.)
-  still need their owning gameplay controllers.
+- The quest log's pages, the album, the events, the leaderboards, the PvP
+  queue, the premium shop and the NPC desks (salvage, the `gemdeskwb` gem desk,
+  workbench, transmog) are bound on their 2026 layouts
+  (`client/src/ui/controls/systems.rs`, see docs/client-progress.md "The
+  systems' windows" and "The systems' windows on their 2026 layouts"); talent
+  allocation and the social rosters are not drawn yet. Lists scroll with the
+  wheel; their scroll handles follow but cannot be dragged. The album and the
+  transmog desk show the sticker's or skin's icon where the game turns a 3D
+  preview; the transmog desk's eye toggles have no server command and are
+  hidden.
 
 
 ## Settings, shortcuts and hover descriptions
@@ -445,9 +472,13 @@ the fallback when DLSS is disabled or the same preferences are loaded on an
 unsupported device. CAS remains available. FSR/XeSS is not integrated.
 SMAA/FXAA smooth edges at the current resolution, and CAS sharpens; these options
 do not upscale. See [native DLSS setup](getting-started.md#optional-native-dlss--dlaa).
-Percentage settings use draggable sliders with exact percentage labels. Track
-clicks and thumb drags update the draft until Apply.
-Audio explains that playback is not implemented in this client.
+Audio provides mute and draggable master, music, ambience and effects sliders.
+All percentage settings use sliders with exact percentage labels. Click the
+track to jump to a value or drag the thumb; dragging stays captured outside the
+track and clamps at its endpoints. Settings sliders edit the draft until Apply.
+The debug map-transparency and lighting-panel opacity controls use the same
+drag behavior and apply immediately. UI click and close sounds always play once,
+even when their source event metadata describes an infinite loop.
 
 The Hotkeys tab supports modifier combinations, Delete to clear a binding and
 Escape to cancel capture. Assigning an occupied key clears its old action and

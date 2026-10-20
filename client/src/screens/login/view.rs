@@ -5,9 +5,9 @@ use bevy::prelude::*;
 use bevy::sprite::{BorderRect, TextureSlicer};
 use bevy::window::PrimaryWindow;
 
-const GOLD: Color = Color::srgb(0.85, 0.73, 0.48);
-const IVORY: Color = Color::srgb(0.96, 0.91, 0.79);
-const MUTED: Color = Color::srgb(0.65, 0.65, 0.61);
+pub(super) const GOLD: Color = Color::srgb(0.85, 0.73, 0.48);
+pub(super) const IVORY: Color = Color::srgb(0.96, 0.91, 0.79);
+pub(super) const MUTED: Color = Color::srgb(0.65, 0.65, 0.61);
 const ERROR: Color = Color::srgb(1.0, 0.59, 0.49);
 const PANEL_WIDTH: f32 = 480.0;
 
@@ -19,6 +19,7 @@ pub(super) struct Art {
     frame: Handle<Image>,
     primary: Handle<Image>,
     progress: Handle<Image>,
+    github: Handle<Image>,
     font: Handle<Font>,
 }
 
@@ -33,7 +34,7 @@ pub(super) struct Art {
 #[derive(Component)] pub(super) struct Sweep;
 #[derive(Component)] pub(super) struct ButtonSkin(bool);
 
-pub(super) fn load(mut commands: Commands, assets: Res<AssetServer>) {
+pub(super) fn load(mut commands: Commands, assets: Res<AssetServer>, mut images: ResMut<Assets<Image>>) {
     commands.insert_resource(Art {
         backdrop: assets.load("textures/ui_chapterartworks/act_00_crunch.png"),
         stone: assets.load("textures/ui/struktur.png"),
@@ -41,6 +42,7 @@ pub(super) fn load(mut commands: Commands, assets: Res<AssetServer>) {
         frame: assets.load("textures/ui/deco_elemente_5.png"),
         primary: assets.load("textures/ui/charselectionwindow_button_01_crunch.png"),
         progress: assets.load("textures/ui/statusbar_connenctscreen_new.png"),
+        github: super::footer::icon(&mut images),
         font: assets.load("fonts/tahoma.ttf"),
     });
 }
@@ -53,7 +55,7 @@ pub(super) fn preload(art: Res<Art>, mut loading: ResMut<crate::screens::loading
     ]);
 }
 
-fn text(art: &Art, value: impl Into<String>, size: f32, color: Color) -> impl Bundle {
+pub(super) fn text(art: &Art, value: impl Into<String>, size: f32, color: Color) -> impl Bundle {
     (Text::new(value), TextFont { font: art.font.clone().into(), font_size: FontSize::Px(size), ..default() },
         TextColor(color), TextShadow { offset: Vec2::new(0.0, 1.0), color: Color::BLACK })
 }
@@ -229,10 +231,7 @@ pub(super) fn draw(mut commands: Commands, mut form: ResMut<Form>, art: Res<Art>
                     }
                     card.spawn((text(&art, "Your password is never saved on this device.", 11.0, MUTED), Node { align_self: AlignSelf::Center, ..default() }));
                 });
-            root.spawn(Node { position_type: PositionType::Absolute, bottom: px(14), width: percent(100),
-                justify_content: JustifyContent::Center, padding: UiRect::horizontal(px(16)), ..default() })
-                .with_children(|footer| { footer.spawn((text(&art, "RELEASE 261     /     Tab: next field     /     Enter: continue     /     Esc: back", 11.0, MUTED),
-                    TextLayout::justify(Justify::Center))); });
+            super::footer::spawn(root, &art, &art.github);
         });
 }
 
@@ -241,11 +240,11 @@ pub(super) fn resize(form: Res<Form>, windows: Query<&Window, With<PrimaryWindow
     let Ok(window) = windows.single() else { return; };
     let (w, h) = (window.width(), window.height());
     let height = panel_height(&form);
-    let scale = ((w - 32.0) / PANEL_WIDTH).min((h - 68.0) / height).clamp(0.1, 1.0);
+    let scale = ((w - 32.0) / PANEL_WIDTH).min((h - 104.0) / height).clamp(0.1, 1.0);
     let wide = w >= 1100.0 && w / h >= 1.5;
     for (mut node, mut transform) in &mut nodes.p0() {
         node.left = px((w - PANEL_WIDTH) * 0.5 + if wide { w * 0.235 } else { 0.0 });
-        node.top = px((h - height) * 0.5 - 8.0);
+        node.top = px((h - height) * 0.5 - 14.0);
         transform.scale = Vec2::splat(scale);
     }
     // Cover using the artwork's occupied atlas region, without distorting it.

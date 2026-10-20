@@ -8,6 +8,24 @@ use super::cpu;
 mod render;
 mod batches;
 
+// Combat hitches can miss the older 50 ms stall threshold entirely. Keep the
+// finer system accounting opt-in: the mutex and report have no normal-play cost.
+#[derive(Default)]
+struct SystemTiming { count: u64, total: f64, maximum: f64 }
+static COMBAT_TIMINGS: std::sync::Mutex<std::collections::BTreeMap<&'static str, SystemTiming>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+pub(super) fn enabled() -> bool { crate::flag("frameprofile") || crate::flag("combatprofile") }
+
+fn report_combat_timings() {
+    if !crate::flag("combatprofile") { return; }
+    let timings = std::mem::take(&mut *COMBAT_TIMINGS.lock().unwrap());
+    for (name, timing) in timings {
+        info!("combat system profile: {name} mean {:.3} ms, max {:.3} ms, samples {} (system wall time)",
+            timing.total / timing.count as f64, timing.maximum, timing.count);
+    }
+}
+
 /// Schedule boundaries avoid assigning native render-thread waits to gameplay.
 /// Enable separately from frameprofile so normal A/B timings stay inexpensive.
 #[derive(bevy::ecs::schedule::ScheduleLabel, Clone, Debug, PartialEq, Eq, Hash)]
@@ -173,7 +191,7 @@ pub(super) fn install_render(render: &mut SubApp) {
         (|mut clock: ResMut<RenderClock>, cache: Res<bevy::render::render_resource::PipelineCache>| {
             let now = cpu::now();
             let intervals = [clock.submit - clock.start, now - clock.submit];
-            if crate::flag("frameprofile") && now - clock.start >= 20.0 {
+            if enabled() && now - clock.start >= 20.0 {
                 info!("frame profile: render {:.2} ms (prepare {:.2}, submit/present {:.2}), pipelines pending {}",
                     now - clock.start, intervals[0], intervals[1], cache.waiting_pipelines().count());
             }
@@ -195,7 +213,7 @@ pub(super) fn install_render(render: &mut SubApp) {
                 }
             }
         }).after(RenderSystems::Render).before(RenderSystems::Cleanup),
-    ).run_if(|| crate::flag("frameprofile") || crate::flag("stageprofile")));
+    ).run_if(|| enabled() || crate::flag("stageprofile")));
 }
 
 pub(crate) struct FrameSpan {
@@ -205,7 +223,7 @@ pub(crate) struct FrameSpan {
 
 impl FrameSpan {
     pub(crate) fn new(name: &'static str) -> Self {
-        Self { name, start: crate::flag("frameprofile").then(cpu::now) }
+        Self { name, start: enabled().then(cpu::now) }
     }
 }
 
@@ -213,6 +231,13 @@ impl Drop for FrameSpan {
     fn drop(&mut self) {
         if let Some(start) = self.start {
             let ms = cpu::now() - start;
+            if crate::flag("combatprofile") {
+                let mut timings = COMBAT_TIMINGS.lock().unwrap();
+                let timing = timings.entry(self.name).or_default();
+                timing.count += 1;
+                timing.total += ms;
+                timing.maximum = timing.maximum.max(ms);
+            }
             if ms >= 5.0 { info!("frame profile: {} took {ms:.2} ms", self.name); }
         }
     }
@@ -234,7 +259,7 @@ pub(super) fn sample(mut samples: Local<Samples>,
     let Some(previous) = previous else { return };
     let ms = now - previous;
     samples.frames.push(ms);
-    if ms >= 50.0 {
+    if ms >= if crate::flag("combatprofile") { 1000.0 / 60.0 } else { 50.0 } {
         info!("frame spike: {ms:.2} ms, previous main {:.2} ms, loading {}, map {}, player {:?}",
             cpu::get(&cpu::RAW_MAIN), loading.active(),
             map.as_ref().map_or("-", |m| m.name.as_str()), players.iter().next().map(|p| p.translation()));
@@ -248,6 +273,7 @@ pub(super) fn sample(mut samples: Local<Samples>,
             frames.len(), percentile(0.5), percentile(0.95), percentile(0.99), frames[frames.len() - 1],
             frames.iter().filter(|&&ms| ms >= 50.0).count());
         samples.frames.clear();
+        report_combat_timings();
     }
 }
 

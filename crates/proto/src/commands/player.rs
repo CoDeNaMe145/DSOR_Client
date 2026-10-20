@@ -43,15 +43,6 @@ fn invalid(what: &'static str, value: i64) -> DecodeError {
     DecodeError::Invalid { what, value }
 }
 
-/// A u32 count that must be zero: the entry layout is not established.
-fn empty_list(r: &mut BitReader<'_>, what: &'static str) -> Result<(), DecodeError> {
-    let n = r.u32()?;
-    if n != 0 {
-        return Err(invalid(what, n as i64));
-    }
-    Ok(())
-}
-
 fn strings(r: &mut BitReader<'_>, what: &'static str) -> Result<Vec<String>, DecodeError> {
     counted(r, MOST, what, |r| r.string())
 }
@@ -152,19 +143,46 @@ impl Body for AchievementInfo {
     }
 }
 
-/// GuildStatusCommand (176), not actor-scoped: i8 status (-1..3), u32 guild, string,
-/// u32, bit, u32, u32, then a u32 member count (always 0 from this server; member
-/// layout not established). SOURCE: dsor/mapentry2018.py guild_status; reader
-/// sub_A22B7D.
+/// One member of a GuildStatus: u32 character, u32 actor (on the RECIPIENT's map; 0
+/// elsewhere), str name, u8 class, u16 level, bool online, bool (the activity icon),
+/// bool, u8 rank (0 member, 1 officer, 2 leader; the reader refuses others), then the
+/// joining time as six u32 (y, m, d, h, min, s).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct GuildMember {
+    pub player_id: u32,
+    pub actor: u32,
+    pub name: String,
+    pub character_class: u8,
+    pub level: u16,
+    pub online: bool,
+    pub active: bool,
+    pub unknown_bool_0: bool,
+    pub rank: u8,
+    pub joined: [u32; 6],
+}
+
+impl GuildMember {
+    pub const MEMBER: u8 = 0;
+    pub const OFFICER: u8 = 1;
+    pub const LEADER: u8 = 2;
+}
+
+/// GuildStatusCommand (167), not actor-scoped: u8 status, u32 guild, str name, u32
+/// (the recipient's character id), bool in a guild, u32 leader, u32 member count,
+/// then the counted members. The server always chains an IgnoredStatus (179) after
+/// it (the 2018 client needed the pair).
+/// SOURCE: dso-server-production protocol/social_protocol.py encode_guild_status
+///   (:739-781), GuildMember (:706-724).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct GuildStatus {
     pub status: i8,
     pub guild: u32,
     pub name: String,
-    pub unknown_u32_0: u32,
-    pub unknown_flag_1: bool,
-    pub unknown_u32_2: u32,
-    pub unknown_u32_3: u32,
+    pub recipient_id: u32,
+    pub in_guild: bool,
+    pub leader_id: u32,
+    pub member_count: u32,
+    pub members: Vec<GuildMember>,
 }
 
 impl Body for GuildStatus {
@@ -173,27 +191,51 @@ impl Body for GuildStatus {
         if !(-1..=3).contains(&status) {
             return Err(invalid("guild status", status as i64));
         }
-        let v = Self {
+        Ok(Self {
             status,
             guild: r.u32()?,
             name: r.string()?,
-            unknown_u32_0: r.u32()?,
-            unknown_flag_1: r.bit()?,
-            unknown_u32_2: r.u32()?,
-            unknown_u32_3: r.u32()?,
-        };
-        empty_list(r, "guild member count (member layout unknown)")?;
-        Ok(v)
+            recipient_id: r.u32()?,
+            in_guild: r.bit()?,
+            leader_id: r.u32()?,
+            member_count: r.u32()?,
+            members: counted(r, MOST, "guild member count", |r| {
+                let (player_id, actor, name, character_class, level) = (r.u32()?, r.u32()?, r.string()?, r.u8()?, r.u16()?);
+                let (online, active, unknown_bool_0, rank) = (r.bit()?, r.bit()?, r.bit()?, r.u8()?);
+                if rank > GuildMember::LEADER {
+                    return Err(invalid("guild rank", rank as i64));
+                }
+                let mut joined = [0; 6];
+                for v in &mut joined {
+                    *v = r.u32()?;
+                }
+                Ok(GuildMember { player_id, actor, name, character_class, level, online, active, unknown_bool_0, rank, joined })
+            })?,
+        })
     }
     fn encode(&self, w: &mut BitWriter) {
         w.i8(self.status);
         w.u32(self.guild);
         w.string(&self.name);
-        w.u32(self.unknown_u32_0);
-        w.bit(self.unknown_flag_1);
-        w.u32(self.unknown_u32_2);
-        w.u32(self.unknown_u32_3);
-        w.u32(0);
+        w.u32(self.recipient_id);
+        w.bit(self.in_guild);
+        w.u32(self.leader_id);
+        w.u32(self.member_count);
+        w.count(self.members.len());
+        for m in &self.members {
+            w.u32(m.player_id);
+            w.u32(m.actor);
+            w.string(&m.name);
+            w.u8(m.character_class);
+            w.u16(m.level);
+            w.bit(m.online);
+            w.bit(m.active);
+            w.bit(m.unknown_bool_0);
+            w.u8(m.rank);
+            for v in m.joined {
+                w.u32(v);
+            }
+        }
     }
 }
 
@@ -1393,24 +1435,59 @@ impl Body for UnlockMap {
     }
 }
 
-/// TravelCommand (105), client: travel point (may be empty), destination map, and
-/// the pay-with-andermant bit.
-/// SOURCE: dsor/travel.py decode; reader 0x9AA22E (vtable 0xFEF0E8).
+/// TravelCommand (97), client -> server: fast travel. The native body: str source,
+/// str map, str entry, bool force. Empty source and entry are the travel map's
+/// selection (the server reads those bytes as difficulty 0, entry 0 and requires
+/// the map discovered); a named entry with no source is an event's Start (the
+/// server matches map:entry against an active event's TeleportTarget); "Hub" is
+/// the hub-return talent's symbolic map.
+/// SOURCE: dso-server-production protocol/gameplay_protocol.py
+///   decode_map_travel_request (:909-930, bodies tried in order), services/
+///   map_transition.py _perform_map_travel; docs/MAP_AND_CUSTOMIZATION.md:40-48
+///   (native serializer 0x140945bb4: strings at +0x20, +0x60, +0xa0, bool +0xe0).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Travel {
-    pub point: String,
-    pub destination: String,
-    pub pay_with_rc: bool,
+    pub source: String,
+    pub map: String,
+    pub entry: String,
+    pub force: bool,
+}
+
+impl Travel {
+    /// The travel map's choice of a discovered map.
+    pub fn to_map(map: &str) -> Self {
+        Self { map: map.to_owned(), ..Default::default() }
+    }
 }
 
 impl Body for Travel {
     fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
-        Ok(Self { point: r.string()?, destination: r.string()?, pay_with_rc: r.bit()? })
+        Ok(Self { source: r.string()?, map: r.string()?, entry: r.string()?, force: r.bit()? })
     }
     fn encode(&self, w: &mut BitWriter) {
-        w.string(&self.point);
-        w.string(&self.destination);
-        w.bit(self.pay_with_rc);
+        w.string(&self.source);
+        w.string(&self.map);
+        w.string(&self.entry);
+        w.bit(self.force);
+    }
+}
+
+/// PlayerLogoutInfoCommand (327), NOT actor-scoped: the seconds until the server
+/// moves us to the character screen after a LogoutCommand outside a town (0: the
+/// countdown was cancelled by a hit). In a town the switch is immediate.
+/// SOURCE: dso-server-production protocol/gameplay_protocol.py:132-143, services/
+///   map_transition.py _handle_logout (:25-89).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PlayerLogoutInfo {
+    pub seconds: u32,
+}
+
+impl Body for PlayerLogoutInfo {
+    fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self { seconds: r.u32()? })
+    }
+    fn encode(&self, w: &mut BitWriter) {
+        w.u32(self.seconds);
     }
 }
 

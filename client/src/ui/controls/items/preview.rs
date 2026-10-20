@@ -24,14 +24,20 @@ fn readable(id: &str) -> String {
     result.trim().to_owned()
 }
 
+/// An item's rarity and the colour its name is written in.
+pub(super) fn rarity<'a>(catalog: &'a Catalog, template: &str, item: Option<&ItemInfo>) -> (&'a str, Color) {
+    let rarity = item.map(|i| ["Common", "Improved", "Magic", "Extraordinary", "Legendary", "Unique", "Set", "Mythic"].get(i.kind as usize).copied().unwrap_or("Item"))
+        .unwrap_or_else(||catalog.items.get(template).map_or("Item",|m|m.rarity.as_str()));
+    let tint = match rarity { "Unique" => Color::srgb(1.0,0.9,0.0), "Set" => GREEN, "Magic" => BLUE,
+        "Extraordinary" => Color::srgb(0.75,0.4,1.0), "Legendary" => Color::srgb(1.0,0.65,0.15), _ => color(catalog,item) };
+    (rarity, tint)
+}
+
 pub(super) fn card(d: &DisplayItem, catalog: &Catalog, layout: Option<&Layout>, advanced: bool) -> Card {
     let meta = catalog.items.get(d.template);
     let mut card = Card::new(if advanced { 370.0 } else { 285.0 },layout);
     card.background = Color::srgba(0.01, 0.01, 0.005, 0.985);
-    let rarity = d.item.map(|i| ["Common", "Improved", "Magic", "Extraordinary", "Legendary", "Unique", "Set", "Mythic"].get(i.kind as usize).copied().unwrap_or("Item"))
-        .unwrap_or_else(||meta.map_or("Item",|m|m.rarity.as_str()));
-    let tint = match rarity { "Unique" => Color::srgb(1.0,0.9,0.0), "Set" => GREEN, "Magic" => BLUE,
-        "Extraordinary" => Color::srgb(0.75,0.4,1.0), "Legendary" => Color::srgb(1.0,0.65,0.15), _ => color(catalog,d.item) };
+    let (rarity, tint) = rarity(catalog, d.template, d.item);
     card.title(catalog.name(d.template,d.item),None,tint);
     card.text(&format!("{rarity} Item"),tint);
     if let Some(m) = meta.filter(|m|!m.category.is_empty()) { card.text(&format!("<i>({})</>",m.category),MUTED); }

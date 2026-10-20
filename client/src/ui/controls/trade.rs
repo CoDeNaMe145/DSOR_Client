@@ -6,8 +6,8 @@
 //! other player sees a handshake in the notification column (crate's social
 //! column, type TRADE_INVITE), and accepts it in the invitation dialog
 //! (TradeAnswer). Both then fill their offer: an item dragged from the bags
-//! onto their side, or right-clicked in the bags, joins it; a click on one of
-//! their slots takes it back; the gold entry sets the gold (TradeOffer). Accept
+//! onto their side, or a consumable right-clicked in the bags, joins it; clicking
+//! one of their slots takes it back; the gold entry sets the gold (TradeOffer). Accept
 //! (TradeReady) locks the offer in; any change unlocks both; when both have
 //! accepted, the server makes the exchange. Closing the window ends the trade
 //! (TradeCancel). The server's TradeState is the only truth shown.
@@ -28,7 +28,7 @@ pub(in crate::ui) const SLOTS: usize = 12;
 
 #[derive(Resource, Default)]
 pub(crate) struct TradeUi {
-    /// Items to add to our offer (dropped or right-clicked in the bags).
+    /// Items to add to our offer (dropped, or consumables right-clicked in the bags).
     pub(super) add: Vec<u32>,
     /// A slot of our offer clicked: take it back.
     pub(super) remove: Option<usize>,

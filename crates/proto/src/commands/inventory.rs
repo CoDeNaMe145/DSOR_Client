@@ -718,55 +718,80 @@ impl Body for Offer {
     }
 }
 
-/// TransactionCommand (94), client -> server: buy or sell in the current shop.
-/// string shop, u8 kind, then the offer id (kinds 1 buy, 2 buy group, 3 buy without
-/// shop) or the item's u32 (4 sell, 5 restore), then a u32 amount for kind 3.
-/// EVIDENCE: reader 0xA26C19 / writer 0xA26D7C (dsor/trading.py decode_transaction).
+/// One line of a TransactionCommand: an offer bought (`offer` set, `amount` copies),
+/// or an item sold (`offer` empty, `item`, `amount` 4) or bought back (`amount` 5).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct Transaction {
-    pub shop: String,
-    pub kind: u8,
-    /// Kinds 1..3.
+pub struct TransactionEntry {
     pub offer: String,
-    /// Kinds 4..5.
+    /// The item sold or bought back (production field_58).
     pub item: u32,
-    /// Kind 3 only.
+    /// Production field_5c, always 0.
+    pub extra: u32,
+    /// Copies bought (1..1000), or the item operation (4 sell, 5 restore).
     pub amount: u32,
 }
 
+/// TransactionCommand (91), client -> server: buy, sell or buy back in the open shop.
+/// u32-counted entries, each `bool present` then a TransactionEntry (string offer,
+/// u32, u32, u32); string shop (must be the shop the server opened); bool mode
+/// (the server refuses true).
+/// SOURCE: dso-server-production protocol/commerce_protocol.py decode_transaction
+///   (:93-131) and services/commerce.py _handle_transaction: operation 4 (sale) and
+///   5 (restore) sit in the final u32 with an empty offer id; a purchase names the
+///   offer's resource id and the copies wanted. The 2018 layout (string shop, u8
+///   kind, offer or item) is gone.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Transaction {
+    pub entries: Vec<Option<TransactionEntry>>,
+    pub shop: String,
+    pub mode: bool,
+}
+
 impl Transaction {
-    pub const BUY_OFFER: u8 = 1;
-    pub const BUY_OFFER_GROUP: u8 = 2;
-    pub const BUY_WITHOUT_SHOP: u8 = 3;
-    pub const SELL_ITEM: u8 = 4;
-    pub const RESTORE_ITEM: u8 = 5;
+    pub const SELL_ITEM: u32 = 4;
+    pub const RESTORE_ITEM: u32 = 5;
+
+    fn one(shop: &str, entry: TransactionEntry) -> Self {
+        Self { entries: vec![Some(entry)], shop: shop.to_owned(), mode: false }
+    }
+    /// Buy `amount` copies of the offer with that resource id.
+    pub fn buy(shop: &str, offer: &str, amount: u32) -> Self {
+        Self::one(shop, TransactionEntry { offer: offer.to_owned(), item: 0, extra: 0, amount })
+    }
+    /// Sell a stack from the backpack or the extra bag.
+    pub fn sell(shop: &str, item: u32) -> Self {
+        Self::one(shop, TransactionEntry { offer: String::new(), item, extra: 0, amount: Self::SELL_ITEM })
+    }
+    /// Buy back a stack sold to this shop (its id as the Offer's buyback list has it).
+    pub fn restore(shop: &str, item: u32) -> Self {
+        Self::one(shop, TransactionEntry { offer: String::new(), item, extra: 0, amount: Self::RESTORE_ITEM })
+    }
 }
 
 impl Body for Transaction {
     fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
-        let shop = r.string()?;
-        let kind = r.u8()?;
-        let mut t = Self { shop, kind, ..Default::default() };
-        match kind {
-            1..=3 => t.offer = r.string()?,
-            4 | 5 => t.item = r.u32()?,
-            _ => return Err(DecodeError::Invalid { what: "transaction kind", value: kind as i64 }),
-        }
-        if kind == Self::BUY_WITHOUT_SHOP {
-            t.amount = r.u32()?;
-        }
-        Ok(t)
+        let entries = counted(r, MOST, "transaction entries", |r| {
+            Ok(if r.bit()? {
+                Some(TransactionEntry { offer: r.string()?, item: r.u32()?, extra: r.u32()?, amount: r.u32()? })
+            } else {
+                None
+            })
+        })?;
+        Ok(Self { entries, shop: r.string()?, mode: r.bit()? })
     }
     fn encode(&self, w: &mut BitWriter) {
+        w.count(self.entries.len());
+        for entry in &self.entries {
+            w.bit(entry.is_some());
+            if let Some(e) = entry {
+                w.string(&e.offer);
+                w.u32(e.item);
+                w.u32(e.extra);
+                w.u32(e.amount);
+            }
+        }
         w.string(&self.shop);
-        w.u8(self.kind);
-        match self.kind {
-            1..=3 => w.string(&self.offer),
-            _ => w.u32(self.item),
-        }
-        if self.kind == Self::BUY_WITHOUT_SHOP {
-            w.u32(self.amount);
-        }
+        w.bit(self.mode);
     }
 }
 
@@ -824,19 +849,141 @@ impl Body for UseStickerBookItem {
 
 // ── talents ─────────────────────────────────────────────────────────────────
 
-/// Talents::SelectTalentCommand (286), client -> server: the talent id (StringAtom).
-/// EVIDENCE: writer 0xA3CAA0 (dsor/talents.py talent_id_in).
+/// Talents::SelectTalentCommand (279), client -> server: the talent id and how
+/// many ranks to add (1 per click; 1..255). The server checks the class, the
+/// unlock level, the rank cap, the preset's category and the points left, and
+/// answers with the effects' StatusEffects and a TalentSelectionInfo (a snapshot
+/// with TalentCategoryPointsInfo on refusal).
+/// SOURCE: dso-server-production protocol/talent_protocol.py:128-155, services/
+///   talents.py:54-377. The 2018 writer (0xA3CAA0) sent the id alone.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SelectTalent {
     pub talent: String,
+    pub ranks: u32,
 }
 
 impl Body for SelectTalent {
     fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
-        Ok(Self { talent: r.string()? })
+        Ok(Self { talent: r.string()?, ranks: r.u32()? })
     }
     fn encode(&self, w: &mut BitWriter) {
-        w.string(&self.talent)
+        w.string(&self.talent);
+        w.u32(self.ranks);
+    }
+}
+
+/// Talents::EnableTalentPreselectionCommand (281), client -> server: switch a
+/// category (0 skill, 1 wisdom, 2 group, 3 fame) to one of its presets (skill 0..7,
+/// wisdom and group 0..3, fame 0). u8 preset, then u8 category.
+/// SOURCE: dso-server-production protocol/talent_protocol.py:198-210.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TalentPreselection {
+    pub preselection: u8,
+    pub category: u8,
+}
+
+impl Body for TalentPreselection {
+    fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self { preselection: r.u8()?, category: r.u8()? })
+    }
+    fn encode(&self, w: &mut BitWriter) {
+        w.u8(self.preselection);
+        w.u8(self.category);
+    }
+}
+
+/// Talents::ResetTalentsCommand (286), client -> server: clear the active preset
+/// of a category. u8 category, then u8 preset (the order of 281 reversed).
+/// SOURCE: dso-server-production protocol/talent_protocol.py:238-250.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ResetTalents {
+    pub category: u8,
+    pub preselection: u8,
+}
+
+impl Body for ResetTalents {
+    fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self { category: r.u8()?, preselection: r.u8()? })
+    }
+    fn encode(&self, w: &mut BitWriter) {
+        w.u8(self.category);
+        w.u8(self.preselection);
+    }
+}
+
+/// Talents::ResetTalentCategoryCommand (287), client -> server: clear one branch
+/// of the wisdom or group category's active preset. u8 category, str branch
+/// resource id, u8 preset.
+/// SOURCE: dso-server-production protocol/talent_protocol.py:278-316.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ResetTalentCategory {
+    pub category: u8,
+    pub branch: String,
+    pub preselection: u8,
+}
+
+impl Body for ResetTalentCategory {
+    fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self { category: r.u8()?, branch: r.string()?, preselection: r.u8()? })
+    }
+    fn encode(&self, w: &mut BitWriter) {
+        w.u8(self.category);
+        w.string(&self.branch);
+        w.u8(self.preselection);
+    }
+}
+
+/// Talents::TalentCategoryPointsInfoCommand (282), actor-scoped: the progression
+/// behind the talent points. u8 category (0xFF: all of them), then four u32 in the
+/// wire order skill, fame, wisdom, group.
+/// SOURCE: dso-server-production protocol/player_init_protocol.py:865-872 (the
+///   wire order TALENT_CATEGORY_POINTS_WIRE_ORDER = 0, 3, 1, 2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TalentCategoryPointsInfo {
+    pub category: u8,
+    pub points: [u32; 4],
+}
+
+impl TalentCategoryPointsInfo {
+    pub const ALL: u8 = 0xFF;
+    /// The value for a category (0 skill, 1 wisdom, 2 group, 3 fame).
+    pub fn of(&self, category: u8) -> u32 {
+        let slot = match category { 0 => 0, 3 => 1, 1 => 2, _ => 3 };
+        self.points[slot]
+    }
+}
+
+impl Body for TalentCategoryPointsInfo {
+    fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
+        let category = r.u8()?;
+        let mut points = [0; 4];
+        for p in &mut points {
+            *p = r.u32()?;
+        }
+        Ok(Self { category, points })
+    }
+    fn encode(&self, w: &mut BitWriter) {
+        w.u8(self.category);
+        for p in self.points {
+            w.u32(p);
+        }
+    }
+}
+
+/// Talents::UnlockSkillTalentPreselectionInfoCommand (285), actor-scoped: how
+/// many skill presets are unlocked. One u32.
+/// SOURCE: dso-server-production protocol/player_init_protocol.py:1193-1196.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct UnlockSkillTalentPreselectionInfo {
+    pub unlocked: u32,
+}
+
+impl Body for UnlockSkillTalentPreselectionInfo {
+    fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self { unlocked: r.u32()? })
+    }
+    fn encode(&self, w: &mut BitWriter) {
+        w.u32(self.unlocked);
     }
 }
 
@@ -951,6 +1098,9 @@ impl Body for TalentSelectionInfo {
 pub struct OcpOffer {
     pub unknown_i32_0: i32,
     pub unknown_f32_1: f32,
+    /// Release 261: a bool after the price (production `featured`; the 2018
+    /// reader had none). SOURCE: protocol/gameplay_protocol.py:2726-2736.
+    pub featured: bool,
     pub unknown_string_2: String,
     pub unknown_string_3: String,
     pub unknown_string_4: String,
@@ -972,6 +1122,7 @@ impl Body for OcpOfferResponse {
                 Ok(OcpOffer {
                     unknown_i32_0: r.i32()?,
                     unknown_f32_1: r.f32()?,
+                    featured: r.bit()?,
                     unknown_string_2: r.string()?,
                     unknown_string_3: r.string()?,
                     unknown_string_4: r.string()?,
@@ -985,6 +1136,7 @@ impl Body for OcpOfferResponse {
         for o in &self.offers {
             w.i32(o.unknown_i32_0);
             w.f32(o.unknown_f32_1);
+            w.bit(o.featured);
             w.string(&o.unknown_string_2);
             w.string(&o.unknown_string_3);
             w.string(&o.unknown_string_4);
@@ -1030,5 +1182,110 @@ impl Body for OcpMethods {
             w.f32(m.unknown_f32_2);
             w.f32(m.unknown_f32_3);
         }
+    }
+}
+
+// ── 82, 130, 310, 314: the rest of a purchase's reply ────────────────────────
+
+/// QuickbarInfoCommand (82), actor-scoped: how many quick bars the player has and
+/// how many are still locked. Sent after a purchase (services/commerce.py).
+/// SOURCE: dso-server-production protocol/player_init_protocol.py:449-451, writer
+///   :1182-1184.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct QuickbarInfo {
+    pub quickbars: u32,
+    pub locked: u32,
+}
+
+impl Body for QuickbarInfo {
+    fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self { quickbars: r.u32()?, locked: r.u32()? })
+    }
+    fn encode(&self, w: &mut BitWriter) {
+        w.u32(self.quickbars);
+        w.u32(self.locked);
+    }
+}
+
+/// One timed shop offer: its id, two u32 and a six-part end time (y, m, d, h, min, s).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TimedOffer {
+    pub offer: String,
+    pub unknown_u32_0: u32,
+    pub unknown_u32_1: u32,
+    pub ends_at: [u32; 6],
+}
+
+/// TimedOffersInfoCommand (130), actor-scoped: the server time and the timed offers
+/// still running. Precedes every Offer and a timed purchase's reply.
+/// SOURCE: dso-server-production protocol/player_init_protocol.py:1532-1542 and
+///   protocol/shop_protocol.py encode_offer_response_batch.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TimedOffersInfo {
+    pub server_time: u64,
+    pub offers: Vec<TimedOffer>,
+}
+
+impl Body for TimedOffersInfo {
+    fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
+        let server_time = r.u64()?;
+        let offers = counted(r, MOST, "timed offers", |r| {
+            let (offer, unknown_u32_0, unknown_u32_1) = (r.string()?, r.u32()?, r.u32()?);
+            let mut ends_at = [0; 6];
+            for v in &mut ends_at {
+                *v = r.u32()?;
+            }
+            Ok(TimedOffer { offer, unknown_u32_0, unknown_u32_1, ends_at })
+        })?;
+        Ok(Self { server_time, offers })
+    }
+    fn encode(&self, w: &mut BitWriter) {
+        w.u64(self.server_time);
+        w.count(self.offers.len());
+        for o in &self.offers {
+            w.string(&o.offer);
+            w.u32(o.unknown_u32_0);
+            w.u32(o.unknown_u32_1);
+            for v in o.ends_at {
+                w.u32(v);
+            }
+        }
+    }
+}
+
+/// GameCurrencyChangedCommand (310), actor-scoped: one keyed currency's new balance
+/// (materi fragments, event coins, stickerbook upgrade currency...), by its resource
+/// id. The ordinary wallet comes as CurrencyChanged (128).
+/// SOURCE: dso-server-production protocol/currency_protocol.py:173-187.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct GameCurrencyChanged {
+    pub currency: String,
+    pub amount: u64,
+}
+
+impl Body for GameCurrencyChanged {
+    fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self { currency: r.string()?, amount: r.u64()? })
+    }
+    fn encode(&self, w: &mut BitWriter) {
+        w.string(&self.currency);
+        w.u64(self.amount);
+    }
+}
+
+/// UpdateProgressTierSpenderChallengesCommand (314), actor-scoped: andermant spent,
+/// counted towards the tiered spender rewards. One u32.
+/// SOURCE: dso-server-production protocol/player_init_protocol.py:1545-1555.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TierSpenderProgress {
+    pub amount: u32,
+}
+
+impl Body for TierSpenderProgress {
+    fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self { amount: r.u32()? })
+    }
+    fn encode(&self, w: &mut BitWriter) {
+        w.u32(self.amount);
     }
 }

@@ -25,9 +25,15 @@ jobs:
           pkg-config libudev-dev libwayland-dev libxkbcommon-dev libx11-dev libasound2-dev
     # Restores ~/.cargo and target/ before building, saves them afterwards.
     - uses: Swatinem/rust-cache@v2
+    # The client's default `dlss` feature needs NVIDIA's SDK (.cargo/config.toml
+    # points at a local copy); CI builds the client without it.
     - name: Build
-      run: cargo build --verbose
+      run: |
+        cargo build --verbose --workspace --exclude dsor-client
+        cargo build --verbose -p dsor-client --no-default-features
     # Tests that need the converted game assets (never in the repository) are
     # #[ignore]d.
     - name: Run tests
-      run: cargo test --verbose
+      run: |
+        cargo test --verbose --workspace --exclude dsor-client
+        cargo test --verbose -p dsor-client --no-default-features

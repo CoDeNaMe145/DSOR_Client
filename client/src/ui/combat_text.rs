@@ -338,6 +338,7 @@ fn spawn_texts(
     mut font: Local<Option<Handle<Font>>>,
     mut seed: Local<u32>,
 ) {
+    let _profile = crate::diagnostics::hud::FrameSpan::new("combat_text::spawn_texts");
     if !settings.current.combat_text { queue.0.clear(); return; }
     if queue.0.is_empty() {
         return;
@@ -430,6 +431,7 @@ fn move_texts(
     cameras: Query<(&Camera, &GlobalTransform), (With<Camera3d>, Without<crate::rendering::highlight::HighlightCamera>)>,
     mut texts: Query<(Entity, &mut Floating, &mut Node, &mut Visibility, &mut TextColor, &mut TextShadow, &mut UiTransform)>,
 ) {
+    let _profile = crate::diagnostics::hud::FrameSpan::new("combat_text::move_texts");
     let Ok((camera, cam_at)) = cameras.single() else { return };
     let right = cam_at.right();
     let height = camera.logical_viewport_size().map(|s| s.y).unwrap_or(1080.0);

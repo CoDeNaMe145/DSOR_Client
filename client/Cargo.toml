@@ -9,10 +9,12 @@ license.workspace = true
 # The browser's graphics API (no effect natively). One per build: bevy's renderer
 # is specialised for it at compile time. index.html loads the WebGPU build when
 # the browser has an adapter, the WebGL2 one otherwise (tools/serve_web.sh).
-default = ["webgl2"]
+default = ["webgl2", "dlss"]
 webgl2 = ["bevy/webgl2"]
 webgpu = ["bevy/webgpu"]
-# Optional Windows/Linux Vulkan integration; requires the NVIDIA DLSS SDK.
+# Windows/Linux Vulkan integration, on by default natively; the dependency is
+# target-specific, so browser builds ignore it. Needs the NVIDIA DLSS SDK (see
+# .cargo/config.toml, docs/getting-started.md); opt out with --no-default-features.
 dlss = ["dep:bevy_anti_alias"]
 
 [dependencies]
@@ -22,12 +24,12 @@ dsor-proto.workspace = true
 dsor-transport.workspace = true
 # bevy's "3d" collection without its web backend (default_platform brings
 # webgl2): the browser build picks WebGL2 or WebGPU through this crate's features.
-# ui: the HUD; free_camera: WASD + mouse fly camera. No audio for now.
+# ui: the HUD; free_camera: WASD + mouse fly camera. Audio uses our shared PCM mixer.
 bevy = { workspace = true, features = [
     "default_app", "scene", "picking", "3d_bevy_render",
     "std", "bevy_gilrs", "bevy_winit", "bevy_clipboard", "default_font", "multi_threaded",
     "x11", "wayland", "custom_cursor", "sysinfo_plugin",
-    "ui", "png", "free_camera", "system_clipboard",
+    "ui", "png", "free_camera", "system_clipboard", "bevy_audio",
 ] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

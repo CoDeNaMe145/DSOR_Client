@@ -11,7 +11,7 @@
 //!   model has clips for); a row plays it, looping ones loop.
 //! - Heroes: the offline character's class and gender (switches in place).
 //! - Skills: the class's skills; a row puts it on the right mouse button.
-//! The footer holds map transparency until the settings window is implemented.
+//! The footer also exposes map transparency and a detachable free-look camera.
 //! While the menu is open the keyboard types into its filter (the game sees no
 //! key): Enter acts on the first row, Up / Down page, Escape clears, F3 closes.
 //! Hit / Crit / Kill strike the selected monster as the server's HitCommand /
@@ -33,6 +33,9 @@ use crate::actors::monsters::{DebugMonsters, Monster, MonsterTemplates};
 use crate::network::net::Net;
 use crate::gameplay::skills::{play, SequenceTable, SkillData};
 use crate::gameplay::stats::StatsData;
+
+mod free_look;
+pub(crate) use free_look::{DetachedCamera, FollowedPlayer};
 
 #[derive(Asset, TypePath, Deserialize, Debug)]
 pub struct DebugIndex {
@@ -140,7 +143,7 @@ struct FilterText;
 #[derive(Component)]
 struct StatusText;
 #[derive(Component)]
-struct MapTransparencyStep(i8);
+struct MapTransparencySlider;
 #[derive(Component)]
 struct MapTransparencyText;
 
@@ -151,8 +154,10 @@ impl Plugin for DebugPlugin {
         app.init_asset::<DebugIndex>()
             .register_asset_loader(DebugIndexLoader)
             .add_systems(Startup, setup)
-            .add_systems(PreUpdate, keyboard.after(bevy::input::InputSystems))
-            .add_systems(Update, (buttons, map_controls, refresh).chain());
+            .add_systems(PreUpdate, (keyboard, free_look::sync_controls).chain()
+                .after(bevy::input::InputSystems).after(crate::ui::input::CaptureUiInput))
+            .add_systems(Update, (buttons, map_controls, free_look::button, refresh).chain()
+                .after(crate::ui::slider::SliderInput).before(crate::network::net::NetSystems));
     }
 }
 
@@ -216,27 +221,35 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>) {
                 }
             });
             p.spawn((StatusText, Text::new(""), font.clone(), TextColor(Color::srgb(0.7, 0.9, 1.0))));
+            p.spawn((free_look::Toggle, button(424.0))).with_children(|b| {
+                b.spawn((free_look::Caption, Text::new("Free look: off"), font.clone()));
+            });
+            p.spawn((Text::new("Close F3: WASD move, Q/E down/up, RMB look, Shift faster"),
+                TextFont { font_size: bevy::text::FontSize::Px(11.0), ..default() },
+                TextColor(Color::srgb(0.7, 0.7, 0.75))));
             p.spawn(Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: px(8), margin: UiRect::top(px(6)), ..default() })
                 .with_children(|row| {
-                    row.spawn((MapTransparencyText, Text::new(""), font.clone(), Node { width: px(285), ..default() }));
-                    for (delta, caption) in [(-5, "-"), (5, "+")] {
-                        row.spawn((MapTransparencyStep(delta), button(48.0))).with_children(|b| {
-                            b.spawn((Text::new(caption), font.clone()));
-                        });
-                    }
+                    row.spawn((MapTransparencyText, Text::new(""), font.clone(), Node { width: px(205), ..default() }));
+                    let slider = crate::ui::slider::spawn(row, 205., 45, 0, 100);
+                    row.commands().entity(slider).insert(MapTransparencySlider);
                 });
         });
 }
 
-/// Temporary home for the map preference until the settings window is built.
+/// Keep the debug slider and percentage label in sync with the map preference.
 fn map_controls(
     settings: Option<ResMut<crate::ui::MapSettings>>,
-    buttons: Query<(&Interaction, &MapTransparencyStep, &InheritedVisibility), Changed<Interaction>>,
+    mut sliders: Query<(&mut crate::ui::slider::PercentSlider, &InheritedVisibility), With<MapTransparencySlider>>,
     mut labels: Query<&mut Text, With<MapTransparencyText>>,
 ) {
     let Some(mut settings) = settings else { return };
-    for (interaction, step, visibility) in &buttons {
-        if visibility.get() && *interaction == Interaction::Pressed { settings.adjust(step.0); }
+    for (mut slider, visibility) in &mut sliders {
+        if slider.edited && visibility.get() {
+            let delta = slider.value as i8 - settings.transparency() as i8;
+            settings.adjust(delta);
+        }
+        slider.edited = false;
+        slider.value = settings.transparency();
     }
     let caption = format!("Map transparency: {}%", settings.transparency());
     for mut text in &mut labels {
@@ -616,27 +629,25 @@ mod map_tests {
     use super::*;
 
     #[test]
-    fn debug_map_buttons_adjust_transparency_and_ignore_hidden_controls() {
+    fn debug_map_slider_updates_transparency_and_ignores_hidden_controls() {
         let mut app = App::new();
         app.init_resource::<crate::ui::MapSettings>().add_systems(Update, map_controls);
         let label = app.world_mut().spawn((MapTransparencyText, Text::new(""))).id();
-        let increase = app.world_mut().spawn((MapTransparencyStep(5), Interaction::None, InheritedVisibility::VISIBLE)).id();
-        let decrease = app.world_mut().spawn((MapTransparencyStep(-5), Interaction::None, InheritedVisibility::VISIBLE)).id();
-        let click = |app: &mut App, entity| {
-            *app.world_mut().get_mut::<Interaction>(entity).unwrap() = Interaction::None;
-            app.update();
-            *app.world_mut().get_mut::<Interaction>(entity).unwrap() = Interaction::Pressed;
+        let slider = app.world_mut().spawn((MapTransparencySlider, crate::ui::slider::PercentSlider::new(45, 0, 100), InheritedVisibility::VISIBLE)).id();
+        let drag = |app: &mut App, value| {
+            let mut s = app.world_mut().get_mut::<crate::ui::slider::PercentSlider>(slider).unwrap();
+            s.value = value; s.edited = true;
             app.update();
         };
-        click(&mut app, increase);
-        assert_eq!(app.world().resource::<crate::ui::MapSettings>().transparency(), 50);
-        assert_eq!(app.world().get::<Text>(label).unwrap().0, "Map transparency: 50%");
-        for _ in 0..25 { click(&mut app, increase); }
+        drag(&mut app, 37);
+        assert_eq!(app.world().resource::<crate::ui::MapSettings>().transparency(), 37);
+        assert_eq!(app.world().get::<Text>(label).unwrap().0, "Map transparency: 37%");
+        drag(&mut app, 100);
         assert_eq!(app.world().resource::<crate::ui::MapSettings>().transparency(), 100);
-        for _ in 0..25 { click(&mut app, decrease); }
+        drag(&mut app, 0);
         assert_eq!(app.world().resource::<crate::ui::MapSettings>().transparency(), 0);
-        *app.world_mut().get_mut::<InheritedVisibility>(increase).unwrap() = InheritedVisibility::HIDDEN;
-        click(&mut app, increase);
+        *app.world_mut().get_mut::<InheritedVisibility>(slider).unwrap() = InheritedVisibility::HIDDEN;
+        drag(&mut app, 90);
         assert_eq!(app.world().resource::<crate::ui::MapSettings>().transparency(), 0);
     }
 }

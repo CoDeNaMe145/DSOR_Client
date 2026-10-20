@@ -1,0 +1,933 @@
+//! The systems' windows: the leaderboards and the PvP queue, the premium shop,
+//! the events, the collector's album and the transmog desk, the smith's salvage
+//! and workbench desks and the jeweller's gem desk, the quest log's achievement,
+//! daily and Wanted Thief pages and the character sheet's titles.
+//!
+//! Each is an authored template (crate::ui::controls::template) filled from what
+//! the server said (crate::network::net) and the systems' data
+//! (crate::gameplay::systems). `sync` builds every window's view and rebuilds
+//! the windows whose view changed; `send` asks the server what an opened window
+//! needs and sends what its buttons asked for (`Request`, from
+//! crate::ui::controls::interact through Pointer).
+//! SOURCE: DSOR_Server services/{ranking,matchmaking,commerce,events,customization,
+//!   inventory_interactions,achievements,daily_challenges,wanted_thief,
+//!   presence_identity}.py; protocol/gem_protocol.py (the gem actions are
+//!   InventoryCommand operations 0x11 insert [item, socket], 0x14 remove [socket],
+//!   0x15 unlock a socket).
+pub(super) mod boards;
+pub(super) mod shop;
+pub(super) mod events;
+pub(super) mod album;
+pub(super) mod transmog;
+pub(super) mod desks;
+pub(super) mod log;
+
+use bevy::prelude::*;
+use std::collections::{HashMap, HashSet};
+
+use dsor_proto::commands::{inventory, player, social, systems as proto, ClientCommand};
+
+use crate::gameplay::inventory::Place;
+use crate::gameplay::systems::SystemsCatalog;
+use crate::network::net::Net;
+use crate::ui::{Layout, Loaded, Window2018};
+use super::template::Icon;
+use super::{items, Action, Pointer, Widget, WindowControls};
+
+pub(in crate::ui) const SALVAGE: &str = "salvagewindow";
+/// The jeweller's desk: the 2026 layout (ten sockets; gemdesk is the old one).
+pub(in crate::ui) const GEMDESK: &str = "gemdeskwb";
+pub(in crate::ui) const WORKBENCH: &str = "recipebookwb";
+pub(in crate::ui) const TRANSMOG: &str = "transmogwindow";
+/// The NPC desks (crate::ui::dialogue opens them by the NPC's profession) and
+/// their depth.
+pub(in crate::ui) const DESKS: [(&str, f32); 4] = [(SALVAGE, 420.0), (GEMDESK, 425.0), (WORKBENCH, 430.0), (TRANSMOG, 435.0)];
+pub(in crate::ui) const LEADERBOARDS: &str = "leaderboards";
+pub(in crate::ui) const MATCHMAKING: &str = "matchmakingwindow";
+pub(in crate::ui) const SHOP: &str = "shopwindow";
+pub(in crate::ui) const EVENTS: &str = "eventwindow";
+pub(in crate::ui) const ALBUM: &str = "collectorsalbum";
+pub(in crate::ui) const SHEET: &str = "charactersheet";
+pub(in crate::ui) const QUESTLOG: &str = super::quests::WINDOW;
+/// The rows a board's page holds (ranking_protocol.py MAX_RANKING_PAGE_SIZE).
+const PAGE_ROWS: u32 = 10;
+const UNRANKED: u32 = 0xFFFF_FFFF;
+const FILTER_ALL: u16 = 0x01;
+const FILTER_PLAYER_PAGE: u16 = 0x10;
+/// The lifetime honour board: the only one this server records.
+const LIFETIME_BOARD: u8 = 4;
+const EVERY_CLASS: u8 = 4;
+/// The queue the matchmaking window's tabs join: team (best of 5, 5 on 5),
+/// solo (best of 3, the duel) (pvp_match_protocol.py MATCH_MODE_*).
+const QUEUE_MODES: [i8; 2] = [1, 0];
+/// EquipmentSlotType of an equipment slot (item_customization_protocol.py
+/// CUSTOMIZATION_SLOTS): the cloak's slot 7 is type 12.
+fn slot_type(slot: i8) -> u32 { if slot == 7 { 12 } else { slot as u32 } }
+
+/// Where a board's page turns to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Paging { First, Previous, Next, Last, Player }
+
+/// What a button of these windows asks for; `send` carries it out.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Request {
+    Page(Paging),
+    /// Join the PvP queue of the tab (QUEUE_MODES; -1 the open tab's), leave
+    /// it, or accept the match found.
+    Queue(i8),
+    /// An event tab of the event window.
+    Event(usize),
+    /// Turn the event bar's page.
+    EventPage(i32),
+    /// Travel to the open event's area.
+    Teleport,
+    /// Buy a premium offer (its product key).
+    Buy(String),
+    /// Use an owned sticker (a mount, a costume, a pet, an emote).
+    Sticker(String),
+    /// Preview a sticker; again, use it (owned).
+    Pick(String),
+    /// Open an album book, a sticker of it previewed.
+    AlbumBook(String, Option<String>),
+    /// Show the album's n-th banner.
+    Banner(usize),
+    Favorite(String, bool),
+    Upgrade(String),
+    /// Add the carried item that fills this sticker.
+    AddSticker(String),
+    Salvage,
+    /// Take a picked item out of the salvage desk.
+    Unpick(usize),
+    /// A gem socket's button: take its gem out.
+    Socket(usize),
+    /// Buy the next socket of the gem desk's item.
+    BuySocket,
+    RecipeCategory(String),
+    /// The workbench's tab, a filter (0 craftable, 1 locked), the amount
+    /// (a step; i32::MIN the least, i32::MAX the most).
+    WorkbenchTab(usize),
+    WorkbenchFilter(u8),
+    CraftAmount(i32),
+    Recipe(String),
+    /// Craft the open recipe, with Andermant when true.
+    Craft(bool),
+    Skin(String),
+    /// The transmog desk's tab, slot, a slot's reset, a filter (0 owned, 1 shop).
+    TransmogTab(u8),
+    TransmogSlot(i8),
+    TransmogReset(i8),
+    TransmogFilter(u8),
+    /// Apply the chosen skin to the transmog desk's item.
+    Apply,
+    /// An achievement category of the log (empty: its overview).
+    AchievementCategory(String),
+    /// Open or close an achievement's row.
+    Achievement(String),
+    /// The wheel over a list: (its key, rows).
+    Scroll(String, i32),
+    /// Accept a daily challenge, or (true) have it replaced.
+    Daily(String, bool),
+    Wanted(u32),
+    WantedRefresh(u32),
+    /// Show no title (0), an achievement's (1, its id) or the PvP rank's (2).
+    Title(u8, String),
+    /// Sort the honour board by a column; toggle a filter (0x02 friends, 0x04 guild).
+    Sort(u8),
+    Filter(u16),
+    /// The matchmaking window's tab.
+    MatchTab(u8),
+    /// The shop's tab; a category of the open tab.
+    ShopTab(usize),
+    ShopCategory(String),
+    /// Redeem the voucher code typed.
+    Redeem,
+    /// Turn a window's grid page.
+    Turn(&'static str, i32),
+}
+
+/// The windows' selections and what their buttons asked for.
+#[derive(Resource, Default)]
+pub(crate) struct State {
+    pub catalog: Handle<SystemsCatalog>,
+    pub achievement_category: Option<String>,
+    pub achievement_open: Option<String>,
+    /// Rows scrolled off the lists' tops, by list (crate::ui::controls::quests
+    /// and the systems' windows read them).
+    pub scroll: HashMap<String, usize>,
+    /// The workbench's tab, its category open and book chosen, the amount to
+    /// craft, its filters (craftable now, locked only).
+    pub workbench_tab: usize,
+    pub recipe_category: Option<String>,
+    pub craft_amount: u32,
+    pub workbench_craftable_only: bool,
+    pub workbench_locked_only: bool,
+    pub recipe: Option<String>,
+    /// The items picked for melting (right-clicked while the desk is open).
+    pub salvage: Vec<u32>,
+    /// The equipment on the gem desk, the one on the transmog desk.
+    pub gem_target: Option<u32>,
+    /// The transmog desk's slot picked (an equipment slot), its tab (skins,
+    /// dyes) and filters (owned, the shop's).
+    pub skin_slot: Option<i8>,
+    pub transmog_tab: u8,
+    pub transmog_owned: bool,
+    pub transmog_shop: bool,
+    pub skin: Option<String>,
+    /// The title asked for, as SetTitle (kind, achievement).
+    pub title: Option<(u8, String)>,
+    pub event: usize,
+    /// The open event's bar page chosen (None: the one with the next reward).
+    pub event_page: Option<usize>,
+    /// The album's book open (None: the front page), the sticker previewed,
+    /// the front page's banner.
+    pub album_book: Option<String>,
+    pub album_sticker: Option<String>,
+    pub album_banner: usize,
+    pub rank_start: u32,
+    /// The grids' pages, by window.
+    pub pages: HashMap<&'static str, usize>,
+    /// The windows open last frame, for the requests an opening sends.
+    opened: HashSet<String>,
+    /// The quest the log's overview showed (its scroll restarts with another).
+    last_quest: Option<String>,
+    /// The leaderboards' tabs last asked for: (group, category, class).
+    rank_tabs: Option<(u8, u8, u8)>,
+    /// The honour board's sort column and filters (ranking_protocol FILTER_*).
+    pub rank_sort: u8,
+    pub rank_filters: u16,
+    /// The matchmaking window's tab (QUEUE_MODES).
+    pub matchmaking_tab: u8,
+    /// The shop's tab and each tab's open category.
+    pub shop_tab: usize,
+    pub shop_category: Vec<Option<String>>,
+    /// A request the server has not answered: (inventory revision, time).
+    pending: Option<(u64, f64)>,
+}
+
+/// What every window shows, compared frame to frame.
+#[derive(Resource, Default, Clone, Debug, PartialEq)]
+pub(in crate::ui) struct Views {
+    pub boards: boards::Boards,
+    pub shop: shop::Shop,
+    pub events: events::Events,
+    pub album: album::Album,
+    pub transmog: transmog::Transmog,
+    pub salvage: desks::Salvage,
+    pub gems: desks::Gems,
+    pub workbench: desks::Workbench,
+    pub log: log::Log,
+    pub titles: log::Titles,
+}
+
+/// What the views are built from.
+pub(in crate::ui) struct Sources<'a> {
+    pub net: &'a Net,
+    pub catalog: &'a SystemsCatalog,
+    pub items: Option<&'a items::Catalog>,
+    pub state: &'a State,
+    pub class: Option<u8>,
+}
+
+impl Sources<'_> {
+    /// An item template's icon layers (a carried item's own look when given).
+    pub fn icon(&self, template: &str, item: Option<&inventory::ItemInfo>) -> Icon {
+        let Some(items) = self.items else { return Icon::default() };
+        let (image, background, frame) = items.icon_parts(template, item);
+        Icon { background: background.unwrap_or_default().to_owned(), image: image.unwrap_or_default().to_owned(), frame: frame.unwrap_or_default().to_owned() }
+    }
+    pub fn name(&self, template: &str, item: Option<&inventory::ItemInfo>) -> String {
+        self.items.map(|i| i.name(template, item).to_owned()).filter(|n| !n.is_empty()).unwrap_or_else(|| crate::ui::dialogue::readable(template))
+    }
+    /// Our class's name (crate::actors::character::CLASSES).
+    pub fn class_name(&self) -> &'static str {
+        crate::actors::character::CLASSES.get(self.class.unwrap_or(0) as usize).copied().unwrap_or("warrior")
+    }
+    /// The carried items of a template, by id.
+    pub fn carried(&self, template: &str) -> Vec<u32> {
+        let inventory = &self.net.inventory;
+        let mut ids: Vec<u32> = inventory.items.values().filter(|i| i.template == template)
+            .filter(|i| matches!(inventory.location(i.id), Some(Place::Bag(_) | Place::Extra(_)))).map(|i| i.id).collect();
+        ids.sort_unstable();
+        ids
+    }
+}
+
+/// The views from the network state; the windows whose view changed are rebuilt.
+#[allow(clippy::too_many_arguments)]
+pub(in crate::ui) fn sync(
+    mut commands: Commands,
+    net: Option<NonSend<Net>>,
+    state: Res<State>,
+    catalogs: Res<Assets<SystemsCatalog>>,
+    item_data: Option<Res<items::Data>>,
+    item_catalogs: Res<Assets<items::Catalog>>,
+    players: Query<&crate::actors::character::Character, With<crate::network::net::LocalPlayer>>,
+    mut views: ResMut<Views>,
+    mut loaded: ResMut<Loaded>,
+    layouts: Res<Assets<Layout>>,
+    windows: Query<(Entity, &Window2018)>,
+) {
+    let Some(net) = net else { return };
+    let fallback = SystemsCatalog::default();
+    let catalog = catalogs.get(&state.catalog).unwrap_or(&fallback);
+    let items = item_data.as_ref().and_then(|d| item_catalogs.get(&d.catalog));
+    let sources = Sources { net: &net, catalog, items, state: &state, class: players.iter().next().map(|c| c.desc.class) };
+    let next = Views {
+        boards: boards::boards(&sources),
+        shop: shop::shop(&sources),
+        events: events::events(&sources),
+        album: album::album(&sources),
+        transmog: transmog::transmog(&sources),
+        salvage: desks::salvage(&sources),
+        gems: desks::gems(&sources),
+        workbench: desks::workbench(&sources),
+        log: log::log(&sources),
+        titles: log::titles(&sources),
+    };
+    if *views == next { return; }
+    let changed: Vec<&str> = [
+        (views.boards != next.boards, vec![LEADERBOARDS, MATCHMAKING]),
+        (views.shop != next.shop, vec![SHOP]),
+        (views.events != next.events, vec![EVENTS]),
+        (views.album != next.album, vec![ALBUM]),
+        (views.transmog != next.transmog, vec![TRANSMOG]),
+        (views.salvage != next.salvage, vec![SALVAGE]),
+        (views.gems != next.gems, vec![GEMDESK]),
+        (views.workbench != next.workbench, vec![WORKBENCH]),
+        (views.log != next.log, vec![QUESTLOG]),
+        (views.titles != next.titles, vec![SHEET]),
+    ].into_iter().filter(|(changed, _)| *changed).flat_map(|(_, w)| w).collect();
+    *views = next;
+    // The windows keep their roots (and whether they are open): their parts are
+    // rebuilt from the new view (crate::ui::spawn_windows).
+    for (entity, window) in &windows {
+        if changed.contains(&window.0.as_str()) { commands.entity(entity).despawn_related::<Children>(); }
+    }
+    for i in 0..loaded.layouts.len() {
+        if layouts.get(&loaded.layouts[i].0).is_some_and(|l| changed.contains(&l.window.as_str())) { loaded.spawned[i] = false; }
+    }
+}
+
+/// The window a layout is, prepared from its view; None for the others.
+pub(in crate::ui) fn prepare(layout: &Layout, views: &Views, quests: &super::quests::Quests) -> Option<Layout> {
+    Some(match layout.window.as_str() {
+        LEADERBOARDS => boards::prepare_leaderboards(layout, &views.boards),
+        MATCHMAKING => boards::prepare_matchmaking(layout, &views.boards),
+        SHOP => shop::prepare_shop(layout, &views.shop),
+        EVENTS => events::prepare_events(layout, &views.events),
+        ALBUM => album::prepare_album(layout, &views.album),
+        TRANSMOG => transmog::prepare_transmog(layout, &views.transmog),
+        SALVAGE => desks::prepare_salvage(layout, &views.salvage),
+        GEMDESK => desks::prepare_gemdesk(layout, &views.gems),
+        WORKBENCH => desks::prepare_workbench(layout, &views.workbench),
+        QUESTLOG => log::prepare_questlog(&super::quests::prepare_log(layout, quests), &views.log),
+        SHEET => log::prepare_sheet(layout, &views.titles),
+        _ => return None,
+    })
+}
+
+/// The buttons of these windows: the rows `prepare` clones carry `Sys:<request>`
+/// events; the authored buttons are named by their window.
+pub(super) fn action(window: &str, w: &Widget) -> Option<Action> {
+    let event = w.event.as_str();
+    let leaf = super::template::leaf(&w.id);
+    if let Some(rest) = event.strip_prefix("Sys:") {
+        let (kind, arg) = rest.split_once(':').unwrap_or((rest, ""));
+        let flag = arg.ends_with(":1");
+        let bare = arg.rsplit_once(':').map_or(arg, |(a, _)| a);
+        let request = match kind {
+            "Buy" => Request::Buy(arg.to_owned()),
+            "Event" => Request::Event(arg.parse().ok()?),
+            "Sticker" => Request::Sticker(arg.to_owned()),
+            "Pick" => Request::Pick(arg.to_owned()),
+            "AlbumBook" => match arg.split_once(':') { Some((book, sticker)) => Request::AlbumBook(book.to_owned(), Some(sticker.to_owned())), None => Request::AlbumBook(arg.to_owned(), None) },
+            "Banner" => Request::Banner(arg.parse().ok()?),
+            "Favorite" => Request::Favorite(bare.to_owned(), flag),
+            "Upgrade" => Request::Upgrade(arg.to_owned()),
+            "Add" => Request::AddSticker(arg.to_owned()),
+            "Unpick" => Request::Unpick(arg.parse().ok()?),
+            "Socket" => Request::Socket(arg.parse().ok()?),
+            "Category" => Request::RecipeCategory(arg.to_owned()),
+            "Recipe" => Request::Recipe(arg.to_owned()),
+            "WorkbenchTab" => Request::WorkbenchTab(arg.parse().ok()?),
+            "WorkbenchFilter" => Request::WorkbenchFilter(arg.parse().ok()?),
+            "CraftAmount" => Request::CraftAmount(match arg { "min" => i32::MIN, "max" => i32::MAX, step => step.parse().ok()? }),
+            "ShopCategory" => Request::ShopCategory(arg.to_owned()),
+            "Skin" => Request::Skin(arg.to_owned()),
+            "TransmogTab" => Request::TransmogTab(arg.parse().ok()?),
+            "TransmogSlot" => Request::TransmogSlot(arg.parse().ok()?),
+            "TransmogReset" => Request::TransmogReset(arg.parse().ok()?),
+            "TransmogFilter" => Request::TransmogFilter(arg.parse().ok()?),
+            "Achievements" => Request::AchievementCategory(arg.to_owned()),
+            "Achievement" => Request::Achievement(arg.to_owned()),
+            "Daily" => Request::Daily(bare.to_owned(), flag),
+            "Wanted" => Request::Wanted(arg.parse().ok()?),
+            "WantedRefresh" => Request::WantedRefresh(arg.parse().ok()?),
+            "Title" => Request::Title(1, arg.to_owned()),
+            _ => return None,
+        };
+        return Some(Action::System(request));
+    }
+    // The gem desk's "Open Workbench".
+    if window == GEMDESK && event == "Crafting" { return Some(Action::Window(WORKBENCH)); }
+    // The privileged Wanted poster's button: the membership page.
+    if window == QUESTLOG && event == "vip" { return Some(Action::Membership); }
+    let request = match (window, event) {
+        (LEADERBOARDS, sort) if boards::SORTS.iter().any(|(e, _)| *e == sort) => Request::Sort(boards::SORTS.iter().find(|(e, _)| *e == sort).map_or(0, |(_, c)| *c)),
+        (LEADERBOARDS, filter) if filter.starts_with("FilterFriendsOnly") => Request::Filter(0x02),
+        (LEADERBOARDS, filter) if filter.starts_with("FilterGuildMembersOnly") => Request::Filter(0x04),
+        (MATCHMAKING, _) if leaf == "TabButton01" => Request::MatchTab(0),
+        (MATCHMAKING, _) if leaf == "TabButton02" => Request::MatchTab(1),
+        (SHOP, _) if leaf.starts_with("ShopTab") => Request::ShopTab(leaf[7..].parse::<usize>().ok()?.saturating_sub(1)),
+        (SHOP, "Payment") => Request::ShopTab(1),
+        (SHOP, "RedeemCode") => Request::Redeem,
+        (LEADERBOARDS, "PageFirst") => Request::Page(Paging::First),
+        (LEADERBOARDS, "PageUp") => Request::Page(Paging::Previous),
+        (LEADERBOARDS, "PageDown") => Request::Page(Paging::Next),
+        (LEADERBOARDS, "PageLast") => Request::Page(Paging::Last),
+        (LEADERBOARDS, "PagePlayer") => Request::Page(Paging::Player),
+        (MATCHMAKING, "JoinBattle") => Request::Queue(-1),
+        (EVENTS, "TeleportEventArea") => Request::Teleport,
+        (EVENTS, "NextPage") => Request::EventPage(1),
+        (EVENTS, "PrevPage") => Request::EventPage(-1),
+        (EVENTS, _) if leaf.starts_with("TabEvent") && w.id.contains("/TabBarLabel/") => Request::Event(leaf[8..].parse().ok()?),
+        (ALBUM, "NextPage") => Request::Turn(ALBUM, 1),
+        (ALBUM, "PrevPage") => Request::Turn(ALBUM, -1),
+        (TRANSMOG, "NextPage") => Request::Turn(TRANSMOG, 1),
+        (TRANSMOG, "PrevPage") => Request::Turn(TRANSMOG, -1),
+        (TRANSMOG, "Apply") => Request::Apply,
+        (SALVAGE, "Salvage") => Request::Salvage,
+        (GEMDESK, "SocketBuyButton") => Request::BuySocket,
+        (GEMDESK, "SocketButton") => Request::Socket(w.id.split('/').find_map(|p| p.strip_prefix("Socket").and_then(|n| n.parse().ok()))?),
+        (WORKBENCH, "Crafting") => Request::Craft(false),
+        (WORKBENCH, "CraftingRC") => Request::Craft(true),
+        (WORKBENCH, "ClearAllSlots") => Request::Recipe(String::new()),
+        (QUESTLOG, "Confirm") => Request::WantedRefresh(0),
+        (QUESTLOG, "ShowOverview") => Request::AchievementCategory(String::new()),
+        (SHEET, "DoNotShowTitle") => Request::Title(0, String::new()),
+        (SHEET, "ShowPVPTitle") => Request::Title(2, String::new()),
+        _ => return None,
+    };
+    Some(Action::System(request))
+}
+
+/// A clicked request, with what only the window knows (its open tab).
+pub(super) fn clicked(mut request: Request, controls: &mut WindowControls) -> Request {
+    match &mut request {
+        Request::MatchTab(tab) => { controls.pages.insert("matchmaking", *tab); }
+        Request::Event(index) => { controls.pages.insert("event", *index as u8); }
+        _ => {}
+    }
+    request
+}
+
+/// The lists the wheel scrolls: (window, page shown (group, page), key, rect, k).
+/// Paged ones turn instead (scrolled).
+const SCROLL_AREAS: [(&str, Option<(&str, u8)>, &str, [f32; 4], f32); 7] = [
+    (WORKBENCH, None, desks::LIST, [7.0, 143.0, 274.0, 435.0], 0.5),
+    (ALBUM, None, album::LIST, [62.0, 103.0, 202.0, 639.0], 0.5),
+    (SHOP, None, shop::OFFERS, [215.0, 130.0, 719.0, 623.0], 0.5),
+    (QUESTLOG, Some(("quest", 0)), super::quests::LIST, [123.0, 145.0, 433.0, 627.0], 0.5),
+    (QUESTLOG, Some(("quest", 0)), super::quests::OVERVIEW, [446.0, 140.0, 904.0, 468.0], 0.5),
+    (QUESTLOG, Some(("quest", 2)), log::CATEGORIES, [117.0, 201.0, 406.0, 632.0], 0.5),
+    (QUESTLOG, Some(("quest", 2)), log::ROWS, [410.0, 140.0, 907.0, 632.0], 0.5),
+];
+
+/// The request the wheel makes over the topmost open window's list, if any.
+fn scrolled(window: &Window, windows: &Query<(&Window2018, &Visibility, &WindowControls, &Transform)>, rows: i32) -> Option<Request> {
+    let height = window.height().max(1.0);
+    let point = window.cursor_position()? * (crate::ui::BASE_H / height);
+    let width = crate::ui::BASE_H * window.width() / height;
+    let mut open: Vec<_> = windows.iter().filter(|(_, v, _, _)| **v != Visibility::Hidden).collect();
+    open.sort_by(|a, b| b.3.translation.z.total_cmp(&a.3.translation.z));
+    for (name, _, controls, tf) in open {
+        let offset = super::window_offset(tf);
+        let inside = |rect: [f32; 4], k: f32| {
+            let p = point - offset - Vec2::new(k * (width - crate::ui::BASE_W), 0.0);
+            p.x >= rect[0] && p.x <= rect[2] && p.y >= rect[1] && p.y <= rect[3]
+        };
+        for (window, page, key, rect, k) in SCROLL_AREAS {
+            if window != name.0 || page.is_some_and(|(group, n)| controls.pages.get(group).copied().unwrap_or(0) != n) { continue; }
+            if inside(rect, k) { return Some(Request::Scroll(key.to_owned(), rows)); }
+        }
+        if name.0 == LEADERBOARDS && inside([406.0, 297.0, 1048.0, 560.0], 0.5) {
+            return Some(Request::Page(if rows > 0 { Paging::Next } else { Paging::Previous }));
+        }
+        if (name.0 == ALBUM || name.0 == TRANSMOG) && controls.covers(point - offset, width) {
+            return Some(Request::Turn(if name.0 == ALBUM { ALBUM } else { TRANSMOG }, rows.signum()));
+        }
+        // The topmost window under the cursor takes the wheel, list or not.
+        if controls.covers(point - offset, width) { return None; }
+    }
+    None
+}
+
+/// How far a list scrolls: its entries less those its area shows.
+fn scroll_limit(key: &str, views: &Views, quests: &super::quests::Quests) -> usize {
+    use super::quests::{LIST, OVERVIEW};
+    match key {
+        LIST => quests.entries().saturating_sub(10),
+        OVERVIEW => quests.list.get(quests.selected).map_or(0, |q| q.overview_rows()).saturating_sub(12),
+        log::CATEGORIES => views.log.categories.len().saturating_sub(9),
+        album::LIST => album::list_limit(&views.album),
+        desks::LIST => desks::list_limit(&views.workbench),
+        log::ROWS if views.log.category.is_none() => log::overview_entries(&views.log).saturating_sub(log::OVERVIEW_ROWS),
+        log::ROWS => views.log.achievements.len().saturating_sub(5),
+        shop::OFFERS => views.shop.cards.len().div_ceil(2).saturating_sub(shop::VISIBLE_ROWS),
+        _ => 0,
+    }
+}
+
+/// A request's hover text (crate::ui::controls::tooltips): heading and body;
+/// None for the rows and cards, which show their own text.
+pub(super) fn tooltip(request: &Request) -> Option<(&'static str, String)> {
+    Some(match request {
+        Request::Page(Paging::First) => ("First page", String::new()),
+        Request::Page(Paging::Previous) => ("Previous page", String::new()),
+        Request::Page(Paging::Next) => ("Next page", String::new()),
+        Request::Page(Paging::Last) => ("Last page", String::new()),
+        Request::Page(Paging::Player) => ("Your rank", "Show the page with your own rank.".into()),
+        Request::Queue(_) => ("Join battle", "Join the queue of this battle mode; click again to leave it, or to enter the match found.".into()),
+        Request::Teleport => ("Travel to the event", String::new()),
+        Request::EventPage(1) => ("Next rewards", String::new()),
+        Request::EventPage(_) => ("Previous rewards", String::new()),
+        Request::Sort(_) => ("Sort", "Sort the board by this column.".into()),
+        Request::Filter(0x02) => ("Friends only", String::new()),
+        Request::Filter(_) => ("Guild members only", String::new()),
+        Request::ShopTab(0) => ("Andermant shop", "Items for Andermant.".into()),
+        Request::ShopTab(_) => ("Premium shop", "Andermant and special offers.".into()),
+        Request::Redeem => ("Redeem", String::new()),
+        Request::Buy(_) => ("Buy", String::new()),
+        Request::Pick(_) => ("Sticker", "Shows it in the preview; click it again to use it.".into()),
+        Request::AlbumBook(..) => ("Open", "Opens this part of the album.".into()),
+        Request::Banner(_) => ("Banner", String::new()),
+        Request::Favorite(_, true) => ("Add to favourites", String::new()),
+        Request::Favorite(_, false) => ("Remove from favourites", String::new()),
+        Request::Upgrade(_) => ("Upgrade", "Raise this item's rarity with its upgrade items.".into()),
+        Request::AddSticker(_) => ("Add to the album", "Adds the carried item to your collection.".into()),
+        Request::Salvage => ("Melt down", "Melts the items placed here into Glyphs of Power and materials.".into()),
+        Request::Unpick(_) => ("Take back", String::new()),
+        Request::Socket(_) => ("Remove the gem", "The gem returns to your inventory.".into()),
+        Request::BuySocket => ("Unlock socket", "Unlocks the next socket for Andermant.".into()),
+        Request::WorkbenchTab(_) => ("Recipes", "Shows this kind of recipes.".into()),
+        Request::WorkbenchFilter(0) => ("Craftable only", "Lists the recipes your items make now.".into()),
+        Request::WorkbenchFilter(_) => ("Locked only", "Lists the recipes still to learn.".into()),
+        Request::CraftAmount(i32::MIN) => ("Fewest", String::new()),
+        Request::CraftAmount(i32::MAX) => ("Most", "As many as the ingredients allow.".into()),
+        Request::CraftAmount(step) if *step < 0 => ("Fewer", String::new()),
+        Request::CraftAmount(_) => ("More", String::new()),
+        Request::Craft(false) => ("Craft", "Crafts the recipe with gold.".into()),
+        Request::Craft(true) => ("Craft", "Crafts the recipe with Andermant.".into()),
+        Request::Apply => ("Apply changes", "Applies the chosen look to the item.".into()),
+        Request::TransmogTab(0) => ("Skins", "Change the look of the worn items.".into()),
+        Request::TransmogTab(_) => ("Dyes", "Colour the worn items.".into()),
+        Request::TransmogSlot(_) => ("Choose", "Shows what fits this item.".into()),
+        Request::TransmogReset(_) => ("Reset", "Restores the item's own look.".into()),
+        Request::TransmogFilter(0) => ("Owned only", String::new()),
+        Request::TransmogFilter(_) => ("Shop only", String::new()),
+        Request::Daily(_, false) => ("Accept challenge", "Accept this challenge and complete it today to receive its reward.".into()),
+        Request::Daily(_, true) => ("Exchange", "Exchange this challenge for another one.".into()),
+        Request::Wanted(_) => ("Accept mission", String::new()),
+        Request::WantedRefresh(0) => ("Refresh all", "Replaces every open mission.".into()),
+        Request::WantedRefresh(_) => ("Refresh", "Replaces this mission.".into()),
+        Request::Title(0, _) => ("Hide title", String::new()),
+        Request::Title(2, _) => ("Display PvP rank", String::new()),
+        Request::Turn(_, delta) if *delta < 0 => ("Previous page", String::new()),
+        Request::Turn(..) => ("Next page", String::new()),
+        _ => return None,
+    })
+}
+
+/// What an opened window asks the server (and the leaderboards on a tab change).
+fn opening(window: &str, state: &State, tabs: Option<(u8, u8, u8)>) -> Vec<ClientCommand> {
+    match window {
+        // The premium shop's offers and the Andermant item shop's (by its name).
+        SHOP => vec![ClientCommand::OcpOfferRequest(proto::OcpOfferRequest::default()),
+            ClientCommand::RequestOffer(inventory::RequestOffer { by_name: true, actor: 0, shop: shop::ITEM_SHOP.into() })],
+        // The running events, and the Andermant shop's offers (their useful ones).
+        EVENTS => vec![ClientCommand::ActiveEvents(proto::ActiveEvents::default()),
+            ClientCommand::RequestOffer(inventory::RequestOffer { by_name: true, actor: 0, shop: shop::ITEM_SHOP.into() })],
+        QUESTLOG => vec![ClientCommand::WantedThiefInfoRequest(proto::WantedThiefInfoRequest::default())],
+        LEADERBOARDS => ranking_requests(state, tabs.unwrap_or_default(), FILTER_ALL),
+        _ => Vec::new(),
+    }
+}
+
+/// The honour board's page (the overall board's on the first category tab) and
+/// our own rank; the class tabs filter (1: every class, then CLASSES), the
+/// check boxes to friends or guild members.
+fn ranking_requests(state: &State, (_, category, class): (u8, u8, u8), flags: u16) -> Vec<ClientCommand> {
+    let class = if class == 0 { EVERY_CLASS } else { class - 1 };
+    let flags = if state.rank_filters != 0 { (flags & !FILTER_ALL) | state.rank_filters } else { flags };
+    let start = if flags & FILTER_PLAYER_PAGE != 0 { UNRANKED } else { state.rank_start };
+    if category == 0 {
+        vec![ClientCommand::OverallRankingRequest(proto::OverallRankingRequest { start, count: PAGE_ROWS, context: 0, flags, class }),
+            ClientCommand::OverallLocalRankingRequest(proto::OverallLocalRankingRequest { context: 0 })]
+    } else {
+        vec![ClientCommand::HonorRankingRequest(proto::HonorRankingRequest { board: LIFETIME_BOARD, start, count: PAGE_ROWS, context: 0, flags, class, sort: state.rank_sort }),
+            ClientCommand::LocalRankingRequest(proto::LocalRankingRequest { context: 0, board: LIFETIME_BOARD })]
+    }
+}
+
+/// The leaderboards' tabs: (group, category, class) from its controls.
+fn rank_tabs(controls: &WindowControls) -> (u8, u8, u8) {
+    let page = |g| controls.pages.get(g).copied().unwrap_or(0);
+    (page("rank_group"), page("rank_category"), page("rank_class"))
+}
+
+/// The server's part: the requests of the windows opened and of their buttons.
+#[allow(clippy::too_many_arguments)]
+pub(in crate::ui) fn send(
+    net: Option<NonSendMut<Net>>,
+    mut pointer: ResMut<Pointer>,
+    mut state: ResMut<State>,
+    catalogs: Res<Assets<SystemsCatalog>>,
+    views: Res<Views>,
+    windows: Query<(&Window2018, &Visibility, &WindowControls, &Transform)>,
+    time: Res<Time<Real>>,
+    mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
+    primary: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    quests: Res<super::quests::Quests>,
+) {
+    let Some(mut net) = net else { return };
+    let fallback = SystemsCatalog::default();
+    let catalog = catalogs.get(&state.catalog).unwrap_or(&fallback);
+    // The wheel over a list scrolls it (a notch a row); over a paged grid or
+    // board it turns the page.
+    let notches: f32 = wheel.read().map(|w| if w.unit == bevy::input::mouse::MouseScrollUnit::Line { w.y } else { w.y / 40.0 }).sum();
+    if notches.abs() >= 0.5 {
+        if let Some(request) = primary.single().ok().and_then(|window| scrolled(window, &windows, -notches.round() as i32)) { pointer.system.push(request); }
+    }
+    // A newly opened quest's overview starts at its top.
+    let open_quest = quests.list.get(quests.selected).map(|q| q.id.clone());
+    if state.last_quest != open_quest { state.scroll.remove(super::quests::OVERVIEW); state.last_quest = open_quest; }
+    let open: HashSet<String> = windows.iter().filter(|(_, v, _, _)| **v != Visibility::Hidden).map(|(w, _, _, _)| w.0.clone()).collect();
+    let tabs = windows.iter().find(|(w, _, _, _)| w.0 == LEADERBOARDS).map(|(_, _, c, _)| rank_tabs(c));
+    let mut commands = Vec::new();
+    let opened: Vec<String> = open.difference(&state.opened).cloned().collect();
+    for window in &opened {
+        if window == LEADERBOARDS { state.rank_start = 0; }
+        commands.extend(opening(window, &state, tabs));
+    }
+    // The boards follow their tabs; closed, they ask again when reopened.
+    if open.contains(LEADERBOARDS) && tabs.is_some() && tabs != state.rank_tabs {
+        if state.opened.contains(LEADERBOARDS) { state.rank_start = 0; commands.extend(ranking_requests(&state, tabs.unwrap(), FILTER_ALL)); }
+        state.rank_tabs = tabs;
+    }
+    if !open.contains(LEADERBOARDS) { state.rank_tabs = None; }
+    state.opened = open;
+    if state.pending.is_some_and(|(revision, at)| net.inventory.revision != revision || time.elapsed_secs_f64() - at > 2.0) { state.pending = None; }
+    // One inventory-changing request at a time: the server answers with the
+    // inventory (or refuses silently; two seconds then).
+    let busy = state.pending.is_some();
+    let mut wait = false;
+    for request in std::mem::take(&mut pointer.system) {
+        if busy && matches!(request, Request::AddSticker(_) | Request::Salvage | Request::Socket(_) | Request::BuySocket | Request::Craft(_) | Request::Apply | Request::TransmogReset(_)) { continue; }
+        match request {
+            Request::Page(paging) => {
+                let total = net.ranking.as_ref().map(|p| p.total).or(net.overall_ranking.as_ref().map(|p| p.total)).unwrap_or(0);
+                let last = total.saturating_sub(PAGE_ROWS) / PAGE_ROWS * PAGE_ROWS;
+                let mut flags = FILTER_ALL;
+                state.rank_start = match paging {
+                    Paging::First => 0,
+                    Paging::Previous => state.rank_start.saturating_sub(PAGE_ROWS),
+                    Paging::Next => (state.rank_start + PAGE_ROWS).min(last),
+                    Paging::Last => last,
+                    Paging::Player => { flags |= FILTER_PLAYER_PAGE; state.rank_start }
+                };
+                commands.extend(ranking_requests(&state, tabs.unwrap_or_default(), flags));
+            }
+            Request::Queue(mode) => {
+                let mode = if mode < 0 { QUEUE_MODES.get(state.matchmaking_tab as usize).copied().unwrap_or(1) } else { mode };
+                if let Some(found) = net.battleground.take() {
+                    commands.push(ClientCommand::JoinBattlegroundResponse(proto::JoinBattlegroundResponse { tick: found.tick, battleground: found.battleground, accepted: true, unknown_u32_0: 0, mode: found.mode }));
+                } else if net.matchmaking.as_ref().is_some_and(|m| m.state >= 0) {
+                    commands.push(ClientCommand::AbortMatchQueue(proto::AbortMatchQueue { tick: 0, flag: true, modes: vec![mode], all: false }));
+                    net.matchmaking = None;
+                } else {
+                    commands.push(ClientCommand::JoinMatchQueue(social::JoinMatchQueue { tick: 0, mode, kind: 0 }));
+                }
+            }
+            Request::Event(index) => { state.event = index; state.event_page = None; }
+            Request::EventPage(delta) => {
+                if let Some(event) = views.events.list.get(views.events.open) {
+                    state.event_page = Some((event.page as i32 + delta).clamp(0, event.pages.saturating_sub(1) as i32) as usize);
+                }
+            }
+            Request::Teleport => {
+                let key = net.events.get(state.event).map(|e| e.key.clone()).unwrap_or_default();
+                if let Some((map, entry)) = catalog.events.get(&key).and_then(|e| e.teleport.split_once(':')) {
+                    commands.push(ClientCommand::Travel(player::Travel { source: String::new(), map: map.to_owned(), entry: entry.to_owned(), force: false }));
+                }
+            }
+            // A premium offer's product key books it (the server's local payment
+            // provider); an item offer is bought from the item shop.
+            Request::Buy(offer) if offer.contains("realCurrency") => commands.push(ClientCommand::OcpBooking(proto::OcpBooking { offer, method: "external".into() })),
+            Request::Buy(offer) => {
+                commands.push(ClientCommand::Transaction(inventory::Transaction::buy(shop::ITEM_SHOP, &offer, 1)));
+                wait = true;
+            }
+            Request::Sort(column) => {
+                state.rank_sort = column;
+                state.rank_start = 0;
+                commands.extend(ranking_requests(&state, tabs.unwrap_or_default(), FILTER_ALL));
+            }
+            Request::Filter(bit) => {
+                state.rank_filters ^= bit;
+                state.rank_start = 0;
+                commands.extend(ranking_requests(&state, tabs.unwrap_or_default(), FILTER_ALL));
+            }
+            Request::MatchTab(tab) => state.matchmaking_tab = tab,
+            Request::ShopTab(tab) => {
+                state.shop_tab = tab;
+                state.scroll.remove(shop::OFFERS);
+                if tab == 1 && state.shop_category.get(1).is_none_or(|c| c.is_none()) {
+                    state.shop_category.resize(2, None);
+                    state.shop_category[1] = Some("Andermant".into());
+                }
+            }
+            Request::ShopCategory(category) => {
+                let tab = state.shop_tab;
+                if state.shop_category.len() <= tab { state.shop_category.resize(tab + 1, None); }
+                state.shop_category[tab] = Some(category);
+                state.scroll.remove(shop::OFFERS);
+            }
+            Request::Redeem => net.social_notes.push("Vouchers are not redeemed on this server.".to_owned()),
+            Request::Sticker(template) => commands.push(ClientCommand::UseStickerBookItem(inventory::UseStickerBookItem { template })),
+            // A second click on the sticker previewed uses it, if owned.
+            Request::Pick(id) => {
+                let owned = views.album.stickers.iter().any(|s| s.id == id && s.owned);
+                if state.album_sticker.as_ref() == Some(&id) && owned {
+                    commands.push(ClientCommand::UseStickerBookItem(inventory::UseStickerBookItem { template: id }));
+                } else {
+                    state.album_sticker = Some(id);
+                }
+            }
+            Request::AlbumBook(book, sticker) => {
+                state.album_book = Some(book);
+                state.album_sticker = sticker;
+                state.pages.remove(ALBUM);
+            }
+            Request::Banner(n) => state.album_banner = n,
+            Request::Favorite(id, favorite) => commands.push(ClientCommand::SetStickerbookFavorite(proto::SetStickerbookFavorite { id, favorite })),
+            Request::Upgrade(id) => commands.push(ClientCommand::UpgradeStickerbookItem(proto::UpgradeStickerbookItem { id })),
+            Request::AddSticker(id) => {
+                let sources = Sources { net: &net, catalog, items: None, state: &state, class: None };
+                let item = catalog.stickers.get(&id).into_iter().flat_map(|s| s.items.iter()).find_map(|t| sources.carried(t).first().copied());
+                if let Some(item) = item { commands.push(ClientCommand::AddStickerbookFromInventory(proto::AddStickerbookFromInventory { item })); wait = true; }
+            }
+            Request::Salvage => {
+                let items: Vec<u32> = state.salvage.iter().copied().filter(|id| net.inventory.items.contains_key(id)).collect();
+                if !items.is_empty() { commands.push(ClientCommand::Salvage(proto::Salvage { items, mode: 0 })); wait = true; }
+                state.salvage.clear();
+            }
+            Request::Unpick(index) => { if index < state.salvage.len() { state.salvage.remove(index); } }
+            Request::Socket(socket) => {
+                if let Some(target) = state.gem_target.filter(|id| net.inventory.items.get(id).is_some_and(|i| i.names.get(socket).is_some_and(|g| !g.is_empty()))) {
+                    commands.push(crate::gameplay::inventory::command(target, 0x14, vec![socket as i32]));
+                    wait = true;
+                }
+            }
+            Request::BuySocket => {
+                if let Some(target) = state.gem_target.filter(|id| net.inventory.items.contains_key(id)) {
+                    commands.push(crate::gameplay::inventory::command(target, 0x15, vec![]));
+                    wait = true;
+                }
+            }
+            // A category opens; clicked again, it closes.
+            Request::RecipeCategory(category) => {
+                state.recipe_category = if state.recipe_category.as_ref() == Some(&category) { None } else { Some(category) };
+                state.recipe = None;
+            }
+            Request::Recipe(id) => { state.recipe = Some(id).filter(|id| !id.is_empty()); state.craft_amount = 1; }
+            Request::WorkbenchTab(tab) => {
+                state.workbench_tab = tab;
+                state.recipe_category = None;
+                state.recipe = None;
+                state.scroll.remove(desks::LIST);
+            }
+            Request::WorkbenchFilter(0) => { state.workbench_craftable_only = !state.workbench_craftable_only; state.scroll.remove(desks::LIST); }
+            Request::WorkbenchFilter(_) => { state.workbench_locked_only = !state.workbench_locked_only; state.scroll.remove(desks::LIST); }
+            Request::CraftAmount(step) => {
+                let most = views.workbench.detail.as_ref().map_or(1, |d| d.most.max(1)) as i64;
+                state.craft_amount = match step {
+                    i32::MIN => 1,
+                    i32::MAX => most,
+                    step => (state.craft_amount.max(1) as i64 + step as i64).clamp(1, most),
+                } as u32;
+            }
+            // The chosen book's recipe, the amount chosen, a carried item of each
+            // ingredient (the server takes the amounts by template).
+            Request::Craft(andermant) => {
+                let sources = Sources { net: &net, catalog, items: None, state: &state, class: None };
+                if let Some(detail) = views.workbench.detail.as_ref().filter(|d| !d.locked && d.most > 0 && !d.recipe.is_empty()) {
+                    let mut items = Vec::new();
+                    for ingredient in &detail.ingredients {
+                        let carried = sources.carried(&ingredient.template);
+                        if let Some(item) = carried.iter().find(|id| !items.contains(*id)).or(carried.first()) { items.push(*item); }
+                    }
+                    if items.len() == detail.ingredients.len() {
+                        commands.push(ClientCommand::Crafting(proto::Crafting { items, currency: andermant as u8, slot: 0, amount: detail.amount.max(1), recipe: detail.recipe.clone(), mode: 0, ..default() }));
+                        wait = true;
+                    }
+                }
+            }
+            Request::Skin(id) => state.skin = Some(id),
+            // The chosen skin (or dye) on the picked slot's item; the old one
+            // named as removed (item_customization_protocol checks it).
+            Request::Apply => {
+                let item = state.skin_slot.and_then(|slot| net.inventory.at(Place::Equipment(slot)).map(|i| (slot, i.clone())));
+                if let (Some((slot, item)), Some(choice)) = (item, state.skin.clone()) {
+                    let change = if state.transmog_tab == 1 {
+                        proto::CustomizationChange { slot: slot_type(slot), apply_color: choice, remove_color: dye_of(&item), ..default() }
+                    } else {
+                        proto::CustomizationChange { slot: slot_type(slot), apply_skin: choice.clone(), remove_skin: item.fourth_name.clone(), skin: choice, ..default() }
+                    };
+                    commands.push(ClientCommand::ApplyItemCustomization(proto::ApplyItemCustomization { changes: vec![change] }));
+                    wait = true;
+                }
+            }
+            Request::TransmogReset(slot) => {
+                if let Some(item) = net.inventory.at(Place::Equipment(slot)).cloned() {
+                    let change = if state.transmog_tab == 1 {
+                        proto::CustomizationChange { slot: slot_type(slot), remove_color: dye_of(&item), ..default() }
+                    } else {
+                        proto::CustomizationChange { slot: slot_type(slot), remove_skin: item.fourth_name.clone(), ..default() }
+                    };
+                    if !change.remove_color.is_empty() || !change.remove_skin.is_empty() {
+                        commands.push(ClientCommand::ApplyItemCustomization(proto::ApplyItemCustomization { changes: vec![change] }));
+                        wait = true;
+                    }
+                }
+            }
+            Request::TransmogTab(tab) => {
+                state.transmog_tab = tab;
+                state.skin = None;
+                state.pages.remove(TRANSMOG);
+            }
+            Request::TransmogSlot(slot) => {
+                state.skin_slot = Some(slot);
+                state.skin = None;
+                state.pages.remove(TRANSMOG);
+            }
+            Request::TransmogFilter(0) => { state.transmog_owned = !state.transmog_owned; state.pages.remove(TRANSMOG); }
+            Request::TransmogFilter(_) => { state.transmog_shop = !state.transmog_shop; state.pages.remove(TRANSMOG); }
+            Request::AchievementCategory(category) => {
+                state.achievement_category = Some(category).filter(|c| !c.is_empty());
+                state.achievement_open = None;
+                state.scroll.remove(log::ROWS);
+            }
+            Request::Achievement(id) => state.achievement_open = if state.achievement_open.as_ref() == Some(&id) { None } else { Some(id) },
+            Request::Scroll(key, rows) => {
+                let most = scroll_limit(&key, &views, &quests);
+                let entry = state.scroll.entry(key).or_default();
+                *entry = (*entry as i32 + rows).clamp(0, most as i32) as usize;
+            }
+            Request::Daily(id, refresh) => commands.push(ClientCommand::DailyChallengeSelection(proto::DailyChallengeSelection { id, refresh })),
+            Request::Wanted(slot) => commands.push(ClientCommand::AcceptWantedThiefMission(proto::WantedThiefSlot { slot })),
+            Request::WantedRefresh(slot) => commands.push(ClientCommand::RefreshWantedThiefMission(proto::WantedThiefSlot { slot })),
+            Request::Title(kind, title) => {
+                commands.push(ClientCommand::SetTitle(proto::SetTitle { kind, title: title.clone() }));
+                state.title = Some((kind, title));
+            }
+            Request::Turn(window, delta) => {
+                let last = match window {
+                    ALBUM => views.album.pages,
+                    _ => views.transmog.choices.len().div_ceil(transmog::per_page(views.transmog.tab)),
+                }.max(1) - 1;
+                let page = state.pages.entry(window).or_default();
+                *page = (*page as i32 + delta).clamp(0, last as i32) as usize;
+            }
+        }
+    }
+    if net.offline || commands.is_empty() { return; }
+    for command in &commands { net.send(command); }
+    if wait { state.pending = Some((net.inventory.revision, time.elapsed_secs_f64())); }
+}
+
+/// An item's dye (ItemInfo.named, "none" without one).
+fn dye_of(item: &inventory::ItemInfo) -> String {
+    if item.named == "none" { String::new() } else { item.named.clone() }
+}
+
+/// A desk's pick of a carried or worn item (crate::ui::controls::items::input:
+/// a right click while the desk is open): true when taken.
+pub(in crate::ui) fn pick(state: &mut State, desk: &str, net: &Net, item: &inventory::ItemInfo, category: &str) -> Option<ClientCommand> {
+    let carried = matches!(net.inventory.location(item.id), Some(Place::Bag(_) | Place::Extra(_)));
+    let worn = matches!(net.inventory.location(item.id), Some(Place::Equipment(_)));
+    match desk {
+        SALVAGE if carried && !state.salvage.contains(&item.id) && state.salvage.len() < desks::SALVAGE_SLOTS => { state.salvage.push(item.id); None }
+        GEMDESK if matches!(category, "EquipmentGem" | "EquipmentJewel" | "EquipmentRune") && carried => {
+            // A gem goes into the desk's item's first free socket (op 0x11).
+            let target = net.inventory.items.get(&state.gem_target?)?;
+            let socket = target.names.iter().position(|g| g.is_empty()).filter(|s| *s < target.tenth as usize)?;
+            Some(crate::gameplay::inventory::command(item.id, 0x11, vec![target.id as i32, socket as i32]))
+        }
+        GEMDESK if carried || worn => { state.gem_target = Some(item.id); None }
+        TRANSMOG if worn => {
+            if let Some(Place::Equipment(slot)) = net.inventory.location(item.id) { state.skin_slot = Some(slot); }
+            state.skin = None;
+            None
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An audit of the real layouts (needs the converted assets): every button
+    /// a window offers once prepared, its action and whether its page shows.
+    /// `cargo test -p dsor-client audit_buttons -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn audit_buttons() {
+        let filter = std::env::var("DSOR_AUDIT").unwrap_or_default();
+        for name in [LEADERBOARDS, MATCHMAKING, SHOP, EVENTS, ALBUM, TRANSMOG, SALVAGE, GEMDESK, WORKBENCH, QUESTLOG, SHEET, super::super::quests::TRACKER] {
+            if !filter.is_empty() && !filter.split(',').any(|f| f == name) { continue; }
+            let Ok(bytes) = std::fs::read(format!("../assets/interface/{name}.ui.json")) else { println!("{name}: no layout"); continue };
+            let source: Layout = serde_json::from_slice(&bytes).unwrap();
+            let layout = prepare(&source, &Views::default(), &super::super::quests::Quests::default()).unwrap_or(source);
+            let controls = WindowControls::new(&layout);
+            println!("== {name}: {} buttons", controls.buttons.len());
+            for b in &controls.buttons {
+                let shown = controls.section_visible(b.section);
+                println!("  {:<11} {:<5} k={:.1} {:?} {}", format!("{:?}", b.action).chars().take(40).collect::<String>().split('(').next().unwrap_or(""), if shown { "shown" } else { "page" }, b.k, b.action, b.id);
+            }
+        }
+    }
+
+    fn widget(event: &str, id: &str) -> Widget {
+        let layout = super::super::template::fixture::layout("w", &[(id, "Button", false)]);
+        let mut w = layout.widgets[0].clone();
+        w.event = event.into();
+        w
+    }
+
+    #[test]
+    fn events_name_their_requests() {
+        assert_eq!(action(ALBUM, &widget("Sys:Favorite:sb_x:1", "a/b")), Some(Action::System(Request::Favorite("sb_x".into(), true))));
+        assert_eq!(action(ALBUM, &widget("Sys:Sticker:sb_x", "a/b")), Some(Action::System(Request::Sticker("sb_x".into()))));
+        assert_eq!(action(QUESTLOG, &widget("Sys:Daily:bonus_1:0", "a/b")), Some(Action::System(Request::Daily("bonus_1".into(), false))));
+        assert_eq!(action(GEMDESK, &widget("SocketButton", "Canvas/BackGroundLabel/SocketsBackgroundLabel/SocketsLabel/Socket2/Button")), Some(Action::System(Request::Socket(2))));
+        assert_eq!(action(EVENTS, &widget("", "Canvas/Eventwindow/TabBarLabel/TabEvent3")), Some(Action::System(Request::Event(3))));
+        assert_eq!(action(LEADERBOARDS, &widget("PagePlayer", "a/ScrollToMe")), Some(Action::System(Request::Page(Paging::Player))));
+        assert_eq!(action(SHEET, &widget("ShowPVPTitle", "a/RadioButtonShowPVPTitle")), Some(Action::System(Request::Title(2, String::new()))));
+        assert_eq!(action("inventory", &widget("Close", "a/b")), None);
+    }
+
+    #[test]
+    fn opening_windows_ask_the_server_and_the_boards_follow_their_tabs() {
+        let state = State::default();
+        assert!(matches!(&opening(SHOP, &state, None)[..], [ClientCommand::OcpOfferRequest(_), ClientCommand::RequestOffer(r)] if r.by_name && r.shop == shop::ITEM_SHOP));
+        assert!(matches!(&opening(EVENTS, &state, None)[..], [ClientCommand::ActiveEvents(_), ClientCommand::RequestOffer(r)] if r.shop == shop::ITEM_SHOP));
+        let overall = ranking_requests(&state, (0, 0, 0), FILTER_ALL);
+        assert!(matches!(&overall[0], ClientCommand::OverallRankingRequest(r) if r.class == EVERY_CLASS && r.count == PAGE_ROWS && r.start == 0));
+        let honour = ranking_requests(&state, (0, 1, 2), FILTER_PLAYER_PAGE);
+        assert!(matches!(&honour[0], ClientCommand::HonorRankingRequest(r) if r.board == LIFETIME_BOARD && r.class == 1 && r.start == UNRANKED && r.flags == FILTER_PLAYER_PAGE));
+        assert!(matches!(&honour[1], ClientCommand::LocalRankingRequest(r) if r.board == LIFETIME_BOARD));
+        assert_eq!(slot_type(7), 12);
+        assert_eq!(slot_type(3), 3);
+    }
+}

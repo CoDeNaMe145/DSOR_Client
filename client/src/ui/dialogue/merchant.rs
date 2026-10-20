@@ -25,7 +25,7 @@ impl Price {
     fn width(&self) -> f32 { 22.0 + self.amount.to_string().len() as f32 * 6.0 }
 }
 #[derive(Clone, PartialEq, Eq)]
-pub(super) struct MerchantItem { name: String, icon: String, background: String, frame: String, amount: u32, prices: Vec<Price> }
+pub(super) struct MerchantItem { name: String, icon: String, background: String, frame: String, amount: u32, prices: Vec<Price>, action: Option<Action> }
 #[derive(Clone, PartialEq, Eq)]
 pub(super) struct MerchantView {
     pub items: Vec<MerchantItem>,
@@ -33,7 +33,7 @@ pub(super) struct MerchantView {
     category: Option<u16>,
     pub buyback: bool,
     usable: bool,
-    can_sell: bool,
+    pub can_sell: bool,
     pub page: usize,
     pages: usize,
     row_height: u32,
@@ -48,6 +48,11 @@ impl MerchantView {
         }
         if self.page > 0 { choices.push(Choice::new("Previous page", "talk", Action::Previous)); }
         if self.page + 1 < self.pages { choices.push(Choice::new("Next page", "talk", Action::Next)); }
+        // Each card is a choice of its own: a click buys the offer or buys the
+        // stack back; the hover caption is the item's name.
+        for item in &self.items {
+            if let Some(action) = &item.action { choices.push(Choice::new(&item.name, "shop", action.clone())); }
+        }
     }
 }
 
@@ -125,7 +130,7 @@ pub(super) fn build(offers: Option<&inventory::Offer>, selection: &Selection, pa
                 let (icon, background, frame) = items.map(|c| c.icon_parts(&item.template, Some(item))).unwrap_or_default();
                 cards.push(MerchantItem { name: def.map(|d| d.name.clone()).unwrap_or_else(|| readable(&item.template)),
                     icon: icon.unwrap_or_default().into(), background: background.unwrap_or_default().into(), frame: frame.unwrap_or_default().into(),
-                    amount: item.third, prices: vec![] });
+                    amount: item.third, prices: vec![], action: Some(Action::Restore(item.id)) });
             }
         } else {
             for offer in offers.offers.iter().flatten().filter(|o| Some(o.category) == category) {
@@ -150,7 +155,7 @@ pub(super) fn build(offers: Option<&inventory::Offer>, selection: &Selection, pa
                     else { Some(c.background.as_str()) }).or(background).unwrap_or_default().into();
                 let frame = config.map(|c| c.frame.as_str()).filter(|f| !f.is_empty()).or(frame).unwrap_or_default().into();
                 cards.push(MerchantItem { name: def.map(|d| d.name.clone()).unwrap_or_else(|| readable(&offer.item)), icon, background, frame,
-                    amount: offer.amount, prices: prices(offer, &offers.shop, catalog) });
+                    amount: offer.amount, prices: prices(offer, &offers.shop, catalog), action: Some(Action::Buy(offer.id.clone())) });
             }
         }
     }
@@ -230,7 +235,7 @@ pub(super) fn prepare(source: &Layout, view: &View, merchant: &MerchantView, lay
                     w.art = (!category.icon.is_empty()).then(|| image_art(w.rect, category.icon.clone()));
                     if category.icon.is_empty() {
                         w.text = Some(Label { text: category.name.clone(), key: "gui.runtime.dialogue".into(), size: 7.0,
-                            color: [0.9, 0.78, 0.54, 1.0], align: [1, 1], bold: false, word_break: true });
+                            color: [0.9, 0.78, 0.54, 1.0], align: [1, 1], bold: false, word_break: true, outline: Vec::new() });
                     }
                 }
                 selected(&mut w, Some(*code) == merchant.category);
@@ -245,6 +250,10 @@ pub(super) fn prepare(source: &Layout, view: &View, merchant: &MerchantView, lay
         for widget in source.widgets.iter().filter(|w| w.id == ENTRY || w.id.starts_with(&format!("{ENTRY}/"))) {
             if ["/MoneyDisplay", "/FlagDiscount", "/LabelDiscount"].iter().any(|p| widget.id.contains(p)) { continue; }
             let mut w = clone_widget(widget, ENTRY, &replacement);
+            if widget.id == ENTRY {
+                // The authored card is a label; as a button its whole area orders.
+                if let Some(action) = &item.action { w.kind = "Button".into(); event(&mut w, view, action.clone()); }
+            }
             if widget.id == ENTRY && merchant.row_height > 64 {
                 map_widget(&mut w, |x| x, |y| stretch(y, 202.0, 223.38, (merchant.row_height - 64) as f32));
             }
@@ -334,6 +343,7 @@ mod tests {
         let first = build(Some(&shop), &Selection::default(), 0, None, &Catalog::default(), None, None);
         assert_eq!(first.tabs.iter().map(|(id, _)| *id).collect::<Vec<_>>(), [46, 4, 7]);
         assert_eq!(first.items[0].name, "Misc");
+        assert_eq!(first.items[0].action, Some(Action::Buy("misc".into())));
         let selection = Selection { category: Some(4), ..default() };
         let last = build(Some(&shop), &selection, 99, None, &Catalog::default(), None, None);
         assert_eq!((last.page, last.pages, last.items.len()), (2, 3, 1));
@@ -391,6 +401,10 @@ mod tests {
         assert!(result.buyback);
         assert_eq!(result.items[0].name, "Sold");
         assert_eq!(result.items[0].amount, 2);
+        assert_eq!(result.items[0].action, Some(Action::Restore(91)));
+        let mut choices = Vec::new();
+        result.choices(&mut choices);
+        assert!(choices.iter().any(|c| c.label == "Sold" && c.action == Action::Restore(91)));
     }
 
     #[test]

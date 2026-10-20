@@ -27,8 +27,9 @@ page, so the web server must serve the same tree next to `index.html`.
 
 ### Audio preparation
 
-The converter also runs `tools/export_audio.py` to prepare the original audio
-for later playback work. Install [vgmstream-cli](https://github.com/vgmstream/vgmstream/releases)
+The converter runs `tools/export_audio.py` to prepare the original audio and
+`tools/export_audio_runtime.py` to bind game events and map audio to those samples.
+Install [vgmstream-cli](https://github.com/vgmstream/vgmstream/releases)
 (tested with r2117), including its companion libraries. Put it on `PATH`, set
 `DSOR_VGMSTREAM` to the executable, or unpack it into `.local/vgmstream/`.
 The Windows conversion wrapper uses the same exporter. For an existing asset
@@ -36,7 +37,17 @@ pack, run only:
 
 ```sh
 python tools/export_audio.py <export_win32> <assets> --vgmstream /path/to/vgmstream-cli
+python tools/export_audio_runtime.py <export_win32> <assets>
 ```
+
+Some client exports contain stripped banks with no events or samples (including
+the bank used by the lava hound's footsteps). If a complete older export is
+available, pass `--fallback-root <older_export_win32>` to `export_audio.py`, or
+set `DSOR_AUDIO_FALLBACK_ROOT` when running the full converter. Only completely
+empty banks with matching original bank GUIDs are restored; event-only banks
+remain intact. The source trees are read-only, and the catalog records each
+restored bank's provenance. Use the same fallback on subsequent conversions;
+the local Windows wrapper already supplies it.
 
 Every source file under `export_win32/audio` is retained in `audio/source/`,
 including event-only banks, `eventbankmapping.txt`, and animation `hotspots.xml`.
@@ -50,16 +61,86 @@ Numbered filenames preserve duplicate variants and avoid unsafe source names.
 paths, a `banks` map with each bank's `samples`, and an `event_banks` map from
 event names to bank names. Sample entries include the original name, index,
 sample rate, channel count, frame count, codec, and decoder loop metadata.
-The event map identifies banks; reconstructing each FMOD event's selection,
-layering, timing, and mixing remains part of the later playback implementation.
-Original banks are retained for that work.
+That catalog identifies banks. The runtime exporter additionally follows FMOD
+event, timeline, instrument and waveform GUID references across banks, without
+following shared buses into unrelated events. It writes `audio/runtime.audio.json`
+with sample bindings, loop/polyphony metadata, and every DB4 map's music, ambient
+beds, positioned sound objects, music areas, layers and event gates. Cue names
+with `event:/` prefixes are normalized. `audio/runtime-report.json` lists map
+cues that cannot be resolved; the client skips them. With the older-bank fallback,
+the local pack contains 4,619 resolved events across 391 maps, with 14 distinct
+unresolved map cues (3,431 events and 41 unresolved map cues before restoration).
+
+The runtime export also reads `audio/hotspots.xml` and NAX3 sound markers. The
+marker category is the hotspot index, so silent slots and out-of-order markers
+must be retained. Skin and character-set bindings select the original NPC,
+creature and mount sounds. Run this stage after model conversion so character
+set sidecars are available. Cosmetic sets without their own binding use the
+most common binding for the same model and movement clip; explicit silent bindings stay
+silent. The current pack has movement bindings for 219 of 252 mount definitions;
+the remaining definitions, including test mounts and newer models, lack authored
+movement markers or bindings and remain silent. A binding is playable only when
+its event resolves to extracted samples: inspect `unresolved_animation_events`
+in `audio/runtime-report.json` as well as the animation markers when diagnosing
+missing footsteps.
 
 Reruns reuse unchanged banks after checking their WAV headers and sizes; missing
 or truncated WAVs are regenerated. `--force` decodes everything again, and
 `--workers N` controls parallel decoding (default 4). Missing input, missing
 decoder, malformed banks, and incomplete decoding fail the conversion rather
 than publishing a successful catalog. Audio stays inside the gitignored asset
-tree used by native and web builds. The client does not play these files yet.
+tree used by native and web builds.
+
+The client uses one stereo output stream and 64 reusable voices: two music
+voices for crossfades, fourteen ambience voices, and forty-eight effect voices.
+PCM16 sample buffers are shared across simultaneous casts. A 128 MiB LRU cache
+counts pending loads against its budget, allows four concurrent loads, and never
+evicts a playing buffer. Current-class spell variants are warmed within a 32 MiB
+allowance. Effect requests are capped at 128, expire after 250 ms, and have a
+35 ms per-emitter/event cooldown plus the authored event's voice limit (capped
+at eight). Saturation drops excess effects; it cannot take music slots. The
+mixer resamples to 48 kHz, interpolates samples, fades starts/stops, and limits
+the combined output to prevent clipping. Positioned sounds attenuate to silence
+at 45 metres and pan relative to the camera, using the player as listener.
+
+Music and ambience continue throughout map loading, including gaps with no map
+or player. Destination background samples preload behind the overlay; once the
+map is ready, each outgoing bed fades over 1.5 seconds as its replacement starts.
+Music also blends into ambience-only destinations. Four ambience slots are
+reserved for overlapping background beds, so busy sound objects cannot block a
+transition. Enabled music areas override the default track. Inactive or gated
+sound objects stay silent, and only the nearest ten audible objects receive voices.
+Non-looping ambient cues recur with a 5–11 second gap. Sequence sound tracks
+preserve cue names, volumes and loop lifetime, including remote actors; repeated
+requests for an existing owned loop reuse its voice. Master, music, ambience,
+effects and mute controls live in Settings → Audio and follow Apply/Cancel.
+HUD buttons use the original click/close cues as one-shots, overriding authored
+loop flags so an ownerless UI voice always finishes and releases its slot.
+Animation markers trigger spatial one-shots for NPC actions (including smiths'
+hammer strikes), decorative actors, footsteps, creatures and mounts. They follow
+the active clip and animation speed, including NPC pose LOD, and skip stale
+markers after hitches or teleports. The rider does not duplicate mount sounds.
+These sounds share the bounded effects pool and PCM cache; nearby clips warm
+their samples before the next marker. Equipment sounds follow confirmed local
+inventory slot changes, once per swap, with separate armor, weapon and jewelry
+cues. Initial inventory snapshots and unchanged closing packets stay silent.
+Browser audio resumes on the first
+click or key press.
+
+This is a sample-based player, not an FMOD Studio interpreter: an event's reachable
+samples currently serve as variants. Layered instrument timing, parameter-driven
+music stems, authoring DSP/reverb and scripted activation of disabled sound
+objects are not reconstructed. Original banks and map reverb names are preserved
+for extending those behaviours. Music stays in the bounded PCM cache rather than
+streaming from disk; oversized samples are skipped with a warning.
+
+To browse the extracted soundtrack, run `python tools/collect_music.py <assets>`.
+It groups byte-identical music samples, gives the WAVs descriptive filenames,
+and writes `audio/music/music.m3u8` for tracks lasting at least 30 seconds.
+`all_music.m3u8` includes shorter cues and jingles; `tracks.csv` lists durations
+and source banks. Change the main playlist cutoff with `--min-seconds`.
+The collection uses hard links where supported, so it needs no second copy of
+the audio; edits to a linked WAV also affect its original sample.
 
 ### Updating model and character data
 
@@ -149,6 +230,7 @@ interactions still require their gameplay UI/controller implementations.
 | `maps/<map>.map.json` | one placement manifest per client `.map` (format below). |
 | `maps/<map>.ambience.json` | the level's global light, post effect (fog, bloom, saturation, vignette) and placed lights (`tools/export_ambience.py`). |
 | `audio/source/`, `audio/samples/`, `audio/catalog.json` | original audio banks and metadata, decoded WAV samples, and lookup catalog (`tools/export_audio.py`). |
+| `audio/runtime.audio.json`, `audio/runtime-report.json` | game event/sample bindings, audio for every map, and unresolved cue names (`tools/export_audio_runtime.py`). |
 | `textures/**/<name>.cube.png` | cube maps, six faces stacked top to bottom (+X -X +Y -Y +Z -Z), `tools/embed_textures.py`. |
 | `maps/build_map.gd` | DSO_Godot's Godot-side builder; ignored here. |
 | `logs/` | conversion logs and `export_report.json`. |

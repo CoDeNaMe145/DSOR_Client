@@ -9,6 +9,8 @@ use bevy::window::PrimaryWindow;
 
 use crate::{actors::character::CharacterAnim, world::map::CurrentMap, network::net::LocalPlayer};
 
+pub(crate) mod readiness;
+
 const SPLASH: &str = "textures/ui/splashart_crunch.png";
 const BAR: &str = "textures/ui/statusbar_connenctscreen_new.png";
 
@@ -31,6 +33,10 @@ pub struct LoadingScreen {
 impl LoadingScreen {
     pub fn active(&self) -> bool { self.work.is_some() }
 
+    pub(crate) fn map_active(&self) -> bool { self.error.is_none() && matches!(self.work, Some(Work::Map(_))) }
+
+    pub(crate) fn fail(&mut self, message: String) { self.error = Some(message); }
+
     /// Future preloaders can submit any typed asset handles via `.untyped()`.
     /// Dependencies and failures are counted too; failed optional assets must
     /// not keep a batch open forever.
@@ -49,6 +55,7 @@ impl LoadingScreen {
     pub fn cancel(&mut self) { *self = Self::default(); }
 
     fn advance(&mut self, fraction: f32, ready: bool, renderer_ready: bool, dt: f32) {
+        if self.error.is_some() { return; }
         self.progress = self.progress.max(fraction.clamp(0.0, 0.98));
         if ready && renderer_ready {
             self.stable += dt.min(0.1);
@@ -72,9 +79,9 @@ pub fn gameplay_ready(login: Option<Res<crate::LoginGate>>, loading: Res<Loading
 }
 
 #[derive(Resource, Clone, Default)]
-struct RendererBusy(Arc<AtomicBool>);
+pub(crate) struct RendererBusy(Arc<AtomicBool>);
 #[derive(Resource)]
-struct Art { splash: Handle<Image>, bar: Handle<Image>, font: Handle<Font> }
+pub(crate) struct Art { splash: Handle<Image>, bar: Handle<Image>, font: Handle<Font> }
 #[derive(Component)] struct Root;
 #[derive(Component)] struct Splash;
 #[derive(Component)] struct Bar;
@@ -88,9 +95,12 @@ impl Plugin for LoadingPlugin {
         let busy = RendererBusy::default();
         app.insert_resource(busy.clone())
             .init_resource::<LoadingScreen>()
+            .init_resource::<readiness::SceneReadiness>()
             .add_systems(Startup, setup)
             .add_systems(PreUpdate, track_map.after(crate::network::net::NetReceive))
-            .add_systems(PostUpdate, (update_progress, paint, exit_failed).chain().before(bevy::ui::UiSystems::Layout));
+            .add_systems(PostUpdate, readiness::check.after(TransformSystems::Propagate).before(update_progress))
+            .add_systems(PostUpdate, (update_progress, paint, exit_failed).chain().before(bevy::ui::UiSystems::Layout))
+            .add_plugins(crate::rendering::warmup::WarmupPlugin);
         if let Some(render) = app.get_sub_app_mut(RenderApp) {
             render.insert_resource(busy).add_systems(Render,
                 renderer_busy.after(RenderSystems::Render).before(RenderSystems::Cleanup));
@@ -147,18 +157,26 @@ fn track_map(current: Option<Res<CurrentMap>>, mut loading: ResMut<LoadingScreen
     }
 }
 
-fn settled(assets: &AssetServer, handle: &UntypedHandle) -> bool {
-    matches!(assets.get_load_state(handle.id()), Some(LoadState::Failed(_))) ||
-        matches!(assets.get_recursive_dependency_load_state(handle.id()),
+pub(crate) fn asset_failed(assets: &AssetServer, id: bevy::asset::UntypedAssetId) -> bool {
+    matches!(assets.get_load_state(id), Some(LoadState::Failed(_))) ||
+        matches!(assets.get_recursive_dependency_load_state(id), Some(RecursiveDependencyLoadState::Failed(_)))
+}
+
+pub(crate) fn asset_settled(assets: &AssetServer, id: bevy::asset::UntypedAssetId) -> bool {
+    asset_failed(assets, id) ||
+        matches!(assets.get_recursive_dependency_load_state(id),
             Some(RecursiveDependencyLoadState::Loaded | RecursiveDependencyLoadState::Failed(_)))
 }
 
+fn settled(assets: &AssetServer, handle: &UntypedHandle) -> bool { asset_settled(assets, handle.id()) }
+
 #[allow(clippy::too_many_arguments)]
-fn update_progress(mut commands: Commands, mut loading: ResMut<LoadingScreen>, current: Option<Res<CurrentMap>>,
-    assets: Res<AssetServer>, player: Query<&CharacterAnim, With<LocalPlayer>>,
+pub(crate) fn update_progress(mut commands: Commands, mut loading: ResMut<LoadingScreen>, current: Option<Res<CurrentMap>>,
+    assets: Res<AssetServer>, player: Query<(&CharacterAnim, &crate::actors::character::Character), With<LocalPlayer>>,
     online: Option<Res<crate::network::net::NetActive>>, failure: Option<Res<crate::network::net::ConnectionFailure>>,
     art: Res<Art>, busy: Res<RendererBusy>, time: Res<Time<Real>>, props: Option<Res<crate::world::props::PropScene>>,
-    selection: Option<Res<crate::screens::selection::Selection>>, previews: Query<(&CharacterAnim, &crate::actors::character::Character), With<crate::screens::selection::Preview>>) {
+    selection: Option<Res<crate::screens::selection::Selection>>, previews: Query<(&CharacterAnim, &crate::actors::character::Character), With<crate::screens::selection::Preview>>,
+    readiness: Res<readiness::SceneReadiness>, warmup: Res<crate::rendering::warmup::Warmup>, mut report_at: Local<f64>) {
     if !loading.active() { return; }
     let (fraction, ready) = match loading.work.as_ref().unwrap() {
         Work::Assets(handles) => {
@@ -177,16 +195,23 @@ fn update_progress(mut commands: Commands, mut loading: ResMut<LoadingScreen>, c
             let map_ready = current.spawned && done == total && props.as_ref().is_none_or(|p| p.ready(current, &assets));
             let player_ready = if name == crate::screens::selection::MAP {
                 selection.as_ref().is_some_and(|s| s.active && (s.characters.is_empty() || previews.iter().any(|(a, c)| a.is_ready() && c.outfit_ready())))
-            } else { online.is_none() || player.iter().any(CharacterAnim::is_ready) };
-            let fraction = if total == 0 { 0.0 } else { done as f32 / total as f32 * 0.9 };
-            (fraction + if map_ready && player_ready { 0.1 } else { 0.0 }, map_ready && player_ready)
+            } else { (online.is_none() && player.is_empty()) || player.iter().any(|(a, c)| a.is_ready() && c.outfit_ready()) };
+            let fraction = if total == 0 { 0.0 } else { done as f32 / total as f32 * 0.75 };
+            let ready = map_ready && player_ready && readiness.ready && warmup.ready();
+            (fraction + readiness.fraction * 0.15 + if warmup.ready() { 0.1 } else { 0.0 }, ready)
         }
     };
     if !matches!(loading.work, Some(Work::Assets(_))) {
         if let Some(failure) = failure { loading.error = Some(failure.0.clone()); return; }
     }
     let art_ready = [&art.splash, &art.bar].iter().all(|h| settled(&assets, &(*h).clone().untyped()));
+    let was_map = loading.map_active();
+    if was_map && time.elapsed_secs_f64() - *report_at > 5. {
+        *report_at = time.elapsed_secs_f64();
+        info!("loading readiness: {}, progress {:.0}%", readiness.stage, fraction * 100.);
+    }
     loading.advance(fraction, ready && art_ready, !busy.0.load(Ordering::Relaxed), time.delta_secs());
+    if was_map && !loading.active() { info!("loading screen: ready (scene, class assets and rendering warm-up complete)"); }
 }
 
 fn cover(view: Vec2, image: Vec2) -> Vec2 { image * (view.x / image.x).max(view.y / image.y) }
@@ -235,6 +260,20 @@ fn exit_failed(loading: Res<LoadingScreen>, interactions: Query<&Interaction, (W
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn failed_loading_stays_visible_and_stops_map_work_until_reset() {
+        let mut loading = LoadingScreen::default();
+        loading.map("first".into());
+        loading.fail("failed graphics".into());
+        for _ in 0..10 { loading.advance(1.0, true, true, 0.1); }
+        assert!(loading.active());
+        assert!(!loading.map_active());
+        assert_eq!(loading.error.as_deref(), Some("failed graphics"));
+        loading.map("second".into());
+        assert!(loading.map_active());
+        assert!(loading.error.is_none());
+    }
+
     #[test]
     fn completion_waits_for_map_and_renderer_then_resets_for_next_map() {
         let mut loading = LoadingScreen::default();

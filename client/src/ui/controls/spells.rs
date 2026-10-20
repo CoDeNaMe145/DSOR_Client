@@ -76,12 +76,13 @@ pub(super) struct DropSpell {
     spell: Spell,
     source: Option<usize>,
     bar: usize,
-    target: usize,
+    /// None removes a spell dragged out of the action bar.
+    target: Option<usize>,
 }
 
 /// Returns true when release belongs to a drag, so it cannot also cast a spell.
 pub(super) fn drag(pointer: &mut Pointer, windows: &Windows, mouse: &ButtonInput<MouseButton>,
-    hit: Option<(Entity, usize)>, point: Option<Vec2>, allowed: bool) -> bool {
+    hit: Option<(Entity, usize)>, over: Option<Entity>, point: Option<Vec2>, allowed: bool) -> bool {
     let bar = windows.iter().find(|(_, n, _, v, _)| n.0 == "bottombar" && **v != Visibility::Hidden);
     let editable = allowed && bar.is_some_and(|(_, _, c, _, _)| !c.locked && c.spells.ready);
     if mouse.just_pressed(MouseButton::Left) {
@@ -121,9 +122,12 @@ pub(super) fn drag(pointer: &mut Pointer, windows: &Windows, mouse: &ButtonInput
                     let (_, name, c, _, _) = windows.get(root).unwrap();
                     if name.0 == "bottombar" && editable {
                         if let Action::Skill(target) = c.buttons[button].action {
-                            pointer.spell_drop = Some(DropSpell { spell: d.spell, source: d.source, target, bar: d.bar });
+                            pointer.spell_drop = Some(DropSpell { spell: d.spell.clone(), source: d.source, target: Some(target), bar: d.bar });
                         }
                     }
+                }
+                if d.source.is_some() && point.is_some() && bar.is_some_and(|(root, _, _, _, _)| Some(root) != over) {
+                    pointer.spell_drop = Some(DropSpell { spell: d.spell, source: d.source, target: None, bar: d.bar });
                 }
                 pointer.down = None;
                 return true;
@@ -137,20 +141,30 @@ pub(super) fn drag(pointer: &mut Pointer, windows: &Windows, mouse: &ButtonInput
 /// Refuse incomplete snapshots and stale source slots rather than replacing
 /// unseen item/essence slots with guessed empty entries.
 fn edited_bar(slots: &[Slot], drop: &DropSpell) -> Option<Vec<Slot>> {
-    if slots.len() != BAR_SIZE || drop.target >= VISIBLE_SLOTS { return None; }
+    if slots.len() != BAR_SIZE || drop.target.is_some_and(|target| target >= VISIBLE_SLOTS) { return None; }
     let mut edited = slots.to_vec();
     if let Some(source) = drop.source {
         if source >= VISIBLE_SLOTS || slots[source].kind != 0 || slots[source].id.as_ref() != Some(&drop.spell.id) { return None; }
-        edited.swap(source, drop.target);
+        if let Some(target) = drop.target { edited.swap(source, target); }
+        else { edited[source] = Slot { kind: Slot::EMPTY, id: None }; }
     } else {
-        edited[drop.target] = Slot { kind: 0, id: Some(drop.spell.id.clone()) };
+        edited[drop.target?] = Slot { kind: 0, id: Some(drop.spell.id.clone()) };
     }
     (edited != slots).then_some(edited)
 }
 
 pub(in crate::ui) fn apply_drop(mut pointer: ResMut<Pointer>, net: Option<NonSendMut<crate::network::net::Net>>) {
-    let Some(drop) = pointer.spell_drop.take() else { return };
     let Some(mut net) = net else { return };
+    // A talent card buys one rank; a preset button switches the category's preset
+    // (DSOR_Server services/talents.py answers with the effects and the selection,
+    // or a snapshot when it refuses).
+    if let Some(talent) = pointer.talent.take() {
+        if !net.offline { net.send(&dsor_proto::commands::ClientCommand::SelectTalent(dsor_proto::commands::inventory::SelectTalent { talent, ranks: 1 })); }
+    }
+    if let Some((preselection, category)) = pointer.preset.take() {
+        if !net.offline { net.send(&dsor_proto::commands::ClientCommand::TalentPreselection(dsor_proto::commands::inventory::TalentPreselection { preselection, category })); }
+    }
+    let Some(drop) = pointer.spell_drop.take() else { return };
     if drop.source.is_none() && !net.offline && !drop.spell.wire.is_some_and(|wire|
         net.skill_book.as_ref().is_some_and(|b| b.entries.iter().any(|e| e.skill == wire && e.owned && !e.unknown_flag_1))) { return; }
     if net.offline && net.quickbars.bars.is_empty() {
@@ -233,11 +247,11 @@ mod tests {
         slots[0] = Slot { kind: 0, id: Some("magicmissile".into()) };
         slots[2] = Slot { kind: 1, id: Some("healing_potion".into()) };
         slots[16] = Slot { kind: 2, id: Some("essence".into()) };
-        let drop = DropSpell { bar: 0, spell: spell(), source: None, target: 3 };
+        let drop = DropSpell { bar: 0, spell: spell(), source: None, target: Some(3) };
         let edited = edited_bar(&slots, &drop).unwrap();
         assert_eq!(edited[3], slots[0]);
         for i in 0..BAR_SIZE { if i != 3 { assert_eq!(edited[i], slots[i]); } }
-        let swap = DropSpell { source: Some(0), target: 2, ..drop };
+        let swap = DropSpell { source: Some(0), target: Some(2), ..drop };
         let edited = edited_bar(&slots, &swap).unwrap();
         assert_eq!(edited[0], slots[2]);
         assert_eq!(edited[2], slots[0]);
@@ -254,14 +268,64 @@ mod tests {
         let mut slots = vec![Slot { kind: Slot::EMPTY, id: None }; BAR_SIZE];
         slots[16] = Slot { kind: 2, id: Some("essence".into()) };
         let other = vec![Slot { kind: 1, id: Some("item".into()) }; BAR_SIZE];
-        app.world_mut().non_send_resource_mut::<crate::network::net::Net>().quickbars.bars = vec![slots.clone(), other.clone()];
-        app.world_mut().resource_mut::<Pointer>().spell_drop = Some(DropSpell { bar: 0, spell: spell(), source: None, target: 3 });
+        app.world_mut().non_send_mut::<crate::network::net::Net>().quickbars.bars = vec![slots.clone(), other.clone()];
+        app.world_mut().resource_mut::<Pointer>().spell_drop = Some(DropSpell { bar: 0, spell: spell(), source: None, target: Some(3) });
         app.update();
-        let net = app.world().non_send_resource::<crate::network::net::Net>();
+        let net = app.world().non_send::<crate::network::net::Net>();
         assert_eq!(net.bar[3].as_deref(), Some("magicmissile"));
         assert_eq!(net.quickbars.bars[0].len(), BAR_SIZE);
         assert_eq!(net.quickbars.bars[0][16], slots[16]);
         assert_eq!(net.quickbars.bars[1], other);
         assert!(app.world().resource::<Pointer>().spell_drop.is_none());
+    }
+
+    #[test]
+    fn removing_a_spell_clears_only_its_slot_and_rejects_stale_sources() {
+        let mut slots = vec![Slot { kind: 1, id: Some("potion".into()) }; BAR_SIZE];
+        slots[0] = Slot { kind: 0, id: Some(spell().id) };
+        let drop = DropSpell { bar: 0, spell: spell(), source: Some(0), target: None };
+        let edited = edited_bar(&slots, &drop).unwrap();
+        assert_eq!(edited[0], Slot { kind: Slot::EMPTY, id: None });
+        assert_eq!(&edited[1..], &slots[1..]);
+        assert!(edited_bar(&edited, &drop).is_none());
+        assert!(edited_bar(&slots[..8], &drop).is_none());
+        assert!(edited_bar(&slots, &DropSpell { source: None, ..drop }).is_none());
+    }
+
+    #[test]
+    fn dragging_out_clears_a_slot_but_bar_background_and_cancelled_drags_do_not() {
+        use bevy::ecs::system::RunSystemOnce;
+        for outcome in ["outside", "bar_background", "locked", "unfocused", "missing_cursor"] {
+            let mut world = World::new();
+            world.init_resource::<Time<Real>>();
+            world.init_resource::<Pointer>();
+            crate::network::net::start_offline(&mut world, 1, 0);
+            let layout: Layout = serde_json::from_value(serde_json::json!({"window":"bottombar","widgets":[
+                {"id":"Canvas/LMB","type":"SlotButton","k":0.0,"rect":[0,0,30,30],"hidden":false}
+            ]})).unwrap();
+            let mut controls = WindowControls::new(&layout);
+            // The real spell book supplies this metadata, even while hidden.
+            controls.buttons[0].spell = Some(spell());
+            controls.locked = outcome == "locked";
+            let bar = world.spawn((Window2018("bottombar".into()),controls,Visibility::Inherited,Transform::default())).id();
+            world.run_system_once(move |mut pointer: ResMut<Pointer>, windows: Windows| {
+                let mut mouse = ButtonInput::default();
+                mouse.press(MouseButton::Left);
+                assert!(!drag(&mut pointer,&windows,&mouse,Some((bar,0)),Some(bar),Some(Vec2::ZERO),true));
+            }).unwrap();
+            let consumed = world.run_system_once(move |mut pointer: ResMut<Pointer>, windows: Windows| {
+                let mut mouse = ButtonInput::default();
+                mouse.press(MouseButton::Left); mouse.clear(); mouse.release(MouseButton::Left);
+                drag(&mut pointer,&windows,&mouse,None,(outcome=="bar_background").then_some(bar),
+                    (outcome!="missing_cursor").then_some(Vec2::splat(100.)),outcome!="unfocused")
+            }).unwrap();
+            assert_eq!(consumed, matches!(outcome,"outside"|"bar_background"));
+            world.run_system_once(apply_drop).unwrap();
+            let net = world.non_send::<crate::network::net::Net>();
+            assert_eq!(net.bar[0].as_deref(), if outcome=="outside" { None } else { Some("magicmissile") });
+            if outcome=="outside" {
+                assert_eq!(net.quickbars.bars[0][0],Slot { kind:Slot::EMPTY,id:None });
+            }
+        }
     }
 }

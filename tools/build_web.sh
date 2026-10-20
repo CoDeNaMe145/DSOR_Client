@@ -28,6 +28,7 @@ if [ "${1:-}" = "--fast" ]; then
         [ -f "dist/$kind/index.fast.html" ] && mv "dist/$kind/index.fast.html" "dist/$kind/index.html"
     done
     cp web/index.html dist/index.html
+    cp web/audio-unlock.js dist/audio-unlock.js
     ln -sfn ../../assets dist/assets
     echo "[web] done (fast): client/dist"
     exit 0
@@ -40,6 +41,7 @@ for kind in ${kinds[@]}; do
         --dist "dist/$kind" --filehash false --public-url "./"
 done
 cp web/index.html dist/index.html
+cp web/audio-unlock.js dist/audio-unlock.js
 # The converted game data is never copied: the page reads it through a symlink.
 ln -sfn ../../assets dist/assets
 echo "[web] done: client/dist (open index.html?map=a0200_kingscity)"

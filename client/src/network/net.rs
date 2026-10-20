@@ -30,6 +30,9 @@ use crate::world::map::{CurrentMap, MapManifest, MapRoot};
 use crate::world::nav::{CurrentNav, NavMesh};
 use crate::actors::nameplate::Nameplate;
 
+#[cfg(test)]
+mod remote_tests;
+
 /// How far up or down one step may go (stairs, slopes).
 const MAX_STEP: f32 = 1.2;
 /// Seconds ANOTHER player keeps running after they last moved: just over the 40 ms
@@ -45,6 +48,9 @@ const TICK_SECONDS: f32 = 0.04;
 /// _Template_Player.RunSpeed, the same 5.0 for every class (static.db4).
 /// UNKNOWN: the unit -- tuned by eye against the map until confirmed.
 pub const RUN_SPEED: f32 = 5.0;
+/// A MoveCommand's speed byte at RUN_SPEED (0x40; 0x59 under a 1.4x buff, see
+/// dsor_proto::commands::movement::Move::speed).
+const RUN_SPEED_BYTE: f32 = 64.0;
 /// The duration every captured client MoveCommand carries (session-walk4: 20).
 const MOVE_DURATION: u16 = 20;
 /// The game camera, from _Globals (static.db4): CamRotX -45, CamRotY -45,
@@ -173,6 +179,9 @@ pub struct Net {
     pub monster_spawns: Vec<MonsterSpawn>,
     /// Health of monsters (MonsterUpdate 50): actor, health, maximum.
     pub monster_health: Vec<(u32, u32, u32)>,
+    /// Retained while visuals load and after corpse disposal. A late spawn or
+    /// health snapshot must not recreate a killed actor before server discard.
+    pub(crate) monster_vitals: HashMap<u32, (u32, u32)>,
     /// Blows (HitCommand 115) and deaths (KillCommand 116), for crate::actors::monsters.
     pub hits: Vec<(u32, dsor_proto::commands::combat::Hit)>,
     /// MessageCommands (loot received, sudden death...), by actor; drained by
@@ -188,6 +197,56 @@ pub struct Net {
     /// The server's answers to our group invitations (GroupInvitationResponse:
     /// code, the other player's name), for the chat (crate::ui::controls::social).
     pub group_answers: Vec<(i8, String)>,
+    /// The inviter's answers to our guild invitations (171), as `group_answers`.
+    pub guild_answers: Vec<(i8, String)>,
+    /// What the server said about our group and guild requests, for the chat.
+    pub social_notes: Vec<String>,
+    /// Our group as the server last described it (GroupStatus 151); None ungrouped.
+    pub group: Option<dsor_proto::commands::social::GroupStatus>,
+    /// Our guild (GuildStatus 167); None when in none.
+    pub guild: Option<dsor_proto::commands::player::GuildStatus>,
+    /// Traps placed on the map (NewTrap 63), tripped (66) and taken away (64), for
+    /// crate::gameplay::skills::trap_visuals.
+    pub trap_events: Vec<TrapEvent>,
+    pub traps_tripped: Vec<u32>,
+    pub traps_gone: Vec<u32>,
+    /// Glyphs of power (CurrencyChanged's u64).
+    pub glyphs: Option<u64>,
+    /// Our talents as the server last listed them (283) and the progression behind
+    /// the points (282).
+    pub talents: Option<dsor_proto::commands::inventory::TalentSelectionInfo>,
+    pub talent_points: Option<dsor_proto::commands::inventory::TalentCategoryPointsInfo>,
+    /// The collector's album (StickerbookInfo 303, StickerbookItemInfo 304): the
+    /// entries owned, by resource id (state 2 owned, 3 a favourite).
+    pub stickerbook: HashMap<String, dsor_proto::commands::systems::StickerbookEntry>,
+    /// The recipes known (RecipeBookInfo 311).
+    pub recipes: Vec<(String, Option<String>)>,
+    /// The events' progress and our participation (224, 223), by event id.
+    pub event_progress: HashMap<u32, [u32; 4]>,
+    pub event_participation: HashMap<u32, bool>,
+    /// The daily challenges (TimedChallengesInfo 131), the Wanted Thief board (357),
+    /// the PvP queue (215) as the server last described them.
+    pub challenges: Option<dsor_proto::commands::systems::TimedChallengesInfo>,
+    pub wanted: Option<dsor_proto::commands::systems::WantedThiefInfo>,
+    pub matchmaking: Option<dsor_proto::commands::systems::MatchMakingInfo>,
+    /// A match found (JoinBattleground 210), waiting for our answer (211).
+    pub battleground: Option<dsor_proto::commands::systems::JoinBattleground>,
+    /// The achievements with progress (AchievementInfo 276): the nine values of
+    /// each (progress, then the completion's year, day, hour, minute, second, 0,
+    /// weekday, month; zeros while open).
+    pub achievements: HashMap<String, [u32; 9]>,
+    /// The events running (EventUpdate 221, entries flagged on), as the window
+    /// lists them (crate::world::props keeps their flags for the props).
+    pub events: Vec<dsor_proto::commands::player::ScheduleEntry>,
+    /// The premium shop's offers (OcpOfferResponse 270).
+    pub ocp_offers: Vec<dsor_proto::commands::inventory::OcpOffer>,
+    /// The skins applied to our equipment (ItemCustomizationInfo 320).
+    pub skins: Vec<(String, Option<String>)>,
+    /// The honour board's page (236), the overall board's (241) and our own rank
+    /// (243), as last answered.
+    pub ranking: Option<dsor_proto::commands::systems::HonorRankingPage>,
+    pub overall_ranking: Option<dsor_proto::commands::systems::OverallRankingPage>,
+    pub local_rank: Option<dsor_proto::commands::systems::LocalRanking>,
     /// The trade as the server holds it (DSOR TradeStateCommand), and whether its
     /// message is new (crate::ui::controls::trade).
     pub trade: dsor_proto::commands::trade::TradeState,
@@ -222,6 +281,9 @@ pub struct Net {
     /// CurrencyChanged 137). EVIDENCE: experimental dsor/mapinstance.py WALLET_RC /
     /// WALLET_VC (handler 0x513E39).
     pub wallet: Option<[u64; 5]>,
+    /// The keyed game currencies by resource id (NewPlayer +384, GameCurrencyChanged
+    /// 310): event coins, materi fragments, the stickerbook upgrade currency...
+    pub game_currencies: HashMap<String, u64>,
     /// The first quick slot bar (QuickSlotsInfo 0x50): skill ids by wire slot.
     pub bar: Vec<Option<String>>,
     /// Preserve all slot kinds and bars when saving an edited bar (0x51).
@@ -251,8 +313,9 @@ pub struct Net {
     /// for crate::drops.
     pub item_drops: Vec<dsor_proto::commands::inventory::ItemInfo>,
     pub items_gone: Vec<u32>,
-    /// (actor, where, facing, the record's own start tick).
-    remote_moves: Vec<(u32, Vec3, f32, u32)>,
+    /// (actor, where, facing, the record's own start tick, and for a record with a
+    /// speed its dead-reckoned travel: velocity per second and seconds).
+    remote_moves: Vec<(u32, Vec3, f32, u32, Option<(Vec3, f32)>)>,
     /// Re-resolve after full inventory or compact item updates; retained until
     /// the local entity, item records and skin table are available.
     local_appearance_dirty: bool,
@@ -270,6 +333,15 @@ pub struct StatusEvent {
     /// An element without details: the instance's removal (DSOR_Server
     /// local_mount_state.py: `has_details=bool(active)`), not a new start.
     pub removed: bool,
+}
+
+/// A trap placed on the map (NewTrapCommand 63): its id, its _Template_Trap id and
+/// where it lies. A dwarf's mine is dwarf_mine (dwarf_mine1..10 by talent rank).
+pub struct TrapEvent {
+    pub id: u32,
+    pub template: String,
+    pub position: Vec3,
+    pub heading: f32,
 }
 
 /// A ground effect (NewLocationEffectCommand 64): it stays where it is placed.
@@ -347,8 +419,8 @@ pub struct RemotePlayer {
     /// Seconds since this player last moved, so the run cycle is not cut between
     /// two of their records.
     pub still_for: f32,
-    /// Seconds left of its own skill, during which movement records are ignored:
-    /// it stands where and as it cast.
+    /// Seconds left of its own skill. Keep the cast pose and facing while
+    /// finishing interpolation to the server's captured cast position.
     /// EVIDENCE: HandleMoveCommand 0x518E80 applies a record whole only while the
     ///   actor's feature 0 is on (FUN_004abd74(0)); otherwise it keeps the record's
     ///   start and end ticks alone (0x9FB92E, 0x9FB8CA). The skill runner turns
@@ -374,10 +446,35 @@ pub struct RemotePlayer {
     ///   every 4 ticks reached each one early and stood until the next: it moved
     ///   in jerks ("les mobs se deplacent frame par frame").
     pub speed: f32,
-    /// Its last record's position and tick, for `speed`.
+    /// Its last accepted position and tick, for speed and stale-record rejection.
     pub last_record: Option<(Vec3, u32)>,
     /// Seconds between its records (monsters: every 4 ticks), 0 until known.
     pub interval: f32,
+    /// The stretch its last moving record describes, walked on by the client.
+    pub travel: Option<Travel>,
+}
+
+/// Dead reckoning of one MoveCommand with a speed: from its start position along
+/// its heading, for its duration.
+/// EVIDENCE: dsor_proto::commands::movement::Move (the client dead-reckons start +
+///   velocity * time, clamped to the duration). The live server sends one record
+///   per straight stretch; taken as a destination, its start position left other
+///   players standing where they set off ("no one is moving").
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub struct Travel {
+    pub from: Vec3,
+    /// Units per second along the record's heading.
+    pub velocity: Vec3,
+    pub seconds: f32,
+    pub elapsed: f32,
+}
+
+impl Travel {
+    /// Where the stretch has got to after `dt` more seconds.
+    fn advance(&mut self, dt: f32) -> Vec3 {
+        self.elapsed = (self.elapsed + dt).min(self.seconds);
+        self.from + self.velocity * self.elapsed
+    }
 }
 
 /// The player this client controls.
@@ -584,6 +681,36 @@ mod smoothing_tests {
     }
 
     #[test]
+    fn free_look_reattaches_to_current_player_position_with_previous_zoom() {
+        let mut app = App::new();
+        app.init_resource::<Time>().init_resource::<crate::ui::input::UiInput>()
+            .insert_resource(CameraZoom::new(18.0)).add_message::<MouseWheel>()
+            .add_systems(Update, (zoom_camera, follow_camera).chain());
+        let player = app.world_mut().spawn((Transform::default(), local(None))).id();
+        let camera = app.world_mut().spawn((Camera3d::default(), Transform::default())).id();
+        step(&mut app, 0.1);
+        let attached = *app.world().get::<Transform>(camera).unwrap();
+        app.world_mut().resource_mut::<crate::ui::input::UiInput>().free_look = true;
+        let free = Transform::from_xyz(100., 30., -50.).looking_at(Vec3::ZERO, Vec3::Y);
+        *app.world_mut().get_mut::<Transform>(camera).unwrap() = free;
+        let moved = Vec3::new(8., 2., 12.);
+        app.world_mut().get_mut::<Transform>(player).unwrap().translation = moved;
+        app.world_mut().write_message(MouseWheel {
+            unit: MouseScrollUnit::Line, x: 0., y: 5., window: Entity::PLACEHOLDER,
+            phase: bevy::input::touch::TouchPhase::Moved,
+        });
+        step(&mut app, 0.1);
+        assert_eq!(*app.world().get::<Transform>(camera).unwrap(), free);
+        assert_eq!(app.world().resource::<CameraZoom>().target, 18.);
+        app.world_mut().resource_mut::<crate::ui::input::UiInput>().free_look = false;
+        step(&mut app, 0.1);
+        let restored = app.world().get::<Transform>(camera).unwrap();
+        assert!(restored.translation.distance(attached.translation + moved) < 1e-5);
+        assert_eq!(restored.rotation, attached.rotation);
+        assert_eq!(app.world().get::<Transform>(player).unwrap().translation, moved);
+    }
+
+    #[test]
     fn heading_blend_crosses_the_angle_wrap_by_the_short_arc() {
         let start = Quat::from_rotation_y(179.0_f32.to_radians());
         let target = Quat::from_rotation_y(-179.0_f32.to_radians());
@@ -623,7 +750,7 @@ mod smoothing_tests {
     #[test]
     fn remote_player_blends_record_heading_but_snaps_on_teleport_and_cast() {
         let mut app = App::new();
-        app.insert_resource(Time::<()>::default()).add_systems(Update, move_remotes);
+        app.insert_resource(Time::<()>::default()).init_resource::<Assets<NavMesh>>().add_systems(Update, move_remotes);
         let remote = app.world_mut().spawn((Transform::default(), CharacterAnim::default(), RemotePlayer {
             actor: 2, target: Vec3::X, facing: -std::f32::consts::FRAC_PI_2, still_for: 0.0, held: 0.0, held_until_tick: None, ..default()
         })).id();
@@ -740,12 +867,39 @@ pub fn start_offline(world: &mut World, class: u8, gender: u8) {
         level: Some(1),
         xp: None,
         wallet: None,
+        game_currencies: HashMap::new(),
         monster_health: Vec::new(),
+        monster_vitals: HashMap::new(),
         hits: Vec::new(),
         messages: Vec::new(),
         notifications: Vec::new(),
         login_rewards: Vec::new(),
         group_answers: Vec::new(),
+        guild_answers: Vec::new(),
+        social_notes: Vec::new(),
+        group: None,
+        guild: None,
+        trap_events: Vec::new(),
+        traps_tripped: Vec::new(),
+        traps_gone: Vec::new(),
+        glyphs: None,
+        talents: None,
+        talent_points: None,
+        stickerbook: HashMap::new(),
+        recipes: Vec::new(),
+        event_progress: HashMap::new(),
+        event_participation: HashMap::new(),
+        challenges: None,
+        wanted: None,
+        matchmaking: None,
+        battleground: None,
+        achievements: HashMap::new(),
+        events: Vec::new(),
+        ocp_offers: Vec::new(),
+        skins: Vec::new(),
+        ranking: None,
+        overall_ranking: None,
+        local_rank: None,
         trade: default(),
         trade_message_new: false,
         kills: Vec::new(),
@@ -791,40 +945,49 @@ pub fn start_offline(world: &mut World, class: u8, gender: u8) {
 
 /// Explicit offline regression replay, scheduled after the initial outfits load.
 /// Records are {"frame": N, "hex": server_packet, "bits": exact_bit_count}.
+/// DSOR_EQUIPMENT_REPLAY replays the inventory and remote outfits only;
+/// DSOR_PACKET_REPLAY every command (the local player's as our offline actor),
+/// for the windows' fixtures (tools/ui_fixture_packets.py).
 #[cfg(not(target_arch = "wasm32"))]
+#[allow(clippy::type_complexity)]
 fn replay_equipment(
     mut net: NonSendMut<Net>,
     characters: Query<&Character>,
     loading: Res<crate::screens::loading::LoadingScreen>,
     mut loaded: Local<bool>,
-    mut records: Local<std::collections::VecDeque<(u32, Vec<(ServerCommand, Option<u32>)>)>>,
+    mut records: Local<std::collections::VecDeque<(u32, bool, Vec<(ServerCommand, Option<u32>)>)>>,
     mut frame: Local<u32>,
 ) {
     if !net.offline { return; }
     if !*loaded {
         *loaded = true;
-        if let Ok(path) = std::env::var("DSOR_EQUIPMENT_REPLAY") {
+        for (variable, every) in [("DSOR_EQUIPMENT_REPLAY", false), ("DSOR_PACKET_REPLAY", true)] {
+            let Ok(path) = std::env::var(variable) else { continue };
             let values = std::fs::read(path).ok().and_then(|data| serde_json::from_slice::<Vec<serde_json::Value>>(&data).ok());
             for record in values.into_iter().flatten() {
                 let Some(hex) = record["hex"].as_str() else { continue };
                 let data: Option<Vec<u8>> = hex.as_bytes().chunks(2).map(|b| std::str::from_utf8(b).ok().and_then(|s| u8::from_str_radix(s, 16).ok())).collect();
                 if let Some(data) = data {
-                    if let Ok(commands) = dsor_proto::commands::decode_message(&data, record["bits"].as_u64().unwrap_or((data.len() * 8) as u64) as usize) {
-                        records.push_back((record["frame"].as_u64().unwrap_or(0) as u32, commands));
+                    match dsor_proto::commands::decode_message(&data, record["bits"].as_u64().unwrap_or((data.len() * 8) as u64) as usize) {
+                        Ok(commands) => records.push_back((record["frame"].as_u64().unwrap_or(0) as u32, every, commands)),
+                        Err(e) => warn!("{variable}: {} not decoded: {e}", record["name"].as_str().unwrap_or("record")),
                     }
                 }
             }
-            records.make_contiguous().sort_by_key(|r| r.0);
         }
+        records.make_contiguous().sort_by_key(|r| r.0);
     }
     if records.is_empty() { return; }
     if *frame == 0 && (loading.active() || characters.is_empty() || !characters.iter().all(Character::outfit_ready)) { return; }
     *frame += 1;
     while records.front().is_some_and(|r| r.0 <= *frame) {
-        let (_, commands) = records.pop_front().unwrap();
-        info!("equipment replay frame {}", *frame);
+        let (_, every, commands) = records.pop_front().unwrap();
+        info!("packet replay frame {}", *frame);
         for (command, actor) in commands {
-            if matches!(command, ServerCommand::InventoryInfo(_) | ServerCommand::ItemUpdate(_)) {
+            if every {
+                // The server's local player actor (1) is our offline actor.
+                on_command(&mut net, command, actor.map(|a| if a == 1 { OFFLINE_ACTOR } else { a }));
+            } else if matches!(command, ServerCommand::InventoryInfo(_) | ServerCommand::ItemUpdate(_)) {
                 on_command(&mut net, command, Some(OFFLINE_ACTOR));
             } else if matches!(command, ServerCommand::RemotePlayerInfo(_)) {
                 on_command(&mut net, command, actor);
@@ -970,12 +1133,39 @@ pub(crate) fn start_session(world: &mut World, config: NetConfig) {
         level: None,
         xp: None,
         wallet: None,
+        game_currencies: HashMap::new(),
         monster_health: Vec::new(),
+        monster_vitals: HashMap::new(),
         hits: Vec::new(),
         messages: Vec::new(),
         notifications: Vec::new(),
         login_rewards: Vec::new(),
         group_answers: Vec::new(),
+        guild_answers: Vec::new(),
+        social_notes: Vec::new(),
+        group: None,
+        guild: None,
+        trap_events: Vec::new(),
+        traps_tripped: Vec::new(),
+        traps_gone: Vec::new(),
+        glyphs: None,
+        talents: None,
+        talent_points: None,
+        stickerbook: HashMap::new(),
+        recipes: Vec::new(),
+        event_progress: HashMap::new(),
+        event_participation: HashMap::new(),
+        challenges: None,
+        wanted: None,
+        matchmaking: None,
+        battleground: None,
+        achievements: HashMap::new(),
+        events: Vec::new(),
+        ocp_offers: Vec::new(),
+        skins: Vec::new(),
+        ranking: None,
+        overall_ranking: None,
+        local_rank: None,
         trade: default(),
         trade_message_new: false,
         kills: Vec::new(),
@@ -1020,6 +1210,12 @@ impl Drop for Net {
 }
 
 impl Net {
+    pub(crate) fn remember_monster_health(&mut self, actor: u32, health: u32, max: u32) {
+        if self.monster_vitals.get(&actor).is_none_or(|&(health, _)| health > 0) {
+            self.monster_vitals.insert(actor, (health, max));
+        }
+    }
+
     /// Forget client tracking once an actor's entity has been disposed locally.
     pub(crate) fn forget_actor(&mut self, actor: u32) {
         self.corrections.pending.remove(&actor);
@@ -1029,6 +1225,11 @@ impl Net {
     /// An actor leaves on a server discard; its entity goes in apply_remotes.
     pub(crate) fn discard_actor(&mut self, actor: u32) {
         self.forget_actor(actor);
+        self.monster_spawns.retain(|s| s.actor != actor);
+        self.monster_health.retain(|&(a, _, _)| a != actor);
+        self.monster_vitals.remove(&actor);
+        self.hits.retain(|(a, _)| *a != actor);
+        self.kills.retain(|(a, _)| *a != actor);
         self.remote_gone.push(actor);
     }
 
@@ -1175,6 +1376,7 @@ fn pump(
             SessionEvent::MapAssigned { name, rule_set } => {
                 net.props.reset_map();
                 net.map_markers.reset_map();
+                net.monster_vitals.clear();
                 net.npc_dialogue.reset_map();
                 selection.active = name == crate::screens::selection::MAP;
                 if !selection.active { selection.entering = false; selection.dialog = crate::screens::selection::Dialog::None; }
@@ -1287,6 +1489,7 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
             net.level = Some(p.words_240[1]);
             net.xp = Some((p.words_240[2], p.words_240[3], p.words_240[4]));
             net.wallet = Some(p.currencies);
+            net.game_currencies = p.entries_384.iter().cloned().collect();
             net.local_name = Some(p.name.clone());
             // The third leading bool is the admin byte (OverheadAdminColor name).
             let admin = p.leading_flags[2];
@@ -1306,8 +1509,7 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
             for a in v.actors {
                 net.remote_redress.remove(&a);
                 net.remote_spawns.retain(|p| p.0 != a);
-                net.requested.remove(&a);
-                net.remote_gone.push(a);
+                net.discard_actor(a);
                 net.npc_gone.push(a);
             }
         }
@@ -1385,6 +1587,9 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
             });
         }
         ServerCommand::DiscardLocationEffect(c) => net.location_gone.push(c.effect_id),
+        ServerCommand::NewTrap(t) => net.trap_events.push(TrapEvent { id: t.trap_id, template: t.template.clone(), position: Vec3::from(t.position), heading: t.heading }),
+        ServerCommand::TrapTripped(t) => net.traps_tripped.push(t.trap_id),
+        ServerCommand::DiscardTrap(t) => net.traps_gone.push(t.trap_id),
         ServerCommand::Skill(c) => net.skill_event(actor, &c.base, Vec::new(), None),
         ServerCommand::TargetSkill(c) => net.skill_event(actor, &c.base, Vec::new(), Some(c.target)),
         ServerCommand::BulletSkill(c) => net.skill_event(actor, &c.base, Vec::new(), None),
@@ -1406,12 +1611,19 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
         }
         ServerCommand::NewMonster(m) => {
             let Some(actor) = actor else { return };
+            if m.health == 0 {
+                net.remember_monster_health(actor, 0, sat(m.max_health));
+                net.monster_health.push((actor, 0, sat(m.max_health)));
+                return;
+            }
+            let (health, _) = *net.monster_vitals.entry(actor).or_insert((sat(m.health), sat(m.max_health)));
+            if health == 0 { return; }
             debug!("monster {} actor {actor:#x} at {:?}", m.blueprint, m.position);
             net.monster_spawns.push(MonsterSpawn {
                 actor,
                 blueprint: m.blueprint,
                 position: Vec3::from(m.position),
-                health: sat(m.health),
+                health,
                 level: m.level,
             });
         }
@@ -1424,6 +1636,7 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
         }
         ServerCommand::MonsterUpdate(u) => {
             if let Some(a) = actor {
+                net.remember_monster_health(a, sat(u.health), sat(u.max_health));
                 net.monster_health.push((a, sat(u.health), sat(u.max_health)));
             }
         }
@@ -1436,6 +1649,60 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
         }
         ServerCommand::CurrencyChanged(c) => {
             net.wallet = Some(c.wallet);
+            net.glyphs = Some(c.unknown_u64_5);
+        }
+        ServerCommand::TalentSelectionInfo(t) => net.talents = Some(t),
+        // The systems' answers (systems.rs): kept for the windows, the notable ones
+        // told in the chat.
+        ServerCommand::StickerbookInfo(s) => {
+            net.stickerbook = s.entries.into_iter().flatten().map(|e| (e.id.clone(), e)).collect();
+        }
+        ServerCommand::StickerbookItemInfo(s) => {
+            if let Some(e) = s.entry { net.stickerbook.insert(e.id.clone(), e); }
+            if s.operation == 3 && !s.related.is_empty() { net.stickerbook.remove(&s.related); }
+        }
+        ServerCommand::RecipeBookInfo(r) => net.recipes = r.recipes,
+        ServerCommand::EventProgressInfo(e) => net.event_progress = e.events.into_iter().collect(),
+        ServerCommand::EventParticipationInfo(e) => net.event_participation = e.events.into_iter().collect(),
+        ServerCommand::EventProgressChanged(e) => { net.event_progress.insert(e.values[0], [e.values[1], e.values[2], e.values[3], e.values[4]]); }
+        ServerCommand::TimedChallengesInfo(c) => net.challenges = Some(c),
+        ServerCommand::WantedThiefInfo(w) => net.wanted = Some(w),
+        ServerCommand::HonorPointsChanged(h) => { if let Some(w) = net.wallet.as_mut() { w[2] = h.honor as u64; } }
+        ServerCommand::CraftingResult(c) => {
+            net.social_notes.push(if c.status == 0 { format!("Crafted {}.", c.items.iter().map(|i| i.template.replace('_', " ")).collect::<Vec<_>>().join(", ")) } else { format!("Crafting failed ({}).", c.status) });
+        }
+        ServerCommand::MatchMakingInfo(m) => {
+            net.social_notes.push(if m.state < 0 { "Left the PvP queue.".to_owned() } else if m.message.is_empty() { "Queued for PvP.".to_owned() } else { m.message.clone() });
+            net.matchmaking = Some(m);
+        }
+        ServerCommand::JoinMatchQueueInfo(q) => {
+            net.social_notes.push(format!("PvP queue: {} waiting, about {:.0} s.", q.queued, q.estimated_wait));
+        }
+        ServerCommand::JoinBattleground(j) => {
+            net.social_notes.push(format!("A match is ready on {}.", j.map.replace('_', " ")));
+            net.battleground = Some(j);
+        }
+        ServerCommand::MatchOver(m) => net.social_notes.push(format!("The match is over: team {} won.", m.winning_team)),
+        ServerCommand::JoinMatchQueueResponse(r) => {
+            if !r.accepted { net.social_notes.push("The PvP queue refused the request.".to_owned()); }
+        }
+        ServerCommand::AchievementInfo(a) => {
+            for (id, values) in a.achievements { net.achievements.insert(id, values); }
+        }
+        ServerCommand::EventUpdate(e) => net.events = e.entries.into_iter().filter(|e| e.flag).collect(),
+        ServerCommand::OcpOfferResponse(o) => net.ocp_offers = o.offers,
+        ServerCommand::ItemCustomizationInfo(i) => net.skins = i.items,
+        ServerCommand::HonorRankingPage(p) => net.ranking = Some(p),
+        ServerCommand::OverallRankingPage(p) => net.overall_ranking = Some(p),
+        ServerCommand::LocalRanking(l) => net.local_rank = Some(l),
+        ServerCommand::TalentCategoryPointsInfo(p) => net.talent_points = Some(p),
+        ServerCommand::PlayerLogoutInfo(l) => net.social_notes.push(if l.seconds > 0 {
+            format!("Leaving for the character screen in {} seconds; a hit cancels it.", l.seconds)
+        } else {
+            "The logout was cancelled.".to_owned()
+        }),
+        ServerCommand::GameCurrencyChanged(c) => {
+            net.game_currencies.insert(c.currency.clone(), c.amount);
         }
         ServerCommand::Message(m) => {
             net.messages.push((actor.unwrap_or(0), m));
@@ -1446,6 +1713,9 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
                 net.health = Some(h.victim_health.max(0) as f32);
             }
             if let Some(a) = actor {
+                if h.victim_max_health > 0 {
+                    net.remember_monster_health(a, h.victim_health.max(0) as u32, h.victim_max_health as u32);
+                }
                 // A skill's blow (not healing, poison ticking, immunity): the
                 // attacker's bullet in flight ends on its victim.
                 if h.attacker != a && h.combat_text.is_empty() && !h.immune {
@@ -1456,6 +1726,8 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
         }
         ServerCommand::Kill(k) => {
             if let Some(a) = actor {
+                let max = net.monster_vitals.get(&a).map_or(0, |&(_, max)| max);
+                net.remember_monster_health(a, 0, max);
                 if Some(a) == net.local_actor {
                     net.death = DeathState { dead: true, ..default() };
                 }
@@ -1480,6 +1752,31 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
         }
         ServerCommand::GroupInvitationResponse(r) => {
             net.group_answers.push((r.code, r.name));
+        }
+        ServerCommand::GuildInvitationResponse(r) => {
+            net.guild_answers.push((r.code, r.name));
+        }
+        // The group as this recipient sees it: to the asker, and to every member
+        // when one joins or changes map (DSOR_Server services/social.py).
+        ServerCommand::GroupStatus(s) => {
+            net.group = s.grouped().then_some(s);
+        }
+        ServerCommand::GuildStatus(g) => {
+            net.guild = g.in_guild.then_some(g);
+        }
+        ServerCommand::GroupFoundationResponse(r) => {
+            net.social_notes.push(if r.status == 0 { "Your group has been founded.".to_owned() } else { format!("The group could not be founded: {}", r.message) });
+        }
+        ServerCommand::GroupingFailed(f) => {
+            net.social_notes.push(f.text().to_owned());
+        }
+        ServerCommand::GuildFoundationResponse(r) => {
+            net.social_notes.push(match r.status {
+                0 => format!("The guild {} has been founded.", r.guild),
+                1 => "You are already in a guild.".to_owned(),
+                3 => "That guild name is already taken.".to_owned(),
+                _ => format!("The guild could not be founded: {}", r.message),
+            });
         }
         ServerCommand::SpecialOffer(o) if !o.login_rewards.is_empty() => {
             net.login_rewards = o.login_rewards;
@@ -1557,7 +1854,14 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
                         info!("move record {a} tick {} at ({:.2}, {:.2}) heading {} facing {} speed {} duration {}",
                             m.start_tick, at.x, at.z, m.heading, m.facing, m.speed, m.duration);
                     }
-                    net.remote_moves.push((a, at, facing, m.start_tick));
+                    // Heading in 256ths of a turn, the same angle as our own facing
+                    // (send_moves): along (sin, 0, cos).
+                    let travel = (m.speed > 0 && m.duration > 0).then(|| {
+                        let heading = m.heading as f32 / 256.0 * TAU;
+                        let velocity = Vec3::new(heading.sin(), 0.0, heading.cos()) * RUN_SPEED * m.speed as f32 / RUN_SPEED_BYTE;
+                        (velocity, m.duration as f32 * TICK_SECONDS)
+                    });
+                    net.remote_moves.push((a, at, facing, m.start_tick, travel));
                 } else if net.corrections.corrected_echo(&m) {
                     let at = net.wire_to_game(m.x, m.elevation, m.y);
                     let facing = m.facing as f32 / 256.0 * TAU;
@@ -1583,7 +1887,7 @@ fn apply_corrections(
         // ("mon perso retourne instant en idle").
         let held = local.as_ref().is_some_and(|p| p.casting > 0.0) && matches!(animation.state, AnimState::Named(_));
         if let Some(mut p) = local { p.target = None; p.facing = heading; if !held { p.casting = 0.0; } p.snapped = true; }
-        if let Some(mut p) = remote { p.target = position; p.facing = heading; p.held = 0.0; p.held_until_tick = None; p.still_for = 1.0; }
+        if let Some(mut p) = remote { p.target = position; p.travel = None; p.facing = heading; p.held = 0.0; p.held_until_tick = None; p.still_for = 1.0; }
         if !animation.dead && !held { animation.state = AnimState::Idle; }
     }
 }
@@ -1616,13 +1920,21 @@ fn apply_remotes(
             RemotePlayer { actor, target: at, facing: heading, still_for: 1.0, held: 0.0, held_until_tick: None, ..default() },
         ));
     }
-    for (actor, at, facing, tick) in std::mem::take(&mut net.remote_moves) {
+    for (actor, at, facing, tick, travel) in std::mem::take(&mut net.remote_moves) {
         for (_, mut r) in &mut remotes {
+            if r.actor != actor || r.last_record.is_some_and(|(_, then)| (tick.wrapping_sub(then) as i32) < 0) {
+                continue;
+            }
             // A record from before the end of its skill's hold: its ticks only
             // (RemotePlayer::held_until_tick).
             let held = r.held_until_tick.is_some_and(|end| end.wrapping_sub(tick) as i32 >= 0);
-            if r.actor == actor && !held {
-                let at = mesh.and_then(|m| m.ground(at.x, at.z, at.y, 3.0).map(|h| Vec3::new(at.x, h, at.z))).unwrap_or(at);
+            if !held {
+                if r.held_until_tick.take().is_some() {
+                    // The server has resumed motion, even if the locally timed
+                    // animation hold started late because its packet was late.
+                    r.held = 0.0;
+                }
+                let at = remote_ground_position(mesh, at);
                 if let Some((before, then)) = r.last_record {
                     let ticks = tick.wrapping_sub(then) as i32;
                     if ticks > 0 {
@@ -1639,22 +1951,51 @@ fn apply_remotes(
                 r.last_record = Some((at, tick));
                 r.target = at;
                 r.facing = facing;
+                // A record with a speed starts a stretch that move_remotes walks on
+                // from here; its speed is known outright.
+                r.travel = travel.map(|(velocity, seconds)| Travel { from: at, velocity, seconds, elapsed: 0.0 });
+                if let Some((velocity, _)) = travel {
+                    r.speed = velocity.length();
+                    r.interval = TICK_SECONDS;
+                }
             }
         }
     }
 }
 
+/// The client walks on PathEngine, while server spawns can use collision-terrain
+/// Y (Swerdfield has samples 2.58 units below this plane). Use the same surface
+/// for spawn, movement, picking and projectile capsules; never change wire X/Z.
+pub(crate) fn remote_ground_position(mesh: Option<&NavMesh>, at: Vec3) -> Vec3 {
+    mesh.and_then(|m| m.ground(at.x, at.z, at.y, f32::MAX))
+        .map(|y| Vec3::new(at.x, y, at.z)).unwrap_or(at)
+}
+
 /// Other players run toward their last reported position at the run speed, and
 /// snap when they are far off (a teleport, a map entry).
-fn move_remotes(time: Res<Time>, mut remotes: Query<(&mut Transform, &mut RemotePlayer, &mut CharacterAnim, Has<crate::actors::monsters::Monster>)>) {
+fn move_remotes(
+    time: Res<Time>,
+    mut remotes: Query<(&mut Transform, &mut RemotePlayer, &mut CharacterAnim, Has<crate::actors::monsters::Monster>)>,
+    nav: Option<Res<CurrentNav>>,
+    meshes: Res<Assets<NavMesh>>,
+) {
+    let mesh = nav.as_ref().and_then(|n| meshes.get(&n.0));
     for (mut tf, mut r, mut anim, monster) in &mut remotes {
+        if monster {
+            // Also handles a stationary spawn that arrived before the nav asset.
+            tf.translation = remote_ground_position(mesh, tf.translation);
+            r.target = remote_ground_position(mesh, r.target);
+        }
         if anim.dead {
             continue;
         }
-        if r.held > 0.0 {
-            r.held -= time.delta_secs();
-            tf.rotation = Quat::from_rotation_y(r.facing);
-            continue;
+        let held = r.held > 0.0;
+        r.held = (r.held - time.delta_secs()).max(0.0);
+        // Its stretch goes on between records; a skill's hold stops it.
+        if !held {
+            if let Some(at) = r.travel.as_mut().map(|t| t.advance(time.delta_secs())) {
+                r.target = remote_ground_position(mesh, at);
+            }
         }
         let to = r.target - tf.translation;
         let flat = Vec2::new(to.x, to.z).length();
@@ -1671,6 +2012,17 @@ fn move_remotes(time: Res<Time>, mut remotes: Query<(&mut Transform, &mut Remote
             tf.translation = r.target;
         } else if moving {
             tf.translation += to * (step / flat).min(1.0);
+        } else {
+            // Vertical corrections and the final few centimetres still matter
+            // to picking and bullets even when there is no horizontal walk.
+            tf.translation = r.target;
+        }
+        if monster {
+            tf.translation = remote_ground_position(mesh, tf.translation);
+        }
+        if held {
+            tf.rotation = Quat::from_rotation_y(r.facing);
+            continue;
         }
         // The body faces its record's facing byte, walking or not: the client's
         // orientation is the record's (GameActor::GetOrientation 0x8F5F6F reads
@@ -1899,7 +2251,7 @@ fn walk_local(
 
 fn zoom_camera(mut wheel: MessageReader<bevy::input::mouse::MouseWheel>, mut zoom: ResMut<CameraZoom>, ui: Res<crate::ui::input::UiInput>, time: Res<Time>) {
     for w in wheel.read() {
-        if ui.over_ui { continue; }
+        if ui.over_ui || ui.free_look { continue; }
         let step = if w.unit == bevy::input::mouse::MouseScrollUnit::Line { w.y } else { w.y / 40.0 };
         zoom.target = (zoom.target - step).clamp(CAM_HEIGHT_MIN, CAM_HEIGHT_MAX);
     }
@@ -1910,11 +2262,12 @@ fn zoom_camera(mut wheel: MessageReader<bevy::input::mouse::MouseWheel>, mut zoo
 /// The DSO camera: fixed pitch and yaw, looking at the player from `zoom` above.
 fn follow_camera(
     zoom: Res<CameraZoom>,
+    input: Res<crate::ui::input::UiInput>,
     opts: Option<Res<crate::Options>>,
     players: Query<&Transform, With<LocalPlayer>>,
     mut cameras: Query<(&mut Transform, &mut Projection), (With<Camera3d>, Without<crate::rendering::highlight::HighlightCamera>, Without<LocalPlayer>)>,
 ) {
-    if opts.is_some_and(|o| o.cam.is_some()) { return; }
+    if input.free_look || opts.is_some_and(|o| o.cam.is_some()) { return; }
     let Ok(player) = players.single() else { return };
     let rotation = Quat::from_euler(EulerRot::YXZ, CAM_YAW_DEG.to_radians(), CAM_PITCH_DEG.to_radians(), 0.0);
     let back = rotation * Vec3::Z;

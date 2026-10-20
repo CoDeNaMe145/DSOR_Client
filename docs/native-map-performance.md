@@ -1035,3 +1035,83 @@ native measurements above were taken in the integrated workspace, with each
 comparison using one identical executable; their hashes and timing caveats
 remain unchanged. Snapshot validation logs are
 `.local/logs/performance-push-tests.log` and `performance-push-test-build.log`.
+
+## Pastures combat spikes — 2026-10-18
+
+The reported native drop from 150–160 FPS to about 60 FPS was investigated with
+repeated spell impacts in `a0007_pastures_pve`. Intermittent 17–35 ms frames were
+reproduced. A sustained 60-FPS combat plateau was **not** reproduced, and no
+gameplay or renderer behavior change is claimed as a fix.
+
+The clearest located stalls are in presentation synchronization. In
+`sustained-durable.log`, the 18:59:39.131 UTC frame took 26.89 ms, while the
+previous main schedule took 3.27 ms. Rendering took 26.37 ms, including 23.45 ms
+of preparation, with zero pipelines pending. The containing five-second window
+recorded a 21.513 ms maximum around swapchain acquisition (normally about
+0.05 ms). In `central-fireball.log`, the 19:02:47.720 UTC frame took 33.17 ms
+with a 3.46 ms previous main schedule; its window recorded 27.816 ms around
+swapchain acquisition. These windows each contain one large render stall.
+This locates waiting for the display buffer, not equivalent shader/GPU execution
+time. It does not distinguish the driver, compositor, GPU fence, or OS scheduling
+as the underlying cause.
+
+Other spikes have a different shape: main and render wall intervals lengthen
+together, including transform propagation, bind-group preparation, or graph
+recording. A 19.50 ms magic-missile frame also included 7.35 ms in player
+occlusion. Those intervals include scheduling waits; they are not proof of a
+combat-algorithm bottleneck. Casts, projectile updates, hit handling, material
+flashes, damage-text updates, stats, and audio stayed below 1 ms per measured
+call in the settled captures. The central iceball capture's largest reported
+GPU pass averages were below 1 ms; these are neither worst-frame GPU timings nor
+a complete GPU-frame total.
+
+Same-executable captures, excluding the first two five-second windows:
+
+| Capture | Casts during full run | Window p50 range, ms | Window p95 range, ms | Worst settled frame, ms |
+|---|---:|---:|---:|---:|
+| Entry area, magic missile | 89 | 5.02–5.25 | 5.88–6.68 | 26.89 |
+| Central area, iceball | 89 | 4.82–6.36 | 5.96–8.90 | 19.53 |
+| Central iceball, particles disabled | 85 | 4.89–6.16 | 5.74–8.43 | 34.87 |
+| Central area, fireball | 67 | 5.81–6.20 | 6.60–7.84 | 33.17 |
+| Central iceball, without stage/GPU profiling | 89 | 5.19–5.60 | 6.01–7.01 | 24.00 |
+| Central idle, without stage/GPU profiling (35 seconds) | 0 | 4.60–4.66 | 5.39–5.60 | 8.00 |
+
+The idle comparison does not select/highlight a monster, so its difference also
+includes targeting/render-view work, not just the spell itself.
+Disabling particles did not eliminate the stalls. They also occurred without
+the extra stage/GPU profiling systems. These short runs do not justify changing
+particle quality, combat behavior, renderer backend, or worker defaults.
+
+The runner uses an isolated loopback server at `127.0.0.6` with separate fixture
+stores. Monster HP is raised in that server process to sustain repeated impacts;
+the shared server code/database and normal player account are untouched. The
+central fixture starts at `(24.7711, 0, 53)` after client ground snapping. Captures
+use the normal follow camera, saved borderless/fullscreen settings with VSync
+off, and UI replay for logical window focus. They do not force desktop foreground
+focus or stop other desktop workloads. Screenshots are excluded from these
+timed runs. No compiler was observed in follow-up spot checks during these
+captures; this was not continuous process monitoring. A new unrelated build was
+observed after the final capture ended. The earlier exploratory runs overlapped
+compilation and are excluded from this table.
+The initial `sustained-profile` fixture did not raise the authoritative health
+stat and stopped casting after killing the nearby enemies; it is not a sustained
+combat measurement.
+
+Evidence and runners are local under `.local/logs/combat-fps/`,
+`.local/profile-combat-online.py`, and `.local/profile-combat-central.py`.
+The separate optimized diagnostic executable is
+`.local/combat-profile-instrumented.exe`, SHA-256
+`ae19c3f3490dda5de2458d96b4ef7e4842c9b52cf17e2662f808f8e21d2dafba`.
+It was built with `opt-level=3`, thin LTO, and 256 codegen units against the
+existing native dependencies. All comparisons in the table use that executable;
+they are not before/after optimization claims. The runner terminates only its
+own client after 50 seconds (35 for idle), producing Windows exit code 1 by design. The logs
+have no panic; missing trade-window and character-selection sidecars are existing
+asset errors unrelated to the settled measurements.
+
+`combatprofile` now logs frames at or above 16.67 ms and five-second system
+mean/max timings; the former `frameprofile` threshold was 50 ms and missed
+the reported class of hitch. `.local/ProfileCombat.cmd` launches the diagnostic
+client against the normal login flow and saves a `live-*.log` in the evidence
+directory. A foreground capture of the exact reported fight is still needed to
+determine whether the user's full FPS drop shares these presentation stalls.

@@ -36,6 +36,7 @@ impl InventoryState {
         !self.allocation.overflow.contains(&id) && self.location(id).is_some_and(|p| self.writable(p))
     }
     pub fn apply(&mut self, mut update: InventoryInfo) {
+        let has_item_records = !update.items.is_empty();
         for id in &update.removed { self.items.remove(id); }
         // release261 replacement map is NEW -> OLD, not the reverse.
         for (_, old) in &update.map_158 { self.items.remove(old); }
@@ -53,7 +54,8 @@ impl InventoryState {
             //   the closing packet emptied it ("rien n'apparait dans mon inventaire").
             let old = std::mem::take(&mut self.allocation);
             let moved: std::collections::HashSet<u32> = update.placements.iter().chain(&update.extra).chain(&update.bank)
-                .chain(&update.extra_bank).map(|(id, _)| *id).chain(update.overflow.iter().chain(&update.invisible).copied()).collect();
+                .chain(&update.extra_bank).map(|(id, _)| *id).chain(update.slots.iter().map(|(id, _)| *id))
+                .chain(update.overflow.iter().chain(&update.invisible).copied()).collect();
             let keep = |v: Vec<(u32, u32)>| v.into_iter().filter(|(id, _)| !moved.contains(id));
             update.placements = keep(old.placements).chain(update.placements).collect();
             update.extra = keep(old.extra).chain(update.extra).collect();
@@ -61,14 +63,16 @@ impl InventoryState {
             update.extra_bank = keep(old.extra_bank).chain(update.extra_bank).collect();
             update.overflow = old.overflow.into_iter().filter(|id| !moved.contains(id)).chain(update.overflow).collect();
             update.invisible = old.invisible.into_iter().filter(|id| !moved.contains(id)).chain(update.invisible).collect();
-        } else if !stored && update.items.is_empty() && !self.allocation.placements.is_empty() {
+        } else if !stored && !has_item_records && !self.allocation.placements.is_empty() {
             // The transaction's closing InventoryInfo carries no item and no storage
             // entry (world_loot_protocol.py: `final`): the storages stand.
             let old = std::mem::take(&mut self.allocation);
             (update.placements, update.extra, update.bank, update.extra_bank, update.overflow, update.invisible) =
                 (old.placements, old.extra, old.bank, old.extra_bank, old.overflow, old.invisible);
         }
-        for id in &update.removed {
+        // The equipment map is complete even in a partial/closing update. An
+        // equipped essence must not also remain in a preserved bag allocation.
+        for id in update.removed.iter().chain(update.slots.iter().map(|(id, _)| id)) {
             update.placements.retain(|(i, _)| i != id);
             update.extra.retain(|(i, _)| i != id);
             update.bank.retain(|(i, _)| i != id);
@@ -201,6 +205,20 @@ mod tests {
         assert!(s.drop_on(1, Place::Bag(1), 6).is_none());
         s.items.get_mut(&2).unwrap().template = "different".into();
         assert_eq!(s.drop_on(1, Place::Bag(1), 99), Some(command(1, 11, vec![2])));
+    }
+
+    #[test]
+    fn equipping_the_last_carried_stack_never_keeps_a_stale_bag_copy() {
+        for (has_records, partial) in [(true,false),(false,false),(true,true)] {
+            let mut s = InventoryState::default();
+            s.apply(InventoryInfo { items:vec![item(1,10)], placements:vec![(1,0)],
+                storage_sizes:[0,0,28,0,0,0], ..Default::default() });
+            s.apply(InventoryInfo { items:if has_records {vec![item(1,10)]} else {vec![]},
+                slots:vec![(1,vec![35])], storage_sizes:[0,0,28,0,0,0], flag:partial, ..Default::default() });
+            assert_eq!(s.location(1),Some(Place::Equipment(35)));
+            assert!(s.at(Place::Bag(0)).is_none());
+            assert_eq!(s.drop_on(1,Place::Bag(0),999),Some(command(1,7,vec![0])));
+        }
     }
 
     #[test]

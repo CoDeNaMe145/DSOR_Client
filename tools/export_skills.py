@@ -21,7 +21,7 @@ Tracks kept, by their TrackBar type:
   ObserverCameraShakeTrackBar a camera shake
   HideEntityTrackBar          the actor hidden (teleports)
   CharacterTrackBar           a character placed by a level sequence (export_deco.py)
-  PlaySoundTrackBar           a sound (kept for later; the client has no audio yet)
+  PlaySoundTrackBar           an audio event and its volume, played by the client mixer
 """
 import json, os, re, struct, sys
 import xml.etree.ElementTree as ET

@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 use crate::{network::net, LoginGate, Options};
 
 mod view;
+mod footer;
 
 const SETTINGS: &str = "client-auth.json";
 
@@ -20,7 +21,7 @@ impl Plugin for LoginPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, (setup, view::load).run_if(resource_exists::<LoginGate>))
             .add_systems(PostStartup, view::preload.run_if(resource_exists::<LoginGate>))
-            .add_systems(Update, (buttons, keyboard, poll, view::draw, view::resize, view::paint).chain()
+            .add_systems(Update, (buttons, keyboard, poll, view::draw, view::resize, view::paint, footer::animate).chain()
                 .run_if(resource_exists::<LoginGate>));
     }
 }

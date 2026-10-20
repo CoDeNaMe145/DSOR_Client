@@ -122,6 +122,24 @@ fn place(c: Cell, w: &WindowControls) -> Option<Place> {
     Some(match c { Cell::Bag(n)=>match w.bag { EXTRA=>Place::Extra(n), OVERFLOW=>Place::Overflow(w.overflow_page as u32*OVERFLOW_PAGE_SLOTS+n), page=>Place::Bag(page as u32*BAG_SLOTS+n) },
         Cell::Equipment(n)=>Place::Equipment(n), Cell::Ingredient(_)=>return None })
 }
+
+/// The action bar's essence sockets are real equipment slots, not shortcuts.
+fn item_cell(window: &str, action: &Action) -> Option<Cell> {
+    match (window, action) {
+        ("inventory", Action::Item(cell)) => Some(*cell),
+        ("bottombar", Action::Skill(hotbar::PRIMARY_ESSENCE)) => Some(Cell::Equipment(35)),
+        ("bottombar", Action::Skill(hotbar::BACKUP_ESSENCE)) => Some(Cell::Equipment(34)),
+        _ => None,
+    }
+}
+
+fn use_consumable(state: &InventoryState, catalog: &Catalog, id: u32) -> Option<dsor_proto::commands::ClientCommand> {
+    let item = state.items.get(&id)?;
+    let meta = catalog.items.get(&item.template)?;
+    if item.third == 0 || !state.movable(id) || !matches!(state.location(id), Some(Place::Bag(_) | Place::Extra(_)))
+        || !matches!(meta.item_category.as_str(), "Consumable" | "InstantConsumable" | "SkinConsumable" | "RecipeConsumable" | "ConsumablePaymentItem") { return None; }
+    Some(crate::gameplay::inventory::command(id, dsor_proto::commands::inventory::Inventory::USE, vec![]))
+}
 fn ingredient<'a>(catalog: &'a Catalog, w: &WindowControls, slot: usize) -> Option<&'a Ingredient> {
     let class=["warrior","mage","ranger","dwarf"].get(w.spells.class as usize).copied().unwrap_or("mage");
     catalog.ingredients.iter().find(|i| i.tab==TABS[w.ingredient.min(8)] && (i.rarity==w.rarity || i.rarity==0)
@@ -143,8 +161,47 @@ fn displayed<'a>(cell: Cell, c: &WindowControls, state: &'a InventoryState, cata
 struct DragItem { id:u32, revision:u64, origin:Vec2, active:bool, root:Entity }
 struct Split { id:u32, revision:u64, target:Place, total:u32 }
 #[derive(Resource,Default)]
-pub struct Interaction { drag:Option<DragItem>, split:Option<Split>, pending:Option<(u64,f64)> }
+pub struct Interaction { drag:Option<DragItem>, split:Option<Split>, pending:Option<(u64,f64)>,
+    /// The item DESTROY_DIALOG asks about.
+    destroy:Option<u32> }
 impl Interaction { pub(super) fn cancel_drag(&mut self)->bool { self.drag.take().is_some() } }
+
+/// An item dropped on the world, out of every window, is destroyed once this
+/// dialog is confirmed: confirmdialog's DeleteItem variant (the item in its
+/// slot beside the question), centred.
+/// UNVERIFIED: the question's runtime text (the layout's is a placeholder) and
+///   whether the "do not show again" variant is ever chosen.
+pub(in crate::ui) const DESTROY_DIALOG: &str = "confirmdialog";
+const DELETE_ITEM: &str = "Canvas/DialogCenter/Content/DeleteItem";
+/// gui.window.general_confirmText.
+const DESTROY_QUESTION: &str = "Do you really wish to destroy this item?";
+
+pub(in crate::ui) fn prepare_destroy(layout:&Layout)->Layout {
+    let mut out=layout.clone();
+    // DialogBottom is the same dialog placed lower.
+    out.widgets.retain(|w|!w.id.starts_with("Canvas/DialogBottom"));
+    for w in &mut out.widgets {
+        let Some(rest)=w.id.strip_prefix("Canvas/DialogCenter/Content/") else{continue};
+        // The question and the item are drawn by destroy_dialog.
+        w.hidden=(rest!="DeleteItem" && !rest.starts_with("DeleteItem/")) || rest.ends_with("/Question");
+    }
+    out
+}
+
+/// Only what the bags carry: the server's discard (operation 0) leaves an
+/// equipped item's look and stats as they were (DSOR_Server
+/// services/inventory_map.py, "Discard is predicted by the client").
+fn destroyable(state:&InventoryState, id:u32)->bool {
+    state.movable(id) && matches!(state.location(id),Some(Place::Bag(_)|Place::Extra(_)))
+}
+/// Opens DESTROY_DIALOG on the item; false while its layout is not loaded.
+fn ask_destroy(ui:&mut Interaction, windows:&mut Windows, id:u32)->bool {
+    let mut found=false;
+    for (_,name,mut c,mut v,_) in windows.iter_mut() { if name.0==DESTROY_DIALOG {
+        c.hovered=None;c.pressed=None;*v=Visibility::Inherited;ui.destroy=Some(id);found=true;
+    }}
+    found
+}
 
 fn set_amount(c:&mut WindowControls, amount:u32) {
     let Some(id)=c.buttons.iter().find(|b| matches!(b.action,Action::Edit(_))).map(|b|b.id.clone()) else{return};
@@ -188,11 +245,22 @@ fn equip_toggle(state:&InventoryState, catalog:&Catalog, id:u32, level:u32, clas
     state.drop_on(id,Place::Equipment(slot),meta.max_stack)
 }
 
+/// What a right click looks up: the open shop (selling) and the travel items.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct Lookups<'w> {
+    shop: Option<Res<'w, crate::ui::dialogue::Presentation>>,
+    quest_data: Option<Res<'w, Assets<crate::gameplay::quests::QuestCatalog>>>,
+    quest_ui: Option<Res<'w, crate::gameplay::quests::QuestUi>>,
+    /// The NPC desks' picks (super::systems::pick).
+    desks: Option<ResMut<'w, super::systems::State>>,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn input(mut ui:ResMut<Interaction>,mut pointer:ResMut<Pointer>,mut windows:Windows,
     primary:Query<&Window,With<PrimaryWindow>>,mouse:Res<ButtonInput<MouseButton>>,keys:Res<ButtonInput<KeyCode>>,
     net:Option<NonSendMut<crate::network::net::Net>>,data:Res<Data>,catalogs:Res<Assets<Catalog>>,time:Res<Time<Real>>,
-    mut last_click:Local<Option<(u32,f64)>>,mut trade:ResMut<super::trade::TradeUi>) {
+    mut last_click:Local<Option<(u32,f64)>>,mut trade:ResMut<super::trade::TradeUi>,capture:Res<crate::ui::input::UiInput>,mut tested:Local<bool>,
+    mut lookups:Lookups) {
     let Some(mut net)=net else{return}; let Some(catalog)=catalogs.get(&data.catalog) else{return};
     let Ok(window)=primary.single() else{return};
     let point=window.cursor_position().map(|p|p*(BASE_H/window.height().max(1.0)));
@@ -207,8 +275,8 @@ pub fn input(mut ui:ResMut<Interaction>,mut pointer:ResMut<Pointer>,mut windows:
         let (_,_,mut c,_,tf)=windows.get_mut(e).unwrap();
         let change=pointer.item_command.take();
         if let Some(delta)=change.filter(|d|*d!=0) {let n=(amount(&c).unwrap_or(1) as i64+delta as i64).clamp(1,split.total as i64-1) as u32;set_amount(&mut c,n);}
-        if mouse.pressed(MouseButton::Left) {
-            if let (Some(b),Some(p))=(c.hovered.map(|i|&c.buttons[i]),point) {if b.action==Action::SplitSlider {
+        if window.focused && mouse.pressed(MouseButton::Left) {
+            if let (Some(b),Some(p))=(c.pressed.map(|i|&c.buttons[i]),point) {if b.action==Action::SplitSlider {
                 let x=p.x-window_offset(&tf).x-b.k*(BASE_H*window.width()/window.height().max(1.0)-BASE_W);
                 let f=((x-b.rect[0])/(b.rect[2]-b.rect[0])).clamp(0.0,1.0);
                 let n=1+(f*(split.total-2) as f32).round() as u32; set_amount(&mut c,n);
@@ -223,24 +291,68 @@ pub fn input(mut ui:ResMut<Interaction>,mut pointer:ResMut<Pointer>,mut windows:
         return;
     }
     ui.split=None;pointer.item_command=None;
-    let hovered=windows.iter().filter(|(_,n,_,v,_)|n.0=="inventory" && **v!=Visibility::Hidden)
-        .find_map(|(e,_,c,_,_)|c.hovered.and_then(|b|match c.buttons[b].action {Action::Item(cell)=>Some((e,cell)),_=>None}));
-    // A right click uses the item under the cursor: a mount is called (or sent
-    // away), equipment is put on or taken off -- as a double click does.
-    // While trading, a right click offers the item instead (crate::ui::controls::trade).
-    let trading=windows.iter().any(|(_,n,_,v,_)|n.0==super::trade::WINDOW && *v!=Visibility::Hidden);
-    if mouse.just_pressed(MouseButton::Right) && !busy && trading {
-        if let Some((root,cell))=hovered {
-            let (_,_,c,_,_)=windows.get(root).unwrap();
-            if let Some(id)=place(cell,c).and_then(|p|net.inventory.at(p)).map(|i|i.id) {trade.add.push(id);}
+    // DSOR_TEST_DESTROY=1, offline (DSOR_INVENTORY_PREVIEW): the dialog asks about
+    // the first carried item (screenshots).
+    if !*tested && net.offline && net.inventory.ready && std::env::var_os("DSOR_TEST_DESTROY").is_some() {
+        let first=net.inventory.allocation.placements.iter().map(|(id,_)|*id).filter(|id|destroyable(&net.inventory,*id)).min();
+        *tested=first.is_none_or(|id|ask_destroy(&mut ui,&mut windows,id));
+    }
+    // Confirmed, the server destroys the item (InventoryCommand operation 0) and
+    // sends the inventory back: nothing is removed here before that.
+    let asking=windows.iter().find(|(_,n,_,v,_)|n.0==DESTROY_DIALOG && **v!=Visibility::Hidden).map(|(e,_,_,_,_)|e);
+    if let Some(e)=asking {
+        let answer=pointer.destroy.take();
+        let item=ui.destroy.filter(|id|destroyable(&net.inventory,*id));
+        if item.is_none() || answer.is_some() {
+            if let (Some(id),Some(true),false)=(item,answer,busy) {
+                net.send(&crate::gameplay::inventory::command(id,dsor_proto::commands::inventory::Inventory::DELETE,vec![]));
+                ui.pending=Some((net.inventory.revision,time.elapsed_secs_f64()));
+            }
+            windows.get_mut(e).unwrap().3.set_if_neq(Visibility::Hidden);ui.destroy=None;
         }
-    } else if mouse.just_pressed(MouseButton::Right) && !busy {
+        return;
+    }
+    ui.destroy=None;pointer.destroy=None;
+    let hovered=windows.iter().filter(|(_,_,_,v,_)|**v!=Visibility::Hidden)
+        .find_map(|(e,n,c,_,_)|c.hovered.and_then(|b|item_cell(&n.0,&c.buttons[b].action).map(|cell|(e,cell))));
+    // Right-click sells a carried stack while a shop that buys is open (the
+    // server keeps it in the buyback list), else acts on carried consumables.
+    // Equipment, essences and mounts retain their drag/double-click controls.
+    let trading=windows.iter().any(|(_,n,_,v,_)|n.0==super::trade::WINDOW && *v!=Visibility::Hidden);
+    if mouse.just_pressed(MouseButton::Right) && !busy {
         if let Some((root,cell))=hovered {
             let (_,_,c,_,_)=windows.get(root).unwrap();
-            let class=["warrior","mage","ranger","dwarf"][c.spells.class.min(3) as usize];
             if let Some(id)=place(cell,c).and_then(|p|net.inventory.at(p)).map(|i|i.id) {
-                if let Some(cmd)=equip_toggle(&net.inventory,catalog,id,net.level.unwrap_or(1),class) {
-                    net.send(&cmd);ui.pending=Some((net.inventory.revision,time.elapsed_secs_f64()));
+                let selling=lookups.shop.as_ref().and_then(|p|p.open_shop()).filter(|(_,can_sell)|*can_sell).map(|(shop,_)|shop.to_owned());
+                let carried=matches!(net.inventory.location(id),Some(Place::Bag(_)|Place::Extra(_)));
+                let unidentified=net.inventory.items.get(&id).is_some_and(|i|i.flag_0);
+                let travel=net.inventory.items.get(&id).and_then(|i|lookups.quest_data.as_ref().zip(lookups.quest_ui.as_ref()).and_then(|(d,u)|d.get(&u.catalog)).and_then(|q|q.travel_items.get(&i.template).cloned()));
+                // An open NPC desk takes the item: picked for melting, laid on the
+                // gem or transmog desk, a gem set into the desk's item.
+                let desk=windows.iter().find(|(_,n,_,v,_)|super::systems::DESKS.iter().any(|(d,_)|*d==n.0.as_str()) && **v!=Visibility::Hidden).map(|(_,n,_,_,_)|n.0.clone());
+                if let (Some(desk),Some(state))=(desk,lookups.desks.as_mut()) {
+                    if let Some(item)=net.inventory.items.get(&id).cloned() {
+                        let category=catalog.items.get(&item.template).map(|d|d.item_category.clone()).unwrap_or_default();
+                        if let Some(cmd)=super::systems::pick(state,&desk,&net,&item,&category) { net.send(&cmd);ui.pending=Some((net.inventory.revision,time.elapsed_secs_f64())); }
+                    }
+                } else if unidentified && carried {
+                    // Unidentified: a right click identifies it (InventoryCommand operation
+                    // 0x12; the server answers with the item, DSOR_Server services/inventory_map.py).
+                    net.send(&crate::gameplay::inventory::command(id,0x12,vec![]));ui.pending=Some((net.inventory.revision,time.elapsed_secs_f64()));
+                } else if let Some(map)=travel.filter(|_|carried && net.inventory.movable(id)) {
+                    // A travel item: its use (0x13) arms it on the server for 15 s, then the
+                    // travel names the item's map (_Template_Item.TravelItemTarget).
+                    net.send(&crate::gameplay::inventory::command(id,dsor_proto::commands::inventory::Inventory::USE,vec![]));
+                    net.send(&dsor_proto::commands::ClientCommand::UseTravelItem(dsor_proto::commands::inventory::UseTravelItem { item:id, map }));
+                    ui.pending=Some((net.inventory.revision,time.elapsed_secs_f64()));
+                } else if let Some(shop)=selling {
+                    if net.inventory.movable(id) && matches!(net.inventory.location(id),Some(Place::Bag(_)|Place::Extra(_))) {
+                        net.send(&dsor_proto::commands::ClientCommand::Transaction(dsor_proto::commands::inventory::Transaction::sell(&shop,id)));
+                        ui.pending=Some((net.inventory.revision,time.elapsed_secs_f64()));
+                    }
+                } else if let Some(cmd)=use_consumable(&net.inventory,catalog,id) {
+                    if trading { trade.add.push(id); }
+                    else { net.send(&cmd);ui.pending=Some((net.inventory.revision,time.elapsed_secs_f64())); }
                 }
             }
         }
@@ -267,7 +379,7 @@ pub fn input(mut ui:ResMut<Interaction>,mut pointer:ResMut<Pointer>,mut windows:
         }
     }
     if ui.drag.as_ref().is_some_and(|d|d.revision!=net.inventory.revision || !windows.get(d.root).is_ok_and(|(_,_,_,v,_)|*v!=Visibility::Hidden)) {ui.drag=None;}
-    if let Some(d)=ui.drag.as_mut() {if point.is_some_and(|p|p.distance(d.origin)>=4.0) {d.active=true;}}
+    if let Some(d)=ui.drag.as_mut() {if point.is_some_and(|p|p.distance(d.origin)>=4.0) {d.active=true;*last_click=None;}}
     if mouse.just_released(MouseButton::Left) {
         // Dropped on our side of the trade window: offered.
         let on_trade=windows.iter().filter(|(_,n,_,v,_)|n.0==super::trade::WINDOW && **v!=Visibility::Hidden)
@@ -286,8 +398,47 @@ pub fn input(mut ui:ResMut<Interaction>,mut pointer:ResMut<Pointer>,mut windows:
                         net.send(&cmd);ui.pending=Some((net.inventory.revision,time.elapsed_secs_f64()));
                     }
                 }
+            } else if point.is_some() && !capture.over_ui && !trading && destroyable(&net.inventory,d.id) {
+                // Out of every window, on the world: ask before destroying it.
+                ask_destroy(&mut ui,&mut windows,d.id);
             }
         }
+    }
+}
+
+#[derive(Component)] pub struct DestroyContent;
+/// DESTROY_DIALOG's item, drawn in its DeleteItem slot as a cell draws it, and
+/// the question with the item's name.
+#[allow(clippy::too_many_arguments,clippy::type_complexity)]
+pub fn destroy_dialog(mut commands:Commands,ui:Res<Interaction>,windows:Query<(Entity,&Window2018,&Visibility)>,old:Query<Entity,With<DestroyContent>>,
+    net:Option<NonSend<crate::network::net::Net>>,(data,catalogs):(Res<Data>,Res<Assets<Catalog>>),(layouts,loaded):(Res<Assets<Layout>>,Res<crate::ui::Loaded>),
+    assets:Res<AssetServer>,screen:Res<Screen>,mut last:Local<Option<(Entity,u32,u64,u32,u32,bool)>>) {
+    let catalog=catalogs.get(&data.catalog);
+    let open=ui.destroy.zip(windows.iter().find(|(_,n,v)|n.0==DESTROY_DIALOG && **v!=Visibility::Hidden).map(|(e,_,_)|e));
+    let key=open.map(|(id,e)|(e,id,net.as_ref().map_or(0,|n|n.inventory.revision),screen.width.to_bits(),screen.scale.to_bits(),catalog.is_some()));
+    if *last==key {return;} *last=key; for e in &old {commands.entity(e).despawn();}
+    let (Some((id,root)),Some(net),Some(catalog))=(open,net,catalog) else{return};
+    let Some(item)=net.inventory.items.get(&id) else{return};
+    let Some(layout)=loaded.layouts.iter().filter_map(|(h,_,_)|layouts.get(h)).find(|l|l.window==DESTROY_DIALOG) else{return};
+    let widget=|leaf:&str|layout.widgets.iter().find(|w|w.id==format!("{DELETE_ITEM}/{leaf}"));
+    let group=commands.spawn((DestroyContent,Transform::from_xyz(0.0,0.0,WINDOW_ITEMS_DEPTH),Visibility::Inherited,ChildOf(root))).id();
+    if let Some(w)=widget("ItemSlot/IconLabel") {
+        let [l,t,r,b]=w.rect;
+        sprites(&mut commands,&assets,catalog,&item.template,Some(item),screen.world(w.k,l,t).extend(0.0),Vec2::new(r-l,b-t),Color::WHITE,group);
+        if item.third>1 {
+            super::social::label(&mut commands,&assets,&screen,group,item.third.to_string(),screen.world(w.k,l,b-16.0).extend(0.2),10.0,
+                Color::srgb(1.0,0.865,0.677),r-l-4.0,bevy::text::Justify::Right);
+        }
+    }
+    if let Some(w)=widget("Question") {
+        let [l,t,r,b]=w.rect;
+        let name=catalog.items.get(&item.template).map_or(item.template.as_str(),|m|m.name.as_str());
+        let font=TextFont{font:assets.load("fonts/tahoma.ttf").into(),font_size:bevy::text::FontSize::Px(9.0*FONT_SCALE*screen.scale),..default()};
+        commands.spawn((Text2d::new(format!("{DESTROY_QUESTION}\n\n")),font.clone(),TextColor(Color::srgb(0.9,0.78,0.54)),
+            bevy::text::TextLayout::justify(bevy::text::Justify::Center),Anchor::CENTER,bevy::text::TextBounds::new_horizontal((r-l)*screen.scale),
+            Transform::from_translation(screen.world(w.k,(l+r)*0.5,(t+b)*0.5).extend(0.2)).with_scale(Vec3::splat(1.0/screen.scale)),
+            RenderLayers::layer(LAYER),ChildOf(group)))
+            .with_child((TextSpan::new(name),font,TextColor(preview::rarity(catalog,&item.template,Some(item)).1)));
     }
 }
 
@@ -297,6 +448,20 @@ pub(super) fn text(commands:&mut Commands,assets:&AssetServer,screen:&Screen,par
     commands.spawn((Text2d::new(value),TextFont{font:assets.load("fonts/tahoma.ttf").into(),font_size:bevy::text::FontSize::Px(size*TEXT_SCALE*screen.scale),..default()},
         TextColor(color),Anchor::TOP_LEFT,bevy::text::TextBounds::new_horizontal(width*screen.scale),
         Transform::from_translation(at).with_scale(Vec3::splat(1.0/screen.scale)),RenderLayers::layer(LAYER),ChildOf(parent)));
+}
+/// An item as a cell draws it, top-left at `at`: its rarity background, its icon,
+/// and its frame over both (icons_toolkit/frame_slim_*). False without an icon.
+/// FAILURE (2026-10-19): the dragged copy left out the frame ("dragged only with
+///   their background").
+#[allow(clippy::too_many_arguments)]
+fn sprites(commands:&mut Commands,assets:&AssetServer,catalog:&Catalog,template:&str,item:Option<&ItemInfo>,at:Vec3,size:Vec2,tint:Color,parent:Entity)->bool {
+    let (icon,background,frame)=catalog.icon_parts(template,item);
+    for (z,image) in [(0.0,background),(0.05,icon),(0.1,frame)] {
+        let Some(image)=image else{continue};
+        commands.spawn((Sprite{image:assets.load(image.to_owned()),custom_size:Some(size),color:tint,..default()},Anchor::TOP_LEFT,
+            Transform::from_translation(at+Vec3::Z*z),RenderLayers::layer(LAYER),ChildOf(parent)));
+    }
+    icon.is_some()
 }
 fn color(catalog:&Catalog,item:Option<&ItemInfo>)->Color {
     let rgba=item.and_then(|i|catalog.colors.get(&i.twenty_eighth.to_string())).copied().unwrap_or([0.85,0.8,0.67,1.0]);
@@ -326,19 +491,9 @@ pub fn render(mut commands:Commands,windows:Query<(Entity,&Window2018,&WindowCon
         if locked {commands.spawn((Sprite::from_color(Color::srgba(0.01,0.01,0.01,0.8),size),Anchor::TOP_LEFT,Transform::from_translation(pos.extend(0.0)),RenderLayers::layer(LAYER),ChildOf(group)));continue;}
         let Some(d)=displayed(cell,c,&net.inventory,catalog) else{continue};
         let tint=if d.amount==0 {Color::srgba(0.38,0.38,0.38,0.65)} else{Color::WHITE};
-        let (icon,background,frame)=catalog.icon_parts(d.template,d.item);
-        if let Some(bg)=background {
-            commands.spawn((Sprite{image:assets.load(bg.to_owned()),custom_size:Some(size-Vec2::splat(5.0)),color:tint,..default()},Anchor::TOP_LEFT,
-                Transform::from_xyz(pos.x+2.5,pos.y-2.5,0.05),RenderLayers::layer(LAYER),ChildOf(group)));
+        if !sprites(&mut commands,&assets,catalog,d.template,d.item,Vec3::new(pos.x+2.5,pos.y-2.5,0.05),size-Vec2::splat(5.0),tint,group) {
+            text(&mut commands,&assets,&screen,group,"?".into(),pos.extend(0.2)+Vec3::new(15.0,-10.0,0.0),22.0,Color::WHITE,size.x);
         }
-        if let Some(f)=frame {
-            commands.spawn((Sprite{image:assets.load(f.to_owned()),custom_size:Some(size-Vec2::splat(5.0)),color:tint,..default()},Anchor::TOP_LEFT,
-                Transform::from_xyz(pos.x+2.5,pos.y-2.5,0.15),RenderLayers::layer(LAYER),ChildOf(group)));
-        }
-        if let Some(icon)=icon {
-            commands.spawn((Sprite{image:assets.load(icon.to_owned()),custom_size:Some(size-Vec2::splat(5.0)),color:tint,..default()},Anchor::TOP_LEFT,
-                Transform::from_xyz(pos.x+2.5,pos.y-2.5,0.1),RenderLayers::layer(LAYER),ChildOf(group)));
-        } else {text(&mut commands,&assets,&screen,group,"?".into(),pos.extend(0.2)+Vec3::new(15.0,-10.0,0.0),22.0,Color::WHITE,size.x);}
         if d.amount>1 || matches!(cell,Cell::Ingredient(_)) {
             let at=Vec3::new(pos.x+3.0,pos.y-size.y+17.0,0.3);
             text(&mut commands,&assets,&screen,group,d.amount.to_string(),at+Vec3::new(1.0,-1.0,-0.01),13.0,Color::BLACK,size.x-4.0);
@@ -387,6 +542,9 @@ mod preview;
 mod values;
 pub(in crate::ui) mod pins;
 
+#[cfg(test)]
+mod interaction_tests;
+
 pub(super) fn preview_card(catalog:&Catalog, layout:Option<&Layout>, template:&str, item:Option<&ItemInfo>, amount:u32, advanced:bool)->tooltips::card::Card {
     preview::card(&DisplayItem { item,template,amount,unlock:0,read_only:false,waiting:false },catalog,layout,advanced)
 }
@@ -423,9 +581,7 @@ pub fn overlay(mut commands:Commands,ui:Res<Interaction>,windows:Query<(&Window2
     let (Some(d),Some((p,scale)),Some(catalog))=(display,at,catalog) else{return;};
     let root=commands.spawn((Overlay,Transform::from_translation(screen.world(0.0,p.x,p.y).extend(800.0)).with_scale(Vec3::splat(scale)),Visibility::Inherited)).id();
     if dragged.is_some() {
-        let (icon,background)=catalog.icon(d.template,d.item);
-        if let Some(bg)=background {commands.spawn((Sprite{image:assets.load(bg.to_owned()),custom_size:Some(Vec2::splat(44.0)),..default()},Anchor::TOP_LEFT,Transform::from_xyz(0.0,0.0,-0.01),RenderLayers::layer(LAYER),ChildOf(root)));}
-        if let Some(icon)=icon {commands.spawn((Sprite{image:assets.load(icon.to_owned()),custom_size:Some(Vec2::splat(44.0)),..default()},Anchor::TOP_LEFT,RenderLayers::layer(LAYER),ChildOf(root)));}
+        sprites(&mut commands,&assets,catalog,d.template,d.item,Vec3::new(0.0,0.0,-0.01),Vec2::splat(44.0),Color::WHITE,root);
     } else if let Some(card)=card {card.draw(&mut commands,&assets,&screen,&mut meshes,&mut materials,root,layout);}
 }
 
@@ -446,6 +602,8 @@ mod tests {
             .init_resource::<dialogue::Presentation>().init_asset::<dialogue::Catalog>()
             .init_resource::<crate::gameplay::dialogue::Dialogue>()
             .init_resource::<crate::gameplay::stats::Sheet>().init_resource::<crate::actors::monsters::HoverInfo>()
+            .insert_resource(crate::gameplay::stats::ResourceMax(100.0))
+            .init_resource::<super::party::Party>().init_resource::<super::quests::Quests>().init_resource::<super::systems::Views>()
             .init_resource::<Pointer>().init_resource::<Interaction>().init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<bevy::sprite_render::EntitiesNeedingSpecialization<UiMaterial>>()
             .add_systems(PostUpdate, (refresh_mesh_order, bevy::sprite_render::check_entities_needing_specialization::<UiMaterial>)

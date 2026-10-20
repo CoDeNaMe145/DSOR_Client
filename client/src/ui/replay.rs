@@ -26,6 +26,8 @@ struct Step {
     advanced_tooltip: Option<bool>,
     key: Option<String>,
     left: Option<bool>,
+    /// Press (true) or release the right button (a desk's pick of an item).
+    right: Option<bool>,
     capture: Option<String>,
     #[serde(default)] quit: bool,
 }
@@ -146,6 +148,9 @@ pub(super) fn run(mut commands: Commands, mut replay: Local<Replay>,
             let window = window.bypass_change_detection();
             window.set_cursor_position(Some(Vec2::new(x, y) * (window.height() / BASE_H)));
             window.focused = true;
+        }
+        if let Some(right) = step.right {
+            if right { mouse.press(MouseButton::Right); } else { mouse.release(MouseButton::Right); }
         }
         if let Some(left) = step.left {
             if left { mouse.press(MouseButton::Left); } else { mouse.release(MouseButton::Left); }

@@ -53,7 +53,7 @@ pub(in crate::ui) fn prepare(layout: &Layout) -> Layout {
     out.widgets.retain(|w| !w.id.contains("/LMB/Label_lm") && !w.id.contains("/RMB/Label_rm"));
     for (id,rect) in [("Primary",[563.0,759.5,595.0,767.5]),("Secondary",[597.5,759.5,630.0,767.5])] {
         out.widgets.push(Widget { id:format!("Canvas/Runtime/TextLabel_{id}"),kind:"TextLabel".into(),event:String::new(),click_through:true,enabled:true,button:None,state:None,spell:None,k:0.5,rect,hidden:false,art:None,
-            text:Some(Label{text:String::new(),key:"gui.hotkey".into(),size:7.0,color:[0.9,0.78,0.54,1.0],align:[1,1],bold:false,word_break:false}) });
+            text:Some(Label{text:String::new(),key:"gui.hotkey".into(),size:7.0,color:[0.9,0.78,0.54,1.0],align:[1,1],bold:false,word_break:false,outline:Vec::new()}) });
     }
     out
 }

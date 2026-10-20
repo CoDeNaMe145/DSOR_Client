@@ -91,22 +91,37 @@ echo "[convert] Nebula states and tables (log: $logs/post.log)"
     python3 "$tools/embed_textures.py" "$root" "$out" "$godot"
     python3 "$tools/fix_materials.py" "$out" --n3 "$root/models"
     python3 "$tools/fix_materials.py" "$out" --character-colors
+    # The dye masks of character and monster surfaces (equipment colours).
+    python3 "$tools/embed_character_masks.py" "$root" "$out" "$godot"
     python3 "$tools/close_loops.py" "$out"
     python3 "$tools/fx_clip_starts.py" "$root" "$out" "$godot"
     python3 "$tools/restore_pivots.py" "$root/models" "$out" "$godot"
     python3 "$tools/character_tables.py" "$root" "$out"
+    # Monsters (templates, animation sets, the hits on players), picking
+    # shapes, combat texts, character statistics, the selection screen.
+    python3 "$tools/export_monsters.py" "$root" "$out"
+    python3 "$tools/export_picking.py" "$root" "$out"
+    python3 "$tools/export_combat_text.py" "$root" "$out" "$godot"
+    python3 "$tools/export_stats.py" "$root" "$out"
+    python3 "$tools/export_character_selection.py" "$root/db/static.db4" "$out"
+    # The systems windows' data (achievements, events, dailies, the album, recipes...).
+    python3 "$tools/systems_catalog.py" "$root/db/static.db4" "$root" "$godot" "$out"
     python3 "$tools/export_skills.py" "$root" "$out"
     python3 "$tools/export_npcs.py" "$root" "$out"
     python3 "$tools/export_exits.py" "$root" "$out"
     python3 "$tools/export_ambience.py" "$root" "$out"
     python3 "$tools/export_deco.py" "$root" "$out"
+    python3 "$tools/export_audio_runtime.py" "$root" "$out"
     # Last: the VFX editor's edits (vfx-overrides/) over the fresh conversion.
     python3 "$tools/vfx_apply.py" "$out"
     python3 "$tools/export_ui.py" "$root" "$out" "$godot"
+    # The player trade window, composed from exported windows; the debug menu's index.
+    python3 "$tools/compose_trade_ui.py" "$out"
+    python3 "$tools/export_debug.py" "$out"
     # The walkable ground (maps/<map>.nav.bin): player heights and collisions, and
     # where skills may land. It needs the server's PathEngine reader:
     # DSOR_SERVER=<DSOR_Server checkout> (or the legacy EXPERIMENTAL reader).
-    if [ -n "${DSOR_SERVER:-}" ]; then python3 "$tools/export_navmesh.py" "$root" "$out" --server "$DSOR_SERVER"
+    if [ -n "${DSOR_SERVER:-}" ]; then python3 "$tools/export_navmesh.py" "$root" "$out" --server "$DSOR_SERVER" && python3 "$tools/quest_catalog.py" "$DSOR_SERVER/data/quests.xml" "$out" --database "$root/db/static.db4"
     elif [ -n "${EXPERIMENTAL:-}" ]; then python3 "$tools/export_navmesh.py" "$root" "$out"
     else echo "warning: no DSOR_SERVER: no navigation meshes (players walk through walls, skills land anywhere)" >&2; fi
 } > "$logs/post.log" 2>&1
@@ -115,7 +130,7 @@ tail -n 14 "$logs/post.log"
 # Authored edits live outside the generated tree. Recompose client sidecars and
 # derived DB4 files from one effective map; conflicts must fail the conversion.
 sh "$tools/level-tool.sh" apply --assets "$out" --source-root "$root"
-sh "$tools/level-tool.sh" props --assets "$out" --source-root "$root"
+sh "$tools/level-tool.sh" props --assets "$out" --source-root "$root" --static-db "$root/db/static.db4"
 
 du -sh "$out"
 echo "[convert] done -> $out"

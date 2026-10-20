@@ -275,6 +275,7 @@ fn sync(mut commands: Commands, mut editor: ResMut<Editor>, time: Res<Time>, mut
                     let mut placeholder = helper || object.model.is_empty();
                     if let Some(character) = &object.character {
                         let desc = crate::actors::character::CharacterDesc { look: Some(crate::actors::character::NpcLook {
+                            sound_profile: String::new(),
                             skeleton: character.skeleton.clone(), parts: character.parts.clone(), anim_set: character.anim_set.clone(),
                             variation: character.variation.iter().map(|v| (v.bone.clone(), Vec3::from(v.t), Vec3::from(v.s))).collect(),
                         }), ..default() };
@@ -297,6 +298,7 @@ fn sync(mut commands: Commands, mut editor: ResMut<Editor>, time: Res<Time>, mut
                         at.rotation *= Quat::from_rotation_y(std::f32::consts::PI);
                         if let Some(character) = &decoration.character {
                             let desc = crate::actors::character::CharacterDesc { look: Some(crate::actors::character::NpcLook {
+                                sound_profile: String::new(),
                                 skeleton: character.skeleton.clone(), parts: character.parts.clone(), anim_set: character.anim_set.clone(),
                                 variation: character.variation.iter().map(|v| (v.bone.clone(), Vec3::from(v.t), Vec3::from(v.s))).collect(),
                             }), ..default() };

@@ -5,6 +5,7 @@
 /assets
 *.glb
 *.png
+!/client/src/screens/login/icons/github.png
 *.dds
 *.n3
 *.nvx2

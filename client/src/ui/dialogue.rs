@@ -32,9 +32,9 @@ impl AssetLoader for CatalogLoader {
 }
 
 impl Catalog {
-    fn text(&self, key: &str) -> String { self.texts.get(&key.to_lowercase()).cloned().unwrap_or_default() }
-    fn quest(&self, id: &str, field: &str) -> String { self.text(&format!("quest.{id}.s_{field}")) }
-    fn title(&self, id: &str) -> String {
+    pub(in crate::ui) fn text(&self, key: &str) -> String { self.texts.get(&key.to_lowercase()).cloned().unwrap_or_default() }
+    pub(in crate::ui) fn quest(&self, id: &str, field: &str) -> String { self.text(&format!("quest.{id}.s_{field}")) }
+    pub(in crate::ui) fn title(&self, id: &str) -> String {
         let title = self.quest(id, "title");
         if title.is_empty() { readable(id) } else { title }
     }
@@ -43,7 +43,7 @@ impl Catalog {
     }
 }
 
-fn readable(id: &str) -> String {
+pub(in crate::ui) fn readable(id: &str) -> String {
     id.replace(['_', '-'], " ").split_whitespace().map(|s| {
         let mut chars = s.chars();
         chars.next().map(|c| c.to_uppercase().collect::<String>() + chars.as_str()).unwrap_or_default()
@@ -55,6 +55,25 @@ enum Action {
     Quest(String), Talk(String, String), Shop(String),
     Accept(String, u8), ContinueTalk(String), Back, Previous, Next, Close,
     Category(u16), Buyback(bool), Usable(bool),
+    /// Buy one of the offer (its resource id), or buy back a sold stack (its id).
+    Buy(String), Restore(u32),
+    /// Hand a quest's items over: the barter id, the quest.
+    Deliver(String, String),
+    /// Open one of the NPC's desks (controls::systems: the smith's salvage and
+    /// workbench, the jeweller's gem desk, the tailor's transmog desk).
+    Desk(&'static str),
+}
+
+/// The desks an NPC's profession offers (the NPC data's profession ids).
+fn desks(profession: &str) -> &'static [(&'static str, &'static str)] {
+    use controls::systems::{GEMDESK, SALVAGE, TRANSMOG, WORKBENCH};
+    match profession {
+        "jewelry" => &[(GEMDESK, "Gems and sockets")],
+        "smith" | "simple_smith" => &[(SALVAGE, "Melt items"), (WORKBENCH, "Workbench")],
+        "crafting" | "crafting_cake" => &[(WORKBENCH, "Workbench")],
+        "tailor" => &[(TRANSMOG, "Transmogrification")],
+        _ => &[],
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Choice { label: String, icon: String, action: Action }
@@ -81,6 +100,8 @@ pub(super) struct Presentation {
     detail: Option<Detail>,
     merchant: merchant::Selection,
     view: Option<View>,
+    /// A transaction sent and not yet answered: (inventory revision, time).
+    pending: Option<(u64, f64)>,
 }
 
 impl Presentation {
@@ -88,13 +109,19 @@ impl Presentation {
         if index == CLOSE { Some("Close") }
         else { self.view.as_ref()?.options.get(index).map(|choice| choice.label.as_str()) }
     }
+    pub(in crate::ui) fn catalog(&self) -> &Handle<Catalog> { &self.catalog }
+    /// The shop whose selection is on screen, and whether it buys items.
+    pub(super) fn open_shop(&self) -> Option<(&str, bool)> {
+        let merchant = self.view.as_ref()?.merchant.as_ref()?;
+        match &self.detail { Some(Detail { action: Action::Shop(shop), .. }) => Some((shop.as_str(), merchant.can_sell)), _ => None }
+    }
 }
 
 pub(super) fn setup(mut commands: Commands, assets: Res<AssetServer>) {
     commands.insert_resource(Presentation {
         catalog: assets.load("interface/dialogue.catalog.json"),
         items: assets.load("interface/inventory.items.json"),
-        generation: 0, page: 0, detail: None, merchant: default(), view: None,
+        generation: 0, page: 0, detail: None, merchant: default(), view: None, pending: None,
     });
 }
 
@@ -106,6 +133,9 @@ fn menu(info: Option<&actors::NpcInfo>, target: &crate::gameplay::dialogue::Targ
     if !target.profile.shop.is_empty() && !shop.is_empty() {
         choices.push(Choice::new("View selection", "shop", Action::Shop(shop.to_owned())));
     }
+    for (window, label) in desks(&target.profile.profession) {
+        choices.push(Choice::new(*label, "shop", Action::Desk(window)));
+    }
     if let Some(info) = info {
         for entry in &info.interactions {
             let choice = match entry.kind {
@@ -113,6 +143,13 @@ fn menu(info: Option<&actors::NpcInfo>, target: &crate::gameplay::dialogue::Targ
                 2 => {
                     let short = catalog.dialog(&entry.name, true);
                     Choice::new(if short.is_empty() { catalog.title(&entry.quest) } else { short }, "talk", Action::Talk(entry.name.clone(), entry.quest.clone()))
+                }
+                // A delivery (NPC_DELIVERY_DIALOG): its own text, else the quest's name.
+                // SOURCE: DSOR_Server services/quests.py (:491-494), the barter id as
+                //   the interaction's name, the quest as its quest.
+                3 => {
+                    let short = catalog.text(&format!("quest.{}.s_{}bartershort", entry.quest, entry.name));
+                    Choice::new(if short.is_empty() { catalog.title(&entry.quest) } else { short }, "quest", Action::Deliver(entry.name.clone(), entry.quest.clone()))
                 }
                 // Task-target markers are not conversation options.
                 _ => continue,
@@ -151,6 +188,8 @@ pub(super) fn sync(
     layouts: Res<Assets<Layout>>,
     windows: Query<(Entity, &Window2018)>,
     players: Query<&crate::actors::character::Character, With<crate::network::net::LocalPlayer>>,
+    time: Res<Time>,
+    mut desk_windows: Query<(&Window2018, &mut Visibility)>,
 ) {
     if presentation.generation != dialogue.generation {
         presentation.generation = dialogue.generation;
@@ -158,8 +197,13 @@ pub(super) fn sync(
         presentation.detail = None;
         presentation.merchant = default();
         presentation.view = None;
+        presentation.pending = None;
         // Old buttons belong to the old NPC, even if their release arrives now.
         dialogue.choice = None;
+    }
+    // The server's answer changes the inventory; a lost one must not lock the shop.
+    if presentation.pending.is_some_and(|(revision, at)| net.as_ref().is_none_or(|n| n.inventory.revision != revision) || time.elapsed_secs_f64() - at > 2.0) {
+        presentation.pending = None;
     }
     let fallback = Catalog::default();
     let catalog = catalogs.get(&presentation.catalog).unwrap_or(&fallback);
@@ -173,6 +217,12 @@ pub(super) fn sync(
                 else { presentation.view.as_ref().and_then(|v| v.options.get(index)).map(|c| c.action.clone()) };
             match action {
                 Some(Action::Close) => dialogue.close(),
+                Some(Action::Desk(window)) => {
+                    for (w, mut visibility) in &mut desk_windows {
+                        if w.0 == window { *visibility = Visibility::Inherited; }
+                    }
+                    dialogue.close();
+                }
                 Some(Action::Back) => presentation.detail = None,
                 Some(Action::Category(category)) => {
                     presentation.merchant.category = Some(category);
@@ -193,6 +243,21 @@ pub(super) fn sync(
                     if let Some(detail) = &mut presentation.detail { detail.page += 1; }
                     else { presentation.page += 1; }
                 }
+                Some(action @ (Action::Buy(_) | Action::Restore(_))) => {
+                    // One order at a time: the server answers with the inventory, the
+                    // wallet and, for item trades, the buyback list (an Offer that keeps
+                    // the shop). A purchase buys one copy of the offer.
+                    let shop = match &presentation.detail { Some(Detail { action: Action::Shop(shop), .. }) => Some(shop.clone()), _ => None };
+                    if let (Some(shop), Some(net), None) = (shop, net.as_mut().filter(|n| !n.offline && n.inventory.ready), presentation.pending) {
+                        let order = match action {
+                            Action::Buy(offer) => inventory::Transaction::buy(&shop, &offer, 1),
+                            Action::Restore(item) => inventory::Transaction::restore(&shop, item),
+                            _ => unreachable!(),
+                        };
+                        net.send(&ClientCommand::Transaction(order));
+                        presentation.pending = Some((net.inventory.revision, time.elapsed_secs_f64()));
+                    }
+                }
                 Some(action @ (Action::Quest(_) | Action::Talk(_, _) | Action::Shop(_))) if available.iter().any(|c| c.action == action) => {
                     if let (Action::Shop(shop), Some(net)) = (&action, net.as_mut()) {
                         if !net.offline { net.npc_dialogue.offers.remove(shop); }
@@ -209,6 +274,15 @@ pub(super) fn sync(
                             net.send(&ClientCommand::NpcRequest(actors::NpcRequest { actor: target.actor }));
                             dialogue.close();
                         }
+                    }
+                }
+                Some(Action::Deliver(barter, _)) if available.iter().any(|c| matches!(&c.action, Action::Deliver(b, _) if *b == barter)) => {
+                    // The server takes the items and answers with the inventory, the
+                    // task's progress and the NPC's new options.
+                    if let Some(net) = net.as_mut().filter(|n| !n.offline) {
+                        net.send(&ClientCommand::Deliver(actors::Deliver { actor: target.actor, value: barter }));
+                        net.send(&ClientCommand::NpcRequest(actors::NpcRequest { actor: target.actor }));
+                        dialogue.close();
                     }
                 }
                 Some(Action::ContinueTalk(id)) if available.iter().any(|c| matches!(&c.action, Action::Talk(value, _) if *value == id)) => {
@@ -409,7 +483,7 @@ fn conversation(source: &Layout, view: &View, layout: &mut Layout) {
             if widget.id == prefix { w.event = format!("NpcChoice:{index}"); }
             else if w.state.is_some() {
                 w.text = Some(Label { text: choice.label.clone(), key: "gui.runtime.dialogue".into(), size: 10.0,
-                    color: [1.0, 0.83, 0.52, 1.0], align: [1, 1], bold: true, word_break: false });
+                    color: [1.0, 0.83, 0.52, 1.0], align: [1, 1], bold: true, word_break: false, outline: Vec::new() });
             }
             map_widget(&mut w, |x| stretch(x, left + 30.0, left + 70.0, 45.0) - left + 243.87 + slot as f32 * 155.0,
                 |y| y + extra + 32.0);

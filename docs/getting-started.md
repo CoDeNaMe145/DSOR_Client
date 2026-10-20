@@ -16,9 +16,10 @@ locally into `assets/` and are never committed (see `tools/convert_assets.sh`).
 - python3 with Pillow and numpy, a C++ compiler, git (asset conversion)
 - [vgmstream-cli](https://github.com/vgmstream/vgmstream/releases) with its companion libraries
   (audio extraction; on `PATH` or selected with `DSOR_VGMSTREAM`)
+- ALSA development headers for native Linux audio builds
 - the unpacked 2018 client (`DSOClient2018_rel_206-7-32bit/export_win32`)
 
-## 2. Convert the game data (once, ~10 minutes, ~3 GB)
+## 2. Convert the game data
 
 ```sh
 tools/convert_assets.sh ~/Downloads/DSOClient2018_rel_206-7-32bit/export_win32 \
@@ -26,7 +27,7 @@ tools/convert_assets.sh ~/Downloads/DSOClient2018_rel_206-7-32bit/export_win32 \
 ln -sfn ~/Documents/Drakensang/dsor_assets assets
 ```
 
-This prepares audio banks as WAVs and a lookup catalog, runs DSO_Godot, then
+This prepares audio banks as WAVs, event bindings and map audio, runs DSO_Godot, then
 the tools of `tools/` in order (render states, cube
 maps, ambience, skills, NPCs, exits, interface windows, level decorations). With
 `DSOR_SERVER=<DSOR_Server checkout>` it also exports the navigation meshes
@@ -35,9 +36,16 @@ player walks through walls and skills can be aimed anywhere; to add them to
 assets converted without: `python3 tools/export_navmesh.py <export_win32> <assets>
 --server <DSOR_Server>`.
 See the [asset reference](assets.md) for conversion details and file formats.
+Existing packs that already contain decoded audio only need
+`python3 tools/export_audio_runtime.py <export_win32> <assets>` for playback.
+Volume and mute controls are under Settings → Audio; browser playback starts
+after a click or key press.
 
-A few tools are not part of `convert_assets.sh` yet; run them afterwards (same
-two paths, `<export_win32>` then `<assets>`):
+`convert_assets.sh` now runs these tools too (character masks, monsters,
+picking, statistics, combat texts, the debug map, plus the selection screen
+and the trade window); only the font is copied by hand. To refresh an
+existing pack without a full conversion, run them directly (same two paths,
+`<export_win32>` then `<assets>`):
 
 ```sh
 R=~/Downloads/DSOClient2018_rel_206-7-32bit/export_win32   # or the 261 one, below
@@ -82,6 +90,28 @@ animations, meshes, textures -- half-drawn spells, a debug map without ground).
 3. Convert as above with `R=~/Documents/Drakensang/client261/export_win32` and
    another output folder, then run the extra tools, then point `assets` at it.
 
+### October 2026 data (the upgraded server)
+
+The client the upgraded server matches comes extracted from its bundles
+(here `D:\dso-client-october-26`): `export_win32/` is the data tree with its
+static database at `export_win32/db/static.db4` as usual (the extractor may
+write that one under `global/export_win32/db/`: move it into
+`export_win32/db/`), `_toc/` the bundles' listings. Convert into a new folder,
+then put it in place of `assets` (keep `fonts/`, which the conversion does not
+make):
+
+```sh
+# Git Bash. The script has Windows line endings (igncr); python3 must be one
+# with Pillow and numpy (Anaconda's); the level tool must be built beforehand
+# (cargo build --release -p dsor-level-data --bin dsor-levels) since bash has
+# no Visual Studio linker.
+env SHELLOPTS=igncr DSOR_VGMSTREAM=.local/vgmstream/vgmstream-cli.exe DSOR_SERVER=.local/dso_server bash tools/convert_assets.sh /d/dso-client-october-26/export_win32 .local/assets-oct26 .local/DSO_Godot
+```
+
+The script runs every generator the client loads (the extra tools listed
+above included). The quest catalogue keeps the server's `quests.xml` but takes
+its texts from the client's database.
+
 ### After pulling new code
 
 A tool that changed only takes effect once it is run again over your assets.
@@ -113,22 +143,27 @@ from it: run `tools/vfx_apply.py <assets>` last.
 
 ## 3. Native client
 
-### Optional native DLSS / DLAA
+### Native DLSS / DLAA
 
 The `dlss` Cargo feature integrates Bevy's NVIDIA DLSS Super Resolution backend
-on Windows/Linux with Vulkan. It is off by default so ordinary native and web
-builds do not require NVIDIA's SDK. The browser and macOS disable this backend
-even if the feature is requested. RTX support is checked at runtime; a vendor
-name alone does not enable the menu option.
+on Windows/Linux with Vulkan. Native builds include it by default; browser and
+macOS builds ignore it, as the dependency is Windows/Linux only. RTX support is
+checked at runtime: a vendor name alone does not enable the menu option, and
+other GPUs see "Unavailable on this device".
 
-To build, install the [DLSS SDK v310.5.3](https://github.com/NVIDIA/DLSS/tree/v310.5.3),
-the Vulkan SDK and libclang, then set `DLSS_SDK`, `VULKAN_SDK` and (if needed)
-`LIBCLANG_PATH` to their installation directories. This version matches
-`dlss_wgpu` 4.0.0 / Bevy 0.19. Build with:
+Building needs the [DLSS SDK v310.5.3](https://github.com/NVIDIA/DLSS/tree/v310.5.3),
+the Vulkan headers and libclang. `.cargo/config.toml` points `DLSS_SDK`,
+`VULKAN_SDK` and `LIBCLANG_PATH` at git-excluded copies under `.local/dlss/`
+(`sdk/`, `vulkan/` and `clang/clang/native/`); variables already set in the
+environment take precedence. This version matches `dlss_wgpu` 4.0.0 / Bevy 0.19.
+A plain native build therefore includes it:
 
 ```sh
-cargo build --release -p dsor-client --features dlss
+cargo build --release -p dsor-client
 ```
+
+Without the SDK (CI does this) build with `--no-default-features`; the Settings
+row then reads "Not in this build".
 
 Place `nvngx_dlss.dll` from the SDK's `lib/Windows_x86_64/rel` beside the Windows
 executable, or `libnvidia-ngx-dlss.so.310.5.3` from `lib/Linux_x86_64/rel` beside
@@ -137,8 +172,8 @@ texts specified in section 9.5 of the SDK programming guide; see the
 [wrapper's packaging instructions](https://github.com/bevyengine/dlss_wgpu#distributing-your-app).
 SDK files and binaries are not checked into this repository.
 
-This build uses Bevy's native Vulkan initialization. Build without `dlss` when
-you need another graphics backend. Settings > Graphics offers DLAA and DLSS Quality/Balanced/Performance
+This build uses Bevy's native Vulkan initialization. Build with
+`--no-default-features` when you need another graphics backend. Settings > Graphics offers DLAA and DLSS Quality/Balanced/Performance
 only when the active adapter is NVIDIA and the runtime reports support. Missing
 runtime files and unsupported cards retain the selected
 FXAA/SMAA fallback. DLAA keeps native resolution; DLSS renders at a lower
@@ -153,7 +188,11 @@ until the compatibility fix is reviewed.
 ### Launching the client
 
 Running `dsor-client.exe` without arguments opens its built-in login screen.
-On Windows, `Play.cmd` opens this same executable. Sign in or create an account,
+On Windows, `Play.cmd` first runs `tools/Build-Client.ps1` (the same release
+build; cargo rebuilds only what changed, so an up-to-date client starts at
+once, and after source changes the build takes a few minutes), then opens the
+executable. A client still running is renamed aside so the new build can
+replace it. Sign in or create an account,
 then choose a character and press **Play Now** to enter the game in the same window. The client uses the
 account-service protocol from `dso_custom_client` and passes the returned
 account ID and session directly to its game connection.
@@ -208,9 +247,29 @@ scrolling over the interface does not zoom the world camera.
 
 Startup and map transitions use the in-client loading screen with
 `splashart_crunch.png` and the frame/fill from `statusbar_connenctscreen_new.png`.
-Map progress follows loaded models and textures; gameplay resumes once the
-player and renderer are ready. The shared `LoadingScreen::begin_assets` API
-accepts asset batches for additional preload stages.
+Map progress follows nearby geometry, textures and props. The initial loading
+barrier also waits for navigation/ambience files, nearby NPC/decor scheduling,
+scene instances, first poses, and the player's complete outfit. Failed optional
+assets settle with their existing asset diagnostics; a failed player appearance
+keeps the loading error visible.
+
+The selected class preloads its skill and status-effect models, hit effects,
+and the selected skin variants and spawn/hit/death effects of its summons.
+These requests run four at a time after initial geometry/props settle, and
+their handles stay resident for that class, including through a map change
+(every actor is despawned before the next map's player arrives). Behind the opaque overlay, batches
+of inert model/particle samples use the actual game camera's rendering settings.
+The render thread acknowledges uploaded meshes/materials and compiled pipelines
+before the samples are removed and the world is revealed. This does not play
+skills, emit particles, or trigger audio. It prepares the initial class and view;
+later equipment, other players' effects and changed graphics settings may still
+introduce new assets or shader variants.
+This moves preparation into the loading screen to reduce first-use stalls;
+it can lengthen startup and does not reduce steady-state scene rendering cost.
+
+The shared `LoadingScreen::begin_assets` API accepts asset batches for additional
+preload stages. Completion is logged as `loading screen: ready`; the preceding
+`preload:` and `render warm-up:` lines report the asset and render sample counts.
 
 ## 4. Browser client
 
@@ -269,4 +328,5 @@ HTTPS (and the relay over `wss://`) for others.
 | Ctrl + left click a stack | choose an amount to split into a free inventory slot |
 | F2 | lighting panel: scale the level's sun, ambient, placed lights and fog; camera colours come from ambience bubbles. With `DSOR_STUDIO_PREVIEW=1` (natively, for developers) F2 opens the Lighting Menu instead: the same multipliers, live overrides of the map's and each zone's ambience (with a zone preview), and named presets, saved in `lighting-presets.json` |
 | F9 or Ctrl+Shift+D | bug dump: downloads `dsor-dump-<time>.json` (natively: written in the working directory). Also written by itself on a crash or a rendering error. Send it with the bug report. |
-| W A S D, Q E, right mouse | free camera (offline viewer) |
+| F3 → Free look | detach the camera from a spawned character; turn off to follow the character again at the previous zoom |
+| W A S D, Q E, right mouse | free camera (offline viewer or Free look): move, down/up, and look; Shift flies faster. Close F3 to use the controls. |

@@ -66,7 +66,9 @@ struct Channel {
     /// The next ordering index to deliver.
     expected: u32,
     held: HashMap<u32, (Vec<u8>, usize, Reliability)>,
-    /// Highest sequencing index delivered, for sequenced frames.
+    /// Only the latest replaceable snapshot within each future ordering slot.
+    held_sequenced: HashMap<u32, (u32, Vec<u8>, usize, Reliability)>,
+    /// Highest sequencing index delivered within the current ordering slot.
     highest_sequence: Option<u32>,
 }
 
@@ -185,6 +187,7 @@ impl Connection {
         let ordering_index = if reliability.is_ordered() && !reliability.is_sequenced() {
             let i = self.next_ordering[channel as usize];
             self.next_ordering[channel as usize] = (i + 1) & 0xFF_FFFF;
+            self.next_sequencing[channel as usize] = 0;
             i
         } else {
             self.next_ordering[channel as usize]
@@ -508,6 +511,22 @@ impl Connection {
         };
         if frame.reliability.is_sequenced() {
             let ch = &mut self.channels[frame.ordering_channel as usize % ORDERING_CHANNELS];
+            let ahead = frame.ordering_index.wrapping_sub(ch.expected) & 0xFF_FFFF;
+            if ahead >= RELIABLE_WINDOW {
+                // A delayed walk from before a reliable stop/cast must never
+                // move the actor back to that older position.
+                return;
+            }
+            if ahead > 0 {
+                let newer = ch.held_sequenced.get(&frame.ordering_index).is_none_or(|(sequence, ..)| {
+                    let ahead = frame.sequencing_index.wrapping_sub(*sequence) & 0xFF_FFFF;
+                    ahead > 0 && ahead < RELIABLE_WINDOW
+                });
+                if newer {
+                    ch.held_sequenced.insert(frame.ordering_index, (frame.sequencing_index, payload, bits, frame.reliability));
+                }
+                return;
+            }
             if let Some(h) = ch.highest_sequence {
                 let ahead = frame.sequencing_index.wrapping_sub(h) & 0xFF_FFFF;
                 if ahead == 0 || ahead >= RELIABLE_WINDOW {
@@ -530,7 +549,13 @@ impl Connection {
             }
             self.deliver(payload, bits, frame.reliability, now);
             let mut next = (expected + 1) & 0xFF_FFFF;
-            while let Some((p, b, r)) = self.channels[channel].held.remove(&next) {
+            loop {
+                self.channels[channel].highest_sequence = None;
+                if let Some((sequence, p, b, r)) = self.channels[channel].held_sequenced.remove(&next) {
+                    self.channels[channel].highest_sequence = Some(sequence);
+                    self.deliver(p, b, r, now);
+                }
+                let Some((p, b, r)) = self.channels[channel].held.remove(&next) else { break };
                 self.deliver(p, b, r, now);
                 next = (next + 1) & 0xFF_FFFF;
             }
@@ -612,6 +637,56 @@ mod tests {
 
     fn server() -> SocketAddrV4 {
         SocketAddrV4::new(Ipv4Addr::LOCALHOST, 2190)
+    }
+
+    fn motion_frame(order: u32, sequence: u32, reliable: Option<u32>, marker: u8) -> Frame {
+        Frame {
+            reliability: if reliable.is_some() { Reliability::ReliableOrdered } else { Reliability::UnreliableSequenced },
+            bit_length: 8, reliable_index: reliable.unwrap_or(0), sequencing_index: sequence,
+            ordering_index: order, ordering_channel: 0, split: None, payload: vec![marker],
+        }
+    }
+
+    fn messages(c: &mut Connection) -> Vec<u8> {
+        std::iter::from_fn(|| c.poll_event()).filter_map(|e| match e {
+            Event::Message { data, .. } => Some(data[0]), _ => None,
+        }).collect()
+    }
+
+    #[test]
+    fn delayed_walk_cannot_undo_a_reliable_stop() {
+        let mut c = Connection::new(server(), 1, 0);
+        c.receive_frame(motion_frame(0, 5, None, 0x90), 0);
+        c.receive_frame(motion_frame(0, 0, Some(0), 0x91), 1);
+        c.receive_frame(motion_frame(0, 6, None, 0x92), 2);
+        assert_eq!(messages(&mut c), [0x90, 0x91]);
+        // Sequence numbers belong to one ordering slot, and may restart at 0.
+        c.receive_frame(motion_frame(1, 0, None, 0x93), 3);
+        assert_eq!(messages(&mut c), [0x93]);
+    }
+
+    #[test]
+    fn future_walk_waits_for_stop_and_keeps_only_the_latest_snapshot() {
+        let mut c = Connection::new(server(), 1, 0);
+        c.receive_frame(motion_frame(1, 0, None, 0x90), 0);
+        c.receive_frame(motion_frame(1, 2, None, 0x92), 1);
+        c.receive_frame(motion_frame(1, 1, None, 0x91), 2);
+        assert!(messages(&mut c).is_empty());
+        c.receive_frame(motion_frame(0, 0, Some(0), 0x93), 3);
+        assert_eq!(messages(&mut c), [0x93, 0x92]);
+        c.receive_frame(motion_frame(1, 1, None, 0x91), 4);
+        assert!(messages(&mut c).is_empty());
+    }
+
+    #[test]
+    fn sequenced_motion_and_ordering_wrap_independently() {
+        let mut c = Connection::new(server(), 1, 0);
+        c.channels[0].expected = 0xFF_FFFF;
+        c.receive_frame(motion_frame(0xFF_FFFF, 0xFF_FFFF, None, 0x90), 0);
+        c.receive_frame(motion_frame(0xFF_FFFF, 0, None, 0x91), 1);
+        c.receive_frame(motion_frame(0, 0, None, 0x93), 2);
+        c.receive_frame(motion_frame(0xFF_FFFF, 0, Some(0), 0x92), 3);
+        assert_eq!(messages(&mut c), [0x90, 0x91, 0x92, 0x93]);
     }
 
     /// Drive the handshake with the server's real replies from session-walk4.

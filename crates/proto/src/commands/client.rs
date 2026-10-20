@@ -7,7 +7,7 @@
 use dsor_raknet::{BitReader, BitWriter};
 
 use super::wire::{Body, Raw};
-use super::{actors, combat, inventory, movement, player, social, trade, DecodeError, CLIENT, PADDING_BITS};
+use super::{actors, combat, inventory, movement, player, social, systems, trade, DecodeError, CLIENT, PADDING_BITS};
 
 macro_rules! client_commands {
     ($($id:literal => $var:ident($ty:ty),)*) => {
@@ -105,6 +105,9 @@ client_commands! {
     121 => UseTravelItem(inventory::UseTravelItem),
     279 => SelectTalent(inventory::SelectTalent),
     280 => DeselectTalent(inventory::DeselectTalent),
+    281 => TalentPreselection(inventory::TalentPreselection),
+    286 => ResetTalents(inventory::ResetTalents),
+    287 => ResetTalentCategory(inventory::ResetTalentCategory),
     309 => UseStickerBookItem(inventory::UseStickerBookItem),
     // social.rs
     136 => Notification(social::Notification),
@@ -112,13 +115,43 @@ client_commands! {
     154 => GroupInvite(social::GroupInvite),
     156 => GroupInvitationResponse(social::GroupInvitationResponse),
     159 => GroupKick(social::GroupKick),
+    152 => GroupFoundation(social::Foundation),
+    160 => GroupLeave(social::Leave),
+    170 => GuildInvite(social::GuildInvite),
+    171 => GuildInvitationResponse(social::GroupInvitationResponse),
+    173 => GuildLeave(social::Leave),
     166 => GuildList(social::GuildList),
-    168 => GuildFoundation(social::GuildFoundation),
+    168 => GuildFoundation(social::Foundation),
     176 => BuddyList(social::BuddyList),
     182 => GroupQuery(social::GroupQuery),
     192 => PvpFlag(social::PvpFlag),
     206 => JoinMatchQueue(social::JoinMatchQueue),
     // trade.rs
+    // systems.rs: items, the stickerbook, titles, events, dailies, the Wanted
+    // Thief, the rankings, PvP, the premium shop.
+    49 => Salvage(systems::Salvage),
+    92 => Crafting(systems::Crafting),
+    322 => ApplyItemCustomization(systems::ApplyItemCustomization),
+    305 => SetStickerbookFavorite(systems::SetStickerbookFavorite),
+    307 => AddStickerbookFromInventory(systems::AddStickerbookFromInventory),
+    308 => UpgradeStickerbookItem(systems::UpgradeStickerbookItem),
+    277 => SetTitle(systems::SetTitle),
+    222 => ActiveEvents(systems::ActiveEvents),
+    120 => SetEventParticipation(systems::SetEventParticipation),
+    148 => DailyChallengeSelection(systems::DailyChallengeSelection),
+    356 => WantedThiefInfoRequest(systems::WantedThiefInfoRequest),
+    358 => AcceptWantedThiefMission(systems::WantedThiefSlot),
+    359 => RefreshWantedThiefMission(systems::WantedThiefSlot),
+    235 => HonorRankingRequest(systems::HonorRankingRequest),
+    240 => OverallRankingRequest(systems::OverallRankingRequest),
+    242 => LocalRankingRequest(systems::LocalRankingRequest),
+    244 => OverallLocalRankingRequest(systems::OverallLocalRankingRequest),
+    267 => OcpOfferRequest(systems::OcpOfferRequest),
+    271 => OcpBooking(systems::OcpBooking),
+    313 => AcceptedTierSpender(systems::AcceptedTierSpender),
+    209 => AbortMatchQueue(systems::AbortMatchQueue),
+    211 => JoinBattlegroundResponse(systems::JoinBattlegroundResponse),
+    199 => LeavePvp(systems::LeavePvp),
     0x0F00 => TradeHello(trade::TradeHello),
     0x0F01 => TradeRequest(trade::TradeRequest),
     0x0F02 => TradeAnswer(trade::TradeAnswer),

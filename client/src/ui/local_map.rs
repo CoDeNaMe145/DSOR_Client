@@ -59,7 +59,7 @@ impl MapSettings {
 pub struct MapNames(HashMap<String, String>);
 
 impl MapNames {
-    pub(super) fn caption(&self, map: &str) -> String {
+    pub(in crate::ui) fn caption(&self, map: &str) -> String {
         self.0.get(map).filter(|name| !name.trim().is_empty()).cloned().unwrap_or_else(|| {
             // Debug/untranslated maps still get a readable caption, without
             // leaking the internal area prefix into the normal map UI.

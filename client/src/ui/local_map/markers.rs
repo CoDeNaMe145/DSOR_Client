@@ -231,6 +231,36 @@ mod tests {
         let order: Vec<_> = snapshot(app.world_mut()).into_iter().map(|(target, _)| target).collect();
         assert_eq!(order, baseline.into_iter().map(|(target, _)| target).filter(|&target| target != sources[32]).collect::<Vec<_>>());
     }
+
+    #[test]
+    fn monster_markers_disappear_at_death_before_the_corpse_is_removed() {
+        use crate::actors::{character::CharacterAnim, monsters::{Monster, tests::monster}};
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Image>().init_asset::<Mesh>().init_asset::<UiMaterial>().init_asset::<super::super::MapNames>()
+            .add_systems(Update, update);
+        let map = app.world_mut().spawn(MapGeometry {
+            source: Handle::<NavMesh>::default().id(), view: View::new(MapMode::Compact, BASE_W),
+            projection: GroundProjection::gameplay(), min: Vec2::ZERO, origin: Vec2::ZERO, scale: 2.0,
+        }).id();
+        app.world_mut().spawn((MarkerLayer, ChildOf(map)));
+        let monsters: Vec<_> = (41..44).map(|actor| app.world_mut().spawn((
+            monster(actor, 100), CharacterAnim::default(), GlobalTransform::IDENTITY,
+            crate::network::net::RemotePlayer { actor, ..default() },
+        )).id()).collect();
+        app.update();
+        let mut markers = app.world_mut().query::<&Marker>();
+        assert_eq!(markers.iter(app.world()).count(), 3);
+        app.world_mut().get_mut::<Monster>(monsters[0]).unwrap().health = 0;
+        app.world_mut().get_mut::<CharacterAnim>(monsters[1]).unwrap().dead = true;
+        app.update();
+        assert_eq!(markers.single(app.world()).unwrap().target, monsters[2]);
+        assert!(app.world().get_entity(monsters[0]).is_ok(), "corpse still exists");
+        assert!(app.world().get_entity(monsters[1]).is_ok(), "death animation still exists");
+        app.world_mut().despawn(monsters[2]);
+        app.update();
+        assert_eq!(markers.iter(app.world()).count(), 0);
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -240,9 +270,9 @@ impl Style {
     fn authored(icon: &str) -> Option<Self> {
         (!icon.is_empty()).then(|| Self { icon: icon.replace('\\', "/"), color: [255; 3], size: 28 })
     }
-    fn player() -> Self { Self { icon: "ui/icon_map_player".into(), color: [255; 3], size: 32 } }
+    fn player() -> Self { Self { icon: "ui/icon_map_player".into(), color: [255; 3], size: 20 } }
     fn dot(hostile: bool) -> Self {
-        Self { icon: "ui/icon_map_team".into(), color: if hostile { [255, 40, 40] } else { [35, 125, 255] }, size: 28 }
+        Self { icon: "ui/icon_map_team".into(), color: if hostile { [255, 40, 40] } else { [35, 125, 255] }, size: 18 }
     }
 }
 

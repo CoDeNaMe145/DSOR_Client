@@ -209,6 +209,9 @@ struct MonsterDeath {
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct MonsterSystems;
 
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct MonsterHoverInfo;
+
 /// What the debug menu (crate::diagnostics::debug) asks for: monsters to place, and blows on
 /// them (actor; 0 a hit of the next damage type, 1 a critical, 2 a kill).
 #[derive(Resource, Default)]
@@ -343,7 +346,7 @@ impl Plugin for MonstersPlugin {
             .init_resource::<OfflineMonster>()
             .init_resource::<Hovered>()
             .init_resource::<HoverInfo>()
-            .add_systems(Update, hover_info.after(MonsterSystems))
+            .add_systems(Update, hover_info.after(MonsterSystems).in_set(MonsterHoverInfo))
             .init_resource::<ShaderColors>()
             .init_resource::<DebugMonsters>()
             .add_systems(PostUpdate, (own_player_materials, apply_shader_colors).chain())
@@ -351,13 +354,12 @@ impl Plugin for MonstersPlugin {
             .add_systems(Startup, load)
             .add_systems(Update, (spawn_monsters, setup_models, monster_health, hits_and_kills, start_deaths)
                 .chain().in_set(MonsterSystems).before(crate::network::net::NetSystems))
-            // Before the lights' bounds: a corpse takes its effects' lights with it
-            // (ChildOf), and update_point_light_bounding_spheres inserting a Sphere
-            // on one despawned in the same command flush panicked the game
-            // ("Entity despawned ... insert<Sphere>", a0400_deadlands, 2026-10-18).
-            // Ordered, the despawn is applied first and the light is not queried.
-            .add_systems(PostUpdate, remove_corpses.after(bevy::app::AnimationSystems)
-                .before(bevy::light::SimulationLightSystems::UpdateBounds))
+            // Animation completion is known in PostUpdate, but lighting and
+            // visibility still queue commands for the corpse's attached effects
+            // (update_point_light_bounding_spheres inserting a Sphere on a light
+            // despawned with its corpse panicked: a0400_deadlands, 2026-10-18).
+            // Dispose only after that schedule has flushed all of its commands.
+            .add_systems(Last, remove_corpses)
             .add_systems(Update, patrol_test_monster);
     }
 }
@@ -387,6 +389,7 @@ fn spawn_monsters(
     mut debug: ResMut<DebugMonsters>,
     time: Res<Time>,
     (skill_data, seqs): (Option<Res<SkillData>>, Res<Assets<SequenceTable>>),
+    (nav, meshes): (Option<Res<crate::world::nav::CurrentNav>>, Res<Assets<crate::world::nav::NavMesh>>),
 ) {
     // The map viewer, or offline play (--play): no server places monsters.
     // DSOR_TEST_MONSTER=<blueprint>[,x,y,z][;<blueprint>[,x,y,z]]...: the first
@@ -407,9 +410,12 @@ fn spawn_monsters(
             }
         }
     }
-    let queue = match net {
-        Some(net) => &mut net.into_inner().monster_spawns,
-        None => &mut *offline,
+    let (queue, vitals) = match net {
+        Some(net) => {
+            let net = net.into_inner();
+            (&mut net.monster_spawns, Some(&net.monster_vitals))
+        }
+        None => (&mut *offline, None),
     };
     queue.extend(placed);
     queue.extend(debug.spawns.drain(..));
@@ -432,6 +438,10 @@ fn spawn_monsters(
         return;
     }
     for spawn in crate::network::net::last_per_actor(std::mem::take(queue), |s| s.actor) {
+        let (health, max_health) = vitals.and_then(|v| v.get(&spawn.actor)).copied()
+            .unwrap_or((spawn.health, spawn.health));
+        // Kill/zero-HP may have arrived while templates or outfits were loading.
+        if health == 0 { continue; }
         for (e, r) in &existing {
             if r.actor == spawn.actor {
                 commands.entity(e).despawn();
@@ -441,7 +451,9 @@ fn spawn_monsters(
             warn!("monster {} has no template", spawn.blueprint);
             continue;
         };
-        let transform = Transform::from_translation(spawn.position);
+        let mesh = nav.as_ref().and_then(|n| meshes.get(&n.0));
+        let position = crate::network::net::remote_ground_position(mesh, spawn.position);
+        let transform = Transform::from_translation(position);
         let skeleton = t.graphics.strip_prefix("characters/").unwrap_or(&t.graphics).to_owned();
         let entity = if skeleton == "uniskel" || skeleton == "uniskel_dwarf" {
             let outfit = data
@@ -460,7 +472,7 @@ fn spawn_monsters(
                 .map(|shape| shape.iter().map(|j| (j.bone.clone(), Vec3::from(j.t), Vec3::from(j.s))).collect())
                 .unwrap_or_default();
             let desc = CharacterDesc {
-                look: Some(NpcLook { skeleton, parts: outfit.parts.clone(), anim_set: t.anim_set.clone(), variation }),
+                look: Some(NpcLook { sound_profile: t.set.clone(), skeleton, parts: outfit.parts.clone(), anim_set: t.anim_set.clone(), variation }),
                 ..default()
             };
             spawn_character(&mut commands, desc, transform)
@@ -495,15 +507,15 @@ fn spawn_monsters(
             Monster {
                 actor: spawn.actor,
                 template: spawn.blueprint.clone(),
-                health: spawn.health,
-                max_health: spawn.health,
+                health,
+                max_health,
                 level: spawn.level,
                 radius: t.radius.max(0.3),
                 height: t.height.max(1.0),
                 hits: Default::default(),
                 heavy: None,
             },
-            RemotePlayer { actor: spawn.actor, target: spawn.position, facing: 0.0, still_for: 1.0, held: 0.0, held_until_tick: None, ..default() },
+            RemotePlayer { actor: spawn.actor, target: position, facing: 0.0, still_for: 1.0, held: 0.0, held_until_tick: None, ..default() },
         ));
         // A summon appears through its SummonSequence (arcanemanifestation's
         // guardian rising, summontree's tree growing): without it they stood
@@ -612,12 +624,15 @@ fn setup_models(
         commands.entity(e).try_insert(ActorMaterials(own));
         let mut graph = AnimationGraph::new();
         let mut nodes = HashMap::new();
+        let mut sound_clips = HashMap::new();
         if let Some(rows) = table.0.get(&setup.anim_set) {
             for (state, clip) in rows {
                 let looped = format!("{clip}-loop");
                 let found = gltf.named_animations.get(looped.as_str()).map(|h| (h, true)).or_else(|| gltf.named_animations.get(clip.as_str()).map(|h| (h, false)));
                 if let Some((handle, looping)) = found {
-                    nodes.insert(state.clone(), (graph.add_clip(handle.clone(), 1.0, graph.root), looping));
+                    let node = graph.add_clip(handle.clone(), 1.0, graph.root);
+                    sound_clips.insert(node, clip.trim_end_matches("-loop").to_owned());
+                    nodes.insert(state.clone(), (node, looping));
                 }
             }
         } else {
@@ -625,7 +640,8 @@ fn setup_models(
         }
         commands
             .entity(player)
-            .insert((AnimationGraphHandle(graphs.add(graph)), crate::rendering::anim_cull::ManagedAnimation));
+            .insert((AnimationGraphHandle(graphs.add(graph)), crate::rendering::anim_cull::ManagedAnimation,
+                crate::audio::AnimationAudio::new(e, &setup.gltf.path().unwrap().path().to_string_lossy(), &setup.set, sound_clips)));
         anim.bind_model(player, nodes);
         // The file stays loaded while the monster stands: dropped with ModelSetup,
         // the next monster of its kind loaded it again, the reload replaced its
@@ -691,6 +707,7 @@ fn hits_and_kills(
         Res<Assets<PlayerHits>>,
     ),
 ) {
+    let _profile = crate::diagnostics::hud::FrameSpan::new("monsters::hits_and_kills");
     // Combat state must still advance while visual assets are loading/missing.
     let sequences = skills.as_ref().and_then(|s| seqs.get(s.sequences()));
     let templates = templates.get(&data.templates);
@@ -966,6 +983,7 @@ fn remove_corpses(
     sequences: Query<(Entity, &SequencePlayer)>,
     mut commands: Commands,
 ) {
+    let _profile = crate::diagnostics::hud::FrameSpan::new("monsters::remove_corpses");
     for (e, m, anim, death) in &monsters {
         let pending = death.sequence.and_then(|s| sequences.get(s).ok())
             .is_some_and(|(_, s)| s.has_pending_animation());
@@ -1139,6 +1157,7 @@ fn apply_shader_colors(
     actors: Query<&ActorMaterials>,
     mut materials: ResMut<Assets<crate::rendering::surfaces::NebulaMaterial>>,
 ) {
+    let _profile = crate::diagnostics::hud::FrameSpan::new("monsters::apply_shader_colors");
     for (actor, c) in colors.0.drain(..) {
         let Ok(own) = actors.get(actor) else { continue };
         for h in &own.0 {

@@ -28,6 +28,7 @@ pub mod names;
 pub mod player;
 pub mod props;
 pub mod social;
+pub mod systems;
 pub mod trade;
 pub mod wire;
 
@@ -155,6 +156,7 @@ server_commands! {
     167 => GuildStatus(player::GuildStatus),
     221 => EventUpdate(player::EventUpdate),
     276 => AchievementInfo(player::AchievementInfo),
+    327 => PlayerLogoutInfo(player::PlayerLogoutInfo),
     // actors.rs: world entities, items on the ground, props, quests.
     38 => NewNpc(actors::NewNpc),
     40 => NpcInfo(actors::NpcInfo),
@@ -211,6 +213,12 @@ server_commands! {
     268 => OcpMethods(inventory::OcpMethods),
     270 => OcpOfferResponse(inventory::OcpOfferResponse),
     283 => TalentSelectionInfo(inventory::TalentSelectionInfo),
+    82 => QuickbarInfo(inventory::QuickbarInfo),
+    130 => TimedOffersInfo(inventory::TimedOffersInfo),
+    310 => GameCurrencyChanged(inventory::GameCurrencyChanged),
+    314 => TierSpenderProgress(inventory::TierSpenderProgress),
+    282 => TalentCategoryPointsInfo(inventory::TalentCategoryPointsInfo),
+    285 => UnlockSkillTalentPreselectionInfo(inventory::UnlockSkillTalentPreselectionInfo),
     // social.rs: factions, groups, notifications, PvP.
     122 => FactionInfo(social::FactionInfo),
     136 => Notification(social::Notification),
@@ -218,7 +226,42 @@ server_commands! {
     151 => GroupStatus(social::GroupStatus),
     156 => GroupInvitationResponse(social::GroupInvitationResponse),
     159 => GroupKick(social::GroupKick),
+    153 => GroupFoundationResponse(social::GroupFoundationResponse),
+    163 => GroupingFailed(social::GroupingFailed),
+    169 => GuildFoundationResponse(social::GuildFoundationResponse),
+    171 => GuildInvitationResponse(social::GroupInvitationResponse),
+    179 => IgnoredStatus(social::IgnoredStatus),
     192 => PvpFlag(social::PvpFlag),
+    // systems.rs: items, the stickerbook, events, dailies, the Wanted Thief, the
+    // rankings, PvP, the premium shop.
+    86 => GemRemovalResponse(systems::GemRemovalResponse),
+    93 => CraftingResult(systems::CraftingResult),
+    311 => RecipeBookInfo(systems::RecipeBookInfo),
+    320 => ItemCustomizationInfo(systems::ItemCustomizationInfo),
+    303 => StickerbookInfo(systems::StickerbookInfo),
+    304 => StickerbookItemInfo(systems::StickerbookItemInfo),
+    224 => EventProgressInfo(systems::EventProgressInfo),
+    223 => EventParticipationInfo(systems::EventParticipationInfo),
+    225 => EventProgressChanged(systems::EventProgressChanged),
+    131 => TimedChallengesInfo(systems::TimedChallengesInfo),
+    149 => DailyChallengeProgress(systems::DailyChallengeProgress),
+    357 => WantedThiefInfo(systems::WantedThiefInfo),
+    236 => HonorRankingPage(systems::HonorRankingPage),
+    241 => OverallRankingPage(systems::OverallRankingPage),
+    243 => LocalRanking(systems::LocalRanking),
+    245 => OverallLocalRanking(systems::OverallLocalRanking),
+    127 => HonorPointsChanged(systems::HonorPointsChanged),
+    193 => MatchOver(systems::MatchOver),
+    194 => MatchStart(systems::MatchStart),
+    195 => MatchCountdown(systems::MatchCountdown),
+    196 => MatchInfo(systems::MatchInfo),
+    202 => MatchDescription(systems::MatchDescription),
+    203 => SetBattlegroundId(systems::SetBattlegroundId),
+    204 => ShowPvpDeathDialog(systems::ShowPvpDeathDialog),
+    207 => JoinMatchQueueResponse(systems::JoinMatchQueueResponse),
+    208 => JoinMatchQueueInfo(systems::JoinMatchQueueInfo),
+    210 => JoinBattleground(systems::JoinBattleground),
+    215 => MatchMakingInfo(systems::MatchMakingInfo),
     // trade.rs: a DSOR addition (no game client has it).
     0x0F10 => TradeState(trade::TradeState),
 }

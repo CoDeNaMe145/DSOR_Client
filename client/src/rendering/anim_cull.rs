@@ -59,7 +59,7 @@ fn cull_animations(
     players: Query<(Entity, &GlobalTransform, &InheritedVisibility, Option<&Parked>), (With<AnimationPlayer>, Without<ManagedAnimation>)>,
     targets: Query<(Entity, &AnimatedBy)>,
     first_samples: Query<(), With<PendingFirstPose>>,
-    me: Query<&GlobalTransform, With<crate::network::net::LocalPlayer>>,
+    me: Query<&GlobalTransform, crate::diagnostics::debug::FollowedPlayer>,
 ) {
     *frame = frame.wrapping_add(1);
     let poll = *frame % EVERY == 0;

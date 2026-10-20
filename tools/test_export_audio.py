@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 import wave
 
-from export_audio import bank_samples, export_audio, find_decoder, publish_wav
+from export_audio import bank_samples, export_audio, fallback_bank, find_decoder, publish_wav
 
 
 def pcm_fsb(count=2):
@@ -28,10 +28,14 @@ def chunk(tag, data):
     return tag + struct.pack("<I", len(data)) + data + b"\0" * (len(data) % 2)
 
 
-def bank(*fsbs):
+def bank(*fsbs, identity=None, event=None):
     fmt = chunk(b"FMT ", struct.pack("<II", 0x58, 0x56))
     # Odd-sized chunk before SNDH catches lost RIFF padding/alignment.
     prefix = b"PROJ" + chunk(b"JUNK", b"x")
+    if identity is not None:
+        prefix = b"PROJ" + chunk(b"BNKI", identity + bytes(16))
+    if event is not None:
+        prefix += chunk(b"EVTB", event)
     placeholder = b"\0" * (4 + 8 * len(fsbs)) if fsbs else b""
     offset = 12 + len(fmt) + len(chunk(b"LIST", prefix + chunk(b"SNDH", placeholder))) + 8
     entries = []
@@ -74,9 +78,9 @@ class AudioExportTests(unittest.TestCase):
         (self.source.parent / "eventbankmapping.txt").write_text(
             "skill/attack;skills\nskill/attack;variants\n", encoding="utf-8")
 
-    def export(self):
+    def export(self, **kwargs):
         with redirect_stdout(io.StringIO()):
-            return export_audio(self.root, self.assets)
+            return export_audio(self.root, self.assets, **kwargs)
 
     def require_decoder(self):
         try:
@@ -91,6 +95,38 @@ class AudioExportTests(unittest.TestCase):
         entry = catalog["banks"]["fmodstudioexport/Desktop/empty.bank"]
         self.assertEqual(entry["samples"], [])
         self.assertEqual((self.assets / entry["source"]).read_bytes(), bank())
+
+    def test_fallback_restores_stripped_bank_without_changing_source_or_event_only_banks(self):
+        self.require_decoder()
+        fallback = self.root.parent / "older"
+        older = fallback / "audio/fmodstudioexport/Desktop"
+        older.mkdir(parents=True)
+        identity = bytes(range(16))
+        stripped = bank(identity=identity)
+        complete = bank(pcm_fsb(), identity=identity)
+        (self.source / "empty.bank").write_bytes(stripped)
+        (older / "empty.bank").write_bytes(complete)
+        event_only = bank(identity=identity, event=b"authored references to shared samples")
+        (self.source / "shared.bank").write_bytes(event_only)
+        (older / "shared.bank").write_bytes(complete)
+        catalog = self.export(fallback_root=fallback)
+        restored = catalog["banks"]["fmodstudioexport/Desktop/empty.bank"]
+        self.assertEqual(len(restored["samples"]), 2)
+        self.assertEqual((self.assets / restored["source"]).read_bytes(), complete)
+        self.assertEqual((self.source / "empty.bank").read_bytes(), stripped)
+        self.assertIn("fallback", catalog["files"]["fmodstudioexport/Desktop/empty.bank"])
+        shared = catalog["banks"]["fmodstudioexport/Desktop/shared.bank"]
+        self.assertEqual((self.assets / shared["source"]).read_bytes(), event_only)
+        self.assertEqual(catalog["event_banks"]["skill/attack"], ["skills", "variants"])
+        with patch("export_audio.subprocess.run", side_effect=AssertionError("fallback decoded again")):
+            self.assertEqual(self.export(fallback_root=fallback), catalog)
+
+    def test_fallback_rejects_same_name_with_different_bank_identity(self):
+        relative = Path("different.bank")
+        original = bank(identity=bytes(range(16)))
+        (self.source / relative).write_bytes(bank(pcm_fsb(), identity=bytes(reversed(range(16)))))
+        path = self.root / relative
+        self.assertEqual(fallback_bank(path, relative, original, self.source), (path, original))
 
     def test_real_decoder_preserves_duplicate_names_and_repairs_missing_output(self):
         self.require_decoder()
@@ -144,6 +180,8 @@ class AudioExportTests(unittest.TestCase):
             export_audio(self.root / "missing", self.assets)
         with self.assertRaises(ValueError):
             export_audio(self.root, self.root)
+        with self.assertRaises(ValueError):
+            export_audio(self.root, self.root, fallback_root=self.root)
         self.assertFalse(self.assets.exists())
 
     @unittest.skipUnless(os.name == "nt", "Windows ACL regression")

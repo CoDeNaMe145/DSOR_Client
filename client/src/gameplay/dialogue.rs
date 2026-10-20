@@ -13,6 +13,9 @@ const HEIGHT_TOLERANCE: f32 = 1.5;
 pub(crate) struct NetworkDialogue {
     pub infos: HashMap<u32, actors::NpcInfo>,
     pub quests: HashMap<String, u8>,
+    /// The log in full: states, finished tasks and their counters
+    /// (crate::gameplay::quests).
+    pub log: HashMap<String, crate::gameplay::quests::QuestEntry>,
     pub offers: HashMap<String, dsor_proto::commands::inventory::Offer>,
 }
 
@@ -33,10 +36,23 @@ impl NetworkDialogue {
             }
             ServerCommand::QuestLogInfo(log) => {
                 self.quests = log.records.iter().map(|q| (q.id.to_lowercase(), q.state)).collect();
+                self.log = log.records.iter().map(|q| (q.id.to_lowercase(), crate::gameplay::quests::QuestEntry {
+                    state: q.state, finished: q.finished, progress: q.progress.clone(), targets: HashMap::new(),
+                })).collect();
             }
-            ServerCommand::QuestUpdate(q) if q.kind == 2 => {
-                if let (Some((_, id)), Some((_, state))) = (q.strings.iter().find(|(k, _)| *k == 0), q.ints.iter().find(|(k, _)| *k == 2)) {
-                    if let Ok(state) = u8::try_from(*state) { self.quests.insert(id.to_lowercase(), state); }
+            // Kind 2: the quest's state; kinds 0 and 1: a task's count and its target
+            // (1: the task is done). The quest is named by string key 0.
+            ServerCommand::QuestUpdate(q) if q.kind <= 2 => {
+                let Some((_, id)) = q.strings.iter().find(|(k, _)| *k == 0) else { return };
+                let id = id.to_lowercase();
+                let entry = self.log.entry(id.clone()).or_default();
+                if q.kind == 2 {
+                    if let Some(state) = q.ints.iter().find(|(k, _)| *k == 2).and_then(|(_, s)| u8::try_from(*s).ok()) {
+                        entry.state = state;
+                        self.quests.insert(id, state);
+                    }
+                } else {
+                    entry.apply(q);
                 }
             }
             _ => {}

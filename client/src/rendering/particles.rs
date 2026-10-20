@@ -252,6 +252,33 @@ struct Groups {
     list: Vec<Group>,
 }
 
+/// Shared with loading warm-up so particle shader variants match live draws.
+pub(crate) fn particle_material(emitter: &Emitter, texture: Option<Handle<Image>>) -> NebulaMaterial {
+    NebulaMaterial {
+        base: StandardMaterial {
+            base_color_texture: texture,
+            alpha_mode: if emitter.additive { AlphaMode::Add } else { AlphaMode::Blend },
+            unlit: true,
+            cull_mode: None,
+            double_sided: true,
+            // Additive particles fade out in the fog (crate::rendering::surfaces): bevy's
+            // fog would add its colour to them.
+            fog_enabled: !emitter.additive,
+            ..default()
+        },
+        extension: NebulaSurface {
+            params: SurfaceParams {
+                p0: Vec4::new(Kind::Particle as u32 as f32, 0.0, 0.0, 0.0),
+                p2: Vec4::new(emitter.depth_density, emitter.additive as u32 as f32, 0.0, 0.0),
+                ..default()
+            },
+            cube: None,
+            layer: None,
+            mask: None,
+        },
+    }
+}
+
 pub struct ParticlePlugin;
 
 impl Plugin for ParticlePlugin {
@@ -302,29 +329,7 @@ fn start_emitters(
         let group = match groups.by_key.get(&key) {
             Some(&g) => g,
             None => {
-                let mat = particle_materials.add(NebulaMaterial {
-                    base: StandardMaterial {
-                        base_color_texture: texture,
-                        alpha_mode: if emitter.additive { AlphaMode::Add } else { AlphaMode::Blend },
-                        unlit: true,
-                        cull_mode: None,
-                        double_sided: true,
-                        // Additive particles fade out in the fog (crate::rendering::surfaces): bevy's
-                        // fog would add its colour to them.
-                        fog_enabled: !emitter.additive,
-                        ..default()
-                    },
-                    extension: NebulaSurface {
-                        params: SurfaceParams {
-                            p0: Vec4::new(Kind::Particle as u32 as f32, 0.0, 0.0, 0.0),
-                            p2: Vec4::new(emitter.depth_density, emitter.additive as u32 as f32, 0.0, 0.0),
-                            ..default()
-                        },
-                        cube: None,
-                        layer: None,
-                        mask: None,
-                    },
-                });
+                let mat = particle_materials.add(particle_material(emitter, texture));
                 let mesh = meshes.add(empty_mesh());
                 commands.spawn((
                     Mesh3d(mesh.clone()),

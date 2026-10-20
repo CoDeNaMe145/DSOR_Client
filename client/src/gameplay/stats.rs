@@ -225,6 +225,7 @@ fn update_stats(
     mut output: ResMut<CharacterStats>,
     mut previous: Local<Option<(u8, u32, u64, u64)>>,
 ) {
+    let _profile = crate::diagnostics::hud::FrameSpan::new("stats::update_stats");
     let (Some(d), Some(net), Some(player)) = (stats.get(&data.0), net, players.iter().next()) else {
         *previous = None;
         if !output.0.is_empty() { output.0.clear(); }

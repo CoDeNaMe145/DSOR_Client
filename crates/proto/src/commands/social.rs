@@ -262,12 +262,13 @@ impl Body for Message {
     }
 }
 
-/// One PlayerSocialInfo row of a GroupStatus.
-/// EVIDENCE: reader 0xA617CB: u32, u32, u32 playerId, u32 actorId, str name, str map
-///   atom, u8 class, u16 level, u16, u32, u16, bool (row not greyed), bool online,
-///   bool in group, bool, str timestamp, u8 enum 0..13, u32 colour index. GroupWidget
-///   0x6931FA draws HP/mana from the entity named by `actor` (0 hides the bars).
-///   SOURCE: dsor/groups.py encode_member.
+/// One PlayerSocialInfo row of a GroupStatus (and of a GroupMemberQueryResult).
+/// SOURCE: dso-server-production protocol/social_protocol.py PlayerSummary and
+///   _write_player_summary (:216-262): u32, u32, u32 character, u32 actor (on the
+///   RECIPIENT's map; 0 elsewhere), str name, str map, u8 class, u16 level, u16 (200),
+///   u32, u16, bool online, bool available, bool invitable, u8 role (0 the leader,
+///   1 a member), str timestamp, u8 relation (0xFF), str note, u32 (0xFFFFFFFF).
+///   Against the 2018 reader (0xA617CB): the role byte and the note string are new.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct GroupMember {
     pub unknown_u32_0: u32,
@@ -282,21 +283,25 @@ pub struct GroupMember {
     pub unknown_u16_2: u16,
     pub unknown_u32_3: u32,
     pub unknown_u16_4: u16,
-    /// Row not greyed.
-    pub active: bool,
     pub online: bool,
-    pub in_group: bool,
-    pub unknown_bool_5: bool,
+    pub available: bool,
+    pub invitable: bool,
+    /// 0 the leader, 1 another member (0xFF when not grouped).
+    pub role: u8,
     pub timestamp: String,
-    /// The reader refuses a value above 13.
-    pub unknown_enum_6: u8,
-    /// Colour index (joining order).
-    pub slot: u32,
+    pub relation: u8,
+    pub note: String,
+    pub unknown_u32_5: u32,
 }
 
 impl GroupMember {
+    pub const LEADER: u8 = 0;
+
+    pub fn leads(&self) -> bool {
+        self.role == Self::LEADER
+    }
     fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
-        let m = Self {
+        Ok(Self {
             unknown_u32_0: r.u32()?,
             unknown_u32_1: r.u32()?,
             player_id: r.u32()?,
@@ -308,18 +313,15 @@ impl GroupMember {
             unknown_u16_2: r.u16()?,
             unknown_u32_3: r.u32()?,
             unknown_u16_4: r.u16()?,
-            active: r.bit()?,
             online: r.bit()?,
-            in_group: r.bit()?,
-            unknown_bool_5: r.bit()?,
+            available: r.bit()?,
+            invitable: r.bit()?,
+            role: r.u8()?,
             timestamp: r.string()?,
-            unknown_enum_6: r.u8()?,
-            slot: r.u32()?,
-        };
-        if m.unknown_enum_6 > 13 {
-            return Err(DecodeError::Invalid { what: "group member enum", value: m.unknown_enum_6 as i64 });
-        }
-        Ok(m)
+            relation: r.u8()?,
+            note: r.string()?,
+            unknown_u32_5: r.u32()?,
+        })
     }
     fn encode(&self, w: &mut BitWriter) {
         w.u32(self.unknown_u32_0);
@@ -333,32 +335,44 @@ impl GroupMember {
         w.u16(self.unknown_u16_2);
         w.u32(self.unknown_u32_3);
         w.u16(self.unknown_u16_4);
-        w.bit(self.active);
         w.bit(self.online);
-        w.bit(self.in_group);
-        w.bit(self.unknown_bool_5);
+        w.bit(self.available);
+        w.bit(self.invitable);
+        w.u8(self.role);
         w.string(&self.timestamp);
-        w.u8(self.unknown_enum_6);
-        w.u32(self.slot);
+        w.u8(self.relation);
+        w.string(&self.note);
+        w.u32(self.unknown_u32_5);
     }
 }
 
-/// GroupStatusCommand (160), NOT actor-scoped: the whole group as one recipient sees
-/// it; group 0 with no members is "no group".
-/// EVIDENCE: reader 0xA224EE (s8, u32 group, u32 leader, u32, bool, u32 count +
-///   entries 0xA1FFBA, str atom, bool, str atom); handler 0x57153B; slot 9 reads no
-///   actor. SOURCE: dsor/groups.py encode_group_status (type 0, the full update).
+/// GroupStatusCommand (151), NOT actor-scoped: the whole group as one recipient sees
+/// it; group 0 with no members is "no group". The server sends it to the asker of
+/// a GroupList, a GroupFoundation or a GroupLeave, to every member when one joins
+/// or changes map, and at login when grouped (services/social.py).
+/// SOURCE: dso-server-production protocol/social_protocol.py encode_group_status
+///   (:443-459): u8 status, u32 group, u32 leader, u32 (the recipient's character),
+///   bool listed, u32 count + members, str name, bool private, str description.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct GroupStatus {
     pub kind: i8,
     pub group_id: u32,
     pub leader_id: u32,
-    pub unknown_u32_0: u32,
-    pub recipient_leads: bool,
+    /// The receiving character's id (what the server writes as the tick).
+    pub recipient_id: u32,
+    /// Listed in the group finder.
+    pub listed: bool,
     pub members: Vec<GroupMember>,
-    pub unknown_string_1: String,
-    pub unknown_bool_2: bool,
-    pub unknown_string_3: String,
+    pub name: String,
+    pub private: bool,
+    pub description: String,
+}
+
+impl GroupStatus {
+    /// Whether the recipient is in a group at all.
+    pub fn grouped(&self) -> bool {
+        self.group_id != 0 && !self.members.is_empty()
+    }
 }
 
 impl Body for GroupStatus {
@@ -367,38 +381,151 @@ impl Body for GroupStatus {
             kind: r.i8()?,
             group_id: r.u32()?,
             leader_id: r.u32()?,
-            unknown_u32_0: r.u32()?,
-            recipient_leads: r.bit()?,
+            recipient_id: r.u32()?,
+            listed: r.bit()?,
             members: counted(r, MOST, "group member count", GroupMember::decode)?,
-            unknown_string_1: r.string()?,
-            unknown_bool_2: r.bit()?,
-            unknown_string_3: r.string()?,
+            name: r.string()?,
+            private: r.bit()?,
+            description: r.string()?,
         })
     }
     fn encode(&self, w: &mut BitWriter) {
         w.i8(self.kind);
         w.u32(self.group_id);
         w.u32(self.leader_id);
-        w.u32(self.unknown_u32_0);
-        w.bit(self.recipient_leads);
+        w.u32(self.recipient_id);
+        w.bit(self.listed);
         w.count(self.members.len());
         for m in &self.members {
             m.encode(w);
         }
-        w.string(&self.unknown_string_1);
-        w.bit(self.unknown_bool_2);
-        w.string(&self.unknown_string_3);
+        w.string(&self.name);
+        w.bit(self.private);
+        w.string(&self.description);
     }
 }
 
-/// GroupInvitationResponseCommand (165), both directions.
-/// Server -> inviter: code 0 joinedYourGroup, 1 didNotJoinYourGroup, 2
-///   isAlreadyInAGroup, 3 isNotLoggedIn, 4 unknownPlayer, 5 leaderRightsRequired
-///   (handler 0x5709BB), with the other player's name.
-/// Client (invitee): AcceptGroupInvite 0x56BB3D sends code 0, a = the notification's
-///   inviter id, b = its group id; RefuseGroupInvite 0x574E80 code 1 (2 when grouped).
-/// EVIDENCE: reader 0xA22017 (s8 code, u32, u32, str name). SOURCE: dsor/groups.py
-///   encode_invitation_response, decode_invitation_response.
+/// GroupFoundationResponseCommand (153), NOT actor-scoped: u8 status (0 made, 1
+/// refused), u32 tick, str message (the refusal's text). A GroupStatus follows.
+/// SOURCE: dso-server-production protocol/social_protocol.py
+///   encode_create_group_result (:489-499).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct GroupFoundationResponse {
+    pub status: u8,
+    pub tick: u32,
+    pub message: String,
+}
+
+impl Body for GroupFoundationResponse {
+    fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self { status: r.u8()?, tick: r.u32()?, message: r.string()? })
+    }
+    fn encode(&self, w: &mut BitWriter) {
+        w.u8(self.status);
+        w.u32(self.tick);
+        w.string(&self.message);
+    }
+}
+
+/// GroupingFailedCommand (163), NOT actor-scoped, to the player whose acceptance
+/// failed: u32 tick, str player, u8 reason (0 the group is full, 1 already in a
+/// group, 2 the invitation expired, 3 no such group).
+/// SOURCE: dso-server-production protocol/social_protocol.py encode_grouping_failed
+///   (:535-567).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct GroupingFailed {
+    pub tick: u32,
+    pub name: String,
+    pub reason: u8,
+}
+
+impl GroupingFailed {
+    pub fn text(&self) -> &'static str {
+        match self.reason {
+            0 => "The group is full.",
+            1 => "You are already in a group.",
+            2 => "The invitation has expired.",
+            _ => "That group no longer exists.",
+        }
+    }
+}
+
+impl Body for GroupingFailed {
+    fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self { tick: r.u32()?, name: r.string()?, reason: r.u8()? })
+    }
+    fn encode(&self, w: &mut BitWriter) {
+        w.u32(self.tick);
+        w.string(&self.name);
+        w.u8(self.reason);
+    }
+}
+
+/// GuildFoundationResponseCommand (169), NOT actor-scoped: u8 status (0 founded, 1
+/// already in a guild, 3 the name is taken, 4 a bad name), u32 tick, str message,
+/// str guild name, bool. A GuildStatus follows a success.
+/// SOURCE: dso-server-production protocol/social_protocol.py
+///   encode_guild_foundation_result (:679-702).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct GuildFoundationResponse {
+    pub status: u8,
+    pub tick: u32,
+    pub message: String,
+    pub guild: String,
+    pub unknown_bool_0: bool,
+}
+
+impl Body for GuildFoundationResponse {
+    fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self { status: r.u8()?, tick: r.u32()?, message: r.string()?, guild: r.string()?, unknown_bool_0: r.bit()? })
+    }
+    fn encode(&self, w: &mut BitWriter) {
+        w.u8(self.status);
+        w.u32(self.tick);
+        w.string(&self.message);
+        w.string(&self.guild);
+        w.bit(self.unknown_bool_0);
+    }
+}
+
+/// IgnoredStatusCommand (179), NOT actor-scoped: the ignore list, which this server
+/// always sends empty right after a GuildStatus (the client reads the pair).
+/// u8 status, u32 (the recipient's character id), u32 count (0).
+/// SOURCE: dso-server-production protocol/social_protocol.py encode_guild_status
+///   (:775-781).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct IgnoredStatus {
+    pub status: u8,
+    pub recipient_id: u32,
+    pub count: u32,
+}
+
+impl Body for IgnoredStatus {
+    fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
+        let v = Self { status: r.u8()?, recipient_id: r.u32()?, count: r.u32()? };
+        if v.count != 0 {
+            return Err(DecodeError::Invalid { what: "ignored players (entry layout unknown)", value: v.count as i64 });
+        }
+        Ok(v)
+    }
+    fn encode(&self, w: &mut BitWriter) {
+        w.u8(self.status);
+        w.u32(self.recipient_id);
+        w.u32(0);
+    }
+}
+
+/// GroupInvitationResponseCommand (156) and GuildInvitationResponseCommand (171),
+/// both directions, one layout.
+/// Server -> inviter (actor-scoped): code 0 joined, 1 declined, 2 already in a group
+///   or guild, 4 no such player or group, 5 no right to invite, 6 no guild (guilds),
+///   with the other player's name; a = the target's id, b = the group's or guild's.
+/// Client (invitee): code 0 accepts, 1 declines, a = the notification's inviter id,
+///   b = its group or guild id, name = OUR name (the server checks it).
+/// SOURCE: dso-server-production protocol/social_protocol.py
+///   decode_invitation_response (:185-203), encode_invitation_response (:502-532);
+///   services/social.py _handle_invitation_response (0 joins, 1 declines, anything
+///   else is refused).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct GroupInvitationResponse {
     pub code: i8,
@@ -491,48 +618,96 @@ impl Body for GroupInvite {
     }
 }
 
-/// PVP::JoinMatchQueueCommand (218), client -> server: a u32, the queue name, a byte.
-/// EVIDENCE: captured only (no server decoder): `8b da00 00000000 0b00 "BestOf3_1v1"
-///   00`, 144 body bits. Field meanings not established.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// PVP::JoinMatchQueueCommand (206), client -> server: u32 tick, i8 match mode
+/// (0 BestOf3 1v1, 1 BestOf5 5v5, 2 CTF 5v5, 3 AssaultFortress 5v5, 4
+/// LastManStanding 8ffa), i8 queue kind (0 alone, 1 as a group).
+/// SOURCE: dso-server-production protocol/pvp_match_protocol.py:342-375 (the
+///   2018 capture carried the mode as a string).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct JoinMatchQueue {
-    pub unknown_u32_0: u32,
-    pub queue: String,
-    pub unknown_u8_1: u8,
+    pub tick: u32,
+    pub mode: i8,
+    pub kind: i8,
 }
 
 impl Body for JoinMatchQueue {
     fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
-        Ok(Self { unknown_u32_0: r.u32()?, queue: r.string()?, unknown_u8_1: r.u8()? })
+        Ok(Self { tick: r.u32()?, mode: r.i8()?, kind: r.i8()? })
     }
     fn encode(&self, w: &mut BitWriter) {
-        w.u32(self.unknown_u32_0);
-        w.string(&self.queue);
-        w.u8(self.unknown_u8_1);
+        w.u32(self.tick);
+        w.i8(self.mode);
+        w.i8(self.kind);
     }
 }
 
-/// GuildFoundationCommand (177), client -> server: 48 bits, the guild name, one bit.
-/// EVIDENCE: captured only (no server decoder): `8b b100 000000000000 0600 "qsdqsd"`
-///   + 1 bit (113 body bits) and the 7-letter variant (121 bits). How the leading 48
-///   zero bits split into fields is NOT established; kept as u32 + u16.
+/// GroupFoundationCommand (152) and GuildFoundationCommand (168), client -> server:
+/// u32, str our name, str the group's or guild's name, bool.
+/// SOURCE: dso-server-production protocol/social_protocol.py decode_foundation_request
+///   (:101-112); the captured `8b b100 000000000000 0600 "qsdqsd"` + 1 bit is the
+///   same bytes with an empty first string (the 2018 client wrote none).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct GuildFoundation {
+pub struct Foundation {
     pub unknown_u32_0: u32,
-    pub unknown_u16_1: u16,
+    pub source_name: String,
     pub name: String,
-    pub unknown_bool_2: bool,
+    pub unknown_bool_1: bool,
 }
 
-impl Body for GuildFoundation {
+impl Body for Foundation {
     fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
-        Ok(Self { unknown_u32_0: r.u32()?, unknown_u16_1: r.u16()?, name: r.string()?, unknown_bool_2: r.bit()? })
+        Ok(Self { unknown_u32_0: r.u32()?, source_name: r.string()?, name: r.string()?, unknown_bool_1: r.bit()? })
     }
     fn encode(&self, w: &mut BitWriter) {
         w.u32(self.unknown_u32_0);
-        w.u16(self.unknown_u16_1);
+        w.string(&self.source_name);
         w.string(&self.name);
-        w.bit(self.unknown_bool_2);
+        w.bit(self.unknown_bool_1);
+    }
+}
+
+/// GroupLeaveCommand (160) and GuildLeaveCommand (173), client -> server: one u32
+/// the server ignores.
+/// SOURCE: dso-server-production protocol/social_protocol.py decode_uint32_request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Leave {
+    pub unknown_u32_0: u32,
+}
+
+impl Body for Leave {
+    fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self { unknown_u32_0: r.u32()? })
+    }
+    fn encode(&self, w: &mut BitWriter) {
+        w.u32(self.unknown_u32_0);
+    }
+}
+
+/// GuildInviteCommand (170), client -> server: our name, the invitee's, two u32 and
+/// a message. The server answers the inviter with a GuildInvitationResponse (171)
+/// on failure (6 no guild, 5 no right to invite, 2 already in a guild, 4 offline) and
+/// sends the invitee a Notification of kind 3 on success.
+/// SOURCE: dso-server-production protocol/social_protocol.py decode_guild_invite
+///   (:155-172).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct GuildInvite {
+    pub inviter_name: String,
+    pub invitee_name: String,
+    pub unknown_u32_0: u32,
+    pub unknown_u32_1: u32,
+    pub message: String,
+}
+
+impl Body for GuildInvite {
+    fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self { inviter_name: r.string()?, invitee_name: r.string()?, unknown_u32_0: r.u32()?, unknown_u32_1: r.u32()?, message: r.string()? })
+    }
+    fn encode(&self, w: &mut BitWriter) {
+        w.string(&self.inviter_name);
+        w.string(&self.invitee_name);
+        w.u32(self.unknown_u32_0);
+        w.u32(self.unknown_u32_1);
+        w.string(&self.message);
     }
 }
 
