@@ -65,7 +65,34 @@ attributing costs between pipelined native frames.
 On Windows, `python tools/profile_native_maps.py kingscity baseline --flags stageprofile`
 runs a fixed-view capture and saves logs under `.local/logs/map-fps/`; use
 `swerdfield` for the second map. See the [native map investigation](native-map-performance.md)
-for findings, limitations and comparison commands.
+for findings, limitations and comparison commands. Extra client environment goes
+through `--env KEY=VALUE` (the runner drops the caller's `DSOR_*` variables).
+
+To find which system costs a frame, build with the `system-profile` feature and
+run with `systemprofile`:
+
+```powershell
+cargo build --locked --profile fast -p dsor-client --features system-profile
+python tools/profile_native_maps.py kingscity systems --exe target/fast/dsor-client.exe --flags systemprofile
+python tools/profile_native_maps.py kingscity ui --exe target/fast/dsor-client.exe --flags systemprofile --env DSOR_SYSTEM_PROFILE=dsor_client::ui
+```
+
+Every five seconds the log gives each module's systems' time a frame
+(`system profile module: 0.262 ms a frame  62 systems  dsor_client::ui`), then the
+45 costliest systems and schedules with their mean and maximum a run
+(`DSOR_SYSTEM_PROFILE=<text>` lists every one whose name holds that text instead).
+These are wall times from Bevy's `trace` spans: schedules contain their systems,
+the render world's systems run inside `bevy_render::run_render_schedule`, and the
+spans add a little cost, so compare builds that both have the feature. This is
+how the 2026-10-21 interface regression was found in one run
+([Per-frame cost](ui.md#per-frame-cost)).
+
+`frameprofile` also logs `ui work: N layouts prepared, N system views, N quest lists
+in N frames` every five seconds: the interface's rebuilds. In a still scene they
+stay at 0, and the map runner prints a warning when they do not.
+`uiaudit` (always on in debug builds) rebuilds the open windows' views once a
+second anyway and logs an error if one changed without its inputs changing: a
+`Net` field edited without `Net::touch_ui`.
 `legacyshadowviews` restores Bevy's unused UI shadow views for same-build regression
 comparisons. `allnpcplacements` restores the old offline population with every event
 NPC enabled. These are diagnostic overrides; normal play uses rendered 3D shadow

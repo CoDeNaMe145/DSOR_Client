@@ -299,6 +299,11 @@ pub struct Net {
     /// Full modifier parameters must survive consumption of the visual events.
     pub stat_effects: HashMap<u32, dsor_proto::commands::combat::StatusEffectElement>,
     pub stat_revision: u64,
+    /// Bumped whenever something the windows show may have changed: every server
+    /// command but the actor stream's (`actor_stream`), and local edits of
+    /// window state (`touch_ui`). The windows rebuild their views when it moves,
+    /// never every frame (docs/ui.md, "Per-frame cost").
+    pub ui_revision: u64,
     /// Every StatusEffect element as (holder, wire index, instance, added):
     /// crate::actors::mounts finds the ride effects among them (an element
     /// without details is the removal).
@@ -916,6 +921,7 @@ pub fn start_offline(world: &mut World, class: u8, gender: u8) {
         status_events: Vec::new(),
         stat_effects: HashMap::new(),
         stat_revision: 0,
+        ui_revision: 0,
         mount_events: Vec::new(),
         location_events: Vec::new(),
         named_status_events: Vec::new(),
@@ -1182,6 +1188,7 @@ pub(crate) fn start_session(world: &mut World, config: NetConfig) {
         status_events: Vec::new(),
         stat_effects: HashMap::new(),
         stat_revision: 0,
+        ui_revision: 0,
         mount_events: Vec::new(),
         location_events: Vec::new(),
         named_status_events: Vec::new(),
@@ -1210,6 +1217,12 @@ impl Drop for Net {
 }
 
 impl Net {
+    /// Something the windows show changed outside `on_command` (a local edit, a
+    /// fixture, a map change): their views are rebuilt (`ui_revision`).
+    pub(crate) fn touch_ui(&mut self) {
+        self.ui_revision = self.ui_revision.wrapping_add(1);
+    }
+
     pub(crate) fn remember_monster_health(&mut self, actor: u32, health: u32, max: u32) {
         if self.monster_vitals.get(&actor).is_none_or(|&(health, _)| health > 0) {
             self.monster_vitals.insert(actor, (health, max));
@@ -1378,6 +1391,7 @@ fn pump(
                 net.map_markers.reset_map();
                 net.monster_vitals.clear();
                 net.npc_dialogue.reset_map();
+                net.touch_ui();
                 selection.active = name == crate::screens::selection::MAP;
                 if !selection.active { selection.entering = false; selection.dialog = crate::screens::selection::Dialog::None; }
                 net.corrections = default();
@@ -1463,7 +1477,28 @@ fn pump(
     }
 }
 
+/// The actor stream: movement, combat, effects and who is in view. These come
+/// many times a second and change nothing a window shows (their handlers below
+/// touch only actor queues, vitals and health), so they leave `ui_revision`
+/// alone. Every other command, including any added later, bumps it: a command
+/// missing here costs a view rebuild, never a stale window.
+fn actor_stream(command: &ServerCommand) -> bool {
+    matches!(command,
+        ServerCommand::Move(_) | ServerCommand::ForceTransform(_)
+        | ServerCommand::ActorsEnterVicinity(_) | ServerCommand::ActorsLeftVicinity(_)
+        | ServerCommand::NewRemotePlayer(_) | ServerCommand::RemotePlayerInfo(_) | ServerCommand::DiscardPlayer(_)
+        | ServerCommand::NewMonster(_) | ServerCommand::MonsterUpdate(_) | ServerCommand::DiscardMonster(_)
+        | ServerCommand::NewNpc(_) | ServerCommand::ActorStatsUpdate(_)
+        | ServerCommand::Hit(_) | ServerCommand::Kill(_) | ServerCommand::Revive(_) | ServerCommand::Message(_)
+        | ServerCommand::StatusEffect(_) | ServerCommand::NewLocationEffect(_) | ServerCommand::DiscardLocationEffect(_)
+        | ServerCommand::NewTrap(_) | ServerCommand::TrapTripped(_) | ServerCommand::DiscardTrap(_)
+        | ServerCommand::Skill(_) | ServerCommand::TargetSkill(_) | ServerCommand::BulletSkill(_)
+        | ServerCommand::TargetBulletSkill(_) | ServerCommand::TargetPointBulletSkill(_) | ServerCommand::ShiftedSkill(_)
+        | ServerCommand::NewItem(_) | ServerCommand::DiscardItem(_))
+}
+
 fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
+    if !actor_stream(&command) { net.touch_ui(); }
     net.props.receive(&command);
     net.map_markers.receive(&command, actor);
     net.npc_dialogue.receive(&command, actor);

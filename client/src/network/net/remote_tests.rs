@@ -129,6 +129,36 @@ fn monster_snapshot(health: u64) -> ServerCommand {
     })
 }
 
+/// The windows rebuild their views when ui_revision moves (docs/ui.md,
+/// "Per-frame cost"): combat and movement, many a second, leave it alone;
+/// what the windows show moves it.
+#[test]
+fn only_commands_the_windows_show_move_the_ui_revision() {
+    let mut app = app();
+    let mut net = app.world_mut().non_send_mut::<Net>();
+    let before = net.ui_revision;
+    for command in [
+        ServerCommand::Move(default()),
+        ServerCommand::MonsterUpdate(default()),
+        ServerCommand::Hit(default()),
+        ServerCommand::Kill(default()),
+        monster_snapshot(100),
+    ] {
+        on_command(&mut net, command, Some(41));
+    }
+    assert_eq!(net.ui_revision, before, "the actor stream changes no window");
+    for command in [
+        ServerCommand::CurrencyChanged(default()),
+        ServerCommand::XpChanged(default()),
+        ServerCommand::AchievementInfo(default()),
+        ServerCommand::RecipeBookInfo(default()),
+    ] {
+        let before = net.ui_revision;
+        on_command(&mut net, command, None);
+        assert_ne!(net.ui_revision, before);
+    }
+}
+
 #[test]
 fn monster_vicinity_health_survives_until_its_spawn_description_arrives() {
     let mut app = app();

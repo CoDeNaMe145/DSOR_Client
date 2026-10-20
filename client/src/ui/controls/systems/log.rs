@@ -208,8 +208,7 @@ pub(super) fn log(sources: &Sources) -> Log {
         Bonus { at: d.value, icon, amount, done }
     }).collect();
     let figure = |name: &str| catalog.figures.get(name).copied().unwrap_or(0);
-    let seconds = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    let left = 86_400 - seconds % 86_400;
+    let left = 86_400 - super::unix_seconds() % 86_400;
     let wanted = net.wanted.as_ref().map(|w| WantedBoard {
         remaining: w.remaining,
         special: (w.special_remaining, figure("wanted_vip")),

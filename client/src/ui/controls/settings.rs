@@ -489,7 +489,7 @@ mod tests {
         app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default()))
             .init_asset::<Layout>().init_asset::<Mesh>().init_asset::<UiMaterial>()
             .init_asset::<Image>().init_asset::<Font>().init_asset::<dialogue::Catalog>()
-            .init_resource::<Loaded>().init_resource::<Screen>().init_resource::<dialogue::Presentation>().init_resource::<super::party::Party>().init_resource::<super::quests::Quests>().init_resource::<crate::gameplay::quests::QuestUi>().init_resource::<super::systems::Views>()
+            .init_resource::<Loaded>().init_resource::<Screen>().init_resource::<dialogue::Presentation>().init_resource::<super::party::Party>().init_resource::<super::quests::Quests>().init_resource::<crate::gameplay::quests::QuestUi>().init_resource::<super::systems::Views>().init_resource::<crate::ui::UiWork>()
             .init_resource::<Settings>().add_systems(Update, (spawn_windows, sliders).chain());
         let handle = app.world_mut().resource_mut::<Assets<Layout>>().add(Layout { window: WINDOW.into(), widgets: Vec::new() });
         app.world_mut().resource_mut::<Loaded>().layouts.push((handle, 100., None));

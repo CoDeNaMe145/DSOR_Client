@@ -5,8 +5,9 @@
 //!
 //! Each is an authored template (crate::ui::controls::template) filled from what
 //! the server said (crate::network::net) and the systems' data
-//! (crate::gameplay::systems). `sync` builds every window's view and rebuilds
-//! the windows whose view changed; `send` asks the server what an opened window
+//! (crate::gameplay::systems). `sync` builds the open windows' views when what
+//! they show changed and rebuilds the windows whose view changed (never every
+//! frame: docs/ui.md, "Per-frame cost"); `send` asks the server what an opened window
 //! needs and sends what its buttons asked for (`Request`, from
 //! crate::ui::controls::interact through Pointer).
 //! SOURCE: DSOR_Server services/{ranking,matchmaking,commerce,events,customization,
@@ -204,7 +205,8 @@ pub(crate) struct State {
     pending: Option<(u64, f64)>,
 }
 
-/// What every window shows, compared frame to frame.
+/// What every window shows. Only the open windows' views are kept current
+/// (`sync`); a closed window's is rebuilt when it opens.
 #[derive(Resource, Default, Clone, Debug, PartialEq)]
 pub(in crate::ui) struct Views {
     pub boards: boards::Boards,
@@ -252,7 +254,67 @@ impl Sources<'_> {
     }
 }
 
-/// The views from the network state; the windows whose view changed are rebuilt.
+/// The wall clock, in seconds since 1970 (std's clock panics in the browser).
+pub(in crate::ui) fn unix_seconds() -> u64 {
+    #[cfg(target_arch = "wasm32")]
+    { (js_sys::Date::now() / 1000.0) as u64 }
+    #[cfg(not(target_arch = "wasm32"))]
+    { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) }
+}
+
+/// The windows each view (`Views`, in `refresh`'s order) fills.
+const VIEW_WINDOWS: [&[&str]; 10] = [&[LEADERBOARDS, MATCHMAKING], &[SHOP], &[EVENTS], &[ALBUM], &[TRANSMOG],
+    &[SALVAGE], &[GEMDESK], &[WORKBENCH], &[QUESTLOG], &[SHEET]];
+
+/// Builds view `index` of `VIEW_WINDOWS` into `views`; true when it changed.
+fn refresh(index: usize, sources: &Sources, views: &mut Views) -> bool {
+    fn set<T: PartialEq>(slot: &mut T, next: T) -> bool {
+        if *slot == next { return false; }
+        *slot = next;
+        true
+    }
+    match index {
+        0 => set(&mut views.boards, boards::boards(sources)),
+        1 => set(&mut views.shop, shop::shop(sources)),
+        2 => set(&mut views.events, events::events(sources)),
+        3 => set(&mut views.album, album::album(sources)),
+        4 => set(&mut views.transmog, transmog::transmog(sources)),
+        5 => set(&mut views.salvage, desks::salvage(sources)),
+        6 => set(&mut views.gems, desks::gems(sources)),
+        7 => set(&mut views.workbench, desks::workbench(sources)),
+        8 => set(&mut views.log, log::log(sources)),
+        _ => set(&mut views.titles, log::titles(sources)),
+    }
+}
+
+/// What the views are built from, besides `State` (by its change ticks).
+#[derive(Clone, Copy, PartialEq)]
+struct Inputs {
+    /// Net::ui_revision and the inventory's revision.
+    net: (u64, u64),
+    /// Which catalogs have loaded.
+    catalogs: (bool, bool),
+    class: Option<u8>,
+    /// The clock's minute while the events or the quest log (the Wanted
+    /// board) show their countdowns; 0 otherwise.
+    minute: u64,
+}
+
+/// Which views are current, and what for.
+#[derive(Default)]
+pub(in crate::ui) struct Built {
+    inputs: Option<Inputs>,
+    current: [bool; VIEW_WINDOWS.len()],
+    frame: u32,
+}
+
+/// The open windows' views, rebuilt when what they are built from changes; the
+/// windows whose view changed are rebuilt.
+/// CONTRACT: nothing per frame while nothing changed. A closed window's view
+///   waits until it opens; an open one's waits for its inputs to move (a server
+///   command, an inventory or State edit, a catalog loading, our class).
+/// FAILURE (2026-10-21): every view was rebuilt every frame and compared, open
+///   or not: 1 ms a frame offline, more with a real account's achievements.
 #[allow(clippy::too_many_arguments)]
 pub(in crate::ui) fn sync(
     mut commands: Commands,
@@ -263,44 +325,52 @@ pub(in crate::ui) fn sync(
     item_catalogs: Res<Assets<items::Catalog>>,
     players: Query<&crate::actors::character::Character, With<crate::network::net::LocalPlayer>>,
     mut views: ResMut<Views>,
+    mut built: Local<Built>,
+    mut work: ResMut<crate::ui::UiWork>,
     mut loaded: ResMut<Loaded>,
     layouts: Res<Assets<Layout>>,
-    windows: Query<(Entity, &Window2018)>,
+    windows: Query<(Entity, &Window2018, &Visibility)>,
 ) {
     let Some(net) = net else { return };
+    let mut open = [false; VIEW_WINDOWS.len()];
+    for (_, window, visibility) in &windows {
+        if *visibility == Visibility::Hidden { continue; }
+        if let Some(index) = VIEW_WINDOWS.iter().position(|names| names.contains(&window.0.as_str())) { open[index] = true; }
+    }
+    let items = item_data.as_ref().and_then(|d| item_catalogs.get(&d.catalog));
+    let class = players.iter().next().map(|c| c.desc.class);
+    let countdown = VIEW_WINDOWS.iter().zip(open).any(|(names, open)| open && (names.contains(&EVENTS) || names.contains(&QUESTLOG)));
+    let inputs = Inputs { net: (net.ui_revision, net.inventory.revision),
+        catalogs: (catalogs.get(&state.catalog).is_some(), items.is_some()), class,
+        minute: if countdown { unix_seconds() / 60 } else { 0 } };
+    if built.inputs != Some(inputs) || state.is_changed() {
+        built.inputs = Some(inputs);
+        built.current = [false; VIEW_WINDOWS.len()];
+    }
+    // Development builds (and DSOR_FLAGS=uiaudit) rebuild the current views now
+    // and then: one that changed means an input above was missed (a Net field
+    // edited without Net::touch_ui).
+    built.frame = built.frame.wrapping_add(1);
+    let audit = (cfg!(debug_assertions) || crate::flag("uiaudit")) && built.frame % 60 == 0;
+    if !(0..open.len()).any(|i| open[i] && (!built.current[i] || audit)) { return; }
     let fallback = SystemsCatalog::default();
     let catalog = catalogs.get(&state.catalog).unwrap_or(&fallback);
-    let items = item_data.as_ref().and_then(|d| item_catalogs.get(&d.catalog));
-    let sources = Sources { net: &net, catalog, items, state: &state, class: players.iter().next().map(|c| c.desc.class) };
-    let next = Views {
-        boards: boards::boards(&sources),
-        shop: shop::shop(&sources),
-        events: events::events(&sources),
-        album: album::album(&sources),
-        transmog: transmog::transmog(&sources),
-        salvage: desks::salvage(&sources),
-        gems: desks::gems(&sources),
-        workbench: desks::workbench(&sources),
-        log: log::log(&sources),
-        titles: log::titles(&sources),
-    };
-    if *views == next { return; }
-    let changed: Vec<&str> = [
-        (views.boards != next.boards, vec![LEADERBOARDS, MATCHMAKING]),
-        (views.shop != next.shop, vec![SHOP]),
-        (views.events != next.events, vec![EVENTS]),
-        (views.album != next.album, vec![ALBUM]),
-        (views.transmog != next.transmog, vec![TRANSMOG]),
-        (views.salvage != next.salvage, vec![SALVAGE]),
-        (views.gems != next.gems, vec![GEMDESK]),
-        (views.workbench != next.workbench, vec![WORKBENCH]),
-        (views.log != next.log, vec![QUESTLOG]),
-        (views.titles != next.titles, vec![SHEET]),
-    ].into_iter().filter(|(changed, _)| *changed).flat_map(|(_, w)| w).collect();
-    *views = next;
+    let sources = Sources { net: &net, catalog, items, state: &state, class };
+    let mut changed: Vec<&str> = Vec::new();
+    for index in (0..open.len()).filter(|&i| open[i]) {
+        let current = built.current[index];
+        if current && !audit { continue; }
+        if refresh(index, &sources, &mut views) {
+            if current { error!("{} changed without an input change: a Net field it shows was edited without Net::touch_ui", VIEW_WINDOWS[index][0]); }
+            changed.extend(VIEW_WINDOWS[index]);
+        }
+        if !current { work.system_views += 1; }
+        built.current[index] = true;
+    }
+    if changed.is_empty() { return; }
     // The windows keep their roots (and whether they are open): their parts are
     // rebuilt from the new view (crate::ui::spawn_windows).
-    for (entity, window) in &windows {
+    for (entity, window, _) in &windows {
         if changed.contains(&window.0.as_str()) { commands.entity(entity).despawn_related::<Children>(); }
     }
     for i in 0..loaded.layouts.len() {
@@ -598,24 +668,31 @@ pub(in crate::ui) fn send(
     if notches.abs() >= 0.5 {
         if let Some(request) = primary.single().ok().and_then(|window| scrolled(window, &windows, -notches.round() as i32)) { pointer.system.push(request); }
     }
+    // State is written only when something changes: its change ticks tell
+    // `sync` to rebuild the views.
     // A newly opened quest's overview starts at its top.
-    let open_quest = quests.list.get(quests.selected).map(|q| q.id.clone());
-    if state.last_quest != open_quest { state.scroll.remove(super::quests::OVERVIEW); state.last_quest = open_quest; }
-    let open: HashSet<String> = windows.iter().filter(|(_, v, _, _)| **v != Visibility::Hidden).map(|(w, _, _, _)| w.0.clone()).collect();
+    let open_quest = quests.list.get(quests.selected).map(|q| q.id.as_str());
+    if state.last_quest.as_deref() != open_quest { state.scroll.remove(super::quests::OVERVIEW); state.last_quest = open_quest.map(str::to_owned); }
     let tabs = windows.iter().find(|(w, _, _, _)| w.0 == LEADERBOARDS).map(|(_, _, c, _)| rank_tabs(c));
     let mut commands = Vec::new();
-    let opened: Vec<String> = open.difference(&state.opened).cloned().collect();
-    for window in &opened {
-        if window == LEADERBOARDS { state.rank_start = 0; }
-        commands.extend(opening(window, &state, tabs));
+    let visible = || windows.iter().filter(|(_, v, _, _)| **v != Visibility::Hidden).map(|(w, _, _, _)| w.0.as_str());
+    let boards_were_open = state.opened.contains(LEADERBOARDS);
+    if visible().count() != state.opened.len() || !visible().all(|w| state.opened.contains(w)) {
+        let open: HashSet<String> = visible().map(str::to_owned).collect();
+        let opened: Vec<String> = open.difference(&state.opened).cloned().collect();
+        for window in &opened {
+            if window == LEADERBOARDS { state.rank_start = 0; }
+            commands.extend(opening(window, &state, tabs));
+        }
+        state.opened = open;
     }
     // The boards follow their tabs; closed, they ask again when reopened.
-    if open.contains(LEADERBOARDS) && tabs.is_some() && tabs != state.rank_tabs {
-        if state.opened.contains(LEADERBOARDS) { state.rank_start = 0; commands.extend(ranking_requests(&state, tabs.unwrap(), FILTER_ALL)); }
+    let boards_open = state.opened.contains(LEADERBOARDS);
+    if boards_open && tabs.is_some() && tabs != state.rank_tabs {
+        if boards_were_open { state.rank_start = 0; commands.extend(ranking_requests(&state, tabs.unwrap(), FILTER_ALL)); }
         state.rank_tabs = tabs;
     }
-    if !open.contains(LEADERBOARDS) { state.rank_tabs = None; }
-    state.opened = open;
+    if !boards_open && state.rank_tabs.is_some() { state.rank_tabs = None; }
     if state.pending.is_some_and(|(revision, at)| net.inventory.revision != revision || time.elapsed_secs_f64() - at > 2.0) { state.pending = None; }
     // One inventory-changing request at a time: the server answers with the
     // inventory (or refuses silently; two seconds then).
@@ -640,10 +717,12 @@ pub(in crate::ui) fn send(
             Request::Queue(mode) => {
                 let mode = if mode < 0 { QUEUE_MODES.get(state.matchmaking_tab as usize).copied().unwrap_or(1) } else { mode };
                 if let Some(found) = net.battleground.take() {
+                    net.touch_ui();
                     commands.push(ClientCommand::JoinBattlegroundResponse(proto::JoinBattlegroundResponse { tick: found.tick, battleground: found.battleground, accepted: true, unknown_u32_0: 0, mode: found.mode }));
                 } else if net.matchmaking.as_ref().is_some_and(|m| m.state >= 0) {
                     commands.push(ClientCommand::AbortMatchQueue(proto::AbortMatchQueue { tick: 0, flag: true, modes: vec![mode], all: false }));
                     net.matchmaking = None;
+                    net.touch_ui();
                 } else {
                     commands.push(ClientCommand::JoinMatchQueue(social::JoinMatchQueue { tick: 0, mode, kind: 0 }));
                 }
@@ -915,6 +994,45 @@ mod tests {
         assert_eq!(action(LEADERBOARDS, &widget("PagePlayer", "a/ScrollToMe")), Some(Action::System(Request::Page(Paging::Player))));
         assert_eq!(action(SHEET, &widget("ShowPVPTitle", "a/RadioButtonShowPVPTitle")), Some(Action::System(Request::Title(2, String::new()))));
         assert_eq!(action("inventory", &widget("Close", "a/b")), None);
+    }
+
+    /// docs/ui.md, "Per-frame cost". FAILURE (2026-10-21): every view was
+    /// rebuilt every frame, open or not (1 ms a frame).
+    #[test]
+    fn views_are_built_only_for_open_windows_and_only_when_something_changed() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default()))
+            .init_asset::<SystemsCatalog>().init_asset::<items::Catalog>().init_asset::<Layout>()
+            .init_resource::<State>().init_resource::<Views>().init_resource::<Loaded>().init_resource::<crate::ui::UiWork>()
+            .add_systems(Update, sync);
+        crate::network::net::start_offline(app.world_mut(), 1, 0);
+        let album = app.world_mut().spawn((Window2018(ALBUM.into()), Visibility::Hidden)).id();
+        let built = |app: &App| app.world().resource::<crate::ui::UiWork>().system_views;
+        let show = |app: &mut App, visibility| *app.world_mut().get_mut::<Visibility>(album).unwrap() = visibility;
+        for _ in 0..5 { app.update(); }
+        assert_eq!(built(&app), 0, "a closed window's view waits until it opens");
+        show(&mut app, Visibility::Inherited);
+        app.update();
+        assert_eq!(built(&app), 1, "opened: its view is built");
+        for _ in 0..10 { app.update(); }
+        assert_eq!(built(&app), 1, "idle frames rebuild nothing");
+        app.world_mut().non_send_mut::<Net>().touch_ui();
+        app.update();
+        assert_eq!(built(&app), 2, "the server said something");
+        app.world_mut().resource_mut::<State>().album_banner = 1;
+        app.update();
+        assert_eq!(built(&app), 3, "a selection changed");
+        app.world_mut().non_send_mut::<Net>().inventory.revision += 1;
+        app.update();
+        assert_eq!(built(&app), 4, "the inventory changed");
+        show(&mut app, Visibility::Hidden);
+        app.world_mut().non_send_mut::<Net>().touch_ui();
+        for _ in 0..5 { app.update(); }
+        assert_eq!(built(&app), 4, "closed: changes wait for it to open");
+        show(&mut app, Visibility::Inherited);
+        app.update();
+        app.update();
+        assert_eq!(built(&app), 5, "reopened after a change: rebuilt once");
     }
 
     #[test]

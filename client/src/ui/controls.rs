@@ -1293,7 +1293,7 @@ mod tests {
             .init_asset::<Layout>().init_asset::<Mesh>().init_asset::<UiMaterial>()
             .init_asset::<Image>().init_asset::<Font>().init_asset::<crate::ui::dialogue::Catalog>()
             .init_resource::<Loaded>().init_resource::<Screen>().init_resource::<crate::ui::dialogue::Presentation>()
-            .init_resource::<party::Party>().init_resource::<crate::gameplay::quests::QuestUi>().init_resource::<systems::Views>()
+            .init_resource::<party::Party>().init_resource::<crate::gameplay::quests::QuestUi>().init_resource::<systems::Views>().init_resource::<crate::ui::UiWork>()
             .insert_resource(quests::Quests { list: vec![quests::QuestView::default()], ..default() })
             .add_systems(Update, spawn_windows);
         let art = |[l, t, r, b]: [f32; 4], alpha: f32| {

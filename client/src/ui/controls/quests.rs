@@ -134,7 +134,22 @@ pub(crate) struct Quests {
     pub compact: bool,
 }
 
+/// What the quest list is built from, besides QuestUi (by its change ticks).
+#[derive(Clone, Copy, PartialEq)]
+pub(in crate::ui) struct QuestInputs {
+    /// Net::ui_revision: the server's quest log, among the rest.
+    revision: u64,
+    /// The quest data, texts (and which), map names and item catalog loaded.
+    loaded: (bool, Option<AssetId<dialogue::Catalog>>, bool, bool),
+    class: u8,
+    /// The list's and the overview's scroll (systems::State).
+    scroll: (usize, usize),
+}
+
 /// The log from the network state; the windows are rebuilt when it changes.
+/// CONTRACT: nothing per frame while nothing changed: the list (which the
+///   always-shown tracker needs) is rebuilt only when QuestInputs or QuestUi
+///   change (docs/ui.md, "Per-frame cost").
 #[allow(clippy::too_many_arguments)]
 pub(in crate::ui) fn sync(
     mut commands: Commands,
@@ -145,21 +160,35 @@ pub(in crate::ui) fn sync(
     texts: Res<Assets<dialogue::Catalog>>,
     lookups: QuestLookups,
     mut quests: ResMut<Quests>,
+    mut built: Local<(Option<QuestInputs>, u32)>,
+    mut work: ResMut<crate::ui::UiWork>,
     mut loaded: ResMut<Loaded>,
     layouts: Res<Assets<Layout>>,
     windows: Query<(Entity, &Window2018)>,
 ) {
     let Some(mut net) = net else { return };
-    if let Some(quest_id) = ui.cancel.take() {
+    if ui.cancel.is_some() {
         // The server answers with QuestUpdate state 3 (and the items taken back).
+        let quest_id = ui.cancel.take().unwrap_or_default();
         if !net.offline { net.send(&ClientCommand::Quest(actors::Quest { quest_id, state: CANCEL, parameter: 0 })); }
     }
-    let fallback = dialogue::Catalog::default();
-    let catalog = texts.get(presentation.catalog()).unwrap_or(&fallback);
+    let catalog_id = texts.get(presentation.catalog()).is_some().then(|| presentation.catalog().id());
     let data = catalogs.get(&ui.catalog);
     let items = lookups.item_data.as_ref().and_then(|d| lookups.item_catalogs.get(&d.catalog));
     let names = lookups.names.get(&loaded.map_names);
     let class = lookups.players.iter().next().map_or(0, |c| c.desc.class);
+    let scroll = (lookups.state.scroll.get(LIST).copied().unwrap_or(0), lookups.state.scroll.get(OVERVIEW).copied().unwrap_or(0));
+    let inputs = QuestInputs { revision: net.ui_revision, loaded: (data.is_some(), catalog_id, names.is_some(), items.is_some()), class, scroll };
+    // Development builds (and DSOR_FLAGS=uiaudit) rebuild now and then anyway:
+    // a list that changed means an input above was missed.
+    built.1 = built.1.wrapping_add(1);
+    let audit = (cfg!(debug_assertions) || crate::flag("uiaudit")) && built.1 % 60 == 0;
+    let current = built.0 == Some(inputs) && !ui.is_changed();
+    if current && !audit { return; }
+    built.0 = Some(inputs);
+    if !current { work.quest_lists += 1; }
+    let fallback = dialogue::Catalog::default();
+    let catalog = texts.get(presentation.catalog()).unwrap_or(&fallback);
     let class_name = crate::actors::character::CLASSES.get(class as usize).copied().unwrap_or("warrior");
     let mut list: Vec<_> = net.npc_dialogue.log.iter().filter(|(_, e)| e.active()).map(|(id, entry)| {
         let def = data.and_then(|d| d.quest(id));
@@ -188,10 +217,11 @@ pub(in crate::ui) fn sync(
     let order = |kind: &str| GROUPS.iter().position(|(k, _)| *k == kind).unwrap_or(GROUPS.len());
     list.sort_by(|a, b| order(&a.kind).cmp(&order(&b.kind)).then(a.level.cmp(&b.level)).then(a.title.cmp(&b.title)).then(a.id.cmp(&b.id)));
     let selected = ui.selected.as_ref().and_then(|s| list.iter().position(|q| &q.id == s)).unwrap_or(0);
-    ui.tracked = ui.tracked.min(list.len().saturating_sub(1));
-    let scroll = (lookups.state.scroll.get(LIST).copied().unwrap_or(0), lookups.state.scroll.get(OVERVIEW).copied().unwrap_or(0));
-    let next = Quests { list, selected, tracked: ui.tracked, folded: ui.folded.iter().cloned().collect(), scroll, compact: ui.compact };
+    let tracked = ui.tracked.min(list.len().saturating_sub(1));
+    if ui.tracked != tracked { ui.tracked = tracked; }
+    let next = Quests { list, selected, tracked, folded: ui.folded.iter().cloned().collect(), scroll, compact: ui.compact };
     if *quests == next { return; }
+    if current { error!("the quest list changed without an input change: a Net field it shows was edited without Net::touch_ui"); }
     // The tracker only depends on the followed quest and its mode.
     let tracker_changed = quests.list.get(quests.tracked) != next.list.get(next.tracked) || quests.compact != next.compact;
     let log_changed = quests.list != next.list || quests.selected != next.selected || quests.folded != next.folded || quests.scroll != next.scroll;
@@ -480,6 +510,36 @@ pub(in crate::ui) fn fold(folded: &mut HashSet<String>, kind: &str) {
 mod tests {
     use super::*;
     use super::super::template::fixture::{find, layout, text_of};
+
+    /// docs/ui.md, "Per-frame cost": the list the tracker needs is rebuilt
+    /// when the log, its selection or its scroll change, not every frame.
+    #[test]
+    fn the_quest_list_is_rebuilt_only_when_something_changed() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default()))
+            .init_asset::<QuestCatalog>().init_asset::<dialogue::Catalog>().init_asset::<super::super::items::Catalog>()
+            .init_asset::<local_map::MapNames>().init_asset::<Layout>()
+            .init_resource::<QuestUi>().init_resource::<dialogue::Presentation>().init_resource::<super::super::systems::State>()
+            .init_resource::<Quests>().init_resource::<Loaded>().init_resource::<crate::ui::UiWork>()
+            .add_systems(Update, sync);
+        crate::network::net::start_offline(app.world_mut(), 1, 0);
+        let built = |app: &App| app.world().resource::<crate::ui::UiWork>().quest_lists;
+        app.update();
+        assert_eq!(built(&app), 1);
+        for _ in 0..10 { app.update(); }
+        assert_eq!(built(&app), 1, "idle frames rebuild nothing");
+        app.world_mut().non_send_mut::<crate::network::net::Net>().touch_ui();
+        app.update();
+        assert_eq!(built(&app), 2, "the server said something");
+        app.world_mut().resource_mut::<QuestUi>().compact = true;
+        app.update();
+        assert_eq!(built(&app), 3, "the tracker was folded");
+        app.world_mut().resource_mut::<super::super::systems::State>().scroll.insert(LIST.into(), 1);
+        app.update();
+        assert_eq!(built(&app), 4, "the list was scrolled");
+        for _ in 0..10 { app.update(); }
+        assert_eq!(built(&app), 4);
+    }
 
     fn quests() -> Quests {
         Quests { list: vec![

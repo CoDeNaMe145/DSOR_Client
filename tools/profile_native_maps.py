@@ -22,6 +22,8 @@ p.add_argument('--position', nargs=3, type=float, metavar=('X','Y','Z'))
 p.add_argument('--route', type=pathlib.Path, help='offline position/capture replay, for cell unload/reload checks')
 p.add_argument('--ui-route', type=pathlib.Path, help='UI actions/captures to merge with the focus replay')
 p.add_argument('--check-skins', action='store_true', help='expensive live joint-ownership checks; never use for FPS timing')
+p.add_argument('--env', action='append', default=[], metavar='KEY=VALUE',
+               help='extra client environment, e.g. DSOR_SYSTEM_PROFILE=dsor_client::ui (repeatable)')
 a = p.parse_args()
 if os.name != 'nt': p.error('this runner requires Windows')
 map_name, pos = {'kingscity': ('a0200_kingscity', [155, 1, -54]),
@@ -48,6 +50,9 @@ env['DSOR_UI_REPLAY'] = str(focus_route)
 if a.map_only: env['DSOR_NO_DECO'] = '1'
 if a.audit: env['DSOR_RENDER_AUDIT'] = str(OUT/f'{tag}.audit.json')
 if a.check_skins: env['DSOR_CHECK_SKIN'] = '1'
+for extra in a.env:
+    key, _, value = extra.partition('=')
+    env[key] = value
 cmd = [str(ROOT/a.exe), map_name, '--offline', '--play', '1', '0']
 if not a.map_only: cmd.append('--npcs')
 with (ROOT/a.exe).open('rb') as binary:
@@ -90,6 +95,12 @@ report = dict(tag=tag, map=map_name, position=pos, flags=env['DSOR_FLAGS'],
               windows=re.findall(r'frame profile: \d+ frames, .*', data),
               hud=re.findall(r'\d+ FPS \([^\n]+', data),
               stages=re.findall(r'frame profile: (\w+::\w+) took ([\d.]+) ms', data),
+              ui_work=re.findall(r'ui work: .*', data),
               errors=[x for x in data.splitlines() if 'ERROR' in x or 'panicked' in x])
 (OUT/f'{tag}.summary.json').write_text(json.dumps(report,indent=2))
 print(json.dumps({k:v for k,v in report.items() if k not in ('stages','focus')}, indent=2),flush=True)
+# The fixed view is idle: after loading, the interface must rebuild nothing
+# (docs/ui.md, "Per-frame cost"). A UI route legitimately opens windows.
+idle = re.findall(r'ui work: (\d+) layouts prepared, (\d+) system views, (\d+) quest lists', data)
+if not a.ui_route and len(idle) >= 2 and any(int(n) for n in idle[-1]):
+    print('WARNING: the interface rebuilt something every window while idle: ' + report['ui_work'][-1], flush=True)

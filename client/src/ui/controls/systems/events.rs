@@ -137,7 +137,7 @@ pub(super) fn events(sources: &Sources) -> Events {
 }
 
 fn now() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    super::unix_seconds()
 }
 
 /// Seconds since the epoch of a civil date (UTC).

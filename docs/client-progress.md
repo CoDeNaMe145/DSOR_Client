@@ -845,3 +845,36 @@ pointer to what lies under it in the tracker, as it already did in the chat
 windows (`ui::passes_pointer`); the visible frame (from y 71) still takes it.
 Test: `the_quest_tracker_leaves_the_game_bar_above_it_to_the_pointer` (fails
 without the fix); 103 UI tests passed with the converted assets.
+
+## Interface per-frame cost (2026-10-21)
+
+The systems' windows commit cut the Kingscity benchmark view from about 180 to
+95 FPS (50–60 online). It was the interface's per-frame work, not the lighting
+merge. The fixed build is back at the pre-regression frame rate (p50 about
+4.5 ms against the 10-20 build's 4.7–5.2 ms in interleaved runs). The whole
+interface now costs about 0.2 ms a frame. Analysis and numbers:
+[native map performance](native-map-performance.md#interface-regression-after-the-systems-windows-2026-10-21);
+rules: [docs/ui.md, "Per-frame cost"](ui.md#per-frame-cost).
+
+- `spawn_windows` checks a window's visibility before preparing its layout (it
+  prepared every closed menu each frame: 5.95 ms).
+- `systems::sync` builds only the open windows' views, when `Net::ui_revision`,
+  the inventory, `State`, the catalogs, the class or a shown countdown's minute
+  change (1 ms a frame before). `on_command` bumps `ui_revision` for every
+  command but the actor stream; local edits call `Net::touch_ui`. `send` writes
+  `State` only on a change.
+- `quests::sync` rebuilds the quest list on the same signal; `spells::sync`
+  hands its model to the windows when it changes; `sheet::rows` skips the
+  closed sheet.
+- Guards: `ui::UiWork` counters with four regression tests (one checked by
+  reintroducing the bug: it fails), a `ui work:` line in `frameprofile` and a
+  runner warning, a debug and `uiaudit` cross-check for a missed `touch_ui`, the
+  `system-profile` cargo feature (per-system and per-module times, `DSOR_SYSTEM_PROFILE`
+  filter), `--env` in `tools/profile_native_maps.py`, and `AGENTS.md`.
+- The views' wall clock (events, the Wanted board) no longer uses
+  `std::time::SystemTime`, which panics in the browser.
+
+Verified: **346 client tests passed** (15 ignored); with the converted assets
+the 13 UI fixture tests pass too (the Kingscity doorway lighting test fails on
+the current, un-overridden assets, unrelated to this change). Logs:
+`.local/logs/map-fps/kingscity-{regress,sysprof,ab}-*`. Not re-measured online.

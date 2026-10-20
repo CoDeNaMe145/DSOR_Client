@@ -145,6 +145,60 @@ the server default. Both the HUD and wisdom tab use these defaults; server
 wisdom progression is not decoded yet. Late-loading layouts receive the current
 values without waiting for another stat update.
 
+## Per-frame cost
+
+**Rule: a frame in which nothing the interface shows has changed does no
+interface work beyond a few cheap checks.** The whole interface (every
+`dsor_client::ui` system) costs about 0.2 ms a frame at the Kingscity
+benchmark view, and must stay well under 0.5 ms. No single UI system should
+take more than 0.05 ms in a still scene. A closed window costs nothing.
+
+What this means for new interface code:
+
+- **Never rebuild a view, a layout or a list every frame to compare it with the
+  last one.** Build it when an input changes. Server state lives in one big
+  `Net`, so Bevy cannot see what changed in it. Key the rebuild on
+  `Net::ui_revision` instead: `on_command` bumps it for every server command
+  except the actor stream (`actor_stream`: movement, combat, effects, vicinity).
+  Also key it on `inventory.revision`, on the change ticks of the UI resources
+  it reads (`State`, `QuestUi`) and on which catalogs have loaded.
+  `controls::systems::sync` and `controls::quests::sync` are the patterns.
+- **Code that edits a field a window shows outside `on_command`** (a click, a
+  fixture, a map change) calls `Net::touch_ui()`.
+- **Write a resource only when the value changes** (`if x != new { x = new }`).
+  Bevy marks a resource changed on every mutable access, so an unconditional
+  `state.opened = open` each frame makes every reader of its change ticks
+  rebuild every frame.
+- **Do not prepare, build or fill a closed window.** `spawn_windows` checks
+  visibility before preparing a layout. A view needed only by its window is
+  built when the window opens (`systems::sync` only builds the open windows'
+  views).
+- **Do not copy shared state into every window every frame.** Hand it over when
+  it changes, and to windows rebuilt since (`spells::sync`).
+- **Count rebuild work in `UiWork`**, and add a test that idle frames leave the
+  counters alone (see `closed_windows_are_not_prepared_every_frame`,
+  `views_are_built_only_for_open_windows_and_only_when_something_changed`,
+  `the_quest_list_is_rebuilt_only_when_something_changed`).
+
+These checks catch a regression:
+
+- the `UiWork` unit tests above and `only_commands_the_windows_show_move_the_ui_revision`;
+- `DSOR_FLAGS=frameprofile` logs `ui work: …` every five seconds (0 in a still
+  scene), and `tools/profile_native_maps.py` warns when an idle run rebuilds;
+- debug builds (or `DSOR_FLAGS=uiaudit`) rebuild the open views once a second and
+  log an error if one changed without an input change (a missed `touch_ui`);
+- the `system-profile` build lists every UI system's cost
+  ([Testing and diagnostics](testing-and-diagnostics.md#performance-diagnostics)).
+
+FAILURE (2026-10-21): the systems' windows commit (`705409a`) dropped Kingscity
+from about 180 to 95 FPS offline, and to 50–60 online. `spawn_windows` prepared
+the layouts of every closed, never-opened menu each frame and then dropped them
+(5.95 ms a frame). `systems::sync` rebuilt and compared all ten system views
+each frame, open or not (1.0 ms a frame offline, more with a real account's
+achievements). `quests::sync` rebuilt the quest list each frame, and
+`spells::sync` cloned the spell model into all windows each frame. Details:
+[native map performance](native-map-performance.md#interface-regression-after-the-systems-windows-2026-10-21).
+
 ## Interaction (`client/src/ui/controls.rs`)
 
 The window controller resolves source events (such as `Close`, `NextPage`,

@@ -1115,3 +1115,67 @@ the reported class of hitch. `.local/ProfileCombat.cmd` launches the diagnostic
 client against the normal login flow and saves a `live-*.log` in the evidence
 directory. A foreground capture of the exact reported fight is still needed to
 determine whether the user's full FPS drop shares these presentation stalls.
+
+## Interface regression after the systems' windows (2026-10-21)
+
+After commit `705409a` (the systems' windows on their 2026 layouts, audio,
+quests), the user saw about 50–60 FPS online, down from 170–180. The upstream
+lighting merge just before it was suspected, but was not the cause. The 10-20
+build that already had that lighting, DLSS and `pe_ssao` still ran the Kingscity
+benchmark view at about 185 FPS. With the same settings (`game-settings.json`:
+DLAA, SSAO high, VSync off) and assets, the `705409a` build ran at about 95 FPS.
+Only the fixed/update stage had grown, from 1.2 to 7.5 ms. Rendering,
+PostUpdate and GPU spans were unchanged.
+
+A per-system profile (the new `system-profile` build, see
+[testing and diagnostics](testing-and-diagnostics.md#performance-diagnostics))
+named the systems in one run:
+
+| System (mean a frame) | `705409a` | Fixed |
+|---|---:|---:|
+| `ui::spawn_windows` | 5.954 ms | 0.011 ms |
+| `ui::controls::systems::sync` | 1.002 ms | < 0.003 ms |
+| `Update` schedule | 8.320 ms | 1.695 ms |
+| All 62 `dsor_client::ui` systems | about 7.2 ms | 0.265 ms |
+
+These are `system-profile` (trace) builds, whose spans add a little cost.
+
+- `spawn_windows` prepared the layout of every closed, never-opened menu every
+  frame (`systems::prepare` cloned and filled the large layouts of ten windows),
+  then found the window hidden and dropped the result. It now checks visibility
+  first; a closed window costs nothing.
+- `systems::sync` built all ten system views every frame and compared them, open
+  or not. It now builds only the open windows' views, when their inputs change:
+  `Net::ui_revision` (bumped by every server command except the actor stream),
+  the inventory's revision, `State`'s change ticks (`send` no longer writes it
+  every frame), the catalogs loading, the class, and the clock's minute while a
+  countdown shows.
+- `quests::sync` rebuilt the quest list (text lookups, wrapping, a sort) every
+  frame, which costs more with a real quest log. It now rebuilds on the same
+  inputs and `QuestUi`'s change ticks.
+- `spells::sync` cloned the spell model (with the skill book's map) into all
+  windows every frame, marking every `WindowControls` changed. `sheet::rows`
+  scanned the character sheet's layout every frame while the sheet was closed.
+
+Interleaved release-build runs, `frameprofile` only, no compiler at either end,
+final three five-second windows:
+
+| Executable (SHA-256 prefix) | Window p50, ms | HUD FPS |
+|---|---:|---:|
+| `705409a` release (`b8c2961c0239`) | 11.67–12.51 | 81–85 |
+| Fixed release (`6b23265879e3`) | 5.92–6.16 | 162–163 |
+
+A second interleaved series with `stageprofile` compared the fixed build with
+the 10-20 baseline (`4e1ce88b7aef`, fast profile). The baseline measured
+4.71–5.21 ms p50 (186–197 FPS) and the fixed build 4.45–4.76 ms (182 FPS).
+Fixed/update was 0.92 ms against the baseline's 1.19–1.26 ms. The desktop's
+load shifted between the series, so compare rows only within a series. The
+fixed build matches the pre-regression frame rate. Every fixed run logged
+`ui work: 0 layouts prepared, 0 system views, 0 quest lists`.
+
+The rules and the checks that now guard this are in
+[docs/ui.md, "Per-frame cost"](ui.md#per-frame-cost). Logs: `kingscity-regress-*`,
+`kingscity-sysprof-*` and `kingscity-ab-*` in `.local/logs/map-fps/`. Online
+play was not re-measured. The online gain should be larger than offline, since
+a real account's quest log and achievements made the old per-frame rebuilds
+costlier.

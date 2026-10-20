@@ -16,6 +16,9 @@ webgpu = ["bevy/webgpu"]
 # target-specific, so browser builds ignore it. Needs the NVIDIA DLSS SDK (see
 # .cargo/config.toml, docs/getting-started.md); opt out with --no-default-features.
 dlss = ["dep:bevy_anti_alias"]
+# Per-system wall times with DSOR_FLAGS=systemprofile (crate::diagnostics::system_profile):
+# bevy's tracing spans, which have a small cost of their own, so never on by default.
+system-profile = ["bevy/trace"]
 
 [dependencies]
 log.workspace = true

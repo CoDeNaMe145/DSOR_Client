@@ -37,6 +37,12 @@ pub(in crate::ui) fn rows(
 ) {
     let notches: f32 = wheel.read().map(|w| w.y.signum()).sum();
     let Some((root, _, controls, visibility, tf)) = windows.iter().find(|(_, w, _, _, _)| w.0 == WINDOW) else { return };
+    // Closed and its rows unchanged: no wheel, no drag, no rebuild below
+    // (docs/ui.md, "Per-frame cost").
+    if *visibility == Visibility::Hidden && !rows.is_changed() && !screen.is_changed() && state.0 == Some(root) && state.2.is_some() {
+        *dragging = false;
+        return;
+    }
     let Some(layout) = loaded.layouts.iter().filter_map(|(h, _, _)| layouts.get(h)).find(|l| l.window == WINDOW) else { return };
     let find = |suffix: &str| layout.widgets.iter().find(|w| w.id.ends_with(&format!("{AREA}{suffix}")));
     let (Some(list), Some(area), Some(head), Some(attr), Some(sub)) = (find("/OverviewList"), find(""), find("/TemplateHeadline"), find("/TemplateAttributes"), find("/TemplateSubHeadline")) else { return };

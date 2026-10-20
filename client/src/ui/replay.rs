@@ -126,6 +126,8 @@ pub(super) fn run(mut commands: Commands, mut replay: Local<Replay>,
                         Err(e) => error!("NPC shop replay: {e}"),
                     }
                 }
+                // The fixtures above edit what the windows show, as a server would.
+                if let Some(net) = net.as_mut().filter(|n| n.offline) { net.touch_ui(); }
                 if let Ok((camera, transform)) = cameras.single() {
                     if let Ok(point) = camera.world_to_viewport(transform, at.translation() + Vec3::Y * 1.1) {
                         let window = window.bypass_change_detection();

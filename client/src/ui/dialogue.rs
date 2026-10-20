@@ -260,7 +260,7 @@ pub(super) fn sync(
                 }
                 Some(action @ (Action::Quest(_) | Action::Talk(_, _) | Action::Shop(_))) if available.iter().any(|c| c.action == action) => {
                     if let (Action::Shop(shop), Some(net)) = (&action, net.as_mut()) {
-                        if !net.offline { net.npc_dialogue.offers.remove(shop); }
+                        if !net.offline { net.npc_dialogue.offers.remove(shop); net.touch_ui(); }
                         net.send(&ClientCommand::RequestOffer(inventory::RequestOffer { actor: target.actor, by_name: false, shop: String::new() }));
                     }
                     presentation.merchant = default();

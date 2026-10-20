@@ -22,8 +22,8 @@ pub(in crate::ui) struct Spell {
     #[serde(default)] pub talent_cost: u32,
 }
 
-#[derive(Clone)]
-pub(super) struct Model {
+#[derive(Clone, PartialEq)]
+pub(in crate::ui) struct Model {
     pub class: u8,
     pub offline: bool,
     pub ready: bool,
@@ -45,11 +45,14 @@ impl Model {
     }
 }
 
+/// The spell model, handed to the windows when it changes and to those (re)built
+/// since: not cloned into every window every frame (docs/ui.md, "Per-frame cost").
 pub(in crate::ui) fn sync(
     net: Option<NonSend<crate::network::net::Net>>,
     players: Query<&crate::actors::character::Character, With<crate::network::net::LocalPlayer>>,
     mut windows: Query<&mut WindowControls>,
     hotbar: Res<hotbar::Hotbar>,
+    mut last: Local<Option<Model>>,
 ) {
     let class = players.iter().next().map(|c| c.desc.class)
         .or_else(|| net.as_ref().and_then(|n| n.offline_pending.as_ref().map(|c| c.class))).unwrap_or(1);
@@ -59,7 +62,12 @@ pub(in crate::ui) fn sync(
             book: net.skill_book.as_ref().map(|b| b.entries.iter().map(|e| (e.skill, *e)).collect()).unwrap_or_default(),
             bar: net.bar.clone() }
     } else { Model { class, ..default() } };
-    for mut c in &mut windows { c.spells = model.clone(); }
+    let changed = last.as_ref() != Some(&model);
+    // is_changed: added or rebuilt by another system (this one's writes don't count).
+    for mut c in &mut windows {
+        if (changed || c.is_changed()) && c.spells != model { c.spells = model.clone(); }
+    }
+    if changed { *last = Some(model); }
 }
 
 pub(super) struct DragSpell {

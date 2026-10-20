@@ -253,7 +253,9 @@ pub(super) struct Samples {
 pub(super) fn sample(mut samples: Local<Samples>,
     map: Option<Res<crate::world::map::CurrentMap>>,
     players: Query<&GlobalTransform, With<crate::network::net::LocalPlayer>>,
-    loading: Res<crate::screens::loading::LoadingScreen>) {
+    loading: Res<crate::screens::loading::LoadingScreen>,
+    work: Option<Res<crate::ui::UiWork>>,
+    mut reported_work: Local<crate::ui::UiWork>) {
     let now = cpu::now();
     let previous = samples.previous.replace(now);
     let Some(previous) = previous else { return };
@@ -272,6 +274,14 @@ pub(super) fn sample(mut samples: Local<Samples>,
         info!("frame profile: {} frames, p50 {:.2} ms, p95 {:.2} ms, p99 {:.2} ms, max {:.2} ms, over50 {}",
             frames.len(), percentile(0.5), percentile(0.95), percentile(0.99), frames[frames.len() - 1],
             frames.iter().filter(|&&ms| ms >= 50.0).count());
+        // Idle, these stay at 0 (docs/ui.md, "Per-frame cost"); a count near
+        // the frame count means the interface rebuilds something every frame.
+        if let Some(work) = work.as_deref() {
+            info!("ui work: {} layouts prepared, {} system views, {} quest lists in {} frames",
+                work.layouts_prepared - reported_work.layouts_prepared, work.system_views - reported_work.system_views,
+                work.quest_lists - reported_work.quest_lists, frames.len());
+            *reported_work = *work;
+        }
         samples.frames.clear();
         report_combat_timings();
     }

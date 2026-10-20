@@ -84,9 +84,13 @@ impl Layer<Registry> for DumpLayer {
     }
 }
 
-/// For LogPlugin::custom_layer.
+/// For LogPlugin::custom_layer; with DSOR_FLAGS=systemprofile, also the
+/// per-system timer (crate::diagnostics::system_profile).
 pub fn log_layer(_: &mut App) -> Option<BoxedLayer> {
-    Some(Box::new(DumpLayer))
+    match super::system_profile::SystemTimer::wanted() {
+        Some(timer) => Some(Box::new(DumpLayer.and_then(timer))),
+        None => Some(Box::new(DumpLayer)),
+    }
 }
 
 /// Write a dump after a crash, once.

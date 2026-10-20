@@ -500,6 +500,20 @@ struct Loaded {
     resource_class: Option<u8>,
 }
 
+/// The interface's rebuilding work, counted. A frame in which nothing the
+/// windows show has changed must leave every counter alone: no layout prepared,
+/// no view or quest list rebuilt (docs/ui.md, "Per-frame cost"). The tests
+/// check this; `DSOR_FLAGS=frameprofile` logs the counts every five seconds.
+#[derive(Resource, Default, Clone, Copy, Debug, PartialEq)]
+pub(crate) struct UiWork {
+    /// Layouts taken through preparation to build their window (spawn_windows).
+    pub layouts_prepared: u64,
+    /// Systems' window views rebuilt (controls::systems::sync).
+    pub system_views: u64,
+    /// Quest lists rebuilt (controls::quests::sync).
+    pub quest_lists: u64,
+}
+
 pub struct UiPlugin;
 
 impl Plugin for UiPlugin {
@@ -522,6 +536,7 @@ impl Plugin for UiPlugin {
             .init_asset_loader::<crate::gameplay::systems::SystemsCatalogLoader>()
             .init_resource::<controls::systems::State>()
             .init_resource::<controls::systems::Views>()
+            .init_resource::<UiWork>()
             .init_resource::<crate::gameplay::dialogue::Dialogue>()
             .init_asset::<controls::items::Catalog>()
             .init_asset_loader::<controls::items::CatalogLoader>()
@@ -793,6 +808,7 @@ fn spawn_windows(
     quests: Res<controls::quests::Quests>,
     views: Res<controls::systems::Views>,
     mut windows: Query<(Entity, &Window2018, &Visibility, &mut WindowControls)>,
+    mut work: ResMut<UiWork>,
 ) {
     let known = players.iter().next().map(|c| c.desc.class);
     let class = known.or(loaded.resource_class).unwrap_or(1);
@@ -819,10 +835,18 @@ fn spawn_windows(
         if loaded.spawned[i] {
             continue;
         }
-        let (handle, z, _key) = loaded.layouts[i].clone();
-        let Some(layout) = layouts.get(&handle) else { continue };
-        // A closed dropdown only needs its existing control model until opened.
-        if layout.window == CHAT_MENU && windows.iter().any(|(_, w, v, _)| w.0 == CHAT_MENU && *v == Visibility::Hidden) { continue; }
+        let z = loaded.layouts[i].1;
+        let Some(layout) = layouts.get(&loaded.layouts[i].0) else { continue };
+        // Keep a light root/control model so every existing shortcut, network
+        // event and navigation button can open the window. Prepare and build its
+        // thousands of artwork/text entities only when it is shown.
+        // FAILURE (2026-10-21): the layouts of closed, never-opened menus were
+        //   prepared here every frame, then dropped below: 6 ms a frame once the
+        //   systems' windows filled theirs (180 -> 95 FPS). A hidden window costs
+        //   nothing per frame (docs/ui.md, "Per-frame cost").
+        let existing = windows.iter_mut().find(|(_, w, _, _)| w.0 == layout.window);
+        if existing.as_ref().is_some_and(|(_, _, visibility, _)| **visibility == Visibility::Hidden) { continue; }
+        work.layouts_prepared += 1;
         let prepared;
         let npc_window = dialogue::WINDOWS.contains(&layout.window.as_str());
         let layout = if npc_window {
@@ -855,12 +879,7 @@ fn spawn_windows(
         // DSOR_UI_OPEN=inventory,...: menus open from the start (screenshots).
         let open = npc_window || std::env::var("DSOR_UI_OPEN").is_ok_and(|v| v.split(',').any(|w| w == layout.window));
         let hidden = (is_menu(&layout.window) || layout.window == HOVER_WINDOW) && !open;
-        // Keep a light root/control model so every existing shortcut, network
-        // event and navigation button can open the window. Build its thousands
-        // of artwork/text entities only when it is first requested.
-        let existing = windows.iter_mut().find(|(_, w, _, _)| w.0 == layout.window);
-        let (root, mut controls) = if let Some((root, _, visibility, mut controls)) = existing {
-            if *visibility == Visibility::Hidden { continue; }
+        let (root, mut controls) = if let Some((root, _, _, mut controls)) = existing {
             // Rebuilt (its rows changed): the new buttons, the player's settings.
             let mut fresh = WindowControls::new(layout);
             fresh.carry(std::mem::replace(&mut *controls, WindowControls::new(layout)));
@@ -1627,7 +1646,7 @@ mod residency_tests {
         app.add_plugins((MinimalPlugins,bevy::asset::AssetPlugin::default()))
             .init_asset::<Layout>().init_asset::<Mesh>().init_asset::<UiMaterial>()
             .init_asset::<Image>().init_asset::<Font>().init_asset::<dialogue::Catalog>()
-            .init_resource::<Loaded>().init_resource::<Screen>().init_resource::<dialogue::Presentation>().init_resource::<controls::party::Party>().init_resource::<controls::quests::Quests>().init_resource::<crate::gameplay::quests::QuestUi>().init_resource::<controls::systems::Views>()
+            .init_resource::<Loaded>().init_resource::<Screen>().init_resource::<dialogue::Presentation>().init_resource::<controls::party::Party>().init_resource::<controls::quests::Quests>().init_resource::<crate::gameplay::quests::QuestUi>().init_resource::<controls::systems::Views>().init_resource::<UiWork>()
             .add_systems(Update,spawn_windows);
         let layout: Layout=serde_json::from_value(serde_json::json!({"window":"inventory","widgets":[{
             "id":"Canvas/background","k":0.0,"rect":[0,0,20,20],"hidden":false,
@@ -1650,5 +1669,37 @@ mod residency_tests {
         }
         assert_eq!(app.world_mut().query::<&Mesh2d>().iter(app.world()).count(),1);
         assert_eq!(app.world_mut().query::<&Window2018>().iter(app.world()).count(),1);
+    }
+
+    /// docs/ui.md, "Per-frame cost". FAILURE (2026-10-21): every closed,
+    /// never-opened menu's layout was prepared each frame, then dropped (6 ms a
+    /// frame with the systems' windows: 180 -> 95 FPS).
+    #[test]
+    fn closed_windows_are_not_prepared_every_frame() {
+        let mut app=App::new();
+        app.add_plugins((MinimalPlugins,bevy::asset::AssetPlugin::default()))
+            .init_asset::<Layout>().init_asset::<Mesh>().init_asset::<UiMaterial>()
+            .init_asset::<Image>().init_asset::<Font>().init_asset::<dialogue::Catalog>()
+            .init_resource::<Loaded>().init_resource::<Screen>().init_resource::<dialogue::Presentation>().init_resource::<controls::party::Party>().init_resource::<controls::quests::Quests>().init_resource::<crate::gameplay::quests::QuestUi>().init_resource::<controls::systems::Views>().init_resource::<UiWork>()
+            .add_systems(Update,spawn_windows);
+        let layout: Layout=serde_json::from_value(serde_json::json!({"window":controls::systems::ALBUM,"widgets":[{
+            "id":"Canvas/background","k":0.0,"rect":[0,0,20,20],"hidden":false,
+            "art":{"tex":null,"pos":[0,0,20,0,0,20],"uv":[0,0,1,0,0,1],"color":[1,1,1,1,1,1,1,1,1,1,1,1],"idx":[0,1,2]}
+        }]})).unwrap();
+        let handle=app.world_mut().resource_mut::<Assets<Layout>>().add(layout);
+        app.world_mut().resource_mut::<Loaded>().layouts.push((handle,100.,None));
+        app.world_mut().resource_mut::<Loaded>().spawned.push(false);
+        let prepared=|app: &App| app.world().resource::<UiWork>().layouts_prepared;
+        app.update();
+        let root=app.world_mut().query_filtered::<Entity,With<Window2018>>().single(app.world()).unwrap();
+        assert_eq!(app.world().get::<Visibility>(root),Some(&Visibility::Hidden));
+        assert_eq!(prepared(&app),1,"once, for the closed window's control model");
+        for _ in 0..10 { app.update(); }
+        assert_eq!(prepared(&app),1,"a closed window costs nothing a frame");
+        *app.world_mut().get_mut::<Visibility>(root).unwrap()=Visibility::Inherited;
+        app.update();
+        assert_eq!(prepared(&app),2,"opened: built once");
+        for _ in 0..10 { app.update(); }
+        assert_eq!(prepared(&app),2,"open and unchanged: nothing more");
     }
 }

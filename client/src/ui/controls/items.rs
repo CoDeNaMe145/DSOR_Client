@@ -603,7 +603,7 @@ mod tests {
             .init_resource::<crate::gameplay::dialogue::Dialogue>()
             .init_resource::<crate::gameplay::stats::Sheet>().init_resource::<crate::actors::monsters::HoverInfo>()
             .insert_resource(crate::gameplay::stats::ResourceMax(100.0))
-            .init_resource::<super::party::Party>().init_resource::<super::quests::Quests>().init_resource::<super::systems::Views>()
+            .init_resource::<super::party::Party>().init_resource::<super::quests::Quests>().init_resource::<super::systems::Views>().init_resource::<crate::ui::UiWork>()
             .init_resource::<Pointer>().init_resource::<Interaction>().init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<bevy::sprite_render::EntitiesNeedingSpecialization<UiMaterial>>()
             .add_systems(PostUpdate, (refresh_mesh_order, bevy::sprite_render::check_entities_needing_specialization::<UiMaterial>)
