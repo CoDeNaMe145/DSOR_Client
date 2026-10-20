@@ -371,6 +371,7 @@ pub struct SkillEvent {
 }
 
 /// One NewNPCCommand: the template, the level Guid (hex) and where.
+#[derive(Clone)]
 pub struct NpcSpawn {
     pub actor: u32,
     pub template: String,
