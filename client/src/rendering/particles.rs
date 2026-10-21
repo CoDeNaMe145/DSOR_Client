@@ -364,6 +364,11 @@ fn start_emitters(
 #[derive(Component)]
 pub struct StopEmitting;
 
+/// An emitter's time rate: inside a skill effect, its sequence's (attack speed;
+/// crate::gameplay::skills FxModel::speed). 1 without it.
+#[derive(Component)]
+pub struct ParticleSpeed(pub f32);
+
 fn step(e: &Emitter, s: &mut EmitterState, at: &GlobalTransform, dt: f32, emitting: bool) {
     let env = &e.envelopes;
     // Emission, sampled over the emitter's duration.
@@ -426,7 +431,7 @@ fn step(e: &Emitter, s: &mut EmitterState, at: &GlobalTransform, dt: f32, emitti
 fn simulate(
     time: Res<Time>,
     cameras: Query<(&GlobalTransform, &bevy::camera::RenderTarget), (With<Camera3d>, Without<crate::rendering::highlight::HighlightCamera>)>,
-    mut emitters: Query<(&Emitter, &mut EmitterState, &GlobalTransform, &InheritedVisibility, Has<StopEmitting>)>,
+    mut emitters: Query<(&Emitter, &mut EmitterState, &GlobalTransform, &InheritedVisibility, Has<StopEmitting>, Option<&ParticleSpeed>)>,
 ) {
     let _profile = crate::diagnostics::hud::FrameSpan::new("particles::simulate");
     let Some((cam, _)) = cameras.iter().find(|(_, target)| matches!(target, bevy::camera::RenderTarget::Window(_))) else { return };
@@ -434,8 +439,9 @@ fn simulate(
     if crate::flag("noparticles") {
         return;
     }
-    let dt = time.delta_secs().min(MAX_DT);
-    for (e, mut s, at, shown, stopped) in &mut emitters {
+    let frame_dt = time.delta_secs().min(MAX_DT);
+    for (e, mut s, at, shown, stopped, speed) in &mut emitters {
+        let dt = frame_dt * speed.map_or(1.0, |s| s.0);
         // Culled with its map cell: no simulation either.
         let near = shown.get() && at.translation().distance_squared(eye) <= e.activity_distance * e.activity_distance;
         if !near {

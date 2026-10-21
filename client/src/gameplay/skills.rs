@@ -485,6 +485,16 @@ pub(crate) struct FxModel {
     /// otherwise it plays once. Repeated, frost nova's ring burst twice within its
     /// track and the teleport's arrival four or five times.
     looping: bool,
+    /// Its sequence's rate (attack speed for a ScaleSkillTiming skill): its clip
+    /// and emitters run at it, so a faster cast compresses the effect instead of
+    /// cutting it off where its track ends.
+    /// FAILURE: at 6 attacks a second the sequence ended its track while the
+    ///   slash's clip and particles ran at 1x: the slash, the fireball's hand
+    ///   burst, barely showed ("le FX du slash apparait plus", 2026-10-21).
+    /// UNVERIFIED: that the 2018 client scales graphics-entity time by the
+    ///   sequence rate (not traced); the alternative would end FX tracks on
+    ///   unscaled time.
+    speed: f32,
 }
 
 /// An effect whose track ended: its surfaces and lights go, its emitters stop and
@@ -509,7 +519,7 @@ impl Plugin for EditorSequencesPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CameraShake>()
             .init_resource::<crate::actors::monsters::ShaderColors>()
-            .add_systems(Update, (play_sequences, start_fx_animations, retire_effects).chain());
+            .add_systems(Update, (play_sequences, start_fx_animations, fx_particle_speed, retire_effects).chain());
     }
 }
 
@@ -531,7 +541,7 @@ impl Plugin for SkillsPlugin {
             .add_systems(Startup, load)
             .add_systems(
                 Update,
-                (index_skills, cast_input.run_if(crate::screens::loading::gameplay_ready), remote_skills, status_visuals, trap_visuals, hold_for_status, test_cast, run_pending, carry_casters, fly_bullets, play_sequences, start_fx_animations, retire_effects, shake_camera, test_shot, test_view, debug_fx_positions)
+                (index_skills, cast_input.run_if(crate::screens::loading::gameplay_ready), remote_skills, status_visuals, trap_visuals, hold_for_status, test_cast, run_pending, carry_casters, fly_bullets, play_sequences, start_fx_animations, fx_particle_speed, retire_effects, shake_camera, test_shot, test_view, debug_fx_positions)
                     .chain()
                     .after(crate::network::net::NetSystems).after(crate::actors::npc::NpcVisualSystems)
                     .before(crate::actors::character::drive_animations),
@@ -1750,7 +1760,7 @@ pub(crate) fn play_sequences(
                         }
                         let mut fx = commands.spawn((
                             WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(path.clone()))),
-                            FxModel { gltf: assets.load(path), started: false, looping: p.looping },
+                            FxModel { gltf: assets.load(path), started: false, looping: p.looping, speed: p.rate.max(0.01) },
                             place,
                             // Shown by start_fx_animations once its model, textures
                             // included, is in and its clip plays (see there).
@@ -1911,7 +1921,7 @@ pub(crate) fn play_sequences(
 ///   conversion joined the spawn and loop clips into one animation.
 /// FAILURE (2026-10-16): looped whole, every item popped out of the ground again
 ///   every 4 s ("les items rejouent l'animation de spawn").
-pub(crate) fn looping_graph(clip: &Handle<AnimationClip>, clips: &mut Assets<AnimationClip>, anim: &mut AnimationPlayer) -> AnimationGraph {
+pub(crate) fn looping_graph(clip: &Handle<AnimationClip>, clips: &mut Assets<AnimationClip>, anim: &mut AnimationPlayer, speed: f32) -> AnimationGraph {
     let split = clips.get(clip).and_then(|c| {
         let end = c.duration();
         let (mut once, mut looped) = (AnimationClip::default(), AnimationClip::default());
@@ -1935,13 +1945,13 @@ pub(crate) fn looping_graph(clip: &Handle<AnimationClip>, clips: &mut Assets<Ani
             let mut graph = AnimationGraph::new();
             let a = graph.add_clip(clips.add(once), 1.0, graph.root);
             let b = graph.add_clip(clips.add(looped), 1.0, graph.root);
-            anim.play(a);
-            anim.play(b).repeat();
+            anim.play(a).set_speed(speed);
+            anim.play(b).set_speed(speed).repeat();
             graph
         }
         None => {
             let (graph, node) = AnimationGraph::from_clip(clip.clone());
-            anim.play(node).repeat();
+            anim.play(node).set_speed(speed).repeat();
             graph
         }
     }
@@ -1986,15 +1996,31 @@ fn start_fx_animations(
         debug!("fx {:?}: playing {} clip(s)", m.gltf.path(), gltf.animations.len());
         let mut anim = AnimationPlayer::default();
         let graph = if m.looping {
-            looping_graph(&gltf.animations[0], &mut clips, &mut anim)
+            looping_graph(&gltf.animations[0], &mut clips, &mut anim, m.speed)
         } else {
             let (graph, node) = AnimationGraph::from_clip(gltf.animations[0].clone());
-            anim.play(node);
+            anim.play(node).set_speed(m.speed);
             graph
         };
         commands.entity(player).try_insert((AnimationGraphHandle(graphs.add(graph)), anim));
         commands.entity(e).try_insert(Visibility::Inherited);
         m.started = true;
+    }
+}
+
+/// Emitters inside an effect run at its sequence's rate (FxModel::speed): set
+/// on them as its scene comes in, emitters included.
+fn fx_particle_speed(
+    mut commands: Commands,
+    fx: Query<(Entity, &FxModel)>,
+    children: Query<&Children>,
+    emitters: Query<(), (With<crate::rendering::particles::Emitter>, Without<crate::rendering::particles::ParticleSpeed>)>,
+) {
+    for (e, m) in &fx {
+        if (m.speed - 1.0).abs() < 1e-3 { continue; }
+        for c in children.iter_descendants(e) {
+            if emitters.contains(c) { commands.entity(c).try_insert(crate::rendering::particles::ParticleSpeed(m.speed)); }
+        }
     }
 }
 

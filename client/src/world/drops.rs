@@ -252,7 +252,7 @@ fn animate_drops(
         let Some(player) = children.iter_descendants(entity).find(|e| players.contains(*e)) else { continue };
         commands.entity(entity).remove::<ItemModel>();
         let mut anim = AnimationPlayer::default();
-        let graph = crate::skills::looping_graph(clip, &mut clips, &mut anim);
+        let graph = crate::skills::looping_graph(clip, &mut clips, &mut anim, 1.0);
         commands.entity(player).try_insert((AnimationGraphHandle(graphs.add(graph)), anim));
     }
 }
