@@ -1465,7 +1465,7 @@ fn update_slots(
     catalogs: Res<Assets<Catalog>>,
     screen: Res<Screen>,
     (skill_data, skill_tables, resource_max): (Res<crate::gameplay::skills::SkillData>, Res<Assets<crate::gameplay::skills::SkillTable>>, Res<crate::gameplay::stats::ResourceMax>),
-    (cooldowns, time): (Res<crate::gameplay::skills::SkillCooldowns>, Res<Time<Real>>),
+    (cooldowns, time, pointer): (Res<crate::gameplay::skills::SkillCooldowns>, Res<Time<Real>>, Res<controls::Pointer>),
 ) {
     let Some(table) = icon_table.get(&loaded.icons) else { return };
     let catalog = catalogs.get(&data.catalog);
@@ -1482,7 +1482,10 @@ fn update_slots(
         // sweep over its icon, redrawn in COOLDOWN_STEPS steps as it turns.
         let cool = skill.as_deref().map_or(0.0, |id| cooldowns.remaining(&skill_data, &skill_tables, id, now));
         let step = (cool * COOLDOWN_STEPS as f32).ceil().min(COOLDOWN_STEPS as f32) as u8;
+        // A spell being dragged off this slot leaves it empty meanwhile, as in the game.
+        let lifted = pointer.lifted_slot() == Some((hotbar.active, s.slot));
         let want = controls::hotbar::appearance(s.slot, hotbar.active, net.as_deref(), &figures, catalog, table)
+            .filter(|_| !lifted)
             .map(|(path, count)| (path, count, dim, step));
         if want == s.shown && !screen.is_changed() { continue; }
         commands.entity(e).despawn_related::<Children>();

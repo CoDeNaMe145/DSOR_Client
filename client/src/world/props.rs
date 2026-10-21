@@ -250,6 +250,11 @@ impl NetworkProps {
         }
         self.revision += 1;
     }
+    /// Bumped by every prop or event change.
+    pub(crate) fn revision(&self) -> u64 {
+        self.revision
+    }
+
     pub(crate) fn event_enabled(&self, event: i32, sets: &BTreeMap<i32, String>) -> bool {
         if event == -1 {
             return true;
@@ -257,6 +262,12 @@ impl NetworkProps {
         let Some(rule) = sets.get(&event) else {
             return false;
         };
+        self.rule_enabled(rule)
+    }
+
+    /// An EventSet's `EventFlags` ("flag=True;other=False;") against the running
+    /// events: on when one positive flag runs (or none is asked) and no negative one does.
+    pub(crate) fn rule_enabled(&self, rule: &str) -> bool {
         let mut positive = false;
         let mut matched = false;
         for declaration in rule.split(';') {

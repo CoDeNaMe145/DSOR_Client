@@ -24,7 +24,7 @@ use serde::Deserialize;
 use crate::actors::character::{attach_character, spawn_character, AnimState, AnimTable, Character, CharacterAnim, CharacterDesc, CharacterLibrary, CharacterVisual, NpcLook};
 use crate::world::map::CurrentMap;
 
-use crate::network::net::Net;
+use crate::network::net::{Net, NpcSpawn};
 
 #[derive(Deserialize, Debug, Clone, Default)]
 pub struct NpcTemplate {
@@ -52,6 +52,32 @@ pub struct NpcTemplate {
     pub overhead_offset: [f32; 3],
 }
 
+impl NpcTemplate {
+    /// An instance's own look (`npcs.json` "look") over its template: what the
+    /// instance sets wins, the rest is the template's. The level tool's
+    /// sidecars (crates/level-data export.rs) carry only the appearance and the
+    /// title, so taken alone the NPC lost its portrait (the quest window's
+    /// placeholder face), map icon, shop and profession (2026-10-21).
+    fn over(&self, base: Option<&NpcTemplate>) -> NpcTemplate {
+        let Some(base) = base else { return self.clone() };
+        let pick = |own: &String, theirs: &String| if own.is_empty() { theirs.clone() } else { own.clone() };
+        NpcTemplate {
+            graphics: pick(&self.graphics, &base.graphics),
+            outfit: pick(&self.outfit, &base.outfit),
+            anim_set: pick(&self.anim_set, &base.anim_set),
+            state: pick(&self.state, &base.state),
+            map_icon: pick(&self.map_icon, &base.map_icon),
+            title: pick(&self.title, &base.title),
+            portrait: pick(&self.portrait, &base.portrait),
+            no_talk: self.no_talk || base.no_talk,
+            shop: pick(&self.shop, &base.shop),
+            profession: pick(&self.profession, &base.profession),
+            profession_title: pick(&self.profession_title, &base.profession_title),
+            overhead_offset: if self.overhead_offset == [0.0; 3] { base.overhead_offset } else { self.overhead_offset },
+        }
+    }
+}
+
 #[derive(Asset, TypePath, Deserialize, Debug)]
 #[serde(transparent)]
 pub struct NpcTemplates(pub HashMap<String, NpcTemplate>);
@@ -75,7 +101,7 @@ fn always_present() -> i32 { -1 }
 impl Placement {
     /// The offline viewer starts with no active events. Negative-only rules
     /// still enable ordinary actors (for example the pre-quest prince).
-    /// Online presence is exclusively decided by the server's NewNpc command.
+    /// Online, the server announces every NPC and the running events decide (GatedNpcs).
     fn enabled_offline(&self) -> bool {
         self.event == -1 || self.event_flags.as_ref().is_some_and(|rule| {
             !rule.split(';').filter_map(|d| d.split_once('='))
@@ -336,6 +362,30 @@ fn follow_map(current: Option<Res<CurrentMap>>, mut data: ResMut<NpcData>, asset
     data.placements = Some((current.name.clone(), assets.load(format!("maps/{}.npcs.json", current.name))));
 }
 
+/// Online NPCs that belong to a map event (`_Instance_NPC.EventSetRow`): the
+/// server announces every NPC of the map, those of events not running too, and
+/// leaves it to the client to show only the ones the running events enable
+/// (DSOR_Server services/player_init_world.py, include_inactive_event_sets: "The
+/// client owns event visibility"). They follow the same EventFlags rules as the
+/// map's props (world/props.rs NetworkProps::rule_enabled): Kingshill's
+/// anniversary Crafting Cake or the greed fiends stay hidden outside their event.
+#[derive(Default)]
+struct GatedNpcs {
+    map: String,
+    /// The props/events revision last applied.
+    revision: Option<u64>,
+    /// Every event NPC announced on this map, shown or not, by actor.
+    held: HashMap<u32, NpcSpawn>,
+    shown: std::collections::HashSet<u32>,
+}
+
+/// The EventFlags rule of the map event this NPC belongs to, if any.
+fn event_rule<'a>(placed: Option<&'a NpcPlacements>, spawn: &NpcSpawn) -> Option<&'a str> {
+    let placement = placed?.0.get(&spawn.guid)?;
+    if placement.event < 0 { return None; }
+    placement.event_flags.as_deref()
+}
+
 #[allow(clippy::too_many_arguments)]
 fn spawn_npcs(
     mut commands: Commands,
@@ -348,23 +398,32 @@ fn spawn_npcs(
     variations: Res<Assets<Variations>>,
     assets: Res<AssetServer>,
     existing: Query<(Entity, &Npc)>,
+    (current, mut gated): (Option<Res<CurrentMap>>, Local<GatedNpcs>),
 ) {
-    let (queue, gone, online) = match (net, offline) {
+    let (queue, gone, online, props) = match (net, offline) {
         (Some(net), _) if !net.offline => {
             let net = net.into_inner();
-            (&mut net.npc_spawns, std::mem::take(&mut net.npc_gone), true)
+            (&mut net.npc_spawns, std::mem::take(&mut net.npc_gone), true, Some(&net.props))
         }
-        (_, Some(offline)) => (&mut offline.into_inner().queued, Vec::new(), false),
+        (_, Some(offline)) => (&mut offline.into_inner().queued, Vec::new(), false, None),
         _ => return,
     };
+    let map = current.as_ref().map(|c| c.name.as_str()).unwrap_or_default();
+    if gated.map != map {
+        *gated = GatedNpcs { map: map.to_owned(), ..default() };
+    }
     for actor in gone {
+        gated.held.remove(&actor);
+        gated.shown.remove(&actor);
         for (e, n) in &existing {
             if n.actor == actor {
                 commands.entity(e).despawn();
             }
         }
     }
-    if queue.is_empty() {
+    let revision = props.map(|p| p.revision());
+    let events_changed = props.is_some() && gated.revision != revision;
+    if queue.is_empty() && !events_changed {
         return;
     }
     let Some(templates) = templates.get(&data.templates) else { return };
@@ -377,19 +436,45 @@ fn spawn_npcs(
         return;
     }
     let placed = placed.and_then(|h| placements.get(h));
+    // A map event's NPCs come and go with its EventUpdate: re-offer the held
+    // ones it now enables, take away the shown ones it no longer does.
+    if let (Some(props), true) = (props, events_changed) {
+        gated.revision = revision;
+        let held: Vec<NpcSpawn> = gated.held.values().cloned().collect();
+        for spawn in held {
+            let Some(rule) = event_rule(placed, &spawn) else { continue };
+            if props.rule_enabled(rule) {
+                if !gated.shown.contains(&spawn.actor) { queue.push(spawn); }
+            } else if gated.shown.remove(&spawn.actor) {
+                for (e, n) in &existing {
+                    if n.actor == spawn.actor { commands.entity(e).despawn(); }
+                }
+            }
+        }
+    }
     for spawn in crate::network::net::last_per_actor(std::mem::take(queue), |s| s.actor) {
         for (e, n) in &existing {
             if n.actor == spawn.actor {
                 commands.entity(e).despawn();
             }
         }
+        if let (Some(props), Some(rule)) = (props, event_rule(placed, &spawn)) {
+            gated.held.insert(spawn.actor, spawn.clone());
+            if !props.rule_enabled(rule) {
+                gated.shown.remove(&spawn.actor);
+                continue;
+            }
+            gated.shown.insert(spawn.actor);
+        }
         if !spawn.visible || std::env::var("DSOR_NPC_ONLY").is_ok_and(|v| !v.split(',').any(|t| t == spawn.template)) {
             continue;
         }
         let placement = placed.and_then(|p| p.0.get(&spawn.guid));
-        let template = placement
-            .and_then(|p| p.look.clone())
-            .or_else(|| templates.0.get(&spawn.template).cloned());
+        let base = templates.0.get(&spawn.template);
+        let template = match placement.and_then(|p| p.look.as_ref()) {
+            Some(look) => Some(look.over(base)),
+            None => base.cloned(),
+        };
         let Some(template) = template else {
             warn!("npc {} has no template", spawn.template);
             continue;
@@ -762,6 +847,16 @@ const DECO_ACTORS: u32 = 0x7800_0000;
 pub(crate) mod placement_tests {
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
+
+    #[test]
+    fn an_instance_look_keeps_its_templates_portrait_and_shop() {
+        let template = NpcTemplate { graphics: "characters/uniskel".into(), outfit: "smith".into(), title: "Smith".into(),
+            portrait: "npc_portraits/smith".into(), shop: "smith_shop".into(), map_icon: "ui/icon_map_smith".into(), ..default() };
+        let look: NpcTemplate = serde_json::from_str(r#"{"graphics":"characters/uniskel","outfit":"smith_winter","anim_set":"npc","state":"Idle","loop":true,"title":""}"#).unwrap();
+        let merged = look.over(Some(&template));
+        assert_eq!((merged.outfit.as_str(), merged.title.as_str()), ("smith_winter", "Smith"));
+        assert_eq!((merged.portrait.as_str(), merged.shop.as_str(), merged.map_icon.as_str()), ("npc_portraits/smith", "smith_shop", "ui/icon_map_smith"));
+    }
 
     pub(crate) fn mark_resident_for_pose_test(world: &mut World, entity: Entity) {
         world.entity_mut(entity).insert((Npc::default(), NpcVisualPending,

@@ -5,7 +5,7 @@
 //! required. The source GLB is read temporarily, but only the selected geometry
 //! and its textures reach the renderer. Relative texture paths remain shared.
 
-use std::{collections::HashSet, path::Path};
+use std::{collections::HashSet, path::{Component, Path}, sync::{OnceLock, atomic::{AtomicBool, Ordering}}};
 
 use bevy::asset::io::{AssetReader, AssetReaderError, AssetSource, AssetSourceBuilder, ErasedAssetReader, PathStream, Reader, VecReader};
 use bevy::gltf::Gltf;
@@ -57,6 +57,69 @@ struct VariantReader {
 
 impl AssetReader for VariantReader {
     async fn read<'a>(&'a self, path: &'a Path) -> Result<Box<dyn Reader + 'a>, AssetReaderError> {
+        let mut reader = self.read_variant(path).await?;
+        if path.extension().is_none_or(|e| e != "glb") { return Ok(reader); }
+        let Some(packed) = self.packed_textures().await else { return Ok(reader) };
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).await?;
+        Ok(Box::new(VecReader::new(block_textures(bytes, path, packed))))
+    }
+
+    async fn read_meta<'a>(&'a self, path: &'a Path) -> Result<Box<dyn Reader + 'a>, AssetReaderError> {
+        self.inner.read_meta(path).await
+    }
+
+    async fn read_directory<'a>(&'a self, path: &'a Path) -> Result<Box<PathStream>, AssetReaderError> {
+        self.inner.read_directory(path).await
+    }
+
+    async fn is_directory<'a>(&'a self, path: &'a Path) -> Result<bool, AssetReaderError> {
+        self.inner.is_directory(path).await
+    }
+}
+
+/// Block-compressed textures (tools: crates/texture-pack, dsor-ktx2): each
+/// model PNG named in textures/ktx2.list has a .ktx2 twin holding the game's
+/// own DXT blocks and mips (or BC7). A model is pointed at the twins only when
+/// the GPU samples BC (BlockTexturesPlugin); any other GPU keeps the PNGs.
+/// Without the list (assets packed before it) nothing changes.
+static BLOCK_TEXTURES: AtomicBool = AtomicBool::new(false);
+static PACKED: OnceLock<HashSet<String>> = OnceLock::new();
+const PACKED_LIST: &str = "textures/ktx2.list";
+
+/// Reads the GPU's compressed formats once the renderer exists (before any
+/// model loads). DSOR_FLAGS=pngtextures keeps the PNGs, for comparison.
+pub struct BlockTexturesPlugin;
+
+impl Plugin for BlockTexturesPlugin {
+    fn build(&self, _: &mut App) {}
+
+    fn finish(&self, app: &mut App) {
+        let bc = app.world().get_resource::<bevy::image::CompressedImageFormatSupport>()
+            .is_some_and(|support| support.0.contains(bevy::image::CompressedImageFormats::BC));
+        let on = bc && !crate::flag("pngtextures");
+        BLOCK_TEXTURES.store(on, Ordering::Relaxed);
+        info!("model textures: {}", if on { "KTX2 (BC blocks) where packed" } else if bc { "PNG (pngtextures)" } else { "PNG (no BC support)" });
+    }
+}
+
+impl VariantReader {
+    /// The packed list, fetched with the first model (shared afterwards; a
+    /// race only fetches it twice). None when unused or empty.
+    async fn packed_textures(&self) -> Option<&'static HashSet<String>> {
+        if !BLOCK_TEXTURES.load(Ordering::Relaxed) { return None; }
+        if PACKED.get().is_none() {
+            let mut bytes = Vec::new();
+            if let Ok(mut reader) = self.inner.read(Path::new(PACKED_LIST)).await {
+                if reader.read_to_end(&mut bytes).await.is_err() { bytes.clear(); }
+            }
+            let list = String::from_utf8_lossy(&bytes).lines().map(str::to_owned).collect();
+            let _ = PACKED.set(list);
+        }
+        PACKED.get().filter(|list| !list.is_empty())
+    }
+
+    async fn read_variant<'a>(&'a self, path: &'a Path) -> Result<Box<dyn Reader + 'a>, AssetReaderError> {
         if let Some((model, state)) = request_kind(path, STATE_MARKER) {
             let mut bytes = Vec::new();
             self.inner.read(Path::new(&format!("{model}.glb"))).await?.read_to_end(&mut bytes).await?;
@@ -95,18 +158,38 @@ impl AssetReader for VariantReader {
         let bytes = crate::rendering::model_compact::compact_glb(&bytes).map_err(std::io::Error::other)?;
         Ok(Box::new(VecReader::new(bytes)))
     }
+}
 
-    async fn read_meta<'a>(&'a self, path: &'a Path) -> Result<Box<dyn Reader + 'a>, AssetReaderError> {
-        self.inner.read_meta(path).await
-    }
+/// The model's image URIs that resolve to a packed PNG, renamed .ktx2 (Bevy's
+/// image loader picks the format by extension and reads the BC levels).
+fn block_textures(bytes: Vec<u8>, glb: &Path, packed: &HashSet<String>) -> Vec<u8> {
+    if !json_mentions(&bytes, b".png") { return bytes; }
+    let dir = glb.parent().unwrap_or(Path::new(""));
+    let rewritten = rewrite_glb(&bytes, |doc| {
+        for image in doc["images"].as_array_mut().into_iter().flatten() {
+            let Some(uri) = image["uri"].as_str() else { continue };
+            let Some(stem) = uri.strip_suffix(".png") else { continue };
+            if asset_path(&dir.join(uri)).is_some_and(|path| packed.contains(&path)) {
+                image["uri"] = Value::String(format!("{stem}.ktx2"));
+            }
+        }
+        Ok(())
+    });
+    rewritten.unwrap_or(bytes)
+}
 
-    async fn read_directory<'a>(&'a self, path: &'a Path) -> Result<Box<PathStream>, AssetReaderError> {
-        self.inner.read_directory(path).await
+/// "a/b/../textures/x.png" -> "a/textures/x.png", as dsor-ktx2 lists them.
+fn asset_path(path: &Path) -> Option<String> {
+    let mut parts: Vec<&str> = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => parts.push(part.to_str()?),
+            Component::ParentDir => { parts.pop()?; }
+            Component::CurDir => {}
+            _ => return None,
+        }
     }
-
-    async fn is_directory<'a>(&'a self, path: &'a Path) -> Result<bool, AssetReaderError> {
-        self.inner.is_directory(path).await
-    }
+    Some(parts.join("/"))
 }
 
 fn filter_glb(bytes: &[u8], skins: &HashSet<&str>) -> Result<Vec<u8>, String> {
@@ -341,6 +424,22 @@ mod tests {
         assert_eq!(doc["meshes"][0]["primitives"][0]["attributes"]["POSITION"], 0);
     }
     use serde_json::json;
+
+    #[test]
+    fn packed_textures_replace_only_their_own_png() {
+        let doc = json!({"images": [{"uri": "../textures/t001_hub/wall_color.png"}, {"uri": "../textures/t001_hub/wall_bump_nrm.png"},
+            {"mimeType": "image/png", "bufferView": 0}]});
+        let mut json = serde_json::to_vec(&doc).unwrap();
+        while json.len() % 4 != 0 { json.push(b' '); }
+        let mut glb = [0x46546c67u32, 2, 20 + json.len() as u32, json.len() as u32, 0x4e4f534a].map(u32::to_le_bytes).concat();
+        glb.extend_from_slice(&json);
+        let packed = HashSet::from(["textures/t001_hub/wall_color.png".to_string()]);
+        let out = block_textures(glb, Path::new("t001_hub/wall.dsor-set-61.glb"), &packed);
+        let images: Value = serde_json::from_slice(&out[20..20 + u32::from_le_bytes(out[12..16].try_into().unwrap()) as usize]).unwrap();
+        assert_eq!(images["images"][0]["uri"], "../textures/t001_hub/wall_color.ktx2");
+        assert_eq!(images["images"][1]["uri"], "../textures/t001_hub/wall_bump_nrm.png", "not packed: stays PNG");
+        assert_eq!(images["images"][2]["bufferView"], 0);
+    }
 
     #[test]
     fn prop_state_selection_preserves_common_nodes_and_fallback_but_discards_other_assets() {

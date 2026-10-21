@@ -84,6 +84,15 @@ pub struct MonsterTemplate {
     pub radius: f32,
     #[serde(default)]
     pub height: f32,
+    /// Its navigation footprint's radius (ActorShapeId, tools/nav_shapes.py):
+    /// what a targeted melee cast measures its reach to. None in assets exported
+    /// before it, or for a shape the table lacks: the capsule then, as the server.
+    #[serde(default)]
+    pub footprint: Option<f32>,
+    /// _Template_Monster.RunSpeed: what its MoveCommands' speed byte scales.
+    /// None in assets exported before it: the player's speed then.
+    #[serde(default)]
+    pub run_speed: Option<f32>,
 }
 
 #[derive(Asset, TypePath, Deserialize, Debug)]
@@ -187,6 +196,8 @@ pub struct Monster {
     /// variation's root scale once the model is in: what the cursor picks.
     pub radius: f32,
     pub height: f32,
+    /// Its navigation footprint (MonsterTemplate::footprint), not scaled.
+    pub footprint: Option<f32>,
     /// Per row and instance: the hit tick it last played and its sequence player.
     hits: [[(Option<u32>, Option<Entity>); INSTANCES]; 7],
     heavy: Option<Entity>,
@@ -512,10 +523,12 @@ fn spawn_monsters(
                 level: spawn.level,
                 radius: t.radius.max(0.3),
                 height: t.height.max(1.0),
+                footprint: t.footprint,
                 hits: Default::default(),
                 heavy: None,
             },
-            RemotePlayer { actor: spawn.actor, target: position, facing: 0.0, still_for: 1.0, held: 0.0, held_until_tick: None, ..default() },
+            RemotePlayer { actor: spawn.actor, target: position, facing: 0.0, still_for: 1.0, held: 0.0, held_until_tick: None,
+                run_speed: t.run_speed.filter(|s| *s > 0.0), ..default() },
         ));
         // A summon appears through its SummonSequence (arcanemanifestation's
         // guardian rising, summontree's tree growing): without it they stood

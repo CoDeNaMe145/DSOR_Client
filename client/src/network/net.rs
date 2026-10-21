@@ -371,6 +371,7 @@ pub struct SkillEvent {
 }
 
 /// One NewNPCCommand: the template, the level Guid (hex) and where.
+#[derive(Clone)]
 pub struct NpcSpawn {
     pub actor: u32,
     pub template: String,
@@ -457,6 +458,15 @@ pub struct RemotePlayer {
     pub interval: f32,
     /// The stretch its last moving record describes, walked on by the client.
     pub travel: Option<Travel>,
+    /// A monster's own RunSpeed (None: a player's RUN_SPEED). A MoveCommand's
+    /// speed byte is a multiple of the actor's speed (64 = 1x, 0x59 = 1.4x):
+    /// the server sends every walking monster 64 (DSOR_Server
+    /// services/monster_activity.py, scalar 1.0).
+    /// UNVERIFIED: the retail meaning of the byte for monsters (not traced in IDA).
+    /// FAILURE: read as the player's 5 m/s, the Bog Beast (RunSpeed 0.7) was
+    ///   pushed 7x too far each record and pulled back by the next: it moved in
+    ///   forward-back jerks while faster monsters looked smooth (2026-10-21).
+    pub run_speed: Option<f32>,
 }
 
 /// Dead reckoning of one MoveCommand with a speed: from its start position along
@@ -2002,6 +2012,8 @@ fn apply_remotes(
                 r.facing = facing;
                 // A record with a speed starts a stretch that move_remotes walks on
                 // from here; its speed is known outright.
+                let scale = r.run_speed.map_or(1.0, |speed| speed / RUN_SPEED);
+                let travel = travel.map(|(velocity, seconds)| (velocity * scale, seconds));
                 r.travel = travel.map(|(velocity, seconds)| Travel { from: at, velocity, seconds, elapsed: 0.0 });
                 if let Some((velocity, _)) = travel {
                     r.speed = velocity.length();
@@ -2041,6 +2053,11 @@ fn move_remotes(
         let held = r.held > 0.0;
         r.held = (r.held - time.delta_secs()).max(0.0);
         // Its stretch goes on between records; a skill's hold stops it.
+        // Walking a record's stretch counts as moving even when the body keeps
+        // within a few centimetres of it: at its true speed a slow monster
+        // never opened the 5 cm gap below and stood in its idle while gliding
+        // (the Bog Beast at 0.7 m/s, 2026-10-21).
+        let travelling = !held && r.travel.is_some_and(|t| t.elapsed < t.seconds && t.velocity != Vec3::ZERO);
         if !held {
             if let Some(at) = r.travel.as_mut().map(|t| t.advance(time.delta_secs())) {
                 r.target = remote_ground_position(mesh, at);
@@ -2090,7 +2107,7 @@ fn move_remotes(
         // CONTRACT: a short grace before standing: records arrive 25 a second and a
         //   remote player reaches each one a little early, so without it the run
         //   restarted at every record ("les animations ne se jouent pas entierement").
-        r.still_for = if moving { 0.0 } else { r.still_for + time.delta_secs() };
+        r.still_for = if moving || travelling { 0.0 } else { r.still_for + time.delta_secs() };
         let wanted = if r.still_for < RUN_GRACE {
             AnimState::Run
         } else if matches!(anim.state, AnimState::Named(_)) {
@@ -2454,6 +2471,20 @@ mod appearance_tests {
 
     fn receive(app: &mut App, command: ServerCommand, actor: u32) {
         on_command(&mut app.world_mut().non_send_mut::<Net>(), command, Some(actor));
+    }
+
+    #[test]
+    fn a_monsters_move_walks_at_its_own_run_speed() {
+        let mut app = app();
+        let beast = app.world_mut().spawn(RemotePlayer { actor: 77, run_speed: Some(0.7), ..default() }).id();
+        let player = app.world_mut().spawn(RemotePlayer { actor: 78, ..default() }).id();
+        for actor in [77, 78] {
+            app.world_mut().non_send_mut::<Net>().remote_moves.push((actor, Vec3::ZERO, 0.0, 100, Some((Vec3::Z * RUN_SPEED, 0.16))));
+        }
+        app.update();
+        let speed = |e| app.world().get::<RemotePlayer>(e).unwrap().travel.unwrap().velocity.length();
+        assert!((speed(beast) - 0.7).abs() < 1e-4, "speed byte 64 = 1x its RunSpeed");
+        assert!((speed(player) - RUN_SPEED).abs() < 1e-4);
     }
 
     #[test]
