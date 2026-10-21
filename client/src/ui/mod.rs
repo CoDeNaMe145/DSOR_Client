@@ -689,6 +689,16 @@ fn class_resource_gauge(mut layout: Layout, class: u8) -> Layout {
     layout
 }
 
+/// The class emblems (textures/ui/emblem_class_*): CharClass 0..3.
+fn class_emblem(class: u8) -> &'static str {
+    match class {
+        1 => "spellweaver",
+        2 => "ranger",
+        3 => "steammechanic",
+        _ => "dragonknight",
+    }
+}
+
 fn resource_bar(class: u8) -> &'static str {
     match class {
         0 => "ProgressBar_rage",
@@ -1000,6 +1010,16 @@ fn spawn_windows(
             if other_class {
                 continue;
             }
+            // The character sheet's class emblem is authored as the warrior's
+            // (emblem_class_dragonknight): the player's own class's instead.
+            // FAILURE: a mage's sheet showed the warrior logo (2026-10-21).
+            let emblem;
+            let w = if w.id.ends_with("/CharacterInfoArea/ClassIcon") && w.art.is_some() {
+                let mut own = w.clone();
+                if let Some(art) = own.art.as_mut() { art.tex = Some(format!("textures/ui/emblem_class_{}.png", class_emblem(class))); }
+                emblem = own;
+                &emblem
+            } else { w };
             let gate = controls.gate(&layout.window, w);
             if let Some(art) = &w.art {
                 if !passes_pointer(&layout.window, w, art) {

@@ -37,9 +37,14 @@ pub(in crate::ui) fn rows(
 ) {
     let notches: f32 = wheel.read().map(|w| w.y.signum()).sum();
     let Some((root, _, controls, visibility, tf)) = windows.iter().find(|(_, w, _, _, _)| w.0 == WINDOW) else { return };
+    // Its two row groups gone with the window's children (the interface
+    // rebuilt when the class became known): drawn again, not only on a scroll.
+    // FAILURE: online the sheet opened on an empty black list until the wheel
+    //   moved it ("si je scroll pas j'ai la fenetre noire vide", 2026-10-21).
+    let groups_lost = kept.is_some_and(|(a, t)| !alive.contains(a) || !alive.contains(t));
     // Closed and its rows unchanged: no wheel, no drag, no rebuild below
     // (docs/ui.md, "Per-frame cost").
-    if *visibility == Visibility::Hidden && !rows.is_changed() && !screen.is_changed() && state.0 == Some(root) && state.2.is_some() {
+    if *visibility == Visibility::Hidden && !rows.is_changed() && !screen.is_changed() && state.0 == Some(root) && state.2.is_some() && !groups_lost {
         *dragging = false;
         return;
     }
@@ -90,7 +95,7 @@ pub(in crate::ui) fn rows(
             }
         }
     }
-    let rebuild = rows.is_changed() || screen.is_changed() || state.0 != Some(root) || state.1 != scroll || state.2.is_none();
+    let rebuild = rows.is_changed() || screen.is_changed() || state.0 != Some(root) || state.1 != scroll || state.2.is_none() || groups_lost;
     if !rebuild { return; }
     // The two groups stay; only their rows are made again. Spawned anew, they
     // were hidden a frame until paint showed them: the rows flickered as they
