@@ -16,6 +16,14 @@ use super::DecodeError;
 pub trait Body: Sized {
     fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError>;
     fn encode(&self, w: &mut BitWriter);
+    /// The server's copy of the body, where it differs from the client's (the skill
+    /// commands' inheritance marker); ServerCommand reads and writes through these.
+    fn decode_server(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
+        Self::decode(r)
+    }
+    fn encode_server(&self, w: &mut BitWriter) {
+        self.encode(w)
+    }
 }
 
 /// Integer, float and string readers past what BitReader offers.

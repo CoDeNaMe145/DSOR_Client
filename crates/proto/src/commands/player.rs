@@ -1063,23 +1063,29 @@ pub struct NewRemotePlayer {
     pub max_health: u32,
     /// +248.
     pub unknown_u32_248: u32,
-    /// Legacy name: release261 sends player kind here (5), not hand armament.
+    /// Legacy name: release261 sends the player kind here, not hand armament: 4 (the
+    /// release261_192 decoder refuses anything outside -1..4; production sent 5
+    /// until 2026-10-21).
     pub armament: i8,
     /// +256.
     pub faction: Faction,
     /// +272: tick the PvP flag was raised; +276: level.
     pub pvp_tick: u32,
     pub level: u32,
-    /// +280, -1 leaves it alone.
-    pub unknown_i32_280: i32,
-    /// +284.
-    pub unknown_u32_284: u32,
-    /// +288, enum 0..2.
-    pub unknown_u8_288: u8,
+    /// +280: the PvP team, -1 for none.
+    pub team: i32,
+    /// +284: lifetime honour points (production sent the fighting power here until
+    /// 2026-10-21).
+    pub honor: u32,
+    /// +288: which title shows, enum 0..2 (1 achievement, 2 PvP rank).
+    pub title_type: u8,
     /// +292: the achievement title.
     pub tertiary: String,
     /// release261: the PvP rank title (social_protocol.py:991).
     pub pvp_title: String,
+    /// release261_192: the emblem icon (Messaging::SetEmblemIcon::SetEmblemId), "" for
+    /// none. SOURCE: social_protocol.py encode_new_remote_player.
+    pub emblem: String,
 }
 
 impl Body for NewRemotePlayer {
@@ -1109,11 +1115,12 @@ impl Body for NewRemotePlayer {
             faction: Faction::read(r)?,
             pvp_tick: r.u32()?,
             level: r.u32()?,
-            unknown_i32_280: r.i32()?,
-            unknown_u32_284: r.u32()?,
-            unknown_u8_288: r.u8()?,
+            team: r.i32()?,
+            honor: r.u32()?,
+            title_type: r.u8()?,
             tertiary: r.string()?,
             pvp_title: r.string()?,
+            emblem: r.string()?,
         })
     }
     fn encode(&self, w: &mut BitWriter) {
@@ -1140,19 +1147,22 @@ impl Body for NewRemotePlayer {
         self.faction.write(w);
         w.u32(self.pvp_tick);
         w.u32(self.level);
-        w.i32(self.unknown_i32_280);
-        w.u32(self.unknown_u32_284);
-        w.u8(self.unknown_u8_288);
+        w.i32(self.team);
+        w.u32(self.honor);
+        w.u8(self.title_type);
         w.string(&self.tertiary);
         w.string(&self.pvp_title);
+        w.string(&self.emblem);
     }
 }
 
 /// RemotePlayerInfoCommand (40): re-dress and re-state another player in place.
 /// string, worn slots, animation set, counted strings, u32 max health, u32, i8
-/// armament, faction composite, u32 level, i32 (-1), u8, string.
+/// armament, faction composite, u32 level, i32 team, u8 title type, the achievement
+/// and PvP titles, the emblem.
 /// SOURCE: dsor/newplayer.py encode_remote_player_info; reader sub_9A9B5C, writer
-///   0x9AD715, handler 0x54607F.
+///   0x9AD715, handler 0x54607F; release261_192: social_protocol.py
+///   encode_remote_player_info (three trailing strings).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct RemotePlayerInfo {
     /// +0x10.
@@ -1166,20 +1176,23 @@ pub struct RemotePlayerInfo {
     pub max_health: u32,
     /// +0xC0.
     pub unknown_u32_c0: u32,
-    /// +0xC4. Legacy name: release261 player kind (5); use animation_set for pose.
+    /// +0xC4. Legacy name: release261 player kind (4, as in NewRemotePlayer); use
+    /// animation_set for pose.
     pub armament: i8,
     /// +0xC8.
     pub faction: Faction,
     /// +0xD8.
     pub level: u32,
-    /// +0xDC.
-    pub unknown_i32_dc: i32,
-    /// +0xE0.
-    pub unknown_u8_e0: u8,
-    /// +0xE4.
+    /// +0xDC: the PvP team, -1 for none.
+    pub team: i32,
+    /// +0xE0: which title shows (NewRemotePlayer::title_type).
+    pub title_type: u8,
+    /// +0xE4: the achievement title.
     pub unknown_text_e4: String,
     /// release261: the PvP rank title (social_protocol.py:1028).
     pub pvp_title: String,
+    /// release261_192: the emblem icon, "" for none.
+    pub emblem: String,
 }
 
 impl Body for RemotePlayerInfo {
@@ -1194,10 +1207,11 @@ impl Body for RemotePlayerInfo {
             armament: r.i8()?,
             faction: Faction::read(r)?,
             level: r.u32()?,
-            unknown_i32_dc: r.i32()?,
-            unknown_u8_e0: r.u8()?,
+            team: r.i32()?,
+            title_type: r.u8()?,
             unknown_text_e4: r.string()?,
             pvp_title: r.string()?,
+            emblem: r.string()?,
         })
     }
     fn encode(&self, w: &mut BitWriter) {
@@ -1210,10 +1224,11 @@ impl Body for RemotePlayerInfo {
         w.i8(self.armament);
         self.faction.write(w);
         w.u32(self.level);
-        w.i32(self.unknown_i32_dc);
-        w.u8(self.unknown_u8_e0);
+        w.i32(self.team);
+        w.u8(self.title_type);
         w.string(&self.unknown_text_e4);
         w.string(&self.pvp_title);
+        w.string(&self.emblem);
     }
 }
 

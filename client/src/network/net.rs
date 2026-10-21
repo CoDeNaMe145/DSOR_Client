@@ -224,8 +224,8 @@ pub struct Net {
     /// The events' progress and our participation (224, 223), by event id.
     pub event_progress: HashMap<u32, [u32; 4]>,
     pub event_participation: HashMap<u32, bool>,
-    /// The daily challenges (TimedChallengesInfo 131), the Wanted Thief board (357),
-    /// the PvP queue (215) as the server last described them.
+    /// The daily challenges (TimedChallengesInfo 131), the Wanted Thief board (360),
+    /// the PvP queue's last event (215) as the server last described them.
     pub challenges: Option<dsor_proto::commands::systems::TimedChallengesInfo>,
     pub wanted: Option<dsor_proto::commands::systems::WantedThiefInfo>,
     pub matchmaking: Option<dsor_proto::commands::systems::MatchMakingInfo>,
@@ -1707,8 +1707,22 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
             net.social_notes.push(if c.status == 0 { format!("Crafted {}.", c.items.iter().map(|i| i.template.replace('_', " ")).collect::<Vec<_>>().join(", ")) } else { format!("Crafting failed ({}).", c.status) });
         }
         ServerCommand::MatchMakingInfo(m) => {
-            net.social_notes.push(if m.state < 0 { "Left the PvP queue.".to_owned() } else if m.message.is_empty() { "Queued for PvP.".to_owned() } else { m.message.clone() });
+            // An event, not a state (systems::MatchMakingInfo).
+            let note = match m.state {
+                _ if !m.message.is_empty() => m.message.clone(),
+                0 => "Queued for PvP.".to_owned(),
+                1 => "Your group leader queued the group for PvP.".to_owned(),
+                3 => "Your group leader left the PvP queue.".to_owned(),
+                4 => "The match was called off.".to_owned(),
+                5 => "Your group is too big for this battle.".to_owned(),
+                6 => "Your group's levels are too far apart for this battle.".to_owned(),
+                _ => "Left the PvP queue.".to_owned(),
+            };
+            net.social_notes.push(note);
             net.matchmaking = Some(m);
+        }
+        ServerCommand::ScreenMessage(m) => {
+            if !m.text.is_empty() { net.social_notes.push(m.text); }
         }
         ServerCommand::JoinMatchQueueInfo(q) => {
             net.social_notes.push(format!("PvP queue: {} waiting, about {:.0} s.", q.queued, q.estimated_wait));

@@ -262,6 +262,29 @@ impl Body for Message {
     }
 }
 
+/// ServerToClientMsgCommand (release261_192: 381), actor-scoped (actor 0): a text the
+/// server puts on screen. i32 type (0 the nonmodal MessageWidget, 1 and 2 dialogs),
+/// the text, a second string (empty from production).
+/// SOURCE: DSOR_Server protocol/gameplay_protocol.py encode_screen_message (decoder
+///   0x14093e6f4, ClientMessageManager 0x1401d9978); the map events' wave notices.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ScreenMessage {
+    pub kind: i32,
+    pub text: String,
+    pub extra: String,
+}
+
+impl Body for ScreenMessage {
+    fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self { kind: r.i32()?, text: r.string()?, extra: r.string()? })
+    }
+    fn encode(&self, w: &mut BitWriter) {
+        w.i32(self.kind);
+        w.string(&self.text);
+        w.string(&self.extra);
+    }
+}
+
 /// One PlayerSocialInfo row of a GroupStatus (and of a GroupMemberQueryResult).
 /// SOURCE: dso-server-production protocol/social_protocol.py PlayerSummary and
 ///   _write_player_summary (:216-262): u32, u32, u32 character, u32 actor (on the

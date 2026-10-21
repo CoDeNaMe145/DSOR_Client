@@ -6,7 +6,12 @@
 //!   protocol modules declare with command_id("<class>", <id>) (marked "code";
 //!   their actor flag is the 2018 one), two placed by their neighbours' offset
 //!   (marked "inferred": the builds keep the classes' order) and chat's builtin.
-//! UNVERIFIED: the "code" rows' actor flags and the "inferred" ids.
+//!   Since 2026-10-21 the server serves the release261_192 dro_client64.exe and
+//!   resolves every id against its registry, docs/command_ids_rel261_192.json
+//!   (371 classes, actor flags included): ids up to 346 are patch5's, that build
+//!   registers three commands at 347 and more after, so the 22 later classes move
+//!   (Wanted Thief 356-359 -> 359-362, ServerToClientMsg 368 -> 381). That registry
+//!   confirms every "code" and "inferred" row and its actor flag.
 
 /// (id, class name, actor-scoped)
 pub const COMMANDS: &[(u16, &str, bool)] = &[
@@ -235,6 +240,7 @@ pub const COMMANDS: &[(u16, &str, bool)] = &[
     (225, "EventProgressChangedCommand", true),
     (226, "ChatClientLoggedInCommand", true), // code
     (227, "ChatErrorReportCommand", true), // inferred
+    (230, "ChatServiceStartedCommand", false),
     (231, "PreloadRessourceCommand", true),
     (232, "ClientAverageFrameInfoTrackingCommand", false),
     (233, "ClientCurrentPositionFrameInfoTrackingCommand", false),
@@ -344,28 +350,41 @@ pub const COMMANDS: &[(u16, &str, bool)] = &[
     (344, "GetCameBackSigninInfoCommand", true),
     (345, "GetCameBackSigninInfoResultCommand", true),
     (346, "GetCameBackSigninAwardCommand", true),
-    (347, "UserHatchEggsInfoCommand", true),
-    (348, "OperateHatchEggsCommand", true),
-    (349, "SelectWishingWellMsgCommand", true),
-    (350, "GetSeasonPassRewardsInfoCommand", true),
-    (351, "GetSeasonPassRewardsInfoResultCommand", true),
-    (352, "GetSeasonPassAwardCommand", true),
-    (353, "AddSeasonPassExpCommand", true),
-    (354, "GetSeasonPassMissionsInfoCommand", true),
-    (355, "GetSeasonPassMissionsInfoResultCommand", true),
-    (356, "GetWantedThiefInfoCommand", true),
-    (357, "GetWantedThiefInfoResultCommand", true),
-    (358, "AcceptWantedThiefMissionCommand", true),
-    (359, "RefreshWantedThiefMissionCommand", true),
-    (360, "KickOutToHubLimitTimeLeftCommand", true),
-    (361, "GetHighScoreRankAllDataCommand", true),
-    (362, "GetHighScoreRankAllDataResultCommand", true),
-    (363, "GetSelfEndlessTowerDataCommand", true),
-    (364, "GetSecondDaySignedAwardCommand", true),
-    (365, "GetSecondDaySignedAwardResultCommand", true),
-    (366, "GetBlackFridayTransactionsInfoCommand", true),
-    (367, "GetBlackFridayTransactionsInfoResultCommand", true),
-    (368, "ServerToClientMsgCommand", true),
+    (347, "GetCameBackSigninInfo2026Command", true),
+    (348, "GetCameBackSigninInfoResult2026Command", true),
+    (349, "GetCameBackSigninAward2026Command", true),
+    (350, "UserHatchEggsInfoCommand", true),
+    (351, "OperateHatchEggsCommand", true),
+    (352, "SelectWishingWellMsgCommand", true),
+    (353, "GetSeasonPassRewardsInfoCommand", true),
+    (354, "GetSeasonPassRewardsInfoResultCommand", true),
+    (355, "GetSeasonPassAwardCommand", true),
+    (356, "AddSeasonPassExpCommand", true),
+    (357, "GetSeasonPassMissionsInfoCommand", true),
+    (358, "GetSeasonPassMissionsInfoResultCommand", true),
+    (359, "GetWantedThiefInfoCommand", true),
+    (360, "GetWantedThiefInfoResultCommand", true),
+    (361, "AcceptWantedThiefMissionCommand", true),
+    (362, "RefreshWantedThiefMissionCommand", true),
+    (363, "KickOutToHubLimitTimeLeftCommand", true),
+    (364, "KillMonsterGetTotalScoresCommand", true),
+    (365, "GetHighScoreRankAllDataCommand", true),
+    (366, "GetHighScoreRankAllDataResultCommand", true),
+    (367, "GetSelfEndlessTowerDataCommand", true),
+    (368, "GetEndlessTowerAllBuffsCommand", true),
+    (369, "GetEndlessTowerAllBuffsResultCommand", true),
+    (370, "GetHighScoreRankGroupDataCommand", true),
+    (371, "GetHighScoreRankGroupDataResultCommand", true),
+    (372, "GetHighRankFirstPassAwardCommand", true),
+    (373, "GetSecondDaySignedAwardCommand", true),
+    (374, "GetSecondDaySignedAwardResultCommand", true),
+    (375, "GetBlackFridayTransactionsInfoCommand", true),
+    (376, "GetBlackFridayTransactionsInfoResultCommand", true),
+    (377, "GetCameBackUserInfo2026Command", true),
+    (378, "GetCameBackUserInfoResult2026Command", true),
+    (379, "GetCameBackUserBindOrPointsAward2026Command", true),
+    (380, "CameBackBindUser2026Command", true),
+    (381, "ServerToClientMsgCommand", true),
     (1234, "Chat::BuiltinChatCommand", false),
     // DSOR additions (crate::commands::trade), above every game id.
     (0x0F00, "DSOR::TradeHelloCommand", false),
@@ -389,5 +408,5 @@ pub fn actor_scoped(id: u16) -> bool {
 }
 
 /// The id past which this client refuses a command, the Builtin chat command
-/// excepted: one past the highest id the release261 table registers.
-pub const MOST_COMMANDS: u16 = 369;
+/// excepted: one past the highest id the release261_192 table registers.
+pub const MOST_COMMANDS: u16 = 382;

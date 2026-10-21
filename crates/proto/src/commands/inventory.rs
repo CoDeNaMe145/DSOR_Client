@@ -530,6 +530,8 @@ pub struct ShopOffer {
     pub once_per_character: bool,
     pub event_timed: bool,
     pub hide_not_suitable: bool,
+    /// _Template_Offer.DirectlyBuyOffer (release261_192's ninth flag).
+    pub directly_buy: bool,
     /// Release 261 ItemRarity (Common through Mythic).
     pub rarity: u8,
     /// Release 261 OfferCategory (0..48).
@@ -565,8 +567,9 @@ impl ShopOffer {
             max_player_level: r.i32()?,
             ..Default::default()
         };
-        // Release 261 protocol/shop_protocol.py _write_shop_offer: eight flags,
-        // icon configuration before the item, six lists, then timed_offer.
+        // Release 261 protocol/shop_protocol.py _write_shop_offer: nine flags
+        // (DirectlyBuyOffer last, since 2026-10-21), icon configuration before the
+        // item, six lists, then timed_offer.
         o.is_recommended = r.bit()?;
         o.dynamic_price = r.bit()?;
         o.is_new = r.bit()?;
@@ -575,6 +578,7 @@ impl ShopOffer {
         o.scale_to_player_level = r.bit()?;
         o.hide_not_suitable = r.bit()?;
         o.event_timed = r.bit()?;
+        o.directly_buy = r.bit()?;
         o.rarity = r.u8()?;
         if o.rarity >= 8 {
             return Err(DecodeError::Invalid { what: "offer rarity", value: o.rarity as i64 });
@@ -623,6 +627,7 @@ impl ShopOffer {
             self.scale_to_player_level,
             self.hide_not_suitable,
             self.event_timed,
+            self.directly_buy,
         ] {
             w.bit(b);
         }

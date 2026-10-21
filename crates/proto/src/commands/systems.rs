@@ -63,7 +63,7 @@ empty_body! {
     /// OCPOfferRequestCommand (267), client -> server: ask for the premium shop's
     /// offers and payment methods (OcpOfferResponse 270 and OcpMethods 268).
     OcpOfferRequest;
-    /// GetWantedThiefInfoCommand (356), client -> server: the board (357 answers).
+    /// GetWantedThiefInfoCommand (359), client -> server: the board (360 answers).
     WantedThiefInfoRequest;
     /// PVP::PVPMatchCountdownCommand (195), NOT actor-scoped: the round's countdown.
     MatchCountdown;
@@ -558,14 +558,18 @@ impl TimedChallenge {
 }
 
 /// TimedChallengesInfoCommand (131), actor-scoped: u64 server time, then the daily
-/// board, the bonuses and the spender challenges, each counted.
-/// SOURCE: protocol/player_init_protocol.py:1387-1393, gameplay/daily_challenges.py.
+/// board, the bonuses, the spender challenges and the comeback dailies, each
+/// counted.
+/// SOURCE: protocol/player_init_protocol.py _read_timed_challenges_info_body,
+///   gameplay/daily_challenges.py. The fourth map is what the release261_192 client
+///   reads (the server always writes it since 2026-10-21, empty so far).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TimedChallengesInfo {
     pub server_time: u64,
     pub daily: Vec<TimedChallenge>,
     pub bonuses: Vec<TimedChallenge>,
     pub spender: Vec<TimedChallenge>,
+    pub comeback: Vec<TimedChallenge>,
 }
 
 impl Body for TimedChallengesInfo {
@@ -575,11 +579,12 @@ impl Body for TimedChallengesInfo {
             daily: counted(r, MOST, "daily challenges", TimedChallenge::decode)?,
             bonuses: counted(r, MOST, "bonus challenges", TimedChallenge::decode)?,
             spender: counted(r, MOST, "spender challenges", TimedChallenge::decode)?,
+            comeback: counted(r, MOST, "comeback challenges", TimedChallenge::decode)?,
         })
     }
     fn encode(&self, w: &mut BitWriter) {
         w.u64(self.server_time);
-        for list in [&self.daily, &self.bonuses, &self.spender] {
+        for list in [&self.daily, &self.bonuses, &self.spender, &self.comeback] {
             w.count(list.len());
             for c in list {
                 c.encode(w);
@@ -629,7 +634,7 @@ impl Body for DailyChallengeSelection {
     }
 }
 
-/// GetWantedThiefInfoResultCommand (357), actor-scoped: missions left today, the
+/// GetWantedThiefInfoResultCommand (360), actor-scoped: missions left today, the
 /// special ones left, the four missions and their statuses (0 open, 1 taken), and
 /// the VIP expiry (year, day, hour, minute, second, ms, month, weekday; zeros when
 /// none).
@@ -664,9 +669,9 @@ impl Body for WantedThiefInfo {
     }
 }
 
-/// AcceptWantedThiefMissionCommand (358) and RefreshWantedThiefMissionCommand
-/// (359), client -> server: the board slot (1..3 to accept; 0 rerolls the whole
-/// board, 1..4 one mission, for andermant). The board (357) answers.
+/// AcceptWantedThiefMissionCommand (361) and RefreshWantedThiefMissionCommand
+/// (362), client -> server: the board slot (1..3 to accept; 0 rerolls the whole
+/// board, 1..4 one mission, for andermant). The board (360) answers.
 /// SOURCE: protocol/wanted_thief_protocol.py:44-56, services/wanted_thief.py.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct WantedThiefSlot {
@@ -1026,19 +1031,22 @@ impl Body for MatchStart {
 }
 
 /// One player of a match's team (PVP::PVPMatchInfoCommand).
+/// SOURCE: protocol/pvp_match_protocol.py MatchPlayer (labels from
+///   ScoreboardWidget::FillTable, 2026-10-21; the wire shape is unchanged).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct MatchPlayer {
-    /// actor, honour total, honour for rounds won, an unknown honour, honour for
-    /// taking part, honour bonus, rounds won, rounds lost, damage dealt, kills.
+    /// actor, honour total, honour for rounds won, honour for taking part, honour
+    /// bonus, rounds won, kills, deaths, damage dealt, score.
     pub values: [u32; 10],
-    pub score: f32,
+    pub support: f32,
     pub rating: u32,
     pub level: u16,
     pub enemy: bool,
     pub name: String,
-    pub team_slot: u32,
+    /// The scoreboard's class emblem (0 warrior, 1 mage, 2 ranger, 3 dwarf).
+    pub class_id: u32,
     pub stats: Vec<u32>,
-    pub deaths: u32,
+    pub rounds_lost: u32,
 }
 
 /// One team of a match: id, rounds won, score, win chance, its players.
@@ -1070,9 +1078,9 @@ impl Body for MatchInfo {
             let (id, rounds_won, score, win_chance) = (r.u32()?, r.u32()?, r.u32()?, r.f32()?);
             let players = counted(r, 64, "match players", |r| {
                 let values = u32s(r)?;
-                let (score, rating, level, enemy, name, team_slot) = (r.f32()?, r.u32()?, r.u16()?, r.bit()?, r.string()?, r.u32()?);
+                let (support, rating, level, enemy, name, class_id) = (r.f32()?, r.u32()?, r.u16()?, r.bit()?, r.string()?, r.u32()?);
                 let stats = counted(r, 64, "match player stats", |r| r.u32())?;
-                Ok(MatchPlayer { values, score, rating, level, enemy, name, team_slot, stats, deaths: r.u32()? })
+                Ok(MatchPlayer { values, support, rating, level, enemy, name, class_id, stats, rounds_lost: r.u32()? })
             })?;
             Ok(MatchTeam { id, rounds_won, score, win_chance, players })
         })?;
@@ -1090,15 +1098,15 @@ impl Body for MatchInfo {
             w.count(t.players.len());
             for p in &t.players {
                 write_u32s(w, &p.values);
-                w.f32(p.score);
+                w.f32(p.support);
                 w.u32(p.rating);
                 w.u16(p.level);
                 w.bit(p.enemy);
                 w.string(&p.name);
-                w.u32(p.team_slot);
+                w.u32(p.class_id);
                 w.count(p.stats.len());
                 write_u32s(w, &p.stats);
-                w.u32(p.deaths);
+                w.u32(p.rounds_lost);
             }
         }
         w.string(&self.battleground);
@@ -1220,14 +1228,26 @@ impl Body for JoinBattleground {
     }
 }
 
-/// PVP::MatchMakingInfoCommand (215), NOT actor-scoped: i8 state (-1 out of the
-/// queue), u32 tick, i8 mode, a message.
+/// PVP::MatchMakingInfoCommand (215), NOT actor-scoped: i8 event, u32 tick, i8 mode,
+/// a message. The event is what happened to the queue, not a state: 0 joined, 1
+/// joined by the group leader, 2 left, 3 left by the group leader, 4 aborted by the
+/// server (a match that never started; a requeue follows as a new 0), 5 group too
+/// big, 6 group level range, -1 invalid.
+/// SOURCE: protocol/pvp_match_protocol.py MATCHMAKING_EVENT_* (2026-10-21; before,
+///   production sent 0 to join and -1 to leave), services/matchmaking.py.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MatchMakingInfo {
     pub state: i8,
     pub tick: u32,
     pub mode: i8,
     pub message: String,
+}
+
+impl MatchMakingInfo {
+    /// Whether this event leaves us in the queue.
+    pub fn queued(&self) -> bool {
+        matches!(self.state, 0 | 1)
+    }
 }
 
 impl Body for MatchMakingInfo {
@@ -1307,5 +1327,143 @@ impl Body for LeavePvp {
     }
     fn encode(&self, w: &mut BitWriter) {
         w.bit(self.leave);
+    }
+}
+
+// ── the Season Pass and the Endless Tower (release261_192) ──────────────────
+//
+// Answers the server sends since 2026-10-21; the client has no window for them
+// yet, so they are decoded only to keep their 0x85 chains exact.
+
+fn u32_array(r: &mut BitReader<'_>, what: &'static str) -> Result<Vec<u32>, DecodeError> {
+    counted(r, MOST, what, |r| r.u32())
+}
+
+fn write_u32_array(w: &mut BitWriter, values: &[u32]) {
+    w.count(values.len());
+    write_u32s(w, values);
+}
+
+/// GetSeasonPassRewardsInfoResultCommand (354), actor-scoped (actor 0): two u32,
+/// the passes owned and the awards claimed (u32 arrays). Sent at login and after a
+/// pass ticket is used.
+/// SOURCE: protocol/player_init_protocol.py _write_season_pass_rewards_info_result_body,
+///   services/season_pass.py.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SeasonPassRewardsInfo {
+    pub unknown_u32_20: u32,
+    pub unknown_u32_24: u32,
+    pub pass_types: Vec<u32>,
+    pub claimed_awards: Vec<u32>,
+}
+
+impl Body for SeasonPassRewardsInfo {
+    fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            unknown_u32_20: r.u32()?,
+            unknown_u32_24: r.u32()?,
+            pass_types: u32_array(r, "season pass types")?,
+            claimed_awards: u32_array(r, "season pass awards")?,
+        })
+    }
+    fn encode(&self, w: &mut BitWriter) {
+        w.u32(self.unknown_u32_20);
+        w.u32(self.unknown_u32_24);
+        write_u32_array(w, &self.pass_types);
+        write_u32_array(w, &self.claimed_awards);
+    }
+}
+
+/// GetSeasonPassMissionsInfoResultCommand (358), actor-scoped (actor 0): counted
+/// (mission, progress) pairs.
+/// SOURCE: protocol/player_init_protocol.py _write_season_pass_missions_info_result_body.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SeasonPassMissionsInfo {
+    pub missions: Vec<(u32, u32)>,
+}
+
+impl Body for SeasonPassMissionsInfo {
+    fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self { missions: counted(r, MOST, "season pass missions", |r| Ok((r.u32()?, r.u32()?)))? })
+    }
+    fn encode(&self, w: &mut BitWriter) {
+        w.count(self.missions.len());
+        for &(mission, progress) in &self.missions {
+            w.u32(mission);
+            w.u32(progress);
+        }
+    }
+}
+
+/// KickOutToHubLimitTimeLeftCommand (363), actor-scoped: the Fractured Planes floor
+/// timer in seconds; 0 marks the floor completed (PlanarFissureInfoWidget::SetTimeLeft).
+/// SOURCE: protocol/player_init_protocol.py KickOutToHubLimitTimeLeft, services/map_events.py.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct KickOutToHubTimeLeft {
+    pub seconds: u32,
+}
+
+impl Body for KickOutToHubTimeLeft {
+    fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self { seconds: r.u32()? })
+    }
+    fn encode(&self, w: &mut BitWriter) {
+        w.u32(self.seconds);
+    }
+}
+
+/// KillMonsterGetTotalScoresCommand (364), actor-scoped: the running Endless Tower /
+/// Fractured Planes kill score (the PlanarFissureInfoWidget bar).
+/// SOURCE: protocol/player_init_protocol.py encode_kill_monster_get_total_scores.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct KillScore {
+    pub score: u32,
+}
+
+impl Body for KillScore {
+    fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self { score: r.u32()? })
+    }
+    fn encode(&self, w: &mut BitWriter) {
+        w.u32(self.score);
+    }
+}
+
+/// GetSelfEndlessTowerDataCommand (367), actor-scoped: the highest floor cleared, the
+/// ranking score, the highest floor rewarded.
+/// SOURCE: protocol/player_init_protocol.py encode_endless_tower_progress.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct EndlessTowerProgress {
+    pub cleared_floor: u32,
+    pub score: u32,
+    pub claimed_floor: u32,
+}
+
+impl Body for EndlessTowerProgress {
+    fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self { cleared_floor: r.u32()?, score: r.u32()?, claimed_floor: r.u32()? })
+    }
+    fn encode(&self, w: &mut BitWriter) {
+        write_u32s(w, &[self.cleared_floor, self.score, self.claimed_floor]);
+    }
+}
+
+/// GetEndlessTowerAllBuffsResultCommand (369), actor-scoped: the buff choices (status
+/// effect resources), a u32 count then strings.
+/// SOURCE: protocol/player_init_protocol.py encode_endless_tower_buffs.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct EndlessTowerBuffs {
+    pub buffs: Vec<String>,
+}
+
+impl Body for EndlessTowerBuffs {
+    fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self { buffs: counted(r, MOST, "endless tower buffs", |r| r.string())? })
+    }
+    fn encode(&self, w: &mut BitWriter) {
+        w.count(self.buffs.len());
+        for b in &self.buffs {
+            w.string(b);
+        }
     }
 }

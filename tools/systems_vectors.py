@@ -81,7 +81,8 @@ batch("event_progress", init.EVENT_PROGRESS_INFO_COMMAND, init.EventProgressInfo
 batch("event_participation", init.EVENT_PARTICIPATION_INFO_COMMAND, init.EventParticipationInfo((init.EventParticipation(5, True),)))
 batch("event_changed", init.EVENT_PROGRESS_CHANGED_COMMAND, init.EventProgressChanged((5, 1, 2, 3, 4)))
 challenge = init.TimedChallenge("dc_a", "dc_a", 2, 3, (2026, 10, 21, 0, 0, 0))
-batch("challenges", init.TIMED_CHALLENGES_INFO_COMMAND, init.TimedChallengesInfo(0, (challenge,), (), ()))
+comeback = init.TimedChallenge("cb_a", "cb_a", 0, 1, (2026, 10, 22, 0, 0, 0))
+batch("challenges", init.TIMED_CHALLENGES_INFO_COMMAND, init.TimedChallengesInfo(0, (challenge,), (), (), (comeback,)))
 batch("challenge_progress", init.DAILY_CHALLENGE_PROGRESS_COMMAND, init.TimedChallenge("dc_a", "dc_a", 3, 5, (2026, 10, 21, 0, 0, 0)))
 packet = client(dc.DAILY_CHALLENGE_SELECTION_COMMAND, lambda w: (w.write_string("dc_a"), w.write_bool(True)))
 request = dc.decode_daily_challenge_selection(packet[0], packet[1])
@@ -133,7 +134,9 @@ record("tier_spender", packet)
 record("match_over", pvp.encode_match_over(pvp.MatchOver(100, 2, True)))
 record("match_start", pvp.encode_match_start(pvp.MatchStart(100, 3000, False)))
 record("match_countdown", pvp.encode_match_countdown())
-player = pvp.MatchPlayer(7, 10, 11, 12, 13, 14, 2, 1, 500, 3, 1.5, 1200, 40, False, "Hero", 0, (1, 2, 3), 1)
+player = pvp.MatchPlayer(actor_id=7, honor_total=10, honor_rounds_won=11, honor_participation=12, honor_bonus=13,
+                         rounds_won=14, kills=2, deaths=1, damage_dealt=500, score=3, support=1.5, rating=1200,
+                         level=40, enemy=False, name="Hero", class_id=2, stats=(1, 2, 3), rounds_lost=1)
 record("match_info", pvp.encode_match_info(pvp.MatchInfo(100, 3000, (pvp.MatchTeam(1, 2, 30, 0.5, (player,)),), "bg_1", 2)))
 record("match_description", pvp.encode_match_description(pvp.MatchDescription(True, 4)))
 record("battleground_id", pvp.encode_set_battleground_id(pvp.SetBattlegroundId("bg_1")))
@@ -146,6 +149,16 @@ record("pvp_death", pvp.encode_show_pvp_death_dialog(pvp.ShowPVPDeathDialog(125,
 record("abort_queue", pvp.encode_abort_match_queue(pvp.AbortMatchQueue(100, True, (0, 1), False)))
 record("battleground_response", pvp.encode_join_battleground_response(pvp.JoinBattlegroundResponse(100, 3, True, 0, 0)))
 record("leave_pvp", pvp.encode_leave_pvp(pvp.LeavePVP(True)))
+
+# ── the Season Pass, the Endless Tower, screen messages (release261_192) ────
+batch("season_pass_rewards", init.SEASON_PASS_REWARDS_INFO_RESULT_COMMAND, init.SeasonPassRewardsInfoResult(3, 4, (1, 2), (7,)), 0)
+batch("season_pass_missions", init.SEASON_PASS_MISSIONS_INFO_RESULT_COMMAND, init.SeasonPassMissionsInfoResult(((5, 9), (6, 0))), 0)
+batch("kick_out_time_left", init.KICK_OUT_TO_HUB_LIMIT_TIME_LEFT_COMMAND, init.KickOutToHubLimitTimeLeft(90))
+assert init.command_available(init.KILL_MONSTER_GET_TOTAL_SCORES_COMMAND)
+record("kill_score", init.encode_kill_monster_get_total_scores(1234, actor_id=1))
+record("endless_tower_progress", init.encode_endless_tower_progress(12, 10, actor_id=1))
+record("endless_tower_buffs", init.encode_endless_tower_buffs(("buff_a", "buff_b"), actor_id=1))
+record("screen_message", gp.encode_screen_message("Wave 2"))
 
 (out / "systems_release261.json").write_text(json.dumps(vectors, indent=2) + "\n", encoding="utf-8")
 print(f"wrote {len(vectors)} vectors")

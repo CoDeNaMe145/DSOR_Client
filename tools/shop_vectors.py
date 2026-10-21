@@ -22,6 +22,7 @@ def main():
         price_vc=12345, price_arena=17, price_gc=23, price_ec=29, price_uc=31, price_ic=37,
         category=46, rarity=7, icon_configuration='unique', is_recommended=True,
         is_new=True, once_per_character=True, event_timed=True, timed_offer=True,
+        directly_buy_offer=True,
         discount_events=(OfferStringFloat('event', .25),),
         privilege_discounts=(OfferStringFloat('premium', .1),), disabled_events=('disabled',),
         completed_quest_requirements=('quest',), conversion_stories=(OfferStringFloat('conversion', 1),),

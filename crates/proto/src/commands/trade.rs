@@ -1,7 +1,7 @@
 //! Trade between players: a DSOR addition, absent from every game client.
 //! The game has no such feature (no command, window or text in the 2018 or the
-//! release261 client), so these ids sit far above the game's own (release261
-//! registers up to 368): 0x0F00.. from the client, 0x0F10 from the server. Only
+//! release261 client), so these ids sit far above the game's own (release261_192
+//! registers up to 381): 0x0F00.. from the client, 0x0F10 from the server. Only
 //! a client that announced itself with TradeHello receives TradeState.
 //! CONTRACT: DSOR_Server protocol/trade_protocol.py writes and reads the same
 //!   layouts.

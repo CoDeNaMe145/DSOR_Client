@@ -123,7 +123,7 @@ macro_rules! server_commands {
             /// The body of server command `id`, or None when the id has no layout.
             pub fn decode_body(id: u16, r: &mut BitReader<'_>) -> Option<Result<Self, DecodeError>> {
                 Some(match id {
-                    $($id => <$ty as Body>::decode(r).map(Self::$var),)*
+                    $($id => <$ty as Body>::decode_server(r).map(Self::$var),)*
                     _ => return None,
                 })
             }
@@ -131,7 +131,7 @@ macro_rules! server_commands {
             /// Write the body (no id, no actor, no terminator).
             pub fn encode_body(&self, w: &mut BitWriter) {
                 match self {
-                    $(Self::$var(c) => c.encode(w),)*
+                    $(Self::$var(c) => c.encode_server(w),)*
                     Self::Unknown { body, .. } => body.write(w),
                 }
             }
@@ -232,8 +232,9 @@ server_commands! {
     171 => GuildInvitationResponse(social::GroupInvitationResponse),
     179 => IgnoredStatus(social::IgnoredStatus),
     192 => PvpFlag(social::PvpFlag),
+    381 => ScreenMessage(social::ScreenMessage),
     // systems.rs: items, the stickerbook, events, dailies, the Wanted Thief, the
-    // rankings, PvP, the premium shop.
+    // rankings, PvP, the premium shop, the Season Pass, the Endless Tower.
     86 => GemRemovalResponse(systems::GemRemovalResponse),
     93 => CraftingResult(systems::CraftingResult),
     311 => RecipeBookInfo(systems::RecipeBookInfo),
@@ -245,7 +246,13 @@ server_commands! {
     225 => EventProgressChanged(systems::EventProgressChanged),
     131 => TimedChallengesInfo(systems::TimedChallengesInfo),
     149 => DailyChallengeProgress(systems::DailyChallengeProgress),
-    357 => WantedThiefInfo(systems::WantedThiefInfo),
+    360 => WantedThiefInfo(systems::WantedThiefInfo),
+    354 => SeasonPassRewardsInfo(systems::SeasonPassRewardsInfo),
+    358 => SeasonPassMissionsInfo(systems::SeasonPassMissionsInfo),
+    363 => KickOutToHubTimeLeft(systems::KickOutToHubTimeLeft),
+    364 => KillScore(systems::KillScore),
+    367 => EndlessTowerProgress(systems::EndlessTowerProgress),
+    369 => EndlessTowerBuffs(systems::EndlessTowerBuffs),
     236 => HonorRankingPage(systems::HonorRankingPage),
     241 => OverallRankingPage(systems::OverallRankingPage),
     243 => LocalRanking(systems::LocalRanking),

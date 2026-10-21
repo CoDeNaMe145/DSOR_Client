@@ -20,9 +20,11 @@ decoder's order, then checked by that decoder), and ``"helper:<fn>"`` when a
 lower-level production writer was used.  ``fields["encoder"]`` names the
 production function that produced the bytes.
 
-Command ids resolve with no ``DSO_COMMAND_IDS`` table and the default
-(current, non-legacy) ``DSO_SELECTION_WIRE``; both variables are cleared before
-import so the output is deterministic.
+Command ids resolve against the server's default table and the codecs take their
+default layouts: ``DSO_COMMAND_IDS``, ``DSO_SKILL_HIT_MARKER_BITS`` and
+``DSO_SELECTION_WIRE`` are cleared before import so the output is deterministic.
+Since 2026-10-21 that default is the release261_192 client's
+(``docs/command_ids_rel261_192.json``, the skill and Hit marker bits on).
 
 Usage::
 
@@ -42,6 +44,9 @@ from pathlib import Path
 def load_package(root: Path):
     """Load ``dso_server`` from ``root`` exactly like the production run.py."""
 
+    for variable in ("DSO_COMMAND_IDS", "DSO_SKILL_HIT_MARKER_BITS",
+                     "DSO_SELECTION_WIRE"):
+        os.environ.pop(variable, None)
     spec = spec_from_file_location(
         "dso_server", root / "__init__.py", submodule_search_locations=[str(root)]
     )
@@ -72,8 +77,6 @@ def main(argv: list[str]) -> int:
         return 2
     root = Path(argv[1]).resolve()
     out = Path(argv[2])
-    os.environ.pop("DSO_COMMAND_IDS", None)
-    os.environ.pop("DSO_SELECTION_WIRE", None)
     load_package(root)
 
     from dso_server.protocol import character_selection as cs
@@ -219,10 +222,12 @@ def main(argv: list[str]) -> int:
         template_id="NpcTemplateB", instance_guid=bytes(range(1, 17)),
         placement=placement, rotation=1.75, position=(5.5, -6.25, 7.125),
         enabled=True, actor_id=0x00080009)
+    # Since 2026-10-21 the batch announces its new NPCs first (the client only
+    # picks actors it saw enter the vicinity).
     add("NewNPCCommand", gp.NEW_NPC_COMMAND,
         gp.encode_npc_batch(gp.NPCBatch((new_npc,))),
         {"new_npc": new_npc}, encoder="encode_npc_batch",
-        batch=["NewNPCCommand"])
+        batch=["ActorsEnterVicinityCommand", "NewNPCCommand"])
 
     # ------------------------------------------------------------- Combat
     hit = cp.Hit(
@@ -238,7 +243,7 @@ def main(argv: list[str]) -> int:
         cp.encode_combat_batch(cp.CombatBatch(
             (cp.HitServerCommand(hit, 0x00090001),))),
         {"hit": hit, "actor_id": 0x00090001,
-         "legacy_hit_tag_boundary_bit": False},
+         "skill_hit_marker_bits": cp.SKILL_HIT_MARKER_BITS},
         encoder="encode_combat_batch", batch=["HitCommand"])
     kill = cp.Kill(
         server_tick=0x21222324, hit_tags=(0x1A, 0x1B), animation_time=0x2526,
@@ -491,10 +496,12 @@ def main(argv: list[str]) -> int:
                                      (0.25, 0.5, 0.75, 1.0)),
             sp.RemoteEquipmentVisual(4, ("skinC",), None),
         ),
+        emblem_id="emblem_x",
         permanent_statuses=("statusP1", "statusP2"),
         animation_set="animset_x", additional_sequences=("seq1", "seq2"),
         fighting_power=0x0000ABCD, title_type=1,
-        achievement_title="ach_title_1", pvp_rank_title="pvptitle03")
+        achievement_title="ach_title_1", pvp_rank_title="pvptitle03",
+        honor_points=0x00012345, team=2)
     remote_fields = {"value": remote, "faction_id": remote.faction_id}
     add("NewRemotePlayerCommand", sp.NEW_REMOTE_PLAYER_COMMAND,
         sp.encode_new_remote_player(remote), remote_fields,

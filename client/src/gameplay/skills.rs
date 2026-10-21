@@ -939,7 +939,7 @@ fn cast_input(
     // cast replaced the previous one's.
     static CAST_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
     let cast_id = CAST_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed).max(1);
-    let base = SkillBase { high_water: 0, skill_id: wire as u16, heading: facing_to_aim(facing), start_tick: tick, unknown_u32_0: cast_id };
+    let base = SkillBase { high_water: 0, skill_id: wire as u16, heading: facing_to_aim(facing), start_tick: tick, unknown_u32_0: cast_id, marker: None };
     let dir = Quat::from_rotation_y(facing) * Vec3::Z;
     let speed = skill.bullet.as_ref().map(|b| b.velocity / FPS).unwrap_or(1.0);
     let step = [dir.x * speed, 0.0, dir.z * speed, 0.0];

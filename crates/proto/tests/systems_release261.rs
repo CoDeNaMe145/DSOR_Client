@@ -58,6 +58,7 @@ fn event_daily_wanted_and_ranking_answers_decode() {
     assert_eq!(e.values, [5, 1, 2, 3, 4]);
     let (ServerCommand::TimedChallengesInfo(c), _) = &decoded("challenges")[0] else { panic!() };
     assert_eq!((c.daily.len(), c.daily[0].id.as_str(), c.daily[0].state, c.daily[0].progress, c.daily[0].timestamp[0], c.bonuses.len()), (1, "dc_a", 2, 3, 2026, 0));
+    assert_eq!((c.comeback.len(), c.comeback[0].id.as_str(), c.comeback[0].timestamp[2]), (1, "cb_a", 22));
     let (ServerCommand::DailyChallengeProgress(p), _) = &decoded("challenge_progress")[0] else { panic!() };
     assert_eq!((p.id.as_str(), p.state, p.progress, p.timestamp[2]), ("dc_a", 3, 5, 21));
     let (ServerCommand::WantedThiefInfo(w), actor) = &decoded("wanted_info")[0] else { panic!() };
@@ -82,7 +83,8 @@ fn pvp_answers_decode() {
     let (ServerCommand::MatchInfo(m), _) = &decoded("match_info")[0] else { panic!() };
     let p = &m.teams[0].players[0];
     assert_eq!((m.round_start, m.teams.len(), m.teams[0].id, m.teams[0].win_chance, m.battleground.as_str(), m.stage), (100, 1, 1, 0.5, "bg_1", 2));
-    assert_eq!((p.values[0], p.values[9], p.score, p.rating, p.level, p.enemy, p.name.as_str(), p.stats.as_slice(), p.deaths), (7, 3, 1.5, 1200, 40, false, "Hero", &[1, 2, 3][..], 1));
+    assert_eq!((p.values[0], p.values[6], p.values[7], p.values[9], p.support, p.rating, p.level, p.enemy), (7, 2, 1, 3, 1.5, 1200, 40, false));
+    assert_eq!((p.name.as_str(), p.class_id, p.stats.as_slice(), p.rounds_lost), ("Hero", 2, &[1, 2, 3][..], 1));
     let (ServerCommand::MatchDescription(m), _) = &decoded("match_description")[0] else { panic!() };
     assert_eq!((m.active, m.value), (true, 4));
     let (ServerCommand::SetBattlegroundId(b), _) = &decoded("battleground_id")[0] else { panic!() };
@@ -94,11 +96,34 @@ fn pvp_answers_decode() {
     let (ServerCommand::JoinBattleground(j), _) = &decoded("join_battleground")[0] else { panic!() };
     assert_eq!((j.tick, j.dialog, j.battleground, j.map.as_str(), j.mode), (100, 9, 3, "pvp_map", 0));
     let (ServerCommand::MatchMakingInfo(m), _) = &decoded("matchmaking_info")[0] else { panic!() };
-    assert_eq!((m.state, m.tick, m.mode, m.message.as_str()), (1, 100, 0, "queued"));
+    assert_eq!((m.state, m.tick, m.mode, m.message.as_str(), m.queued()), (1, 100, 0, "queued", true));
     let (ServerCommand::HonorPointsChanged(h), actor) = &decoded("honor_points")[0] else { panic!() };
     assert_eq!((h.honor, *actor), (150, Some(1)));
     let (ServerCommand::ShowPvpDeathDialog(d), actor) = &decoded("pvp_death")[0] else { panic!() };
     assert_eq!((d.respawn_delay, *actor), (125, Some(1)));
+}
+
+/// The release261_192 additions: the Season Pass, the Endless Tower and the screen
+/// message, at their new ids.
+#[test]
+fn season_pass_and_endless_tower_answers_decode() {
+    let (ServerCommand::SeasonPassRewardsInfo(s), actor) = &decoded("season_pass_rewards")[0] else { panic!() };
+    assert_eq!((s.unknown_u32_20, s.unknown_u32_24, s.pass_types.as_slice(), s.claimed_awards.as_slice(), *actor), (3, 4, &[1, 2][..], &[7][..], Some(0)));
+    let (ServerCommand::SeasonPassMissionsInfo(s), _) = &decoded("season_pass_missions")[0] else { panic!() };
+    assert_eq!(s.missions, [(5, 9), (6, 0)]);
+    let (ServerCommand::KickOutToHubTimeLeft(k), actor) = &decoded("kick_out_time_left")[0] else { panic!() };
+    assert_eq!((k.seconds, *actor), (90, Some(1)));
+    let (ServerCommand::KillScore(k), _) = &decoded("kill_score")[0] else { panic!() };
+    assert_eq!(k.score, 1234);
+    let (ServerCommand::EndlessTowerProgress(p), _) = &decoded("endless_tower_progress")[0] else { panic!() };
+    assert_eq!((p.cleared_floor, p.score, p.claimed_floor), (12, 0, 10));
+    let (ServerCommand::EndlessTowerBuffs(b), _) = &decoded("endless_tower_buffs")[0] else { panic!() };
+    assert_eq!(b.buffs, ["buff_a", "buff_b"]);
+    let (ServerCommand::ScreenMessage(m), actor) = &decoded("screen_message")[0] else { panic!() };
+    assert_eq!((m.kind, m.text.as_str(), m.extra.as_str(), *actor), (0, "Wave 2", "", Some(0)));
+    for (name, id) in [("season_pass_rewards", 354), ("kill_score", 364), ("endless_tower_buffs", 369), ("screen_message", 381)] {
+        assert_eq!(decoded(name)[0].0.id(), id, "{name}");
+    }
 }
 
 #[test]

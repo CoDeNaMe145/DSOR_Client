@@ -88,10 +88,10 @@ pub(super) fn boards(sources: &Sources) -> Boards {
     let own = net.local_rank.as_ref().filter(|l| l.active && l.rank != super::UNRANKED).map(|l| (l.rank, l.values));
     let tab = state.matchmaking_tab as usize;
     let mode = sources.catalog.pvp_modes.get(tab);
-    let queued = net.matchmaking.as_ref().is_some_and(|m| m.state >= 0);
+    let queued = net.matchmaking.as_ref().is_some_and(|m| m.queued());
     let status = if let Some(found) = &net.battleground {
         format!("A match is ready on {}. Join battle to enter it.", found.map.replace('_', " "))
-    } else if let Some(queue) = net.matchmaking.as_ref().filter(|m| m.state >= 0) {
+    } else if let Some(queue) = net.matchmaking.as_ref().filter(|m| m.queued()) {
         let name = sources.catalog.pvp_modes.iter().find(|m| m.mode == queue.mode).map_or_else(|| "this battle".to_owned(), |m| m.title.clone());
         if queue.message.is_empty() { format!("You are in the queue for {name}. Join battle again to leave it.") } else { queue.message.clone() }
     } else {

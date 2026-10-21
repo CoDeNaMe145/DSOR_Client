@@ -141,6 +141,20 @@ fn the_fields_the_client_reads_land_where_the_server_put_them() {
     assert_eq!((p.name.as_str(), p.parts[0], p.parts[1], p.character_id, p.account_id), ("RemoteHero", 2, 1, 4294970044, 8589938159));
     assert_eq!((p.position, p.heading, p.equipment.len(), actor), ([15.5, 16.25, 17.125], 1.5, 2, Some(983297)));
     assert_eq!(p.equipment[0].skin_parts, ["skinA", "skinB"]);
+    assert_eq!((p.armament, p.team, p.honor, p.title_type), (4, 2, 0x12345, 1));
+    assert_eq!((p.tertiary.as_str(), p.pvp_title.as_str(), p.emblem.as_str()), ("ach_title_1", "pvptitle03", "emblem_x"));
+    let (ServerCommand::RemotePlayerInfo(p), _) = first("RemotePlayerInfoCommand") else { panic!() };
+    assert_eq!((p.team, p.title_type, p.unknown_text_e4.as_str(), p.emblem.as_str()), (2, 1, "ach_title_1", "emblem_x"));
+
+    // release261_192: the skill commands' inheritance marker, between SkillBase and
+    // the derived fields, and the Hit's reserved bit after its damage types.
+    let (ServerCommand::TargetSkill(t), _) = first("TargetSkillCommand") else { panic!() };
+    assert_eq!((t.base.skill_id, t.base.marker, t.target), (0x0314, Some(false), 0x000C0099));
+    assert_eq!(t.server.map(|s| s.impact_tick), Some(0x0C0C0001));
+    let (ServerCommand::TargetBulletSkill(t), _) = first("TargetBulletSkillCommand") else { panic!() };
+    assert_eq!((t.base.marker, t.orbit, t.target, t.more_targets.as_slice()), (Some(false), 0x5D, 0x000C0077, &[0x000C0078, 0x000C0079][..]));
+    let (ServerCommand::Hit(h), _) = first("HitCommand") else { panic!() };
+    assert!(!h.tag_boundary);
 
     let (ServerCommand::CharacterSelection(sel), _) = first("CharacterSelectionCommand") else { panic!() };
     assert_eq!(sel.characters.len(), 2);

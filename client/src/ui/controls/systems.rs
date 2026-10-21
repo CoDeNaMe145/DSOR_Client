@@ -719,7 +719,7 @@ pub(in crate::ui) fn send(
                 if let Some(found) = net.battleground.take() {
                     net.touch_ui();
                     commands.push(ClientCommand::JoinBattlegroundResponse(proto::JoinBattlegroundResponse { tick: found.tick, battleground: found.battleground, accepted: true, unknown_u32_0: 0, mode: found.mode }));
-                } else if net.matchmaking.as_ref().is_some_and(|m| m.state >= 0) {
+                } else if net.matchmaking.as_ref().is_some_and(|m| m.queued()) {
                     commands.push(ClientCommand::AbortMatchQueue(proto::AbortMatchQueue { tick: 0, flag: true, modes: vec![mode], all: false }));
                     net.matchmaking = None;
                     net.touch_ui();

@@ -878,3 +878,55 @@ Verified: **346 client tests passed** (15 ignored); with the converted assets
 the 13 UI fixture tests pass too (the Kingscity doorway lighting test fails on
 the current, un-overridden assets, unrelated to this change). Logs:
 `.local/logs/map-fps/kingscity-{regress,sysprof,ab}-*`. Not re-measured online.
+
+## Command ids and layouts of the release261_192 server (2026-10-21)
+
+The live server (`D:\_dso_retired\dso-server\dso_server`, updated 2026-10-21;
+the files it replaced are in `dso_server_backup_2026-10-21`) now serves the
+release261_192 `dro_client64.exe`: `protocol/command_ids.py` resolves every id
+against `docs/command_ids_rel261_192.json` by default, and the combat codecs
+write that build's marker bits (`DSO_SKILL_HIT_MARKER_BITS`, on). The client
+follows it; every layout below is checked against the server's own encoders
+(`tools/prod_vectors.py`, `systems_vectors.py`, `shop_vectors.py`,
+`appearance_vectors.py` run against that tree).
+
+- **Ids.** 1–346 are unchanged. That build registers three commands at 347, so
+  the 22 later classes move: the Wanted Thief 356–359 → 359–362, the Season
+  Pass block +3, ServerToClientMsg 368 → 381 (`commands/names.rs`, now the full
+  371-class registry with its actor flags; `MOST_COMMANDS` 382).
+- **Skill commands (70–75), server copy:** one inheritance-marker bit between
+  SkillBase and the derived fields (`SkillBase::marker`; the client's own skill
+  commands go without it, which the server's decoders accept). `Body` has
+  `decode_server`/`encode_server` for such direction-specific bodies.
+- **Hit (107):** a reserved bit after the damage types (`Hit::tag_boundary`).
+- **NewRemotePlayer (33), RemotePlayerInfo (34):** a trailing emblem string;
+  the player kind is 4, not 5; the fields once unnamed are the team, the
+  honour points and the title type.
+- **TimedChallengesInfo (131):** a fourth list, the comeback dailies.
+- **Offer (90):** shop offers carry a ninth flag, DirectlyBuyOffer.
+- **MatchMakingInfo (215):** the first byte is an event (0 joined, 1 joined by
+  the leader, 2/3 left, 4 called off by the server, 5/6 group refused), not a
+  state: the PvP window uses `MatchMakingInfo::queued()` (0 or 1); leaving used
+  to come as -1 and now comes as 2.
+- **MatchInfo (196):** same shape, the server's new labels (kills, deaths,
+  damage, score, support, class, rounds lost).
+- **New layouts** for what the server now sends: SeasonPassRewardsInfo 354,
+  SeasonPassMissionsInfo 358, KickOutToHubLimitTimeLeft 363, KillScore 364,
+  EndlessTowerProgress 367, EndlessTowerBuffs 369, ScreenMessage 381 (its text
+  goes to the chat). NewNPC batches now start with an ActorsEnterVicinity for
+  the new NPCs (decoded already).
+- Checked, no client change: NewPlayer (values only), the starter inventory
+  (content), the pickup stack merge (an InventoryInfo delta with a replacement
+  map, which `InventoryState::apply` already handles), the quickbar layout
+  (slots are read by kind), the transport.
+- Not done: the server's new client requests (ShuffleTierSpenderDeals 328, the
+  Season Pass requests 353/355–357, crafting payment selector 5) have no client
+  feature yet. `inventory_release261.json` stays as generated from
+  `.local/dso_server`: the live tree lacks its premium-overflow encoder fix.
+- **Compatibility:** `.local/dso_server` (patch5 ids, no marker bits) no longer
+  matches this client; the live server's patch5 mode (`DSO_COMMAND_IDS=builtin`,
+  `DSO_SKILL_HIT_MARKER_BITS=0`) neither.
+
+Verified: **36 proto tests** (the regenerated `release261`, `systems` (58
+vectors), `shop` and `appearance` data) and **346 client tests passed** (15
+ignored). Not yet run online against the live server.

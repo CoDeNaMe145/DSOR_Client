@@ -18,6 +18,14 @@
 //! 0xFF, so it is read by `ServerCommand::decode_actor_slot_tail` after the framework
 //! has read the actor, and stored in the command's `server` field (None on the client
 //! side).
+//!
+//! THE INHERITANCE MARKER. The server's copy of every skill command carries one bit
+//! between SkillBase and the derived fields (`SkillBase::marker`): the release261_192
+//! client always reads it (without it: "invalid command ending in multi command 71").
+//! The client's own copy goes without it, which the server's decoders take (they
+//! find the bit by the message's length).
+//! SOURCE: dso-server-production protocol/combat_protocol.py _write_skill_base,
+//!   _read_optional_derived_flag (DSO_SKILL_HIT_MARKER_BITS, on by default).
 
 use dsor_raknet::{BitReader, BitWriter};
 
@@ -74,11 +82,26 @@ pub struct SkillBase {
     pub start_tick: u32,
     /// +0xC8 in the server's dataclass; meaning not established.
     pub unknown_u32_0: u32,
+    /// The inheritance marker of the server's copy (production `derived_flag`, always
+    /// false); None in the client's copy, which has no such bit.
+    pub marker: Option<bool>,
+}
+
+impl SkillBase {
+    /// The server's copy: the five fields, then the marker.
+    fn decode_marked(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
+        let base = Self::decode(r)?;
+        Ok(Self { marker: Some(r.bit()?), ..base })
+    }
+    fn encode_marked(&self, w: &mut BitWriter) {
+        self.encode(w);
+        w.bit(self.marker.unwrap_or(false));
+    }
 }
 
 impl Body for SkillBase {
     fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
-        Ok(Self { high_water: r.u16()?, skill_id: r.u16()?, heading: r.f32()?, start_tick: r.u32()?, unknown_u32_0: r.u32()? })
+        Ok(Self { high_water: r.u16()?, skill_id: r.u16()?, heading: r.f32()?, start_tick: r.u32()?, unknown_u32_0: r.u32()?, marker: None })
     }
     fn encode(&self, w: &mut BitWriter) {
         w.u16(self.high_water);
@@ -87,6 +110,33 @@ impl Body for SkillBase {
         w.u32(self.start_tick);
         w.u32(self.unknown_u32_0);
     }
+}
+
+/// A skill command's Body: SkillBase, then `read` / `write` for the rest. The
+/// server's copy puts the marker between the two (SkillBase::decode_marked).
+macro_rules! skill_body {
+    ($ty:ty, |$r:ident, $base:ident| $read:expr, |$c:ident, $w:ident| $write:expr) => {
+        impl Body for $ty {
+            fn decode($r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
+                let $base = SkillBase::decode($r)?;
+                $read
+            }
+            fn decode_server($r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
+                let $base = SkillBase::decode_marked($r)?;
+                $read
+            }
+            fn encode(&self, $w: &mut BitWriter) {
+                self.base.encode($w);
+                let $c = self;
+                $write
+            }
+            fn encode_server(&self, $w: &mut BitWriter) {
+                self.base.encode_marked($w);
+                let $c = self;
+                $write
+            }
+        }
+    };
 }
 
 /// The server-only part of a skill command's slot 9, after the actor.
@@ -149,14 +199,7 @@ pub struct Skill {
     pub server: Option<SkillServerData>,
 }
 
-impl Body for Skill {
-    fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
-        Ok(Self { base: SkillBase::decode(r)?, server: None })
-    }
-    fn encode(&self, w: &mut BitWriter) {
-        self.base.encode(w)
-    }
-}
+skill_body!(Skill, |r, base| Ok(Self { base, server: None }), |_c, _w| ());
 
 /// TargetSkillCommand (74): SkillBase then the target actor (+28).
 /// EVIDENCE: writer 0xA5C7EC / reader 0xA5C7B7 (dsor/combat.py encode_target_skill).
@@ -168,15 +211,7 @@ pub struct TargetSkill {
     pub server: Option<SkillServerData>,
 }
 
-impl Body for TargetSkill {
-    fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
-        Ok(Self { base: SkillBase::decode(r)?, target: r.u32()?, server: None })
-    }
-    fn encode(&self, w: &mut BitWriter) {
-        self.base.encode(w);
-        w.u32(self.target);
-    }
-}
+skill_body!(TargetSkill, |r, base| Ok(Self { base, target: r.u32()?, server: None }), |c, w| w.u32(c.target));
 
 /// BulletSkillCommand (75): SkillBase, the step vector4 (+176), the orbit byte (+196).
 /// EVIDENCE: writer 0xA344BF / reader 0xA34464 (dsor/combat.py encode_bullet_skill).
@@ -190,16 +225,10 @@ pub struct BulletSkill {
     pub server: Option<SkillServerData>,
 }
 
-impl Body for BulletSkill {
-    fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
-        Ok(Self { base: SkillBase::decode(r)?, step: vec4(r)?, orbit: r.u8()?, server: None })
-    }
-    fn encode(&self, w: &mut BitWriter) {
-        self.base.encode(w);
-        write_vec4(w, self.step);
-        w.u8(self.orbit);
-    }
-}
+skill_body!(BulletSkill, |r, base| Ok(Self { base, step: vec4(r)?, orbit: r.u8()?, server: None }), |c, w| {
+    write_vec4(w, c.step);
+    w.u8(c.orbit);
+});
 
 /// TargetBulletSkillCommand (release261: 75), both directions: BulletSkill's body,
 /// the primary target (non-zero), a u8-counted list of further targets, a
@@ -218,28 +247,23 @@ pub struct TargetBulletSkill {
     pub server: Option<SkillServerData>,
 }
 
-impl Body for TargetBulletSkill {
-    fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
-        let base = SkillBase::decode(r)?;
-        let step = vec4(r)?;
-        let orbit = r.u8()?;
-        let target = r.u32()?;
-        let n = r.u8()? as usize;
-        let more_targets = list(r, n, |r| r.u32())?;
-        Ok(Self { base, step, orbit, target, more_targets, points: points(r)?, server: None })
+skill_body!(TargetBulletSkill, |r, base| {
+    let step = vec4(r)?;
+    let orbit = r.u8()?;
+    let target = r.u32()?;
+    let n = r.u8()? as usize;
+    let more_targets = list(r, n, |r| r.u32())?;
+    Ok(Self { base, step, orbit, target, more_targets, points: points(r)?, server: None })
+}, |c, w| {
+    write_vec4(w, c.step);
+    w.u8(c.orbit);
+    w.u32(c.target);
+    w.u8(c.more_targets.len() as u8);
+    for &t in &c.more_targets {
+        w.u32(t);
     }
-    fn encode(&self, w: &mut BitWriter) {
-        self.base.encode(w);
-        write_vec4(w, self.step);
-        w.u8(self.orbit);
-        w.u32(self.target);
-        w.u8(self.more_targets.len() as u8);
-        for &t in &self.more_targets {
-            w.u32(t);
-        }
-        write_points(w, &self.points);
-    }
-}
+    write_points(w, &c.points);
+});
 
 /// sub_9F920A: one u8 count, then that many float3 (the clicked points).
 fn points(r: &mut BitReader<'_>) -> Result<Vec<[f32; 3]>, DecodeError> {
@@ -269,17 +293,11 @@ pub struct TargetPointBulletSkill {
     pub server: Option<SkillServerData>,
 }
 
-impl Body for TargetPointBulletSkill {
-    fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
-        Ok(Self { base: SkillBase::decode(r)?, step: vec4(r)?, orbit: r.u8()?, points: points(r)?, server: None })
-    }
-    fn encode(&self, w: &mut BitWriter) {
-        self.base.encode(w);
-        write_vec4(w, self.step);
-        w.u8(self.orbit);
-        write_points(w, &self.points);
-    }
-}
+skill_body!(TargetPointBulletSkill, |r, base| Ok(Self { base, step: vec4(r)?, orbit: r.u8()?, points: points(r)?, server: None }), |c, w| {
+    write_vec4(w, c.step);
+    w.u8(c.orbit);
+    write_points(w, &c.points);
+});
 
 /// ShiftedSkillCommand (77): SkillBase then the target points (u8 count + float3s).
 /// EVIDENCE: reader 0xA5C2B5 -> sub_9F920A (dsor/combat.py decode_target_points).
@@ -290,15 +308,7 @@ pub struct ShiftedSkill {
     pub server: Option<SkillServerData>,
 }
 
-impl Body for ShiftedSkill {
-    fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
-        Ok(Self { base: SkillBase::decode(r)?, points: points(r)?, server: None })
-    }
-    fn encode(&self, w: &mut BitWriter) {
-        self.base.encode(w);
-        write_points(w, &self.points);
-    }
-}
+skill_body!(ShiftedSkill, |r, base| Ok(Self { base, points: points(r)?, server: None }), |c, w| write_points(w, &c.points));
 
 /// SustainedSkillCommand (79), client -> server: a channel start.
 /// SkillBase, then u16 / f32 / u32 repeating the skill index, heading and tick
@@ -410,10 +420,16 @@ impl ServerCommand {
 /// victim). EVIDENCE: the 2018 reader 0x9A788A (vtable 0xFEE2A8 slot 5) -- tick, damage
 /// types, two bits (+40 blocked, +41 critical), seven int32, a float, one bit; handler
 /// 0x516453 (dsor/combat.py encode_hit).
+/// SOURCE (release261_192): dso-server-production protocol/combat_protocol.py
+///   _write_hit_body: a reserved bit between the damage types and the two flags,
+///   always sent (without it the client drops the batch: "invalid command ending in
+///   multi command 107").
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Hit {
     pub tick: u32,
     pub damage_types: Vec<u8>,
+    /// The reserved bit after the damage types (production tag_boundary_bit, clear).
+    pub tag_boundary: bool,
     pub blocked: bool,
     pub critical: bool,
     /// SetHitPoints / SetMaxHitPoints (release261: u64).
@@ -444,6 +460,7 @@ impl Body for Hit {
         Ok(Self {
             tick: r.u32()?,
             damage_types: damage_types(r)?,
+            tag_boundary: r.bit()?,
             blocked: r.bit()?,
             critical: r.bit()?,
             victim_health: r.u64()?,
@@ -464,6 +481,7 @@ impl Body for Hit {
     fn encode(&self, w: &mut BitWriter) {
         w.u32(self.tick);
         write_damage_types(w, &self.damage_types);
+        w.bit(self.tag_boundary);
         w.bit(self.blocked);
         w.bit(self.critical);
         w.u64(self.victim_health);
