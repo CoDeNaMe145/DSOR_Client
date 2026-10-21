@@ -112,6 +112,10 @@ pub(crate) struct SocialUi {
 }
 
 /// The icon 0x6CAE52 gives a notification type.
+/// The event announcements' kinds (_Template_Notifications row order).
+const EVENT_ONCE: u8 = 7;
+const EVENT_KEPT: u8 = 8;
+
 fn icon(kind: u8) -> &'static str {
     match kind {
         1 | 2 => "groupinvite",
@@ -247,6 +251,7 @@ pub(in crate::ui) fn column(
     mut columns: Query<(Entity, &mut crate::ui::input::UiRegions), With<Column>>,
     mut sprites: Query<(&mut Sprite, &mut Transform), (Without<Column>, Without<Window2018>)>,
     mut test: Local<bool>,
+    mut systems: ResMut<super::systems::State>,
 ) {
     let now = time.elapsed_secs_f64();
     // DSOR_TEST_NOTIFICATIONS=group|booking|login: a group invitation, a credited
@@ -331,6 +336,33 @@ pub(in crate::ui) fn column(
     let Some(index) = clicked else { return };
     let Some(guid) = social.slots.get(index).map(|s| s.guid.clone()) else { return };
     let Some(note) = notes.iter().find(|n| n.guid == guid).cloned() else { return };
+    // An event's announcement (_Template_Notifications 7 eventnonpersistent, 8
+    // eventpersistent; payload {"eventId", "templateId"}, DSOR_Server
+    // services/events.py event_notification_entries): the event window, on
+    // that event's tab. The one-time kind is answered and leaves the column
+    // (the server acknowledges any reply naming an eventId).
+    // UNVERIFIED: the retail click (not traced); before, it did nothing.
+    if matches!(note.note_type, EVENT_ONCE | EVENT_KEPT) {
+        let id = params(&note)["eventId"].as_u64().map(|v| v as u32);
+        if let Some(net) = net.as_mut() {
+            if let Some(tab) = id.and_then(|id| net.events.iter().position(|e| e.identifier == id)) {
+                systems.event = tab;
+                systems.event_page = None;
+            }
+            if note.note_type == EVENT_ONCE {
+                net.send(&ClientCommand::Notification(Notification::response(CONFIRM, note.clone())));
+                net.notifications.retain(|n| n.guid != note.guid);
+            }
+        }
+        for (_, w, mut c, mut v, _) in &mut windows {
+            if w.0 == super::systems::EVENTS {
+                *v = Visibility::Inherited;
+                c.hovered = None;
+                c.pressed = None;
+            }
+        }
+        return;
+    }
     let Some(dialog) = dialog(note.note_type) else {
         info!("notification type {} has no dialog here", note.note_type);
         return;

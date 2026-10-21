@@ -1546,12 +1546,14 @@ fn cooldown_sweep(rect: [f32; 4], remaining: f32) -> Art {
 }
 
 /// The hovered monster's info window, shown while one is under the cursor.
-fn show_hover_window(hover: Res<crate::actors::monsters::HoverInfo>, mut windows: Query<(&Window2018, &mut Visibility)>) {
+fn show_hover_window(hover: Res<crate::actors::monsters::HoverInfo>, mut windows: Query<(&Window2018, &mut Visibility, &mut WindowControls)>) {
     if !hover.is_changed() {
         return;
     }
-    for (w, mut v) in &mut windows {
+    for (w, mut v, mut controls) in &mut windows {
         if w.0 == HOVER_WINDOW {
+            // Its gothic ornament (controls::section, page "hover_boss") on bosses only.
+            controls.set_page("hover_boss", u8::from(hover.1));
             let want = if hover.0.is_some() { Visibility::Inherited } else { Visibility::Hidden };
             if *v != want {
                 *v = want;

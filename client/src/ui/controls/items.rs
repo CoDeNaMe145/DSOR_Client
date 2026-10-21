@@ -240,7 +240,8 @@ fn equip_toggle(state:&InventoryState, catalog:&Catalog, id:u32, level:u32, clas
         let free=state.free_slot(Place::Bag(0))?;
         return state.drop_on(id,free,meta.max_stack);
     }
-    if meta.slots.is_empty() || meta.required_level>level || !(meta.class_name.is_empty() || meta.class_name=="any" || meta.class_name==class) {return None;}
+    // Unidentified equipment is not worn until identified (a right click).
+    if item.flag_0 || meta.slots.is_empty() || meta.required_level>level || !(meta.class_name.is_empty() || meta.class_name=="any" || meta.class_name==class) {return None;}
     let slot=meta.slots.iter().copied().find(|s|state.at(Place::Equipment(*s)).is_none()).unwrap_or(meta.slots[0]);
     state.drop_on(id,Place::Equipment(slot),meta.max_stack)
 }
@@ -391,7 +392,7 @@ pub fn input(mut ui:ResMut<Interaction>,mut pointer:ResMut<Pointer>,mut windows:
                 if let Some(target)=place(cell,c) {
                     let source=net.inventory.items.get(&d.id);
                     let meta=source.and_then(|i|catalog.items.get(&i.template));
-                    let valid=if let Place::Equipment(slot)=target {meta.is_some_and(|m|m.slots.contains(&slot)
+                    let valid=if let Place::Equipment(slot)=target {!source.is_some_and(|i|i.flag_0) && meta.is_some_and(|m|m.slots.contains(&slot)
                         && m.required_level <= net.level.unwrap_or(1)
                         && (m.class_name.is_empty() || m.class_name=="any" || m.class_name==["warrior","mage","ranger","dwarf"][c.spells.class.min(3) as usize]))} else{true};
                     if let Some(cmd)=valid.then(||net.inventory.drop_on(d.id,target,meta.map_or(1,|m|m.max_stack))).flatten() {
@@ -490,9 +491,17 @@ pub fn render(mut commands:Commands,windows:Query<(Entity,&Window2018,&WindowCon
         let locked=place(cell,c).is_some_and(|p|!matches!(p,Place::Equipment(_)) && p.cell()>=net.inventory.capacity(p));
         if locked {commands.spawn((Sprite::from_color(Color::srgba(0.01,0.01,0.01,0.8),size),Anchor::TOP_LEFT,Transform::from_translation(pos.extend(0.0)),RenderLayers::layer(LAYER),ChildOf(group)));continue;}
         let Some(d)=displayed(cell,c,&net.inventory,catalog) else{continue};
-        let tint=if d.amount==0 {Color::srgba(0.38,0.38,0.38,0.65)} else{Color::WHITE};
+        // Unidentified (ItemInfo flag_0, DSOR_Server world_loot_protocol NeedsIdentify):
+        // greyed under a question mark until a right click identifies it.
+        let unidentified=d.item.is_some_and(|i|i.flag_0);
+        let tint=if d.amount==0 {Color::srgba(0.38,0.38,0.38,0.65)} else if unidentified {Color::srgb(0.45,0.45,0.45)} else{Color::WHITE};
         if !sprites(&mut commands,&assets,catalog,d.template,d.item,Vec3::new(pos.x+2.5,pos.y-2.5,0.05),size-Vec2::splat(5.0),tint,group) {
             text(&mut commands,&assets,&screen,group,"?".into(),pos.extend(0.2)+Vec3::new(15.0,-10.0,0.0),22.0,Color::WHITE,size.x);
+        }
+        if unidentified {
+            let mark=size*0.62;
+            commands.spawn((Sprite{image:assets.load("textures/ui/icon_questionmark.png"),custom_size:Some(mark),..default()},Anchor::TOP_LEFT,
+                Transform::from_translation(Vec3::new(pos.x+(size.x-mark.x)/2.0,pos.y-(size.y-mark.y)/2.0,0.25)),RenderLayers::layer(LAYER),ChildOf(group)));
         }
         if d.amount>1 || matches!(cell,Cell::Ingredient(_)) {
             let at=Vec3::new(pos.x+3.0,pos.y-size.y+17.0,0.3);
