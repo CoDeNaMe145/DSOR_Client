@@ -80,11 +80,21 @@ pub(super) struct DragSpell {
     bar: usize,
 }
 
+impl DragSpell {
+    /// The bar and slot a spell is being carried from, once the drag is under
+    /// way: that slot shows empty until it is let go (crate::ui update_slots).
+    pub(super) fn lifted(&self) -> Option<(usize, usize)> {
+        if !self.active { return None; }
+        Some((self.bar, self.source?))
+    }
+}
+
+#[cfg_attr(test, derive(Clone))]
 pub(super) struct DropSpell {
     spell: Spell,
     source: Option<usize>,
     bar: usize,
-    /// None removes a spell dragged out of the action bar.
+    /// The slot it lands on; None: dragged off the bar, its source slot clears.
     target: Option<usize>,
 }
 
@@ -149,14 +159,18 @@ pub(super) fn drag(pointer: &mut Pointer, windows: &Windows, mouse: &ButtonInput
 /// Refuse incomplete snapshots and stale source slots rather than replacing
 /// unseen item/essence slots with guessed empty entries.
 fn edited_bar(slots: &[Slot], drop: &DropSpell) -> Option<Vec<Slot>> {
-    if slots.len() != BAR_SIZE || drop.target.is_some_and(|target| target >= VISIBLE_SLOTS) { return None; }
+    if slots.len() != BAR_SIZE || drop.target.is_some_and(|t| t >= VISIBLE_SLOTS) { return None; }
     let mut edited = slots.to_vec();
-    if let Some(source) = drop.source {
-        if source >= VISIBLE_SLOTS || slots[source].kind != 0 || slots[source].id.as_ref() != Some(&drop.spell.id) { return None; }
-        if let Some(target) = drop.target { edited.swap(source, target); }
-        else { edited[source] = Slot { kind: Slot::EMPTY, id: None }; }
-    } else {
-        edited[drop.target?] = Slot { kind: 0, id: Some(drop.spell.id.clone()) };
+    match (drop.source, drop.target) {
+        (Some(source), target) => {
+            if source >= VISIBLE_SLOTS || slots[source].kind != 0 || slots[source].id.as_ref() != Some(&drop.spell.id) { return None; }
+            match target {
+                Some(target) => edited.swap(source, target),
+                None => edited[source] = Slot { kind: Slot::EMPTY, id: None },
+            }
+        }
+        (None, Some(target)) => edited[target] = Slot { kind: 0, id: Some(drop.spell.id.clone()) },
+        (None, None) => return None,
     }
     (edited != slots).then_some(edited)
 }
@@ -250,6 +264,14 @@ mod tests {
     }
 
     #[test]
+    fn a_spell_carried_from_the_bar_lifts_its_slot_once_the_drag_starts() {
+        let drag = |active, source| DragSpell { root: Entity::PLACEHOLDER, button: 0, origin: Vec2::ZERO, active, spell: spell(), source, bar: 1 };
+        assert_eq!(drag(false, Some(4)).lifted(), None);
+        assert_eq!(drag(true, Some(4)).lifted(), Some((1, 4)));
+        assert_eq!(drag(true, None).lifted(), None);
+    }
+
+    #[test]
     fn replacing_and_swapping_preserve_unseen_slots_and_reject_stale_drags() {
         let mut slots = vec![Slot { kind: -1, id: None }; BAR_SIZE];
         slots[0] = Slot { kind: 0, id: Some("magicmissile".into()) };
@@ -259,13 +281,22 @@ mod tests {
         let edited = edited_bar(&slots, &drop).unwrap();
         assert_eq!(edited[3], slots[0]);
         for i in 0..BAR_SIZE { if i != 3 { assert_eq!(edited[i], slots[i]); } }
-        let swap = DropSpell { source: Some(0), target: Some(2), ..drop };
+        let swap = DropSpell { source: Some(0), target: Some(2), ..drop.clone() };
         let edited = edited_bar(&slots, &swap).unwrap();
         assert_eq!(edited[0], slots[2]);
         assert_eq!(edited[2], slots[0]);
         assert_eq!(edited[16], slots[16]);
         assert!(edited_bar(&edited, &swap).is_none());
         assert!(edited_bar(&slots[..7], &swap).is_none());
+        // Dragged off the bar: only its own slot clears; a stale source or a
+        // book spell with nowhere to go changes nothing.
+        let off = DropSpell { source: Some(0), target: None, ..drop.clone() };
+        let edited = edited_bar(&slots, &off).unwrap();
+        assert_eq!(edited[0], Slot { kind: Slot::EMPTY, id: None });
+        for i in 1..BAR_SIZE { assert_eq!(edited[i], slots[i]); }
+        assert!(edited_bar(&edited, &off).is_none());
+        assert!(edited_bar(&slots, &DropSpell { source: Some(2), target: None, ..drop.clone() }).is_none());
+        assert!(edited_bar(&slots, &DropSpell { source: None, target: None, ..drop }).is_none());
     }
 
     #[test]
