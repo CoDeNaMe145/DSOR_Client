@@ -47,7 +47,7 @@ HIT = {
 COLS = ["Id", "Graphics", "CharacterSet", "AnimSet", "StartAnimationState", "LoopStartAnimation",
         "CriticalHitSequence", "HeavyHitSequence", "DeathSequence", "DeathDuration",
         "DespawnSequence", "DespawnDuration", "CapsuleRadius", "CapsuleHeight",
-        "PrimaryColor", "SecondaryColor", "SummonSequence", "MinionType", "ActorShapeId"] + list(HIT.values())
+        "PrimaryColor", "SecondaryColor", "SummonSequence", "MinionType", "ActorShapeId", "RunSpeed"] + list(HIT.values())
 footprints = shape_radii(export)
 db = sqlite3.connect(f"file:{os.path.join(export, 'db', 'static.db4')}?mode=ro", uri=True)
 templates = {}
@@ -73,6 +73,8 @@ for row in db.execute(f"select {','.join(COLS)} from _Template_Monster"):
         "dye": [list(struct.unpack("<4f", r["PrimaryColor"])) if r["PrimaryColor"] else [1, 1, 1, 0],
                 list(struct.unpack("<4f", r["SecondaryColor"])) if r["SecondaryColor"] else [1, 1, 1, 0]],
         "radius": float(r["CapsuleRadius"] or 0.0),
+        # What a MoveCommand's speed byte scales (client RemotePlayer::run_speed).
+        "run_speed": float(r["RunSpeed"] or 0.0),
         "height": float(r["CapsuleHeight"] or 0.0),
     }
     # Its navigation footprint (ActorShapeId), the targeted-melee reach (nav_shapes.py).
