@@ -217,3 +217,15 @@ fn the_destroy_dialog_shows_only_its_centred_item_variant() {
     assert!(!shown("Canvas/DialogCenter/Content/DeleteItemDoNotShowAgain/CheckBox"));
     assert!(layout.widgets.iter().all(|w|!w.id.starts_with("Canvas/DialogBottom")));
 }
+
+#[test]
+fn unidentified_equipment_is_not_worn_until_identified() {
+    let (mut app,..)=app();
+    snapshot(&mut app,"helmet",Place::Bag(0));
+    let catalog=catalog();
+    let mut net=app.world_mut().non_send_mut::<Net>();
+    net.inventory.items.get_mut(&1).unwrap().flag_0=true;
+    assert!(equip_toggle(&net.inventory,&catalog,1,10,"warrior").is_none());
+    net.inventory.items.get_mut(&1).unwrap().flag_0=false;
+    assert!(equip_toggle(&net.inventory,&catalog,1,10,"warrior").is_some());
+}

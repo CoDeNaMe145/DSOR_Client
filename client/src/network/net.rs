@@ -170,6 +170,8 @@ pub struct Net {
     remote_spawns: Vec<(u32, CharacterDesc, Vec3, f32, String, bool)>,
     /// NPCs to place (NewNPCCommand) and actors gone, applied by crate::actors::npc.
     pub npc_spawns: Vec<NpcSpawn>,
+    /// Each monster's _Template_MonsterRanks id, from its NewMonsterCommand.
+    pub monster_ranks: HashMap<u32, String>,
     pub npc_gone: Vec<u32>,
     pub props: crate::world::props::NetworkProps,
     pub map_markers: crate::ui::MapMarkers,
@@ -888,6 +890,7 @@ pub fn start_offline(world: &mut World, class: u8, gender: u8) {
         local_appearance_dirty: false,
         remote_redress: HashMap::new(),
         npc_spawns: Vec::new(),
+        monster_ranks: HashMap::new(),
         npc_gone: Vec::new(),
         props: default(),
         map_markers: default(),
@@ -1158,6 +1161,7 @@ pub(crate) fn start_session(world: &mut World, config: NetConfig) {
         local_appearance_dirty: false,
         remote_redress: HashMap::new(),
         npc_spawns: Vec::new(),
+        monster_ranks: HashMap::new(),
         npc_gone: Vec::new(),
         props: crate::world::props::NetworkProps::online(),
         map_markers: default(),
@@ -1268,6 +1272,7 @@ impl Net {
 
     /// An actor leaves on a server discard; its entity goes in apply_remotes.
     pub(crate) fn discard_actor(&mut self, actor: u32) {
+        self.monster_ranks.remove(&actor);
         self.forget_actor(actor);
         self.monster_spawns.retain(|s| s.actor != actor);
         self.monster_health.retain(|&(a, _, _)| a != actor);
@@ -1702,6 +1707,7 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
             let (health, _) = *net.monster_vitals.entry(actor).or_insert((sat(m.health), sat(m.max_health)));
             if health == 0 { return; }
             debug!("monster {} actor {actor:#x} at {:?}", m.blueprint, m.position);
+            net.monster_ranks.insert(actor, m.rank);
             net.monster_spawns.push(MonsterSpawn {
                 actor,
                 blueprint: m.blueprint,

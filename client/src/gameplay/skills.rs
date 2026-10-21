@@ -830,9 +830,11 @@ fn cast_input(
         Res<crate::gameplay::stats::CharacterStats>,
         Res<crate::gameplay::stats::ResourceMax>,
     ),
-    // A target skill aimed at a monster out of reach: (slot, monster), cast once
-    // the walk brings it in reach.
-    mut queued: Local<Option<(usize, Entity)>>,
+    // queued: a target skill aimed at a monster out of reach, (slot, monster),
+    // cast once the walk brings it in reach. next_cast: when the last cast lets
+    // the next one go (its SkillUnblockFrame), apart from the movement hold
+    // (LocalPlayer::casting, its MotionUnblockFrame).
+    (mut queued, mut next_cast): (Local<Option<(usize, Entity)>>, Local<f64>),
 ) {
     let _profile = crate::diagnostics::hud::FrameSpan::new("skills::cast_input");
     let clicked_slot = ui_skills.0.take();
@@ -877,7 +879,7 @@ fn cast_input(
         *queued = None;
     }
     let Ok((entity, mut tf, mut player, character)) = players.single_mut() else { return };
-    if player.casting > 0.0 {
+    if player.casting > 0.0 || time.elapsed_secs_f64() < *next_cast {
         return;
     }
     let Some(name) = net.bar.get(slot).cloned().flatten() else { return };
@@ -943,9 +945,17 @@ fn cast_input(
     player.facing = facing;
     // Turned now: the cast's effects take the caster's placement this frame.
     tf.rotation = Quat::from_rotation_y(facing);
-    player.target = None;
     let rate = if skill.scale_timing { stats.animation_speed().clamp(0.1, 10.0) } else { 1.0 };
-    player.casting = skill.motion_unblock.max(skill.unblock).max(1) as f32 / FPS / rate;
+    // Movement waits for MotionUnblockFrame only: a skill with 0 there (Furious
+    // Battle Cry, the auras, the buffs) goes off while the player keeps walking.
+    // FAILURE: held until SkillUnblockFrame too and its walk dropped, Battle Cry
+    //   stopped the warrior ("je devrais pouvoir le faire en me deplacant sans
+    //   que ca me stoppe", 2026-10-21).
+    player.casting = skill.motion_unblock as f32 / FPS / rate;
+    if skill.motion_unblock > 0 {
+        player.target = None;
+    }
+    *next_cast = time.elapsed_secs_f64() + (skill.motion_unblock.max(skill.unblock).max(1) as f32 / FPS / rate) as f64;
 
     let tick = net.server_tick(now_ms(&time));
     // A fresh cast id per cast: the release261 server keys each cast's projectile

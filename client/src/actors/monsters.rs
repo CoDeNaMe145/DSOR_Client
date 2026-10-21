@@ -340,7 +340,16 @@ pub struct Hovered(pub Option<(Entity, u32)>);
 /// What the hovered monster's info window shows (crate::ui, interactinfo): its
 /// title, level and health.
 #[derive(Resource, Default, Clone, PartialEq)]
-pub struct HoverInfo(pub Option<(String, u32, u32, u32)>);
+pub struct HoverInfo(pub Option<(String, u32, u32, u32)>, pub bool);
+
+/// A boss's rank: the ranks whose _Template_MonsterRanks.Rank is "boss" or
+/// "worldboss" (static.db4: Rank_sentinel, Rank_treasure_mob[_sentinel],
+/// Rank_companion_sentinel; Rank_boss[_endlesstower|_lead|_no_loot],
+/// Rank_manifested_fear). Only they wear the info window's ornament.
+pub(crate) fn boss_rank(rank: &str) -> bool {
+    rank.starts_with("Rank_boss") || matches!(rank, "Rank_sentinel" | "Rank_treasure_mob" | "Rank_treasure_mob_sentinel"
+        | "Rank_companion_sentinel" | "Rank_manifested_fear")
+}
 
 pub struct MonstersPlugin;
 
@@ -1191,7 +1200,19 @@ fn hover_info(
     data: Res<MonsterData>,
     templates: Res<Assets<MonsterTemplates>>,
     mut info: ResMut<HoverInfo>,
+    net: Option<NonSend<Net>>,
 ) {
+    // DSOR_TEST_HOVER=boss|monster: the info window shown as for one (screenshots).
+    if let Ok(kind) = std::env::var("DSOR_TEST_HOVER") {
+        let test = HoverInfo(Some(("Bog Beast".into(), 19, 260, 391)), kind == "boss");
+        if *info != test { *info = test; }
+        return;
+    }
+    let boss = hovered.0.and_then(|(e, _)| monsters.get(e).ok())
+        .and_then(|(m, _)| net.as_ref()?.monster_ranks.get(&m.actor).map(|r| boss_rank(r))).unwrap_or(false);
+    if info.1 != boss {
+        info.1 = boss;
+    }
     let now = hovered.0.and_then(|(e, _)| monsters.get(e).ok()).filter(|(m, a)| m.is_alive(a)).map(|(m, _)| {
         let title = templates.get(&data.templates).and_then(|t| t.0.get(&m.template)).map(|t| t.title.clone()).unwrap_or_default();
         (title, m.level, m.health, m.max_health)

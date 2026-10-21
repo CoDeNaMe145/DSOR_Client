@@ -144,6 +144,12 @@ fn section(window: &str, id: &str) -> Section {
         if let Some(row) = leaf.strip_prefix("row").or_else(|| leaf.strip_prefix("label")).and_then(|s| s.parse().ok()) { return Section::SettingsRow(row); }
     }
     let parts: Vec<_> = id.split('/').collect();
+    // The hovered monster's ornament -- its top and bottom flourishes -- only
+    // on a boss (ui show_hover_window); the frame (gothic_panel) and the level
+    // ring stay for every monster.
+    if window == "interactinfo" && ["/gothic_panel/LabelTop", "/gothic_panel/LabelTop2", "/gothic_panel/LabelBottom"].iter().any(|end| id.ends_with(end)) {
+        return Section::Page("hover_boss", 0b10);
+    }
     // The character list's scroll handle moves with the list: crate::ui::controls::sheet draws it.
     if window == "charactersheet" && id.contains("/OverviewList/ScrollBarBackground/ScrollBarBoundaries/ScrollHandle") { return Section::Hidden; }
     // Its row templates too: drawn as they are, the first headline, its icon and
@@ -500,6 +506,11 @@ impl WindowControls {
 
     pub(super) fn region(&mut self, k: f32, rect: [f32; 4], gate: Gate) {
         self.regions.push((k, rect, gate));
+    }
+
+    /// Show a group's page (Section::Page); unchanged when already shown.
+    pub(super) fn set_page(&mut self, group: &'static str, page: u8) {
+        if self.pages.get(group).copied().unwrap_or(0) != page { self.pages.insert(group, page); }
     }
 
     fn section_visible(&self, section: Section) -> bool {

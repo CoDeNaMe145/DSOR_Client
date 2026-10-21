@@ -207,3 +207,17 @@ fn right_click_started_on_ui_cannot_cast_when_dragged_into_world() {
     app.update();
     assert_eq!(app.world().non_send::<Net>().resource, Some(90.0));
 }
+
+#[test]
+fn a_skill_without_a_motion_hold_keeps_the_walk_going() {
+    let (mut app, actor) = casting_app(0);
+    let handle = app.world().resource::<SkillData>().skills.clone();
+    app.world_mut().resource_mut::<Assets<SkillTable>>().get_mut(&handle).unwrap().0.get_mut(&1).unwrap().motion_unblock = 0;
+    app.world_mut().get_mut::<LocalPlayer>(actor).unwrap().target = Some(Vec3::new(5.0, 0.0, 5.0));
+    app.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(MouseButton::Right);
+    app.update();
+    assert_eq!(app.world().non_send::<Net>().resource, Some(90.0), "cast");
+    let player = app.world().get::<LocalPlayer>(actor).unwrap();
+    assert_eq!(player.target, Some(Vec3::new(5.0, 0.0, 5.0)), "the walk goes on");
+    assert_eq!(player.casting, 0.0, "no movement hold");
+}
