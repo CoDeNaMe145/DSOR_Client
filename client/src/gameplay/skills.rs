@@ -931,7 +931,10 @@ fn cast_input(
     // compared as it was, 0.4 against 10 rage let a 40-rage skill go out, play,
     // and be refused by the server ("rejected skill index 1842: resource=10,
     // cost=40", 2026-10-18): it seemed to hit only sometimes.
-    let cost = skill_cost(skill, resource_max.0);
+    // Its effects' ResourceCost modifiers too: predicted at the base cost, a
+    // free cast inside Banner of War drained the shown rage (the server took
+    // nothing and, paying nothing, sent no correction).
+    let cost = skill_cost(skill, resource_max.0) * stats.skill_cost_factor();
     if net.resource.is_some_and(|r| r + 1e-3 < cost) {
         return;
     }

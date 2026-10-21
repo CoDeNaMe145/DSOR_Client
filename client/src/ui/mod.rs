@@ -1513,7 +1513,7 @@ fn update_slots(
     data: Res<controls::items::Data>,
     catalogs: Res<Assets<Catalog>>,
     screen: Res<Screen>,
-    (skill_data, skill_tables, resource_max): (Res<crate::gameplay::skills::SkillData>, Res<Assets<crate::gameplay::skills::SkillTable>>, Res<crate::gameplay::stats::ResourceMax>),
+    (skill_data, skill_tables, resource_max, char_stats): (Res<crate::gameplay::skills::SkillData>, Res<Assets<crate::gameplay::skills::SkillTable>>, Res<crate::gameplay::stats::ResourceMax>, Res<crate::gameplay::stats::CharacterStats>),
     (cooldowns, time, pointer): (Res<crate::gameplay::skills::SkillCooldowns>, Res<Time<Real>>, Res<controls::Pointer>),
 ) {
     let Some(table) = icon_table.get(&loaded.icons) else { return };
@@ -1526,6 +1526,7 @@ fn update_slots(
         // (crate::gameplay::skills cast_input refuses it), for every class.
         let dim = resource.is_some_and(|r| skill.as_deref()
             .and_then(|id| crate::gameplay::skills::skill_cost_by_id(&skill_data, &skill_tables, id, resource_max.0))
+            .map(|cost| cost * char_stats.skill_cost_factor())
             .is_some_and(|cost| r + 1e-3 < cost));
         // A skill cooling down (cast_input refuses it until then) gets a dark
         // sweep over its icon, redrawn in COOLDOWN_STEPS steps as it turns.

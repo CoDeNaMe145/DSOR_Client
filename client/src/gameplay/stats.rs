@@ -53,6 +53,12 @@ impl CharacterStats {
          (5.7143,6.25),(8.0,8.3333),(13.3333,12.5),(40.0,25.0)]
             .into_iter().take_while(|(threshold,_)| raw+1e-9 >= *threshold).last().map_or(1.0, |(_,rate)| rate)
     }
+    /// What the player's skills cost relative to their ResourceCost (1 without
+    /// a modifier; 0 inside Banner of War).
+    pub fn skill_cost_factor(&self) -> f32 {
+        self.value("SkillCostFactor").unwrap_or(1.0).max(0.0)
+    }
+
     pub fn movement_speed(&self) -> Option<f32> {
         self.value("MovementSpeed").map(|v| v + self.value("MovementBonus").unwrap_or(0.0).max(0.0))
     }

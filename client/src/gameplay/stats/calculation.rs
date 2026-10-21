@@ -329,6 +329,10 @@ pub fn calculate(d: &StatsData, class: &str, level: u32, inventory: &InventorySt
             // Keep additional authored attribute programs available to UI and
             // consumers without interpreting conditional/skill registrations.
             "finaldamageincrease"|"finaldamagereduction" => add(&i.kind),
+            // What the player's skills cost (Banner of War's
+            // ResourceCost:$0,relative,player_skills, $0 -1: free inside it).
+            // UNVERIFIED: scopes naming one skill group are not applied.
+            "resourcecost" if i.relative() && i.has("player_skills") => add("skill_cost"),
             _ => (),
         }
     }
@@ -350,6 +354,7 @@ pub fn calculate(d: &StatsData, class: &str, level: u32, inventory: &InventorySt
     let limits = d.attrs.get("MovementSpeed").copied().unwrap_or([5.0,1.0,15.0]);
     put("MovementSpeed", a("movement").value(p.run_speed as f64+eq("movement")).clamp(limits[1] as f64, limits[2] as f64));
     put("MovementBonus", a("movement_bonus").absolute);
+    put("SkillCostFactor", a("skill_cost").value(1.0).max(0.0));
     put("Armor", a("physical").value(p.armor as f64+eq("physical")).max(0.0));
     for (index,key) in ELEMENTS.iter().enumerate() {
         put(["FireResistance","IceResistance","LightningResistance","DarkMagicResistance","PoisonResistance"][index],

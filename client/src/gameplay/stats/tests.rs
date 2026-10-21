@@ -49,3 +49,18 @@ fn animation_rate_uses_the_server_breakpoints() {
         assert!((stats.animation_speed()-expected).abs() < 1e-6);
     }
 }
+
+#[test]
+fn banner_of_war_makes_the_player_skills_free() {
+    // skill_defiance_buff_skill_costs (5530): ResourceCost:$0,relative,player_skills, $0 -1.
+    let mut fixture: serde_json::Value = serde_json::from_str(include_str!("../../../tests/fixtures/character_stats.json")).unwrap();
+    fixture["data"]["combat"]["statuses"]["5530"] = serde_json::json!({"id": "skill_defiance_buff_skill_costs", "stacks": 1,
+        "modifiers": [["resourcecost", ["$0", "relative", "player_skills"]]]});
+    let data: StatsData = serde_json::from_value(fixture["data"].clone()).unwrap();
+    let inventory = crate::gameplay::inventory::InventoryState::default();
+    let banner = StatusEffectElement { index: 5530, instance: 1,
+        tail: Some(StatusEffectTail { parameters: vec![-1.0], ..default() }), ..default() };
+    let factor = |effects: Vec<StatusEffectElement>| CharacterStats(calculation::calculate(&data, "warrior", 1, &inventory, effects)).skill_cost_factor();
+    assert_eq!(factor(vec![]), 1.0);
+    assert_eq!(factor(vec![banner]), 0.0);
+}
