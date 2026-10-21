@@ -385,6 +385,10 @@ pub struct SkillEvent {
     pub target: Option<u32>,
     /// The game tick the skill starts at (the command's own).
     pub start_tick: u32,
+    /// The server's execution context frame (SkillServerData +72): the
+    /// caster's LoopStartFrame (Shifted and bullet skills) or HitFrame (the
+    /// others), already scaled by its attack speed.
+    pub phase_frame: Option<u32>,
 }
 
 /// One NewNPCCommand: the template, the level Guid (hex) and where.
@@ -1315,12 +1319,13 @@ impl Net {
     }
 
     /// A game command to the map server, reliable ordered.
-    fn skill_event(&mut self, actor: Option<u32>, base: &dsor_proto::commands::combat::SkillBase, points: Vec<[f32; 3]>, target: Option<u32>) {
+    fn skill_event(&mut self, actor: Option<u32>, base: &dsor_proto::commands::combat::SkillBase, server: Option<&dsor_proto::commands::combat::SkillServerData>, points: Vec<[f32; 3]>, target: Option<u32>) {
         let Some(actor) = actor else { return };
         if Some(actor) == self.local_actor {
             return;
         }
-        self.skill_events.push(SkillEvent { actor, wire: base.skill_id, heading: base.heading, points, target: target.filter(|id| *id != 0 && *id != u32::MAX), start_tick: base.start_tick });
+        let phase_frame = server.map(|s| s.phase_frame).filter(|f| *f > 0);
+        self.skill_events.push(SkillEvent { actor, wire: base.skill_id, heading: base.heading, points, target: target.filter(|id| *id != 0 && *id != u32::MAX), start_tick: base.start_tick, phase_frame });
     }
 
     /// Put the local player (back) on the map: spawned by spawn_local, the old one
@@ -1678,13 +1683,13 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
         ServerCommand::NewTrap(t) => net.trap_events.push(TrapEvent { id: t.trap_id, template: t.template.clone(), position: Vec3::from(t.position), heading: t.heading }),
         ServerCommand::TrapTripped(t) => net.traps_tripped.push(t.trap_id),
         ServerCommand::DiscardTrap(t) => net.traps_gone.push(t.trap_id),
-        ServerCommand::Skill(c) => net.skill_event(actor, &c.base, Vec::new(), None),
-        ServerCommand::TargetSkill(c) => net.skill_event(actor, &c.base, Vec::new(), Some(c.target)),
-        ServerCommand::BulletSkill(c) => net.skill_event(actor, &c.base, Vec::new(), None),
+        ServerCommand::Skill(c) => net.skill_event(actor, &c.base, c.server.as_ref(), Vec::new(), None),
+        ServerCommand::TargetSkill(c) => net.skill_event(actor, &c.base, c.server.as_ref(), Vec::new(), Some(c.target)),
+        ServerCommand::BulletSkill(c) => net.skill_event(actor, &c.base, c.server.as_ref(), Vec::new(), None),
         // Monsters' aimed projectiles (release261: the server sends them too).
-        ServerCommand::TargetBulletSkill(c) => net.skill_event(actor, &c.base, c.points.clone(), Some(c.target)),
-        ServerCommand::TargetPointBulletSkill(c) => net.skill_event(actor, &c.base, c.points.clone(), None),
-        ServerCommand::ShiftedSkill(c) => net.skill_event(actor, &c.base, c.points.clone(), None),
+        ServerCommand::TargetBulletSkill(c) => net.skill_event(actor, &c.base, c.server.as_ref(), c.points.clone(), Some(c.target)),
+        ServerCommand::TargetPointBulletSkill(c) => net.skill_event(actor, &c.base, c.server.as_ref(), c.points.clone(), None),
+        ServerCommand::ShiftedSkill(c) => net.skill_event(actor, &c.base, c.server.as_ref(), c.points.clone(), None),
         ServerCommand::NewNpc(n) => {
             let Some(actor) = actor else { return };
             let guid: String = n.guid.iter().map(|b| format!("{b:02X}")).collect();

@@ -596,7 +596,16 @@ impl GltfExtensionHandler for NebulaStates {
         if raw.contains("\"dsor_sprite\":true") {
             entity.insert(FacesViewer);
         }
-        if raw.contains("dsor_uvanim") || raw.contains("dsor_vector") {
+        // envvertexanim (grass, leaves, the war banner's flag) is Nebula's wind
+        // shader: its Velocity [10, 0, 0.2] and Vector0/1 drive the vertex sway
+        // (model_variant.rs: its vertex colours are the wind weights), not a
+        // texture scroll. Scrolled at 10 UV/s, the banner's cut-out cloth
+        // jumped about 0.17 UV a frame and strobed ("Banner of War flickering").
+        // UNVERIFIED: the sway itself is not drawn, the flag stays still.
+        let wind = gltf_node.mesh().is_some_and(|m| {
+            m.primitives().any(|p| p.material().extras().as_ref().is_some_and(|e| e.get().contains("shd:envvertexanim")))
+        });
+        if !wind && (raw.contains("dsor_uvanim") || raw.contains("dsor_vector")) {
             if let Some(uv) = serde_json::from_str::<serde_json::Value>(raw).ok().and_then(|v| UvAnim::from_extras(&v)) {
                 entity.insert(uv);
             }
@@ -708,6 +717,12 @@ impl GltfExtensionHandler for NebulaStates {
                     base.alpha_mode = AlphaMode::Add;
                     base.fog_enabled = false;
                     base.base_color = Color::WHITE;
+                    // The shell is often the very mesh of the solid surface under
+                    // it (Spike Shield: the glow node is the shield's own mesh).
+                    // Nebula's vs pushes it out by FresnelBias x 0.1; without that
+                    // push the two z-fought. A small depth bias puts the shell in
+                    // front instead. UNVERIFIED: not the authored push itself.
+                    base.depth_bias = 4.0;
                 }
                 Kind::Character => {
                     // The node's MatSpecularIntensity, as on every other lit surface.
@@ -734,7 +749,15 @@ impl GltfExtensionHandler for NebulaStates {
         match state {
             Some(State::Decal) => {
                 m.alpha_mode = AlphaMode::Blend;
-                m.depth_bias = crate::rendering::decals::DECAL_DEPTH_BIAS;
+                // The map's decals only: bevy also passes depth_bias to the GPU
+                // as a constant depth bias, and -1000 sank an effect's flat decal
+                // (drawn 4 cm over the ground, crate::rendering::decals) in and out
+                // of the ground as the camera moved: Banner of War's and Spike
+                // Shield's circles flickered. An effect's decal sorts as any
+                // other surface of its effect.
+                if !load_context.path().path().starts_with("effects") && !load_context.path().path().to_string_lossy().starts_with("effects_") {
+                    m.depth_bias = crate::rendering::decals::DECAL_DEPTH_BIAS;
+                }
                 // The node's MatSpecularIntensity, as on lit surfaces (specular_scale):
                 // the decal ps adds specMap x MatSpecularIntensity x the light
                 // buffer's highlight, none at 0. With Bevy's default sheen every

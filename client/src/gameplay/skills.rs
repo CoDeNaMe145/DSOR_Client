@@ -630,8 +630,30 @@ fn perform(
             // skill. EVIDENCE: BulletSkillVisualizer 0x5ECA7A / 0x5EC837: from
             // start + LoopStartFrame, at the target point turned to the aim heading,
             // stretched to last HitFrame ticks.
+            // The stretch is the sequence's phase track, not its whole length: the
+            // tail (meteor_bullet 50..100, lightningstrike_bullet 30..50) plays
+            // after the impact at that same rate. EVIDENCE (release261):
+            // ConnectWithTrackSequencer 0x14034cc84 passes numPhaseFrames (the
+            // phase track's end - start, 0x14034d19f) to
+            // ShiftedSkillVisualizer::CalculateSequenceFPS 0x14034a714, which
+            // returns numPhaseFrames / (HitFrame * 0.04 s). FAILURE: the whole
+            // length played meteor 1.2 s and lightning 0.56 s ahead of their damage.
             let impact_rate = if skill.hit_frame < 25 { rate } else { 1.0 };
-            let visual_rate = sequences.0.get(&skill.shifted).map(|q| q.length as f32 / skill.hit_frame.max(1) as f32 * impact_rate).unwrap_or(1.0);
+            let visual_rate = sequences
+                .0
+                .get(&skill.shifted)
+                .map(|q| {
+                    let frames = q
+                        .tracks
+                        .iter()
+                        .find_map(|t| match t {
+                            Track::Phase { start, end } if end > start => Some((end - start) as f32),
+                            _ => None,
+                        })
+                        .unwrap_or(q.length as f32);
+                    frames / skill.hit_frame.max(1) as f32 * impact_rate
+                })
+                .unwrap_or(1.0);
             commands.spawn(Pending {
                 after: skill.loop_start as f32 / FPS / rate,
                 what: PendingKind::Sequence { name: skill.shifted.clone(), at: Transform::from_translation(point).with_rotation(entity_rotation(facing)), rate: visual_rate },
@@ -1115,7 +1137,18 @@ fn remote_skills(
         //   attack visually passed through me or missed, but I still took the
         //   damage".
         let aim = ev.target.filter(|_| skill.bullet.is_some()).and_then(|t| chests.get(&t).copied());
-        perform(&mut commands, skill, sequences, e, character, tf.translation, facing, point, Some(ev.actor), aim, ev.target, 1.0);
+        // Its own attack speed, from the frame the server scaled by it: the
+        // cast's visuals keep time with the blow the server times the same way.
+        // They played at 1.0, so a fast caster's meteor or lightning fell after
+        // its damage. UNVERIFIED: the server's speed multiplier and rounding
+        // (presence_visuals.py) stand for the original's.
+        let base = if skill.kind == "Shifted" || skill.bullet.is_some() { skill.loop_start } else { skill.hit_frame };
+        let rate = ev
+            .phase_frame
+            .filter(|_| base > 0)
+            .map(|f| (base as f32 / f as f32).clamp(0.1, 10.0))
+            .unwrap_or(1.0);
+        perform(&mut commands, skill, sequences, e, character, tf.translation, facing, point, Some(ev.actor), aim, ev.target, rate);
     }
 }
 
@@ -2374,6 +2407,20 @@ fn status_visuals(
         };
         let player = play_with(commands, seq.clone(), holder, anchor, seq.repeat, true);
         let ends = seconds.filter(|s| *s > 0.0).map(|s| now + s).or(if seq.repeat { Some(now + def.duration.max(0.5)) } else { None });
+        // A status with both a start and a tick sequence plays both: the start
+        // once, the tick for as long as it lasts (warrior_spikedShield_buff:
+        // start warrior_spikedShield, tick warrior_spikedshield_decal, its
+        // ground circle). Only the start was played, the circle never showed.
+        // UNVERIFIED: replayed each TickRate in the original; looped here.
+        let tick = StatusDef::first(&def.start)
+            .and(StatusDef::first(&def.tick))
+            .filter(|t| StatusDef::first(&def.start) != Some(*t))
+            .and_then(|n| sequences.0.get(n));
+        if let Some(tick) = tick {
+            let player = play_with(commands, tick.clone(), holder, anchor, true, true);
+            let ends = seconds.filter(|s| *s > 0.0).map(|s| now + s).or(Some(now + def.duration.max(0.5)));
+            commands.spawn(StatusVisual { key, player, anchor, holder, ends, end: None });
+        }
         commands.spawn(StatusVisual {
             key,
             player,
@@ -2869,7 +2916,7 @@ mod bullet_tests {
             let root = app.world_mut().spawn((Transform::default(), CharacterAnim::default(),
                 RemotePlayer { actor: 41, target: stop, last_record: Some((stop, 100)), ..default() })).id();
             app.world_mut().non_send_mut::<Net>().skill_events.push(crate::net::SkillEvent {
-                actor: 41, wire: 1, heading: 0., points: Vec::new(), target: None, start_tick: 100,
+                actor: 41, wire: 1, heading: 0., points: Vec::new(), target: None, start_tick: 100, phase_frame: None,
             });
             app.world_mut().run_system_once(remote_skills).unwrap();
             let r = app.world().get::<RemotePlayer>(root).unwrap();
