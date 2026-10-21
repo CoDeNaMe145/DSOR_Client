@@ -179,12 +179,16 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         if d > 0.0 && x > 0.0 {
             g = x * p / d * 0.5;
         }
-        out.color = vec4<f32>(surface.p1.rgb * surface.p0.y * g * fog_clear(in), 1.0);
+        // Alpha 0: bevy blends AlphaMode::Add as premultiplied (src + (1 - src.a)
+        // x dst) and counts on premultiply_alpha, which this early return skips,
+        // to zero it. At 1 the shell replaced what was behind it: Spike Shield's
+        // glow, the shield's own mesh biased in front, drew it solid black.
+        out.color = vec4<f32>(surface.p1.rgb * surface.p0.y * g * fog_clear(in), 0.0);
 #ifdef DSOR_AMBIENCE
         // The gamma scene target (ambience.wgsl encode_scene): the shell adds
         // MatDiffuse as stored x Amplitude x g, the original's sum, unconverted.
         if ambience.output.x != 0.0 {
-            out.color = vec4<f32>(raw(surface.p1.rgb) * surface.p0.y * g * fog_clear(in), 1.0);
+            out.color = vec4<f32>(raw(surface.p1.rgb) * surface.p0.y * g * fog_clear(in), 0.0);
         }
 #endif
         return out;
