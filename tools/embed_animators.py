@@ -72,6 +72,28 @@ def sprite_nodes(d):
         at = i
 
 
+def flat_subtree(doc, nodes, start):
+    """Whether the meshes under a node lie flat: their height (local Y) under a
+    fifth of their narrower width (X, Z). None without meshes."""
+    lo, hi = [1e30] * 3, [-1e30] * 3
+    stack, seen = [start], False
+    while stack:
+        nd = nodes[stack.pop()]
+        stack.extend(nd.get("children", []))
+        if "mesh" not in nd:
+            continue
+        for prim in doc["meshes"][nd["mesh"]].get("primitives", []):
+            acc = doc["accessors"][prim["attributes"]["POSITION"]]
+            if "min" in acc and "max" in acc:
+                seen = True
+                lo = [min(a, b) for a, b in zip(lo, acc["min"])]
+                hi = [max(a, b) for a, b in zip(hi, acc["max"])]
+    if not seen:
+        return None
+    x, y, z = (b - a for a, b in zip(lo, hi))
+    return y < 0.2 * min(x, z)
+
+
 UV_KEYS = {b"KPDA": "pos", b"KSDA": "scale", b"KEDA": "rot"}
 
 
@@ -315,6 +337,7 @@ for root, _dirs, files in os.walk(models):
             nd.get("extras", {}).pop("dsor_anim", None)
             nd.get("extras", {}).pop("dsor_shader", None)
             nd.get("extras", {}).pop("dsor_sprite", None)
+            nd.get("extras", {}).pop("dsor_sprite_upright", None)
             nd.get("extras", {}).pop("dsor_uvanim", None)
             nd.get("extras", {}).pop("dsor_vector", None)
             nd.get("extras", {}).pop("dsor_pass", None)
@@ -322,6 +345,18 @@ for root, _dirs, files in os.walk(models):
             if nd.get("name") in sprites:
                 nd.setdefault("extras", {})["dsor_sprite"] = True
                 stats["sprite nodes"] = stats.get("sprite nodes", 0) + 1
+        # A billboard over geometry lying flat (rings, ground circles) turns to
+        # the viewer about the vertical axis only (client FacesViewerUpright).
+        # FAILURE: turned fully to the camera, the mage's Singularity rings
+        #   (mage_arcanevortex_loop rotating_vortex, 31 wide by 2 high) stood
+        #   tilted ("la singularite est toujours inclinee a 70 degres",
+        #   2026-10-21).
+        # UNVERIFIED: how the 2018 engine orients such a billboard (no Nebula
+        #   source at hand); a quad sprite (upright geometry) is unchanged.
+        for i, nd in enumerate(nodes):
+            if nd.get("extras", {}).get("dsor_sprite") and flat_subtree(doc, nodes, i):
+                nd["extras"]["dsor_sprite_upright"] = True
+                stats["upright sprites"] = stats.get("upright sprites", 0) + 1
         shaded = 0
         for name, params in floats:
             for nd in nodes:

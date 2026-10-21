@@ -182,19 +182,29 @@ impl VarTrack {
 #[reflect(Component, Default)]
 pub struct FacesViewer;
 
+/// A billboard that turns to the viewer about the vertical axis only, never
+/// tilting (tools/embed_animators.py upright_sprites: n3 "HCRH" = 1): ground
+/// markers, the Singularity's rings.
+#[derive(Component, Reflect, Default, Clone)]
+#[reflect(Component, Default)]
+pub struct FacesViewerUpright;
+
 /// After the animation pose: each sprite node's world rotation becomes the
-/// camera's (its translation and scale stay the animation's).
+/// camera's (its translation and scale stay the animation's); an upright one
+/// takes only the camera's heading.
 fn face_viewer(
     cameras: Query<&GlobalTransform, (With<Camera3d>, Without<crate::rendering::highlight::HighlightCamera>)>,
-    mut sprites: Query<(&mut Transform, &ChildOf), With<FacesViewer>>,
+    mut sprites: Query<(&mut Transform, &ChildOf, Has<FacesViewerUpright>), With<FacesViewer>>,
     parents: Query<&GlobalTransform>,
 ) {
     let Some(cam) = cameras.iter().next() else { return };
     let cam_rot = cam.compute_transform().rotation;
-    for (mut tf, parent) in &mut sprites {
+    let (yaw, _, _) = cam_rot.to_euler(EulerRot::YXZ);
+    let cam_heading = Quat::from_rotation_y(yaw);
+    for (mut tf, parent, upright) in &mut sprites {
         let Ok(p) = parents.get(parent.parent()) else { continue };
         let parent_rot = p.compute_transform().rotation;
-        tf.rotation = parent_rot.inverse() * cam_rot;
+        tf.rotation = parent_rot.inverse() * if upright { cam_heading } else { cam_rot };
     }
 }
 
@@ -595,6 +605,7 @@ impl GltfExtensionHandler for NebulaStates {
         let raw = extras.get();
         if raw.contains("\"dsor_sprite\":true") {
             entity.insert(FacesViewer);
+            if raw.contains("\"dsor_sprite_upright\":true") { entity.insert(FacesViewerUpright); }
         }
         // envvertexanim (grass, leaves, the war banner's flag) is Nebula's wind
         // shader: its Velocity [10, 0, 0.2] and Vector0/1 drive the vertex sway
@@ -913,7 +924,7 @@ impl Plugin for MaterialsPlugin {
         npc_shared::install(app);
         // Scene components must be reflected to be instanced.
         app.register_type::<DecalVolume>().register_type::<DecalTiling>();
-        app.register_type::<ShaderAnim>().register_type::<VarTrack>().register_type::<FacesViewer>();
+        app.register_type::<ShaderAnim>().register_type::<VarTrack>().register_type::<FacesViewer>().register_type::<FacesViewerUpright>();
         app.add_systems(
             PostUpdate,
             face_viewer.after(bevy::app::AnimationSystems).before(TransformSystems::Propagate),
