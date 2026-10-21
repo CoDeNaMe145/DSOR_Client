@@ -630,8 +630,30 @@ fn perform(
             // skill. EVIDENCE: BulletSkillVisualizer 0x5ECA7A / 0x5EC837: from
             // start + LoopStartFrame, at the target point turned to the aim heading,
             // stretched to last HitFrame ticks.
+            // The stretch is the sequence's phase track, not its whole length: the
+            // tail (meteor_bullet 50..100, lightningstrike_bullet 30..50) plays
+            // after the impact at that same rate. EVIDENCE (release261):
+            // ConnectWithTrackSequencer 0x14034cc84 passes numPhaseFrames (the
+            // phase track's end - start, 0x14034d19f) to
+            // ShiftedSkillVisualizer::CalculateSequenceFPS 0x14034a714, which
+            // returns numPhaseFrames / (HitFrame * 0.04 s). FAILURE: the whole
+            // length played meteor 1.2 s and lightning 0.56 s ahead of their damage.
             let impact_rate = if skill.hit_frame < 25 { rate } else { 1.0 };
-            let visual_rate = sequences.0.get(&skill.shifted).map(|q| q.length as f32 / skill.hit_frame.max(1) as f32 * impact_rate).unwrap_or(1.0);
+            let visual_rate = sequences
+                .0
+                .get(&skill.shifted)
+                .map(|q| {
+                    let frames = q
+                        .tracks
+                        .iter()
+                        .find_map(|t| match t {
+                            Track::Phase { start, end } if end > start => Some((end - start) as f32),
+                            _ => None,
+                        })
+                        .unwrap_or(q.length as f32);
+                    frames / skill.hit_frame.max(1) as f32 * impact_rate
+                })
+                .unwrap_or(1.0);
             commands.spawn(Pending {
                 after: skill.loop_start as f32 / FPS / rate,
                 what: PendingKind::Sequence { name: skill.shifted.clone(), at: Transform::from_translation(point).with_rotation(entity_rotation(facing)), rate: visual_rate },
@@ -2374,6 +2396,20 @@ fn status_visuals(
         };
         let player = play_with(commands, seq.clone(), holder, anchor, seq.repeat, true);
         let ends = seconds.filter(|s| *s > 0.0).map(|s| now + s).or(if seq.repeat { Some(now + def.duration.max(0.5)) } else { None });
+        // A status with both a start and a tick sequence plays both: the start
+        // once, the tick for as long as it lasts (warrior_spikedShield_buff:
+        // start warrior_spikedShield, tick warrior_spikedshield_decal, its
+        // ground circle). Only the start was played, the circle never showed.
+        // UNVERIFIED: replayed each TickRate in the original; looped here.
+        let tick = StatusDef::first(&def.start)
+            .and(StatusDef::first(&def.tick))
+            .filter(|t| StatusDef::first(&def.start) != Some(*t))
+            .and_then(|n| sequences.0.get(n));
+        if let Some(tick) = tick {
+            let player = play_with(commands, tick.clone(), holder, anchor, true, true);
+            let ends = seconds.filter(|s| *s > 0.0).map(|s| now + s).or(Some(now + def.duration.max(0.5)));
+            commands.spawn(StatusVisual { key, player, anchor, holder, ends, end: None });
+        }
         commands.spawn(StatusVisual {
             key,
             player,
