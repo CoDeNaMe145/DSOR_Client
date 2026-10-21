@@ -2039,6 +2039,11 @@ fn move_remotes(
         let held = r.held > 0.0;
         r.held = (r.held - time.delta_secs()).max(0.0);
         // Its stretch goes on between records; a skill's hold stops it.
+        // Walking a record's stretch counts as moving even when the body keeps
+        // within a few centimetres of it: at its true speed a slow monster
+        // never opened the 5 cm gap below and stood in its idle while gliding
+        // (the Bog Beast at 0.7 m/s, 2026-10-21).
+        let travelling = !held && r.travel.is_some_and(|t| t.elapsed < t.seconds && t.velocity != Vec3::ZERO);
         if !held {
             if let Some(at) = r.travel.as_mut().map(|t| t.advance(time.delta_secs())) {
                 r.target = remote_ground_position(mesh, at);
@@ -2088,7 +2093,7 @@ fn move_remotes(
         // CONTRACT: a short grace before standing: records arrive 25 a second and a
         //   remote player reaches each one a little early, so without it the run
         //   restarted at every record ("les animations ne se jouent pas entierement").
-        r.still_for = if moving { 0.0 } else { r.still_for + time.delta_secs() };
+        r.still_for = if moving || travelling { 0.0 } else { r.still_for + time.delta_secs() };
         let wanted = if r.still_for < RUN_GRACE {
             AnimState::Run
         } else if matches!(anim.state, AnimState::Named(_)) {
