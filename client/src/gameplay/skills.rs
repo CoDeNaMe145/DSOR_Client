@@ -1137,7 +1137,18 @@ fn remote_skills(
         //   attack visually passed through me or missed, but I still took the
         //   damage".
         let aim = ev.target.filter(|_| skill.bullet.is_some()).and_then(|t| chests.get(&t).copied());
-        perform(&mut commands, skill, sequences, e, character, tf.translation, facing, point, Some(ev.actor), aim, ev.target, 1.0);
+        // Its own attack speed, from the frame the server scaled by it: the
+        // cast's visuals keep time with the blow the server times the same way.
+        // They played at 1.0, so a fast caster's meteor or lightning fell after
+        // its damage. UNVERIFIED: the server's speed multiplier and rounding
+        // (presence_visuals.py) stand for the original's.
+        let base = if skill.kind == "Shifted" || skill.bullet.is_some() { skill.loop_start } else { skill.hit_frame };
+        let rate = ev
+            .phase_frame
+            .filter(|_| base > 0)
+            .map(|f| (base as f32 / f as f32).clamp(0.1, 10.0))
+            .unwrap_or(1.0);
+        perform(&mut commands, skill, sequences, e, character, tf.translation, facing, point, Some(ev.actor), aim, ev.target, rate);
     }
 }
 
@@ -2905,7 +2916,7 @@ mod bullet_tests {
             let root = app.world_mut().spawn((Transform::default(), CharacterAnim::default(),
                 RemotePlayer { actor: 41, target: stop, last_record: Some((stop, 100)), ..default() })).id();
             app.world_mut().non_send_mut::<Net>().skill_events.push(crate::net::SkillEvent {
-                actor: 41, wire: 1, heading: 0., points: Vec::new(), target: None, start_tick: 100,
+                actor: 41, wire: 1, heading: 0., points: Vec::new(), target: None, start_tick: 100, phase_frame: None,
             });
             app.world_mut().run_system_once(remote_skills).unwrap();
             let r = app.world().get::<RemotePlayer>(root).unwrap();
