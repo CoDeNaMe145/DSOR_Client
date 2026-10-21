@@ -65,13 +65,21 @@ pub(super) fn section(window: &str, parts: &[&str]) -> Option<Section> {
         }
         "socialscreen" => {
             if has("InviteMultipleLabel") { return Some(page("social_overlay", 1)); }
+            // The lists' rows and scroll bars (systems::rosters) show on their tab;
+            // the List's own scroll bar on the tabs without a list.
+            if let Some(tab) = parts.iter().find_map(|p| super::systems::rosters::list_tab(p)) { return Some(page("social", tab as usize)); }
+            if has("List") && parts.iter().any(|p| matches!(*p, "ScrollbarBackground" | "ScrollUp" | "ScrollDown")) {
+                return Some(Section::Page("social", super::systems::rosters::EMPTY_TABS));
+            }
             for (name, index) in [("PanelSearch", 0), ("TableHeadSearch", 0), ("TableHeadFriends", 1),
                 ("OptionsFriends", 1), ("TableHeadGroup", 2), ("OptionsGroup", 2), ("TableHeadGuild", 3),
                 ("OptionsGuild", 3), ("LabelFoundGuildBackground", 3), ("TableHeadIgnore", 4),
                 ("LabelInvitePlayerBackground", 5), ("TableHeadGroupFinder", 6), ("OptionsGroupFinder", 6)] {
                 if has(name) { return Some(page("social", index)); }
             }
-            if has("MenuBackground") || has("DummyScrollbarDown") || has("DummyScrollbarUp") { return Some(Section::Hidden); }
+            // MenuBackground, the brown panels behind the column heads and the
+            // bottom controls, shows on every tab (systems::rosters draws it first).
+            if has("DummyScrollbarDown") || has("DummyScrollbarUp") { return Some(Section::Hidden); }
         }
         "leaderboards" => {
             // PlanarFissure: the October 2026 client's fourth board (no group
@@ -143,6 +151,8 @@ pub(super) fn action(window: &str, widget: &Widget) -> Option<Action> {
             }
         }
         "socialscreen" => {
+            // The invitation campaign (friend invites with rewards) has no server.
+            if leaf == "TabButtonInvite" { return Some(Action::Unavailable); }
             if let Some(i) = leaf.strip_prefix("TabButton").and_then(|name| SOCIAL_TABS.iter().position(|s| *s == name)) { return tab("social", i); }
             // The group and guild buttons send their requests (controls::social::answer).
             let social = match event {

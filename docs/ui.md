@@ -129,6 +129,8 @@ Drawn:
   resource bars, XP and wisdom bars with level labels, five quick slots plus
   left/right mouse slots, mount and home teleport; the money (`currencybar`), the menu buttons
   (`gamebar`), and the central navigation (`ingamemenu`);
+- the status effects on the player, above the action bar, and the hovered
+  monster's negative ones under its panel (see below);
 - menus: inventory (I: equipment slots, eight 7 x 4 bags, premium and loose-item bags),
   character sheet (C), current skill/talent window (S: `skilltalentswindow`),
   stickerbook (W: `collectorsalbum`, titled "Collector's Bag"),
@@ -144,6 +146,74 @@ skills). Wisdom starts at level 0, 0% progress and 0 available points, matching
 the server default. Both the HUD and wisdom tab use these defaults; server
 wisdom progression is not decoded yet. Late-loading layouts receive the current
 values without waiting for another stat update.
+
+## Status effects above the action bar
+
+`bottombar`'s `BuffBar` holds two rows of six slots, each with a time label
+(`DurN`): `Buffs` for the positive effects, filled from `Slot1` at the left, and
+`Debuffs` for the negative ones, `Slot1` at the right edge, filled towards the
+middle. `client/src/ui/controls/effects.rs` fills them from the effects the
+server runs on the player (`Net::stat_effects`, StatusEffectCommand on our
+actor).
+
+The client's database decides what shows and how
+(`tools/status_catalog.py` → `interface/status.catalog.json`, written whenever
+`export_ui.py` exports `bottombar`, or alone:
+`status_catalog.py <export_win32> <assets> <DSO_Godot>`):
+
+- `_Template_StatusEffect.Groups`: `BuffUI` goes on the positive half,
+  `DebuffUI` on the negative half; every other effect (boss idles, triggers,
+  aura carriers) is never drawn. The 79 marked effects without an icon in the
+  client are left out.
+- `IconBrush` is the image; `IconConfiguration` names its background and frame
+  (`_Template_IconConfig`: `statuseffect_buff` / `_debuff` on `frame_status`,
+  costumes on `bg_costume`...), drawn in the inventory's order.
+- The name is `db.statuseffect.table` `<LocaleId, else Id>Title`.
+
+One icon an effect. Its stack count (the slot's Icon text, outlined) is the
+element's occurrence + 1 (`spare`, the server's `field_18`), summed over the
+effect's instances and capped at `MaxStackSize`, as the character statistics
+count it. An effect keeps its slot while it runs: the server sends every
+refresh as a new instance, so the slots follow arrival order, not instance ids.
+Past six on a half, the permanent effects (costumes, pets, mounts) give way
+first, then the oldest. The time left is `end` minus `Net::server_tick` (both
+the server's milliseconds / 40), in the game's short units
+(`gui.window` `timeSecondsShort` "{0:s} s", then minutes, `hr`, `d`); an effect
+whose end tick is 0 is permanent and shows none.
+
+The bar stays click-through, as authored (no hit regions, not even for its
+labels). Hovering an occupied slot opens a card above it: the name, then one
+line a modifier, from the client's own texts (`gui.statuseffects.modifier`): a
+modifier's `#key` override, else the generic text of its kind and sign
+(`damageRelativePlus` "+ {0:s}% damage"). Values come from the element's wire
+parameters (`$0`), immutable actor variables or literals, times the stacks;
+progression-dependent ones (pet collection bonuses) read as an em dash. The
+card adds the stacks and the time left.
+
+### On the hovered monster
+
+The hovered monster's panel (`interactinfo`: name, health bar, level ring) gets
+a row of its negative (`DebuffUI`) effects under its bottom plate
+(`gothic_panel/LabelBottom`), centred on the health bar: six 22-pixel slots and
+their time labels, which `effects::prepare_target` adds to the layout
+(`Canvas/Label_bg/TargetEffects`; no original window has such a row). The icons
+draw, count and time out as on the bottom bar; the row centres what it shows.
+Its positive effects (enrages, auras) are not shown. The running effects of
+every other actor in view are kept by `Net::actor_effects` (StatusEffectCommand
+on that actor, stamped on each change; dropped when the actor is discarded or
+the map changes). The row only shows while the panel does, so its icons cannot
+be hovered: moving the pointer onto them leaves the monster.
+
+**Settings > Combat > Status effects on enemies** (on by default, saved as
+`monster_effects`; older settings files keep it on) turns the row off. As every
+preference, it waits for Apply.
+
+`DSOR_TEST_EFFECTS=<id>[:seconds[:stacks[:p0/p1...]]],...` gives the offline
+player these effects (seconds 0: permanent), for captures with
+`DSOR_UI_REPLAY`; they also count in the offline character statistics.
+`DSOR_TEST_TARGET_EFFECTS` (same format) gives them to each monster when it is
+first hovered; with `DSOR_TEST_MONSTER` and `DSOR_TEST_TARGET=1` (the nearest
+live monster counts as hovered) no pointer is needed.
 
 ## Per-frame cost
 
@@ -178,7 +248,11 @@ What this means for new interface code:
 - **Count rebuild work in `UiWork`**, and add a test that idle frames leave the
   counters alone (see `closed_windows_are_not_prepared_every_frame`,
   `views_are_built_only_for_open_windows_and_only_when_something_changed`,
-  `the_quest_list_is_rebuilt_only_when_something_changed`).
+  `the_quest_list_is_rebuilt_only_when_something_changed`,
+  `the_status_rows_are_reassigned_only_when_what_they_show_changes`).
+- **Something that counts down** (the status effects' time labels) computes
+  when it next reads differently and does nothing until then
+  (`controls::effects::sync`).
 
 These checks catch a regression:
 
@@ -273,7 +347,8 @@ gauges and quick slots cannot contribute artwork, fill bounds or hit regions.
 
 The original `locationmap` is a runtime drawing area with no map bitmap. Its
 client implementation (`local_map.rs`) projects the loaded navigation mesh into
-a transparent overlay: white boundary lines and captions, a faint neutral
+a transparent overlay, seen from straight above and turned with the camera's
+heading (never its pitch): white boundary lines and captions, a faint neutral
 walkable-area tint and the original green player dot. Friendly players use blue
 dots; enemies use red dots, including hostile players after faction updates.
 NPCs and props use their authored `LocationMapIcon`, including the distinct
@@ -428,6 +503,42 @@ until the chat server confirms membership (or login, for whispers). Leaving a
 group or guild disables that channel and selects an available channel instead;
 disconnecting disables all channel choices.
 
+## Social window
+
+`socialscreen` (F) is a systems window (`controls/systems/rosters.rs`): its
+lists are the authored row templates cloned per player, rebuilt when the server
+says something (`Net::ui_revision`) or a sort or scroll changes.
+
+- Opening it sends GroupList (type 0), GuildList and a PlayerQuery of kind 1:
+  the players on our map instance (the server leaves us out, at most 50). Enter,
+  in the search field or on its button, searches the name typed among every
+  character the server knows (kind 0; offline ones greyed); with an empty field
+  it lists the map again. Update repeats the last search and asks for the group
+  and the guild.
+- Search rows follow the game's `CreatePlayerListElement`: online or offline
+  icon (`icon_status_*`), name, class icon (`icon_member_*`), level and the
+  group status icon. The server sends no group membership for other players
+  (role 0xFF, its third flag set to "online"), so the icon marks our own group's
+  members and rows with a group role.
+- Group rows (GroupStatus): the leader on its template (star, blue name), the
+  member's map name, offline members greyed. Leave group needs a group, Found
+  group (group finder page) none.
+- Guild rows (GuildStatus): rank (Member, Officer, Guild master). The
+  foundation panel shows only outside a guild, Leave guild only inside one.
+- Ignore lists IgnoredStatus, which this server always sends empty. The Invite
+  tab (the friend-invite campaign) is disabled; Friends and the group finder
+  stay empty.
+- Each list shows 19 rows and scrolls with the wheel and its own arrows; the
+  column heads sort every list (up, down, off; the head shows the arrow). A row
+  opens the player menu (whisper, add friend, invite to group, ignore, trade).
+- `MenuBackground`, the brown panels behind the column heads and the bottom
+  controls, follows the window's contents in the layout; it is drawn before
+  them, its border line after. `struktur_hell.png`, the rows' tiled texture
+  (u from -1 to 3.5), is sampled repeating.
+
+`tools/ui_fixture_packets.py` adds a group, a guild and a 22-player search for
+offline captures (`DSOR_PACKET_REPLAY`, `DSOR_UI_OPEN=socialscreen`).
+
 ## NPC dialogue
 
 Left-clicking a talkable NPC follows a route on the navigation mesh and stops about
@@ -493,8 +604,8 @@ for the selected NPC in offline mode, including categories, prices and buyback.
   queue, the premium shop and the NPC desks (salvage, the `gemdeskwb` gem desk,
   workbench, transmog) are bound on their 2026 layouts
   (`client/src/ui/controls/systems.rs`, see docs/client-progress.md "The
-  systems' windows" and "The systems' windows on their 2026 layouts"); talent
-  allocation and the social rosters are not drawn yet. Lists scroll with the
+  systems' windows" and "The systems' windows on their 2026 layouts"), and so
+  is the social window; talent allocation is not drawn yet. Lists scroll with the
   wheel; their scroll handles follow but cannot be dragged. The album and the
   transmog desk show the sticker's or skin's icon where the game turns a 3D
   preview; the transmog desk's eye toggles have no server command and are
@@ -539,6 +650,16 @@ Escape to cancel capture. Assigning an occupied key clears its old action and
 identifies that action. Bindings drive gameplay, HUD captions and tooltips from
 one source. The modal blocks movement/casting and other window shortcuts while
 editing. Existing mouse attacks remain available alongside keyboard alternatives.
+Window keys: I inventory, C character, S skills, W collector's album, Q quests,
+M world map, Tab map overlay, F social, E events, L rankings, J battlegrounds.
+The bottom-left consumable is on G. A settings file saved before these defaults
+(`keymap` below 2) has its consumable moved from E to G, unless G is taken; a
+new window key another action already uses stays unbound.
+
+General also has "Show the Return Link button" and "Show the Return Check-in
+button" (on by default): the game bar's comeback event buttons
+(`ExclsiveactiveCodeBtn`, `RecalledSignInBtn`, no server behind them) hide on
+Apply.
 
 The full seventeen-entry server quickbar is retained: slots 0-7 are attacks,
 8-12 collection favourites, and 13-16 consumables. The HUD uses the original

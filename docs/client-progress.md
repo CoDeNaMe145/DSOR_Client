@@ -930,3 +930,117 @@ follows it; every layout below is checked against the server's own encoders
 Verified: **36 proto tests** (the regenerated `release261`, `systems` (58
 vectors), `shop` and `appearance` data) and **346 client tests passed** (15
 ignored). Not yet run online against the live server.
+
+## Status effects above the action bar (2026-10-21)
+
+The effects on the player now show in `bottombar`'s `BuffBar`: positive ones on
+its left half, negative ones on its right half, each with its icon, stack count
+and time left, and a hover card. Details: [docs/ui.md, "Status effects above
+the action bar"](ui.md#status-effects-above-the-action-bar).
+
+- `tools/status_catalog.py` (run by `export_ui.py` with `bottombar`, or alone)
+  writes `interface/status.catalog.json` from the October 2026 client's
+  database: 2087 effects (438 negative) marked `BuffUI` / `DebuffUI`, their
+  icons (248 new `icons/status_*` PNGs), `_Template_IconConfig` art, names and
+  hover lines from `gui.statuseffects.modifier`. 79 marked effects have no icon
+  in the client and are left out.
+- `client/src/ui/controls/effects.rs` fills the twelve authored slots from
+  `Net::stat_effects`: one icon an effect, stacks as the stats count them
+  (occurrence + 1, summed, capped at `MaxStackSize`), arrival order kept across
+  refreshes, permanent effects giving way past six, time left from the server
+  tick in the game's short units. The bar stays click-through.
+- Change-driven: the slots are reassigned on `Net::stat_revision`, the labels
+  rewritten when the next one is due. `UiWork::status_bars` and the `ui work:`
+  line count the assignments.
+- `DSOR_TEST_EFFECTS` gives the offline player effects for captures.
+
+Verified: **363 client tests passed** (15 ignored; 6 new), the 14 UI fixture
+tests pass with the converted assets. Offline Kingscity captures with
+`DSOR_TEST_EFFECTS` and `DSOR_UI_REPLAY` show both halves and the hover cards.
+`profile_native_maps.py kingscity` (debug build, with and without ticking
+effects): `ui work` 0 in every window after loading, including the status bars.
+The `system-profile` build: `effects::draw` 0.003 ms, `effects::sync` and
+`effects::fixture` 0.001 ms a frame; the UI module 0.243 ms. Logs:
+`.local/logs/map-fps/kingscity-statusbar-*`. Not yet seen online with
+server-sent effects.
+
+### Follow-up: the hovered monster's negative effects (2026-10-21)
+
+The hovered monster's panel now shows its negative effects in a row under its
+bottom plate, centred on the health bar, with the bottom bar's icons, stacks and
+timers ([docs/ui.md](ui.md#on-the-hovered-monster)). No original window has such
+a row: `effects::prepare_target` adds six slots and labels to `interactinfo`.
+`Net::actor_effects` now keeps the StatusEffect elements of every other actor in
+view (stamped per change, dropped on discard and map change). **Settings >
+Combat > Status effects on enemies** (default on, `monster_effects`) turns the
+row off. `DSOR_TEST_TARGET_EFFECTS` is the offline fixture.
+
+Verified: **365 client tests passed** (15 ignored; new: the monster row's
+layout and centring, its change-driven assignment across hover, effect, setting
+and panel changes, and the setting's default, row and draft). Offline Kingscity
+capture (`DSOR_TEST_MONSTER`, `DSOR_TEST_TARGET=1`): four negative effects under
+an Arisen Warrior's panel, its positive one left out. `system-profile` build with
+the monster hovered and timers running: `ui work` 0 after loading,
+`effects::sync` 0.002 ms and `effects::draw` 0.003 ms a frame, UI module
+0.277 ms. Log: `.local/logs/map-fps/kingscity-monsterrow-sysprof.log`. Not yet
+seen online.
+
+## The social window, window hotkeys and the game bar's comeback buttons (2026-10-21)
+
+The social window (`socialscreen`) shows what the server says about the players
+on our map, our group and our guild. It is a systems window
+(`controls/systems/rosters.rs`): a view rebuilt on `Net::ui_revision` and
+`State`, the authored row templates cloned. Details:
+[docs/ui.md, "Social window"](ui.md#social-window).
+
+- **Bottom background.** `MenuBackground` (the brown panels behind the column
+  heads and the bottom controls, a vertex-coloured `system/white` mesh) was
+  hidden because it follows the contents in the layout and covered them. It is
+  drawn first now, its border line still on top; the invite overlay's panel
+  likewise. Every tab, Ignore included, has its bottom panel.
+- **Search.** Opening the window sends GroupList, GuildList and PlayerQuery
+  kind 1 (the map's players); Enter searches a name (kind 0), Update asks
+  again. Rows follow the game's `CreatePlayerListElement` (release261
+  0x14052c55c, decompiled in DSOR_Server
+  `data/diagnostics/social-online-ui.annotated.txt`): status icon, name, class
+  icon, level, group icon.
+- **Group and guild** rows from GroupStatus and GuildStatus (leader star,
+  location, rank, offline greyed); Leave group, Leave guild and the foundations
+  enabled only when they can do something; the guild foundation panel only
+  outside a guild.
+- **Ignore** shows the server's (always empty) IgnoredStatus; **Invite** is
+  disabled. Lists scroll (wheel, their own arrows and handle), the column heads
+  sort, a row opens the player menu; tabs and icon buttons have hover titles.
+- **Protocol.** PlayerQuery (180) was read as u32, str, u8; the server's
+  layout is u8 kind, u32 query id, str text (the old 56-bit capture is a
+  kind-1 refresh). New: PlayerQueryResult (181, `Net::player_query`).
+  `tools/social_vectors.py` gained three vectors (regenerated against the live
+  tree; the 15 existing ones came out byte-identical).
+- **Assets.** `export_ui.py` converts the rows' runtime icons
+  (`icon_status_online/offline`, `icon_member_warrior/wizard/ranger/dwarf`;
+  converted into the local assets with DSO_Godot's converter, no full
+  re-export). `struktur_hell.png` is sampled repeating: the rows' UVs run from
+  -1 to 3.5, and clamped they smeared into streaks.
+- **Hotkeys.** E events, L rankings, J battlegrounds; the bottom-left
+  consumable moves from E to G. Bindings revision 2 (`keymap`) migrates saved
+  files the same way and leaves a new key unbound where the player already uses
+  it.
+- **Settings > General:** "Show the Return Link button" and "Show the Return
+  Check-in button" (`ExclsiveactiveCodeBtn`, `RecalledSignInBtn`; on by
+  default), each button its own page group on the game bar.
+- Not done: the Friends tab (BuddyList/BuddyStatus) and the group finder list.
+  The live server's PlayerQuery rows carry role 0xFF and "online" as their third
+  flag, so the group icon can only mark our own group's members; the server
+  would have to fill the row's role for other groups.
+
+Verified: **37 proto tests** (1 new) and **365 client tests passed** (15
+ignored; 5 new); with the converted assets 14 of the 15 ignored tests pass (the
+Kingscity doorway lighting test fails on the un-overridden assets, as before).
+Offline Kingscity captures with the fixture packets (`tools/ui_fixture_packets.py`
+now adds a group, a guild and a 22-player search) and a `DSOR_UI_REPLAY` route:
+every tab, sorting, scrolling, a row's player menu, the disabled Invite tab,
+E/L/J opening their windows, and a scratch settings file hiding both game bar
+buttons. `profile_native_maps.py kingscity social-open` (debug build, the social
+window open and filled): `ui work` 0 in every window after loading. Logs and
+crops: `.local/logs/social/`, `.local/logs/map-fps/kingscity-social-open*`. Not
+yet tried online against the live server.

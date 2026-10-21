@@ -1,6 +1,7 @@
-//! Groups and guilds against the release 261 server (tools/social_vectors.py): the
-//! statuses and answers as protocol/social_protocol.py writes them, and the client's
-//! requests as its decoders read them.
+//! Groups, guilds and the player search against the release 261 server
+//! (tools/social_vectors.py): the statuses and answers as protocol/social_protocol.py
+//! writes them, and the client's requests as its decoders read them.
+use dsor_proto::commands::player::PlayerQuery;
 use dsor_proto::commands::social::{Foundation, GroupInvitationResponse, GuildInvite, Leave};
 use dsor_proto::commands::{decode_message, encode_chain, ClientCommand, ServerCommand};
 use serde_json::Value;
@@ -79,6 +80,21 @@ fn guild_status_comes_with_its_members_and_the_ignore_list() {
 }
 
 #[test]
+fn a_player_query_answers_with_social_rows() {
+    let commands = decoded("player_query_result");
+    let (ServerCommand::PlayerQueryResult(q), actor) = &commands[0] else { panic!("{commands:?}") };
+    assert_eq!((q.query_id, *actor), (7, None));
+    let [here, away] = q.players.as_slice() else { panic!("{:?}", q.players) };
+    assert_eq!((here.player_id, here.actor, here.name.as_str(), here.map_name.as_str()), (33, 0x10316, "Someone", "Knights"));
+    assert_eq!((here.character_class, here.level, here.role), (2, 31, 0xFF));
+    assert!(here.online && here.available && here.invitable);
+    assert_eq!((away.actor, away.character_class, away.level), (0, 3, 12));
+    assert!(!away.online && !away.available && !away.invitable);
+    let (ServerCommand::PlayerQueryResult(none), _) = &decoded("player_query_empty")[0] else { panic!() };
+    assert_eq!((none.query_id, none.players.len()), (8, 0));
+}
+
+#[test]
 fn requests_encode_as_the_server_decodes_them() {
     let me = "Leader";
     let mut seen = 0;
@@ -90,10 +106,11 @@ fn requests_encode_as_the_server_decodes_them() {
             "guild_accept" => ClientCommand::GuildInvitationResponse(GroupInvitationResponse { code: 0, a: 11, b: 3, name: "Joiner".into() }),
             "leave_group" => ClientCommand::GroupLeave(Leave { unknown_u32_0: 0 }),
             "leave_guild" => ClientCommand::GuildLeave(Leave { unknown_u32_0: 0 }),
+            "player_query" => ClientCommand::PlayerQuery(PlayerQuery { kind: PlayerQuery::ON_MAP, query_id: 7, text: "Som".into() }),
             _ => continue,
         };
         seen += 1;
         assert_eq!(command.encode(), bytes(&v), "{}", v["name"]);
     }
-    assert_eq!(seen, 6);
+    assert_eq!(seen, 7);
 }

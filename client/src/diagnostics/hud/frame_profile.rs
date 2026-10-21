@@ -277,9 +277,9 @@ pub(super) fn sample(mut samples: Local<Samples>,
         // Idle, these stay at 0 (docs/ui.md, "Per-frame cost"); a count near
         // the frame count means the interface rebuilds something every frame.
         if let Some(work) = work.as_deref() {
-            info!("ui work: {} layouts prepared, {} system views, {} quest lists in {} frames",
+            info!("ui work: {} layouts prepared, {} system views, {} quest lists, {} status bars in {} frames",
                 work.layouts_prepared - reported_work.layouts_prepared, work.system_views - reported_work.system_views,
-                work.quest_lists - reported_work.quest_lists, frames.len());
+                work.quest_lists - reported_work.quest_lists, work.status_bars - reported_work.status_bars, frames.len());
             *reported_work = *work;
         }
         samples.frames.clear();

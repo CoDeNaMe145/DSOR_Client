@@ -16,6 +16,9 @@ pub(crate) struct Preferences {
     pub other_names: bool,
     pub combat_text: bool,
     pub camera_shake: bool,
+    /// The hovered monster's negative status effects under its health bar
+    /// (crate::ui::controls::effects).
+    pub monster_effects: bool,
     pub attack_hovered: bool,
     pub classic_cursor: bool,
     pub lock_bar: bool,
@@ -28,16 +31,34 @@ pub(crate) struct Preferences {
     pub music_volume: u8,
     pub ambient_volume: u8,
     pub effects_volume: u8,
+    /// The game bar's comeback event buttons: Return Link (ExclsiveactiveCodeBtn)
+    /// and Return Check-in (RecalledSignInBtn), shown or hidden.
+    pub return_link: bool,
+    pub return_checkin: bool,
     pub bindings: HashMap<String, String>,
+    /// The revision of the default bindings the file was saved with (0: saved
+    /// before revisions); `migrate` moves older files to the later defaults.
+    #[serde(default)]
+    pub keymap: u8,
 }
+
+/// 1 (2026-10-21): Quests on Q, the top-left consumable on U (was U and Q).
+/// 2 (2026-10-21): Events on E (the bottom-left consumable moves to G), the
+/// rankings on L, the battlegrounds on J.
+const KEYMAP: u8 = 2;
+
+/// The game bar's buttons a setting hides: each its own page group (shown on
+/// page 0), named as the button (crate::ui::controls::section).
+pub(super) const GAMEBAR_OPTIONAL: [&str; 2] = ["ExclsiveactiveCodeBtn", "RecalledSignInBtn"];
 
 impl Default for Preferences {
     fn default() -> Self {
         Self { tooltips: true, advanced_tooltips: false, own_name: true, other_names: true, combat_text: true,
-            camera_shake: true, attack_hovered: true, classic_cursor: false, lock_bar: false, fullscreen: false,
+            camera_shake: true, monster_effects: true, attack_hovered: true, classic_cursor: false, lock_bar: false, fullscreen: false,
             vsync: true, graphics: GraphicsSettings::default(), map_transparency: 45,
             audio_muted: false, master_volume: 80, music_volume: 60, ambient_volume: 60, effects_volume: 80,
-            bindings: shortcuts().into_iter().map(|(id, _, key)| (id, key.to_owned())).collect() }
+            return_link: true, return_checkin: true,
+            bindings: shortcuts().into_iter().map(|(id, _, key)| (id, key.to_owned())).collect(), keymap: KEYMAP }
     }
 }
 
@@ -50,15 +71,17 @@ pub(super) fn shortcuts() -> Vec<(String, String, &'static str)> {
         (4, "Action slot 3", "Digit3"), (5, "Action slot 4", "Digit4"),
         (6, "Action slot 5", "Digit5"), (7, "Alternate attack", "Digit6"),
         (8, "Mount", "KeyO"), (9, "Companion", "KeyH"),
-        (13, "Consumable: left top", "KeyQ"),
-        (14, "Consumable: left bottom", "KeyE"), (15, "Consumable: right top", "KeyR"),
+        (13, "Consumable: left top", "KeyU"),
+        (14, "Consumable: left bottom", "KeyG"), (15, "Consumable: right top", "KeyR"),
         (16, "Consumable: right bottom", "KeyT"),
     ] { result.push((format!("slot{slot}"), label.into(), key)); }
     for (id, label, key) in [
         ("inventory", "Inventory", "KeyI"), ("charactersheet", "Character", "KeyC"),
         ("skilltalentswindow", "Skills", "KeyS"), ("collectorsalbum", "Collector's album", "KeyW"),
-        ("questlog", "Quests", "KeyU"), ("locationmap", "Map overlay", "Tab"),
+        ("questlog", "Quests", "KeyQ"), ("locationmap", "Map overlay", "Tab"),
         ("travelmap", "World map", "KeyM"), ("socialscreen", "Social", "KeyF"),
+        ("eventwindow", "Events", "KeyE"), ("leaderboards", "Rankings", "KeyL"),
+        ("matchmakingwindow", "Battlegrounds", "KeyJ"),
         ("chat", "Expand / collapse chat", "KeyV"), ("essence", "Switch essences", "KeyX"),
         ("previous_bar", "Previous action bar", "BracketLeft"), ("next_bar", "Next action bar", "BracketRight"),
     ] { result.push((id.into(), label.into(), key)); }
@@ -118,8 +141,34 @@ impl Preferences {
         result.graphics.sharpening = result.graphics.sharpening.min(100);
         for volume in [&mut result.master_volume, &mut result.music_volume, &mut result.ambient_volume, &mut result.effects_volume] { *volume = (*volume).min(100); }
         for id in ["slot10", "slot11", "slot12"] { result.bindings.remove(id); }
+        result.migrate();
         for (id, _, key) in shortcuts() { result.bindings.entry(id).or_insert_with(|| key.into()); }
         result
+    }
+    /// Saved files keep every binding, so new defaults reach them only here; a
+    /// binding the player changed stays as it is.
+    fn migrate(&mut self) {
+        // A binding missing from the file had the defaults of its time.
+        let was = |p: &Self, id: &str, key: &str| p.bindings.get(id).is_none_or(|k| k == key);
+        if self.keymap < 1 && was(self, "questlog", "KeyU") && was(self, "slot13", "KeyQ") {
+            self.bindings.insert("questlog".into(), "KeyQ".into());
+            self.bindings.insert("slot13".into(), "KeyU".into());
+        }
+        if self.keymap < 2 {
+            let taken = |p: &Self, key: &str| p.bindings.values().any(|k| k == key);
+            // The bottom-left consumable leaves E to the events (G, unless taken).
+            if was(self, "slot14", "KeyE") {
+                let key = if taken(self, "KeyG") { "" } else { "KeyG" };
+                self.bindings.insert("slot14".into(), key.into());
+            }
+            // The new windows' keys, unless the player gave them to another action.
+            for (id, key) in [("eventwindow", "KeyE"), ("leaderboards", "KeyL"), ("matchmakingwindow", "KeyJ")] {
+                if self.bindings.contains_key(id) { continue; }
+                let key = if taken(self, key) { "" } else { key };
+                self.bindings.insert(id.into(), key.into());
+            }
+        }
+        self.keymap = KEYMAP;
     }
     fn save(&self) -> Result<(), String> {
         let raw = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
@@ -200,7 +249,9 @@ impl Settings {
                         "advanced_tooltips" => self.draft.advanced_tooltips ^= true,
                         "other_names" => self.draft.other_names ^= true, "combat_text" => self.draft.combat_text ^= true,
                         "camera_shake" => self.draft.camera_shake ^= true, "attack_hovered" => self.draft.attack_hovered ^= true,
+                        "monster_effects" => self.draft.monster_effects ^= true,
                         "classic_cursor" => self.draft.classic_cursor ^= true,
+                        "return_link" => self.draft.return_link ^= true, "return_checkin" => self.draft.return_checkin ^= true,
                         "lock_bar" => self.draft.lock_bar ^= true, "fullscreen" => self.draft.fullscreen ^= true,
                         "vsync" => self.draft.vsync ^= true,
                         "audio_muted" => self.draft.audio_muted ^= true,
@@ -218,7 +269,8 @@ impl Settings {
         let rows: Vec<(&str, &str, String)> = match self.tab {
             0 => vec![("tooltips", "Hover descriptions", on(p.tooltips)),
                 ("advanced_tooltips", "Always show advanced tooltips", on(p.advanced_tooltips)), ("own_name", "Display your name", on(p.own_name)),
-                ("other_names", "Display other names", on(p.other_names)), ("map_transparency", "Map transparency", format!("{}%", p.map_transparency))],
+                ("other_names", "Display other names", on(p.other_names)), ("map_transparency", "Map transparency", format!("{}%", p.map_transparency)),
+                ("return_link", "Show the Return Link button", on(p.return_link)), ("return_checkin", "Show the Return Check-in button", on(p.return_checkin))],
             1 => {
                 let mut rows = vec![("fullscreen", "Fullscreen", on(p.fullscreen)), ("vsync", "Vertical sync", on(p.vsync))];
                 rows.extend(p.graphics.rows(self.dlss_availability));
@@ -238,7 +290,7 @@ impl Settings {
                 ("attack_hovered", "Left click attacks hovered enemies", on(p.attack_hovered)),
                 ("fixed", "Hold Shift + left click", "Attack in place".into()), ("fixed", "Hold right click", "Secondary attack".into())],
             _ => vec![("combat_text", "Floating combat text", on(p.combat_text)), ("camera_shake", "Camera shake", on(p.camera_shake)),
-                ("lock_bar", "Lock action bar", on(p.lock_bar))],
+                ("lock_bar", "Lock action bar", on(p.lock_bar)), ("monster_effects", "Status effects on enemies", on(p.monster_effects))],
         };
         rows.into_iter().map(|(id, label, v)| (id.into(), label.into(), v)).collect()
     }
@@ -414,6 +466,14 @@ pub(in crate::ui) fn sync(settings: ResMut<Settings>, mut windows: Query<(&Windo
         for (w,mut c,_) in &mut windows { if w.0 == "bottombar" { c.locked = settings.current.lock_bar; } }
         *applied = Some(settings.current.clone());
     }
+    // The game bar's optional buttons (page 1 hides them), whenever it is built.
+    let hidden = [!settings.current.return_link, !settings.current.return_checkin];
+    for (w,mut c,_) in &mut windows {
+        if w.0 != "gamebar" { continue; }
+        for (group, hide) in GAMEBAR_OPTIONAL.into_iter().zip(hidden) {
+            if c.pages.get(group).copied().unwrap_or(0) != u8::from(hide) { c.pages.insert(group, u8::from(hide)); }
+        }
+    }
     let rows = settings.rows();
     for (w,mut c,_) in &mut windows {
         if w.0 != WINDOW { continue; }
@@ -455,7 +515,9 @@ mod tests {
     use super::*;
     #[test]
     fn graphics_pages_edit_only_the_draft_and_reset_all_options() {
-        let p: Preferences = serde_json::from_str(r#"{"vsync":true}"#).unwrap();
+        // As Preferences::load reads an old file.
+        let mut p: Preferences = serde_json::from_str(r#"{"vsync":true}"#).unwrap();
+        p.migrate();
         assert_eq!(p.graphics, GraphicsSettings::default());
         let mut s = Settings { dlss_availability: default(), current:p.clone(), draft:p.clone(), open:true, tab:1, page:0, listening:None, notice:String::new() };
         let click = |s: &mut Settings, id: &str| {
@@ -647,11 +709,80 @@ mod tests {
         p.bind("slot2", "Ctrl+KeyI".into()); assert_eq!(p.slot_pressed(&keys), Some(2));
     }
     #[test]
+    fn saved_default_bindings_move_quests_to_q_once() {
+        let parse = |raw: &str| { let mut p: Preferences = serde_json::from_str(raw).unwrap(); p.migrate(); p };
+        let old = parse(r#"{"bindings":{"questlog":"KeyU","slot13":"KeyQ","inventory":"KeyI"}}"#);
+        assert_eq!((old.label("questlog"), old.label("slot13"), old.label("inventory"), old.keymap), ("Q".into(), "U".into(), "I".into(), KEYMAP));
+        let chosen = parse(r#"{"bindings":{"questlog":"KeyJ","slot13":"KeyQ"}}"#);
+        assert_eq!((chosen.label("questlog"), chosen.label("slot13")), ("J".into(), "Q".into()), "a player's own key stays");
+        // Saved after the move, the old keys are the player's choice.
+        let mut again = old.clone();
+        again.bindings.insert("questlog".into(), "KeyU".into()); again.bindings.insert("slot13".into(), "KeyQ".into());
+        let again = parse(&serde_json::to_string(&again).unwrap());
+        assert_eq!((again.label("questlog"), again.label("slot13")), ("U".into(), "Q".into()));
+        assert_eq!(Preferences::default().keymap, KEYMAP);
+    }
+    #[test]
+    fn events_rankings_and_battlegrounds_take_e_l_and_j_once() {
+        let parse = |raw: &str| { let mut p: Preferences = serde_json::from_str(raw).unwrap(); p.migrate(); p };
+        // Saved at revision 1: the consumable on E moves to G; the windows take E, L and J.
+        let old = parse(r#"{"keymap":1,"bindings":{"slot14":"KeyE","questlog":"KeyQ"}}"#);
+        assert_eq!((old.label("slot14"), old.label("eventwindow"), old.label("leaderboards"), old.label("matchmakingwindow")),
+            ("G".into(), "E".into(), "L".into(), "J".into()));
+        // A key the player gave to another action stays theirs.
+        let mine = parse(r#"{"keymap":1,"bindings":{"slot14":"KeyR","questlog":"KeyL","slot15":"KeyG"}}"#);
+        assert_eq!((mine.label("slot14"), mine.label("questlog"), mine.label("leaderboards"), mine.label("eventwindow")),
+            ("R".into(), "L".into(), "Unbound".into(), "E".into()));
+        let mut keys = ButtonInput::default(); keys.press(KeyCode::KeyE);
+        assert!(old.pressed("eventwindow", &keys) && old.slot_pressed(&keys).is_none(), "E opens the events only");
+        let defaults = Preferences::default();
+        assert_eq!((defaults.label("eventwindow"), defaults.label("leaderboards"), defaults.label("matchmakingwindow"), defaults.label("slot14")),
+            ("E".into(), "L".into(), "J".into(), "G".into()));
+        // The game bar's two comeback buttons: shown by default, rows of the
+        // General tab's first page, edited in the draft until Apply.
+        assert!(defaults.return_link && defaults.return_checkin);
+        let mut s = Settings { dlss_availability: default(), current: defaults.clone(), draft: defaults, open: true, tab: 0, page: 0, listening: None, notice: String::new() };
+        for id in ["return_link", "return_checkin"] {
+            let row = s.rows().iter().position(|r| r.0 == id).unwrap();
+            assert!(row < ROWS);
+            s.action(&format!("row{row}"));
+        }
+        assert!(!s.draft.return_link && !s.draft.return_checkin && s.current.return_link);
+        let saved: Preferences = serde_json::from_str(&serde_json::to_string(&s.draft).unwrap()).unwrap();
+        assert!(!saved.return_link && !saved.return_checkin);
+        // Each button (and its states) is its own page group: page 1 (sync) hides it.
+        let mut controls = WindowControls::new(&Layout { window: "gamebar".into(), widgets: Vec::new() });
+        for group in GAMEBAR_OPTIONAL {
+            let section = super::super::section("gamebar", &format!("Canvas/Label/{group}/mouseover/glow20"));
+            assert_eq!(section, Section::Page(group, 1));
+            assert!(controls.section_visible(section));
+            controls.pages.insert(group, 1);
+            assert!(!controls.section_visible(section));
+        }
+        assert_eq!(super::super::section("gamebar", "Canvas/Label/OptionsBtn"), Section::Always);
+    }
+    #[test]
     fn cancel_and_reset_never_change_applied_preferences() {
         let p = Preferences::default();
         let mut s = Settings { dlss_availability: default(), current:p.clone(), draft:p.clone(), open:false, tab:0, page:0, listening:None, notice:String::new() };
         s.begin(); s.action("row0"); assert!(!s.draft.tooltips); s.action("cancel"); assert!(s.current.tooltips);
         s.begin(); assert!(s.draft.tooltips); s.action("revert"); assert!(s.open); assert_eq!(s.current.bindings, p.bindings);
         let raw = serde_json::to_string(&s.current).unwrap(); assert_eq!(serde_json::from_str::<Preferences>(&raw).unwrap().bindings, p.bindings);
+    }
+    #[test]
+    fn monster_status_effects_are_shown_unless_turned_off_on_the_combat_tab() {
+        // Files saved before the option keep the effects shown.
+        let p: Preferences = serde_json::from_str(r#"{"combat_text":true}"#).unwrap();
+        assert!(p.monster_effects && Preferences::default().monster_effects);
+        let mut s = Settings { dlss_availability: default(), current: p.clone(), draft: p, open: true, tab: 0, page: 0, listening: None, notice: String::new() };
+        s.action("combatSettings");
+        let row = s.rows().iter().position(|r| r.0 == "monster_effects").unwrap();
+        assert!(row < ROWS && s.rows()[row].2 == "On");
+        s.action(&format!("row{row}"));
+        assert!(!s.draft.monster_effects && s.current.monster_effects, "edited in the draft until Apply");
+        let saved: Preferences = serde_json::from_str(&serde_json::to_string(&s.draft).unwrap()).unwrap();
+        assert!(!saved.monster_effects);
+        s.action("revert");
+        assert!(s.draft.monster_effects);
     }
 }

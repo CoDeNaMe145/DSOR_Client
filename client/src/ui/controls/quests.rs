@@ -290,6 +290,16 @@ pub(in crate::ui) fn prepare_log(source: &Layout, quests: &Quests) -> Layout {
     if let Some(w) = layout.widgets.iter_mut().find(|w| w.id.ends_with("/QuestOverview/QuestTitleLabel/QuestTitle")) {
         set_text(w, open.map_or("", |q| q.title.as_str()));
     }
+    // The overview's half-transparent backdrop comes after its title, rewards
+    // heading and scroll bar in the source: drawn there, it dimmed the title's
+    // authored gold to grey. It goes under the whole overview.
+    // FAILURE (2026-10-21): "the quest title ... is a bit dark".
+    let backdrop = format!("{OVERVIEW}/DescriptionListBackground");
+    let from = layout.widgets.iter().position(|w| w.id == backdrop);
+    let to = layout.widgets.iter().position(|w| w.id.starts_with(&overview_prefix));
+    if let (Some(from), Some(to)) = (from, to) {
+        if to < from { let w = layout.widgets.remove(from); layout.widgets.insert(to, w); }
+    }
     // The list: a header per group (its count; it folds the group), its rows.
     let mut stack = Stack::new(source, LIST_TOP, LIST_BOTTOM, quests.scroll.0);
     for (kind, title) in GROUPS {
@@ -562,6 +572,7 @@ mod tests {
             (format!("{LIST}/TemplateQuesttypes"), "Button", false), (format!("{LIST}/TemplateQuesttypes/normal/TextLabel"), "TextLabel", true),
             (format!("{LIST}/TemplateQuesttypes/Label_empty/Label_empty1/QuestCounter"), "TextLabel", true),
             (format!("{OVERVIEW}/QuestTitleLabel/QuestTitle"), "TextLabel", true), (format!("{OVERVIEW}/RewardsHeading"), "TextLabel", true),
+            (format!("{OVERVIEW}/DescriptionListBackground"), "Label", false),
             (format!("{o}/TemplateText"), "Label", false), (format!("{o}/TemplateText/Value"), "TextLabel", true),
             (format!("{o}/TemplateTasksHeading"), "TextLabel", true), (format!("{o}/TemplateTask"), "Label", false), (format!("{o}/TemplateTask/TaskTitle"), "TextLabel", true),
             (format!("{r}/TemplateXP"), "Label", false), (format!("{r}/TemplateXP/Value"), "TextLabel", true),
@@ -593,6 +604,9 @@ mod tests {
         assert!(find(&prepared, &format!("{LIST}/Quest1/normal")).hidden);
         assert_eq!(text_of(&prepared, &format!("{OVERVIEW}/QuestTitleLabel/QuestTitle")), "Beta");
         assert!(!ids.iter().any(|id| id.ends_with("/RewardsHeading")));
+        // The overview's backdrop is drawn under its title, not over it.
+        let at = |id: &str| ids.iter().position(|i| *i == format!("{OVERVIEW}/{id}")).unwrap();
+        assert!(at("DescriptionListBackground") < at("QuestTitleLabel/QuestTitle"));
         // Alpha open: its line, the heading, its tasks stacked; its rewards.
         q.selected = 0;
         let prepared = prepare_log(&source, &q);

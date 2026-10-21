@@ -35,6 +35,12 @@ knight = sp.GuildMember(11, 1, "Leader", 1, 45, True, True, False, 2, (2026, 1, 
 officer = sp.GuildMember(22, 0, "Officer", 3, 40, False, False, False, 1, (2025, 12, 31, 23, 59, 58))
 record("guild_status", sp.encode_guild_status(sp.GuildStatus(0, 3, "Knights", 11, True, 11, 2, (knight, officer))))
 record("no_guild", sp.encode_guild_status(sp.GuildStatus(0, 0, "", 11, False, 0, 0, ())))
+# The social window's player search: one player here (an actor on our map, their
+# guild in the map field), one away; then an empty answer.
+here = sp.PlayerSummary(0, 0, 33, 0x10316, "Someone", "Knights", 2, 31)
+away = sp.PlayerSummary(0, 0, 44, 0, "Away", "", 3, 12, online=False, available=False, group_invitable=False)
+record("player_query_result", sp.encode_player_query_result(7, (here, away)))
+record("player_query_empty", sp.encode_player_query_result(8, ()))
 
 def client(command_id, write):
     w = BitWriter(); w.write_uint8(0x8B); w.write_bytes(command_id.to_bytes(2, "little")); write(w); return w.finish()
@@ -55,6 +61,11 @@ packet = client(sp.GUILD_INVITATION_RESPONSE_COMMAND, answer)
 request = sp.decode_invitation_response(packet[0], sp.GUILD_INVITATION_RESPONSE_COMMAND, packet[1])
 assert (request.status, request.inviter_character_id, request.collective_id, request.player_name) == (0, 11, 3, "Joiner"), request
 record("guild_accept", packet)
+def query(w): w.write_uint8(1); w.write_uint32_le(7); w.write_string("Som")
+packet = client(sp.PLAYER_QUERY_COMMAND, query)
+request = sp.decode_player_query(packet[0], packet[1])
+assert (request.query_kind, request.query_id, request.text) == (1, 7, "Som"), request
+record("player_query", packet)
 for name, command_id in [("leave_group", sp.GROUP_LEAVE_COMMAND), ("leave_guild", sp.GUILD_LEAVE_COMMAND)]:
     packet = client(command_id, lambda w: w.write_uint32_le(0))
     assert sp.decode_uint32_request(packet[0], command_id, packet[1]) == 0

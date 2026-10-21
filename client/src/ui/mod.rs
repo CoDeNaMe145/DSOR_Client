@@ -77,7 +77,10 @@ const HUD_WINDOWS: [(&str, f32); 5] = [("bottombar", 10.0), ("currencybar", 20.0
 ///   are left out.
 const HOVER_WINDOW: &str = "interactinfo";
 fn hover_part(id: &str) -> bool {
-    id == "Canvas"
+    // The monster's negative status effects, a row the client adds under the
+    // panel (controls::effects::prepare_target).
+    controls::effects::target_part(id)
+        || id == "Canvas"
         || id == "Canvas/Label_bg"
         || id.starts_with("Canvas/Label_bg/Healthbar")
         || id == "Canvas/Label_bg/ActorInfo"
@@ -445,6 +448,9 @@ enum ValueKind {
     TargetLevel,
     /// A character sheet figure (crate::gameplay::stats::Sheet, by widget name).
     Sheet(&'static str),
+    /// A status effect's time left: its half of the bar and slot
+    /// (controls::effects writes it).
+    EffectTime(u8, u8),
 }
 
 /// The character sheet's widgets crate::gameplay::stats fills.
@@ -512,6 +518,8 @@ pub(crate) struct UiWork {
     pub system_views: u64,
     /// Quest lists rebuilt (controls::quests::sync).
     pub quest_lists: u64,
+    /// The status effect bar's slots assigned (controls::effects::sync).
+    pub status_bars: u64,
 }
 
 pub struct UiPlugin;
@@ -540,6 +548,9 @@ impl Plugin for UiPlugin {
             .init_resource::<crate::gameplay::dialogue::Dialogue>()
             .init_asset::<controls::items::Catalog>()
             .init_asset_loader::<controls::items::CatalogLoader>()
+            .init_asset::<controls::effects::Catalog>()
+            .init_asset_loader::<controls::effects::CatalogLoader>()
+            .init_resource::<controls::effects::StatusBar>()
             .init_resource::<controls::items::Interaction>()
             .init_resource::<Screen>()
             .init_resource::<Figures>()
@@ -566,7 +577,7 @@ impl Plugin for UiPlugin {
                 .before(bevy::sprite_render::check_entities_needing_specialization::<UiMaterial>))
             .add_systems(
                 Update,
-                ((dialogue::sync, controls::party::sync, controls::quests::sync, controls::systems::sync, spawn_windows, controls::sync_chat).chain(), controls::spells::sync, controls::items::sync, (controls::items::pins::update, controls::keyboard).chain(), controls::interact, (controls::settings::sync, controls::settings::sliders, controls::hotbar::input, controls::spells::apply_drop).chain(), read_figures, controls::edit_text, controls::items::input, controls::order_windows, (update_fills, update_values, update_slots, (local_map::update, local_map::update_markers, local_map::appearance).chain()), controls::chat_rows, controls::sheet::rows, controls::paint, (controls::items::render, controls::items::destroy_dialog), (controls::spells::overlay, controls::items::overlay, controls::tooltips), show_hover_window, death_dialog, (controls::trade::sync, controls::social::column, controls::social::context_menu, controls::social::answer, controls::systems::send, controls::social::dialogs, controls::trade::render).chain()).chain().after(crate::actors::monsters::MonsterHoverInfo).before(crate::network::net::NetSystems).run_if(crate::screens::loading::gameplay_ready),
+                ((dialogue::sync, controls::party::sync, controls::quests::sync, controls::systems::sync, spawn_windows, controls::sync_chat).chain(), controls::spells::sync, controls::items::sync, (controls::items::pins::update, controls::keyboard).chain(), controls::interact, (controls::settings::sync, controls::settings::sliders, controls::hotbar::input, controls::spells::apply_drop).chain(), read_figures, controls::edit_text, controls::items::input, controls::order_windows, (update_fills, update_values, update_slots, (local_map::update, local_map::update_markers, local_map::appearance).chain(), (controls::effects::fixture, controls::effects::sync, controls::effects::draw).chain()), controls::chat_rows, controls::sheet::rows, controls::paint, (controls::items::render, controls::items::destroy_dialog), (controls::spells::overlay, controls::items::overlay, controls::tooltips), show_hover_window, death_dialog, (controls::trade::sync, controls::social::column, controls::social::context_menu, controls::social::answer, controls::systems::send, controls::social::dialogs, controls::trade::render).chain()).chain().after(crate::actors::monsters::MonsterHoverInfo).before(crate::network::net::NetSystems).run_if(crate::screens::loading::gameplay_ready),
             );
         #[cfg(not(target_arch = "wasm32"))]
         app.add_systems(PreUpdate, replay::run.after(bevy::input::InputSystems)
@@ -585,7 +596,8 @@ fn refresh_mesh_order(mut meshes: Query<&mut Mesh2d, (With<MeshMaterial2d<UiMate
     for mut mesh in &mut meshes { mesh.set_changed(); }
 }
 
-fn setup(mut commands: Commands, assets: Res<AssetServer>, mut quest_ui: ResMut<crate::gameplay::quests::QuestUi>, mut systems: ResMut<controls::systems::State>) {
+fn setup(mut commands: Commands, assets: Res<AssetServer>, mut quest_ui: ResMut<crate::gameplay::quests::QuestUi>, mut systems: ResMut<controls::systems::State>,
+    mut status_bar: ResMut<controls::effects::StatusBar>) {
     commands.spawn((
         Camera2d,
         // Drawn into the 3D camera's own target textures, not cleared: that needs
@@ -631,6 +643,8 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>, mut quest_ui: ResMut<
     // systems' data their windows and the quest log's pages read.
     for (name, z) in controls::systems::DESKS { loaded.layouts.push((assets.load(format!("interface/{name}.ui.json")), z, None)); }
     systems.catalog = assets.load("interface/systems.catalog.json");
+    // The status effects the bottom bar shows (controls::effects).
+    status_bar.catalog = assets.load("interface/status.catalog.json");
     loaded.spawned = vec![false; loaded.layouts.len()];
     commands.insert_resource(loaded);
 }
@@ -687,6 +701,7 @@ fn resource_bar(class: u8) -> &'static str {
 fn value_of(id: &str) -> Option<ValueKind> {
     let leaf = id.rsplit('/').next().unwrap_or("");
     if let Some(slot) = controls::hotbar::label_slot(id) { return Some(ValueKind::Hotkey(slot)); }
+    if let Some((side, slot)) = controls::effects::time_label(id) { return Some(ValueKind::EffectTime(side, slot)); }
     if leaf == "TextLabel_ammoslot1" { return Some(ValueKind::EssenceKey); }
     if leaf == "CurrentQuickbar" { return Some(ValueKind::BarNumber); }
     if id.contains("/StatsCharacter/") {
@@ -873,6 +888,8 @@ fn spawn_windows(
             prepared = controls::settings::prepare(layout); &prepared
         } else if layout.window == "bottombar" {
             prepared = class_resource_gauge(controls::hotbar::prepare(layout), class); &prepared
+        } else if layout.window == HOVER_WINDOW {
+            prepared = controls::effects::prepare_target(layout); &prepared
         } else if layout.window == controls::items::DESTROY_DIALOG {
             prepared = controls::items::prepare_destroy(layout); &prepared
         } else { layout };
@@ -906,9 +923,12 @@ fn spawn_windows(
             })
         };
         let atlas = |tex: &Option<String>| tex.as_ref().map(|t| {
-            if t == "textures/ui/npcscreen.png" {
+            if t == "textures/ui/npcscreen.png" || t == "textures/ui/struktur_hell.png" {
                 // The authored speech tails use UVs above 1 to select wrapped
                 // atlas regions. Clamping cuts off every tail after the first.
+                // The lists' light rows tile their texture (u -1 to 3.5 across
+                // the social window's rows): clamped, its edges smeared into
+                // streaks.
                 assets.load_builder().with_settings(|s: &mut bevy::image::ImageLoaderSettings| {
                     s.sampler = bevy::image::ImageSampler::Descriptor(bevy::image::ImageSamplerDescriptor {
                         address_mode_u: bevy::image::ImageAddressMode::Repeat,
@@ -968,6 +988,12 @@ fn spawn_windows(
                 controls.region(w.k, w.rect, Gate::default());
                 let p = parent(&mut commands, w.k, true);
                 commands.spawn((QuickSlot { slot, k: w.k, rect: w.rect, shown: None }, Transform::from_xyz(0.0, 0.0, WINDOW_ITEMS_DEPTH), Visibility::Inherited, ChildOf(p)));
+            }
+            // The status effects' slots: no artwork and no hit region (click-through).
+            if let Some((row, slot)) = controls::effects::slot_of(&w.id) {
+                let p = parent(&mut commands, w.k, true);
+                commands.spawn((controls::effects::EffectSlot { row, slot, k: w.k, rect: w.rect }, controls::effects::Drawn::default(),
+                    Transform::from_xyz(0.0, 0.0, WINDOW_ITEMS_DEPTH), Visibility::Inherited, ChildOf(p)));
             }
             let gauge = gauge_of(&w.id);
             let other_class = gauge == Some(Gauge::Resource) && !w.id.contains(&format!("/{wanted_resource}/"));
@@ -1060,7 +1086,8 @@ fn spawn_windows(
                 if !(static_text(label) || stickerbook_text || value.is_some() || w.kind == "TextEntry") || label.color[3] <= 0.0 {
                     continue;
                 }
-                controls.region(w.k, w.rect, gate.clone());
+                // The status effects' time labels stay click-through, as authored.
+                if !matches!(value, Some(ValueKind::EffectTime(..))) { controls.region(w.k, w.rect, gate.clone()); }
                 let p = parent(&mut commands, w.k, false);
                 let [l, t, r, b] = w.rect;
                 let x = match label.align[0] { 0 => l, 2 => r, _ => (l + r) * 0.5 };
@@ -1435,6 +1462,8 @@ fn update_values(
             ValueKind::Name => figures.name.clone(),
             // Each window owns its current page (controls::paint).
             ValueKind::Page => continue,
+            // Written as they tick down (controls::effects::draw).
+            ValueKind::EffectTime(..) => continue,
             ValueKind::TargetName => hover.0.as_ref().map(|h| h.0.clone()).unwrap_or_default(),
             ValueKind::TargetLevel => hover.0.as_ref().map(|h| h.1.to_string()).unwrap_or_default(),
             ValueKind::Sheet(w) => match sheet.0.get(w) {

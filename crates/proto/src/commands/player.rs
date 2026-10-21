@@ -1554,23 +1554,32 @@ impl Body for StillAlive {
     }
 }
 
-/// PlayerQueryCommand (189), client: 56 bits. The server has no decoder; split as u32,
-/// string, u8 from the captured `01000000 0000 00` only (layout NOT established).
+/// PlayerQueryCommand (180), client: u8 kind, u32 query id (echoed by the result),
+/// str the name searched. Kind 1 lists the players on our map (instance) whose name
+/// contains the text; any other kind searches every character the server knows. The
+/// captured 56 bits `01 00000000 0000` are the social window's kind-1 refresh.
+/// SOURCE: DSOR_Server protocol/social_protocol.py decode_player_query,
+///   services/social.py _handle_player_query (at most 50 results, never the asker).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PlayerQuery {
-    pub unknown_u32_0: u32,
-    pub unknown_text_1: String,
-    pub unknown_u8_2: u8,
+    pub kind: u8,
+    pub query_id: u32,
+    pub text: String,
+}
+
+impl PlayerQuery {
+    pub const ON_MAP: u8 = 1;
+    pub const EVERYONE: u8 = 0;
 }
 
 impl Body for PlayerQuery {
     fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
-        Ok(Self { unknown_u32_0: r.u32()?, unknown_text_1: r.string()?, unknown_u8_2: r.u8()? })
+        Ok(Self { kind: r.u8()?, query_id: r.u32()?, text: r.string()? })
     }
     fn encode(&self, w: &mut BitWriter) {
-        w.u32(self.unknown_u32_0);
-        w.string(&self.unknown_text_1);
-        w.u8(self.unknown_u8_2);
+        w.u8(self.kind);
+        w.u32(self.query_id);
+        w.string(&self.text);
     }
 }
 

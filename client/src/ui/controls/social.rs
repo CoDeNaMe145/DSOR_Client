@@ -104,7 +104,9 @@ pub(crate) struct SocialUi {
     /// The notification the open dialog answers.
     open: Option<NotificationEntry>,
     /// The player the menu was opened on.
-    target: Option<String>,
+    pub(super) target: Option<String>,
+    /// A social window row asked for the menu on `target`, where the cursor is.
+    pub(super) menu_at_cursor: bool,
     pressed: Option<usize>,
     slots: Vec<Slot>,
     /// When the column loaded (the first frame in the game), seconds.
@@ -674,12 +676,15 @@ pub(in crate::ui) fn context_menu(
             if w.0 == CONTEXT_MENU { *v = Visibility::Hidden; }
         }
     }
-    if !test_open && (!mouse.just_pressed(MouseButton::Middle) || ui.over_ui) { return; }
+    // A social window row (crate::ui::controls::interact): its player, at the cursor.
+    let from_row = social.menu_at_cursor;
+    if from_row { social.menu_at_cursor = false; }
+    if !test_open && !from_row && (!mouse.just_pressed(MouseButton::Middle) || ui.over_ui) { return; }
     let Ok(window) = primary.single() else { return };
     let scale = window.height().max(1.0) / BASE_H;
-    let picked = if test_open { Some(("Simo".to_owned(), Vec2::new(400.0, 300.0))) } else {
-        window.cursor_position().and_then(|cursor| pick(cursor, &cameras, &players).map(|name| (name, cursor / scale)))
-    };
+    let picked = if test_open { Some(("Simo".to_owned(), Vec2::new(400.0, 300.0))) }
+        else if from_row { social.target.clone().zip(window.cursor_position().map(|cursor| cursor / scale)) }
+        else { window.cursor_position().and_then(|cursor| pick(cursor, &cameras, &players).map(|name| (name, cursor / scale))) };
     let Some((name, p)) = picked else { return };
     social.target = Some(name);
     // The menu's top-left corner at the cursor, kept on the screen. Its Canvas:

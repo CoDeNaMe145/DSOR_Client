@@ -231,6 +231,7 @@ server_commands! {
     169 => GuildFoundationResponse(social::GuildFoundationResponse),
     171 => GuildInvitationResponse(social::GroupInvitationResponse),
     179 => IgnoredStatus(social::IgnoredStatus),
+    181 => PlayerQueryResult(social::PlayerQueryResult),
     192 => PvpFlag(social::PvpFlag),
     381 => ScreenMessage(social::ScreenMessage),
     // systems.rs: items, the stickerbook, events, dailies, the Wanted Thief, the

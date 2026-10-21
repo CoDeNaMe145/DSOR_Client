@@ -1,7 +1,8 @@
 //! The systems' windows: the leaderboards and the PvP queue, the premium shop,
 //! the events, the collector's album and the transmog desk, the smith's salvage
 //! and workbench desks and the jeweller's gem desk, the quest log's achievement,
-//! daily and Wanted Thief pages and the character sheet's titles.
+//! daily and Wanted Thief pages, the character sheet's titles and the social
+//! window's lists.
 //!
 //! Each is an authored template (crate::ui::controls::template) filled from what
 //! the server said (crate::network::net) and the systems' data
@@ -12,7 +13,7 @@
 //! crate::ui::controls::interact through Pointer).
 //! SOURCE: DSOR_Server services/{ranking,matchmaking,commerce,events,customization,
 //!   inventory_interactions,achievements,daily_challenges,wanted_thief,
-//!   presence_identity}.py; protocol/gem_protocol.py (the gem actions are
+//!   presence_identity,social}.py; protocol/gem_protocol.py (the gem actions are
 //!   InventoryCommand operations 0x11 insert [item, socket], 0x14 remove [socket],
 //!   0x15 unlock a socket).
 pub(super) mod boards;
@@ -22,6 +23,7 @@ pub(super) mod album;
 pub(super) mod transmog;
 pub(super) mod desks;
 pub(super) mod log;
+pub(super) mod rosters;
 
 use bevy::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -50,6 +52,7 @@ pub(in crate::ui) const EVENTS: &str = "eventwindow";
 pub(in crate::ui) const ALBUM: &str = "collectorsalbum";
 pub(in crate::ui) const SHEET: &str = "charactersheet";
 pub(in crate::ui) const QUESTLOG: &str = super::quests::WINDOW;
+pub(in crate::ui) const SOCIAL: &str = rosters::WINDOW;
 /// The rows a board's page holds (ranking_protocol.py MAX_RANKING_PAGE_SIZE).
 const PAGE_ROWS: u32 = 10;
 const UNRANKED: u32 = 0xFFFF_FFFF;
@@ -144,6 +147,13 @@ pub(crate) enum Request {
     Redeem,
     /// Turn a window's grid page.
     Turn(&'static str, i32),
+    /// The social window: search the name typed (all the map's players with
+    /// none), ask again, sort the lists by a column.
+    SocialSearch,
+    SocialRefresh,
+    SocialSort(rosters::Column),
+    /// A player's row: the player menu (crate::ui::controls::interact opens it).
+    Player(String),
 }
 
 /// The windows' selections and what their buttons asked for.
@@ -201,6 +211,11 @@ pub(crate) struct State {
     /// The shop's tab and each tab's open category.
     pub shop_tab: usize,
     pub shop_category: Vec<Option<String>>,
+    /// The social window's sort (column, descending), its last player search
+    /// (kind, text) and the id the next one takes.
+    pub social_sort: Option<(rosters::Column, bool)>,
+    social_query: Option<(u8, String)>,
+    social_query_id: u32,
     /// A request the server has not answered: (inventory revision, time).
     pending: Option<(u64, f64)>,
 }
@@ -219,6 +234,7 @@ pub(in crate::ui) struct Views {
     pub workbench: desks::Workbench,
     pub log: log::Log,
     pub titles: log::Titles,
+    pub rosters: rosters::Rosters,
 }
 
 /// What the views are built from.
@@ -226,6 +242,8 @@ pub(in crate::ui) struct Sources<'a> {
     pub net: &'a Net,
     pub catalog: &'a SystemsCatalog,
     pub items: Option<&'a items::Catalog>,
+    /// The maps' names (interface/maps.names.json).
+    pub names: Option<&'a crate::ui::local_map::MapNames>,
     pub state: &'a State,
     pub class: Option<u8>,
 }
@@ -263,8 +281,8 @@ pub(in crate::ui) fn unix_seconds() -> u64 {
 }
 
 /// The windows each view (`Views`, in `refresh`'s order) fills.
-const VIEW_WINDOWS: [&[&str]; 10] = [&[LEADERBOARDS, MATCHMAKING], &[SHOP], &[EVENTS], &[ALBUM], &[TRANSMOG],
-    &[SALVAGE], &[GEMDESK], &[WORKBENCH], &[QUESTLOG], &[SHEET]];
+const VIEW_WINDOWS: [&[&str]; 11] = [&[LEADERBOARDS, MATCHMAKING], &[SHOP], &[EVENTS], &[ALBUM], &[TRANSMOG],
+    &[SALVAGE], &[GEMDESK], &[WORKBENCH], &[QUESTLOG], &[SHEET], &[SOCIAL]];
 
 /// Builds view `index` of `VIEW_WINDOWS` into `views`; true when it changed.
 fn refresh(index: usize, sources: &Sources, views: &mut Views) -> bool {
@@ -283,7 +301,8 @@ fn refresh(index: usize, sources: &Sources, views: &mut Views) -> bool {
         6 => set(&mut views.gems, desks::gems(sources)),
         7 => set(&mut views.workbench, desks::workbench(sources)),
         8 => set(&mut views.log, log::log(sources)),
-        _ => set(&mut views.titles, log::titles(sources)),
+        9 => set(&mut views.titles, log::titles(sources)),
+        _ => set(&mut views.rosters, rosters::rosters(sources)),
     }
 }
 
@@ -292,8 +311,8 @@ fn refresh(index: usize, sources: &Sources, views: &mut Views) -> bool {
 struct Inputs {
     /// Net::ui_revision and the inventory's revision.
     net: (u64, u64),
-    /// Which catalogs have loaded.
-    catalogs: (bool, bool),
+    /// Which catalogs have loaded: the systems', the items', the map names.
+    catalogs: (bool, bool, bool),
     class: Option<u8>,
     /// The clock's minute while the events or the quest log (the Wanted
     /// board) show their countdowns; 0 otherwise.
@@ -330,6 +349,7 @@ pub(in crate::ui) fn sync(
     mut loaded: ResMut<Loaded>,
     layouts: Res<Assets<Layout>>,
     windows: Query<(Entity, &Window2018, &Visibility)>,
+    map_names: Res<Assets<crate::ui::local_map::MapNames>>,
 ) {
     let Some(net) = net else { return };
     let mut open = [false; VIEW_WINDOWS.len()];
@@ -338,10 +358,11 @@ pub(in crate::ui) fn sync(
         if let Some(index) = VIEW_WINDOWS.iter().position(|names| names.contains(&window.0.as_str())) { open[index] = true; }
     }
     let items = item_data.as_ref().and_then(|d| item_catalogs.get(&d.catalog));
+    let names = map_names.get(&loaded.map_names);
     let class = players.iter().next().map(|c| c.desc.class);
     let countdown = VIEW_WINDOWS.iter().zip(open).any(|(names, open)| open && (names.contains(&EVENTS) || names.contains(&QUESTLOG)));
     let inputs = Inputs { net: (net.ui_revision, net.inventory.revision),
-        catalogs: (catalogs.get(&state.catalog).is_some(), items.is_some()), class,
+        catalogs: (catalogs.get(&state.catalog).is_some(), items.is_some(), names.is_some()), class,
         minute: if countdown { unix_seconds() / 60 } else { 0 } };
     if built.inputs != Some(inputs) || state.is_changed() {
         built.inputs = Some(inputs);
@@ -355,7 +376,7 @@ pub(in crate::ui) fn sync(
     if !(0..open.len()).any(|i| open[i] && (!built.current[i] || audit)) { return; }
     let fallback = SystemsCatalog::default();
     let catalog = catalogs.get(&state.catalog).unwrap_or(&fallback);
-    let sources = Sources { net: &net, catalog, items, state: &state, class };
+    let sources = Sources { net: &net, catalog, items, names, state: &state, class };
     let mut changed: Vec<&str> = Vec::new();
     for index in (0..open.len()).filter(|&i| open[i]) {
         let current = built.current[index];
@@ -392,6 +413,7 @@ pub(in crate::ui) fn prepare(layout: &Layout, views: &Views, quests: &super::que
         WORKBENCH => desks::prepare_workbench(layout, &views.workbench),
         QUESTLOG => log::prepare_questlog(&super::quests::prepare_log(layout, quests), &views.log),
         SHEET => log::prepare_sheet(layout, &views.titles),
+        SOCIAL => rosters::prepare_social(layout, &views.rosters),
         _ => return None,
     })
 }
@@ -434,6 +456,9 @@ pub(super) fn action(window: &str, w: &Widget) -> Option<Action> {
             "Wanted" => Request::Wanted(arg.parse().ok()?),
             "WantedRefresh" => Request::WantedRefresh(arg.parse().ok()?),
             "Title" => Request::Title(1, arg.to_owned()),
+            // A list's scroll arrows: "<key>:<rows>".
+            "Scroll" => { let (key, rows) = arg.rsplit_once(':')?; Request::Scroll(key.to_owned(), rows.parse().ok()?) }
+            "Player" => Request::Player(arg.to_owned()),
             _ => return None,
         };
         return Some(Action::System(request));
@@ -476,6 +501,9 @@ pub(super) fn action(window: &str, w: &Widget) -> Option<Action> {
         (QUESTLOG, "ShowOverview") => Request::AchievementCategory(String::new()),
         (SHEET, "DoNotShowTitle") => Request::Title(0, String::new()),
         (SHEET, "ShowPVPTitle") => Request::Title(2, String::new()),
+        (SOCIAL, "Enter") => Request::SocialSearch,
+        (SOCIAL, "Refresh") => Request::SocialRefresh,
+        (SOCIAL, sort) if rosters::COLUMNS.iter().any(|(e, _, _)| *e == sort) => Request::SocialSort(rosters::COLUMNS.iter().find(|(e, _, _)| *e == sort).map(|c| c.1)?),
         _ => return None,
     };
     Some(Action::System(request))
@@ -493,7 +521,7 @@ pub(super) fn clicked(mut request: Request, controls: &mut WindowControls) -> Re
 
 /// The lists the wheel scrolls: (window, page shown (group, page), key, rect, k).
 /// Paged ones turn instead (scrolled).
-const SCROLL_AREAS: [(&str, Option<(&str, u8)>, &str, [f32; 4], f32); 7] = [
+const SCROLL_AREAS: [(&str, Option<(&str, u8)>, &str, [f32; 4], f32); 10] = [
     (WORKBENCH, None, desks::LIST, [7.0, 143.0, 274.0, 435.0], 0.5),
     (ALBUM, None, album::LIST, [62.0, 103.0, 202.0, 639.0], 0.5),
     (SHOP, None, shop::OFFERS, [215.0, 130.0, 719.0, 623.0], 0.5),
@@ -501,6 +529,10 @@ const SCROLL_AREAS: [(&str, Option<(&str, u8)>, &str, [f32; 4], f32); 7] = [
     (QUESTLOG, Some(("quest", 0)), super::quests::OVERVIEW, [446.0, 140.0, 904.0, 468.0], 0.5),
     (QUESTLOG, Some(("quest", 2)), log::CATEGORIES, [117.0, 201.0, 406.0, 632.0], 0.5),
     (QUESTLOG, Some(("quest", 2)), log::ROWS, [410.0, 140.0, 907.0, 632.0], 0.5),
+    // The social window's List, per tab (rosters::LISTS).
+    (SOCIAL, Some(("social", rosters::LISTS[0].1)), rosters::LISTS[0].2, [561.0, 168.0, 1017.0, 568.0], 1.0),
+    (SOCIAL, Some(("social", rosters::LISTS[1].1)), rosters::LISTS[1].2, [561.0, 168.0, 1017.0, 568.0], 1.0),
+    (SOCIAL, Some(("social", rosters::LISTS[2].1)), rosters::LISTS[2].2, [561.0, 168.0, 1017.0, 568.0], 1.0),
 ];
 
 /// The request the wheel makes over the topmost open window's list, if any.
@@ -544,7 +576,7 @@ fn scroll_limit(key: &str, views: &Views, quests: &super::quests::Quests) -> usi
         log::ROWS if views.log.category.is_none() => log::overview_entries(&views.log).saturating_sub(log::OVERVIEW_ROWS),
         log::ROWS => views.log.achievements.len().saturating_sub(5),
         shop::OFFERS => views.shop.cards.len().div_ceil(2).saturating_sub(shop::VISIBLE_ROWS),
-        _ => 0,
+        _ => rosters::scroll_limit(&views.rosters, key),
     }
 }
 
@@ -604,6 +636,10 @@ pub(super) fn tooltip(request: &Request) -> Option<(&'static str, String)> {
         Request::Title(2, _) => ("Display PvP rank", String::new()),
         Request::Turn(_, delta) if *delta < 0 => ("Previous page", String::new()),
         Request::Turn(..) => ("Next page", String::new()),
+        // gui.window.social_searchButton / refreshButton / *Column.
+        Request::SocialSearch => ("Player Search", "Finds the players whose name contains the text typed; with no text, lists the players on this map.".into()),
+        Request::SocialRefresh => ("Update", "Asks the server again for the players, the group and the guild.".into()),
+        Request::SocialSort(column) => (rosters::COLUMNS.iter().find(|c| c.1 == *column).map_or("Sort", |c| c.2), "Sort the list by this column; again to reverse it.".into()),
         _ => return None,
     })
 }
@@ -682,6 +718,11 @@ pub(in crate::ui) fn send(
         let opened: Vec<String> = open.difference(&state.opened).cloned().collect();
         for window in &opened {
             if window == LEADERBOARDS { state.rank_start = 0; }
+            // The social window: our group, our guild, the players on our map.
+            if window == SOCIAL {
+                commands.extend(social_lists());
+                commands.push(social_query(&mut state, player::PlayerQuery::ON_MAP, String::new()));
+            }
             commands.extend(opening(window, &state, tabs));
         }
         state.opened = open;
@@ -791,7 +832,7 @@ pub(in crate::ui) fn send(
             Request::Favorite(id, favorite) => commands.push(ClientCommand::SetStickerbookFavorite(proto::SetStickerbookFavorite { id, favorite })),
             Request::Upgrade(id) => commands.push(ClientCommand::UpgradeStickerbookItem(proto::UpgradeStickerbookItem { id })),
             Request::AddSticker(id) => {
-                let sources = Sources { net: &net, catalog, items: None, state: &state, class: None };
+                let sources = Sources { net: &net, catalog, items: None, names: None, state: &state, class: None };
                 let item = catalog.stickers.get(&id).into_iter().flat_map(|s| s.items.iter()).find_map(|t| sources.carried(t).first().copied());
                 if let Some(item) = item { commands.push(ClientCommand::AddStickerbookFromInventory(proto::AddStickerbookFromInventory { item })); wait = true; }
             }
@@ -838,7 +879,7 @@ pub(in crate::ui) fn send(
             // The chosen book's recipe, the amount chosen, a carried item of each
             // ingredient (the server takes the amounts by template).
             Request::Craft(andermant) => {
-                let sources = Sources { net: &net, catalog, items: None, state: &state, class: None };
+                let sources = Sources { net: &net, catalog, items: None, names: None, state: &state, class: None };
                 if let Some(detail) = views.workbench.detail.as_ref().filter(|d| !d.locked && d.most > 0 && !d.recipe.is_empty()) {
                     let mut items = Vec::new();
                     for ingredient in &detail.ingredients {
@@ -917,11 +958,50 @@ pub(in crate::ui) fn send(
                 let page = state.pages.entry(window).or_default();
                 *page = (*page as i32 + delta).clamp(0, last as i32) as usize;
             }
+            // The name typed in the search panel; none: the map's players.
+            Request::SocialSearch => {
+                let text = windows.iter().find(|(w, _, _, _)| w.0 == SOCIAL)
+                    .and_then(|(_, _, c, _)| c.entries.iter().find(|(id, _)| id.ends_with("/InputQuery")).map(|(_, e)| e.text.trim().to_owned()))
+                    .unwrap_or_default();
+                let kind = if text.is_empty() { player::PlayerQuery::ON_MAP } else { player::PlayerQuery::EVERYONE };
+                state.scroll.remove(rosters::LISTS[0].2);
+                commands.push(social_query(&mut state, kind, text));
+            }
+            Request::SocialRefresh => {
+                let (kind, text) = state.social_query.clone().unwrap_or((player::PlayerQuery::ON_MAP, String::new()));
+                commands.extend(social_lists());
+                commands.push(social_query(&mut state, kind, text));
+            }
+            // A column sorts up, then down, then not.
+            Request::SocialSort(column) => {
+                state.social_sort = match state.social_sort {
+                    Some((sorted, false)) if sorted == column => Some((column, true)),
+                    Some((sorted, true)) if sorted == column => None,
+                    _ => Some((column, false)),
+                };
+            }
+            Request::Player(_) => {}
         }
     }
     if net.offline || commands.is_empty() { return; }
     for command in &commands { net.send(command); }
     if wait { state.pending = Some((net.inventory.revision, time.elapsed_secs_f64())); }
+}
+
+/// What the social window asks for our group and guild: GroupList type 0 (a
+/// GroupStatus), GuildList (a GuildStatus and the ignore list), its body as the
+/// game client sent it (the server reads neither body).
+fn social_lists() -> [ClientCommand; 2] {
+    let guild = dsor_proto::commands::Raw { data: [0u8; 17].into_iter().chain([0xFF]).collect(), bits: 144 };
+    [ClientCommand::GroupList(social::GroupList::default()), ClientCommand::GuildList(social::GuildList { unknown_body: guild })]
+}
+
+/// A player search under a new id, kept for Update (the server echoes the id in
+/// its PlayerQueryResult).
+fn social_query(state: &mut State, kind: u8, text: String) -> ClientCommand {
+    state.social_query_id = state.social_query_id.wrapping_add(1);
+    state.social_query = Some((kind, text.clone()));
+    ClientCommand::PlayerQuery(player::PlayerQuery { kind, query_id: state.social_query_id, text })
 }
 
 /// An item's dye (ItemInfo.named, "none" without one).
@@ -1002,7 +1082,7 @@ mod tests {
     fn views_are_built_only_for_open_windows_and_only_when_something_changed() {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default()))
-            .init_asset::<SystemsCatalog>().init_asset::<items::Catalog>().init_asset::<Layout>()
+            .init_asset::<SystemsCatalog>().init_asset::<items::Catalog>().init_asset::<Layout>().init_asset::<crate::ui::local_map::MapNames>()
             .init_resource::<State>().init_resource::<Views>().init_resource::<Loaded>().init_resource::<crate::ui::UiWork>()
             .add_systems(Update, sync);
         crate::network::net::start_offline(app.world_mut(), 1, 0);
@@ -1033,6 +1113,74 @@ mod tests {
         app.update();
         app.update();
         assert_eq!(built(&app), 5, "reopened after a change: rebuilt once");
+    }
+
+    /// The social window's lists follow what the server said (the search, the
+    /// group, the guild) and the sort, with no work on idle frames.
+    #[test]
+    fn the_social_window_follows_the_search_group_and_guild_without_idle_work() {
+        use dsor_proto::commands::social::{GroupMember, GroupStatus, PlayerQueryResult};
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default()))
+            .init_asset::<SystemsCatalog>().init_asset::<items::Catalog>().init_asset::<Layout>().init_asset::<crate::ui::local_map::MapNames>()
+            .init_resource::<State>().init_resource::<Views>().init_resource::<Loaded>().init_resource::<crate::ui::UiWork>()
+            .add_systems(Update, sync);
+        crate::network::net::start_offline(app.world_mut(), 1, 0);
+        app.world_mut().spawn((Window2018(SOCIAL.into()), Visibility::Inherited));
+        let built = |app: &App| app.world().resource::<crate::ui::UiWork>().system_views;
+        let rosters = |app: &App| app.world().resource::<Views>().rosters.clone();
+        app.update();
+        assert_eq!(built(&app), 1);
+        for _ in 0..10 { app.update(); }
+        assert_eq!(built(&app), 1, "idle frames rebuild nothing");
+        let player = |name: &str, level: u16, role: u8| GroupMember { name: name.into(), level, online: true, available: true, invitable: true, role, ..Default::default() };
+        {
+            let mut net = app.world_mut().non_send_mut::<Net>();
+            net.player_query = Some(PlayerQueryResult { query_id: 1, players: vec![player("Ann", 30, 0xFF), player("Bob", 12, 0xFF)] });
+            net.touch_ui();
+        }
+        app.update();
+        assert_eq!(built(&app), 2);
+        let view = rosters(&app);
+        assert_eq!(view.lists[0].iter().map(|p| (p.name.as_str(), p.grouped)).collect::<Vec<_>>(), [("Ann", false), ("Bob", false)]);
+        assert!(!view.grouped);
+        // Grouped with Ann: her search row shows the group icon, the group tab lists us both.
+        {
+            let mut net = app.world_mut().non_send_mut::<Net>();
+            let mut me = player("Me", 40, 0);
+            me.player_id = 9;
+            net.group = Some(GroupStatus { group_id: 7, leader_id: 9, recipient_id: 9, members: vec![me, player("Ann", 30, 1)], ..Default::default() });
+            net.touch_ui();
+        }
+        app.update();
+        let view = rosters(&app);
+        assert!(view.grouped && view.lists[0][0].grouped && !view.lists[0][1].grouped);
+        assert_eq!(view.lists[1].iter().map(|p| (p.name.as_str(), p.leader, p.me)).collect::<Vec<_>>(), [("Me", true, true), ("Ann", false, false)]);
+        // A column sorts the lists.
+        app.world_mut().resource_mut::<State>().social_sort = Some((rosters::Column::Level, false));
+        app.update();
+        assert_eq!(rosters(&app).lists[0][0].name, "Bob");
+        let before = built(&app);
+        for _ in 0..10 { app.update(); }
+        assert_eq!(built(&app), before);
+    }
+
+    #[test]
+    fn the_social_window_asks_for_its_lists_and_searches_by_name() {
+        let mut state = State::default();
+        let lists = social_lists();
+        assert!(matches!(&lists[0], ClientCommand::GroupList(g) if g.kind == 0));
+        assert!(matches!(&lists[1], ClientCommand::GuildList(g) if g.unknown_body.bits == 144));
+        let first = social_query(&mut state, player::PlayerQuery::ON_MAP, String::new());
+        let second = social_query(&mut state, player::PlayerQuery::EVERYONE, "Ann".into());
+        assert!(matches!(first, ClientCommand::PlayerQuery(q) if q.kind == 1 && q.query_id == 1 && q.text.is_empty()));
+        assert!(matches!(second, ClientCommand::PlayerQuery(q) if q.kind == 0 && q.query_id == 2 && q.text == "Ann"));
+        assert_eq!(state.social_query, Some((0, "Ann".into())));
+        assert_eq!(action(SOCIAL, &widget("Sys:Scroll:social_search:-1", "a/b")), Some(Action::System(Request::Scroll("social_search".into(), -1))));
+        assert_eq!(action(SOCIAL, &widget("Sys:Player:Ann", "a/b")), Some(Action::System(Request::Player("Ann".into()))));
+        assert_eq!(action(SOCIAL, &widget("SortLevel", "a/b")), Some(Action::System(Request::SocialSort(rosters::Column::Level))));
+        assert_eq!(action(SOCIAL, &widget("Enter", "a/b")), Some(Action::System(Request::SocialSearch)));
+        assert_eq!(action(SOCIAL, &widget("Refresh", "a/b")), Some(Action::System(Request::SocialRefresh)));
     }
 
     #[test]

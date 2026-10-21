@@ -205,6 +205,8 @@ pub struct Net {
     pub group: Option<dsor_proto::commands::social::GroupStatus>,
     /// Our guild (GuildStatus 167); None when in none.
     pub guild: Option<dsor_proto::commands::player::GuildStatus>,
+    /// The social window's last player search (PlayerQueryResult 181).
+    pub player_query: Option<dsor_proto::commands::social::PlayerQueryResult>,
     /// Traps placed on the map (NewTrap 63), tripped (66) and taken away (64), for
     /// crate::gameplay::skills::trap_visuals.
     pub trap_events: Vec<TrapEvent>,
@@ -299,6 +301,11 @@ pub struct Net {
     /// Full modifier parameters must survive consumption of the visual events.
     pub stat_effects: HashMap<u32, dsor_proto::commands::combat::StatusEffectElement>,
     pub stat_revision: u64,
+    /// The effects running on other actors in view (StatusEffectCommand on
+    /// them), for the hovered monster's effect row (crate::ui::controls::effects).
+    pub actor_effects: HashMap<u32, ActorEffects>,
+    /// Stamps each change of `actor_effects`.
+    actor_effects_stamp: u64,
     /// Bumped whenever something the windows show may have changed: every server
     /// command but the actor stream's (`actor_stream`), and local edits of
     /// window state (`touch_ui`). The windows rebuild their views when it moves,
@@ -338,6 +345,14 @@ pub struct StatusEvent {
     /// An element without details: the instance's removal (DSOR_Server
     /// local_mount_state.py: `has_details=bool(active)`), not a new start.
     pub removed: bool,
+}
+
+/// The effects running on one actor, by instance, and the stamp of their last
+/// change (a window showing them rebuilds when it moves).
+#[derive(Default)]
+pub struct ActorEffects {
+    pub stamp: u64,
+    pub elements: HashMap<u32, dsor_proto::commands::combat::StatusEffectElement>,
 }
 
 /// A trap placed on the map (NewTrapCommand 63): its id, its _Template_Trap id and
@@ -894,6 +909,7 @@ pub fn start_offline(world: &mut World, class: u8, gender: u8) {
         social_notes: Vec::new(),
         group: None,
         guild: None,
+        player_query: None,
         trap_events: Vec::new(),
         traps_tripped: Vec::new(),
         traps_gone: Vec::new(),
@@ -931,6 +947,8 @@ pub fn start_offline(world: &mut World, class: u8, gender: u8) {
         status_events: Vec::new(),
         stat_effects: HashMap::new(),
         stat_revision: 0,
+        actor_effects: HashMap::new(),
+        actor_effects_stamp: 0,
         ui_revision: 0,
         mount_events: Vec::new(),
         location_events: Vec::new(),
@@ -1161,6 +1179,7 @@ pub(crate) fn start_session(world: &mut World, config: NetConfig) {
         social_notes: Vec::new(),
         group: None,
         guild: None,
+        player_query: None,
         trap_events: Vec::new(),
         traps_tripped: Vec::new(),
         traps_gone: Vec::new(),
@@ -1198,6 +1217,8 @@ pub(crate) fn start_session(world: &mut World, config: NetConfig) {
         status_events: Vec::new(),
         stat_effects: HashMap::new(),
         stat_revision: 0,
+        actor_effects: HashMap::new(),
+        actor_effects_stamp: 0,
         ui_revision: 0,
         mount_events: Vec::new(),
         location_events: Vec::new(),
@@ -1254,6 +1275,20 @@ impl Net {
         self.hits.retain(|(a, _)| *a != actor);
         self.kills.retain(|(a, _)| *a != actor);
         self.remote_gone.push(actor);
+        if self.actor_effects.remove(&actor).is_some() { self.actor_effects_stamp += 1; }
+    }
+
+    /// A StatusEffect command on another actor: `header` clears what it had; an
+    /// element without details is a removal.
+    pub fn apply_actor_effects(&mut self, holder: u32, header: bool, elements: &[dsor_proto::commands::combat::StatusEffectElement]) {
+        self.actor_effects_stamp += 1;
+        let effects = self.actor_effects.entry(holder).or_default();
+        effects.stamp = self.actor_effects_stamp;
+        if header { effects.elements.clear(); }
+        for e in elements {
+            if e.tail.is_some() { effects.elements.insert(e.instance, e.clone()); } else { effects.elements.remove(&e.instance); }
+        }
+        if effects.elements.is_empty() { self.actor_effects.remove(&holder); }
     }
 
     /// The server's game tick now.
@@ -1427,6 +1462,7 @@ fn pump(
                 net.npc_gone.clear();
                 net.monster_spawns.clear();
                 net.monster_health.clear();
+                net.actor_effects.clear();
                 net.hits.clear();
                 net.kills.clear();
                 net.revives.clear();
@@ -1605,6 +1641,8 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
                     else { net.stat_effects.remove(&effect.instance); }
                 }
                 net.stat_revision = net.stat_revision.wrapping_add(1);
+            } else if let Some(holder) = actor {
+                net.apply_actor_effects(holder, c.header, &c.elements);
             }
             for e in &c.elements {
                 if actor.is_some() && actor == net.local_actor {
@@ -1823,6 +1861,7 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
         ServerCommand::GuildStatus(g) => {
             net.guild = g.in_guild.then_some(g);
         }
+        ServerCommand::PlayerQueryResult(q) => net.player_query = Some(q),
         ServerCommand::GroupFoundationResponse(r) => {
             net.social_notes.push(if r.status == 0 { "Your group has been founded.".to_owned() } else { format!("The group could not be founded: {}", r.message) });
         }

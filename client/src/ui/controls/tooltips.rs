@@ -22,6 +22,20 @@ fn window_title(name: &str) -> &str {
         "eventwindow" => "Events", "inventory" => "Inventory", _ => name }
 }
 
+/// The social window's tabs and icon buttons (gui.window.social_*TabHeading,
+/// *Button, guildChangeName).
+fn social_button(window: &str, leaf: &str) -> Option<&'static str> {
+    if window != "socialscreen" { return None; }
+    Some(match leaf {
+        "TabButtonSearch" => "Player Search", "TabButtonFriends" => "Friends", "TabButtonGroup" => "Group Overview",
+        "TabButtonGuild" => "Guild", "TabButtonIgnore" => "Ignore", "TabButtonInvite" => "Invite friends",
+        "ButtonLeaveGroup" => "Leave group", "ButtonInviteNearby" => "Invite nearby players", "ButtonInviteFriends" => "Invite friends to the group",
+        "ButtonShowGroupfinder" => "Group finder", "ButtonEditGroupName" => "Rename the group", "ButtonFoundGroup" => "Found a group",
+        "ButtonLeaveGuild" => "Leave guild", "ButtonEditGuildName" => "Change the guild settings", "ButtonFoundGuild" => "Found a Guild",
+        _ => return None,
+    })
+}
+
 /// Icon buttons need names; text buttons already explain their destination.
 fn repeats_label(window: &str, button: &Button, layout: Option<&Layout>) -> bool {
     if window == "gamemenu" { return true; }
@@ -45,7 +59,8 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
     primary: Query<&Window, With<PrimaryWindow>>, screen: Res<Screen>, settings: Res<settings::Settings>, (pointer,keys):(Res<Pointer>,Res<ButtonInput<KeyCode>>),
     net: Option<NonSend<crate::network::net::Net>>, hotbar: Res<hotbar::Hotbar>,
     (data, catalogs, dialogue): (Res<items::Data>, Res<Assets<items::Catalog>>, Res<dialogue::Presentation>), layouts: Res<Assets<Layout>>, loaded: Res<Loaded>,
-    skill_tables: Res<Assets<crate::gameplay::skills::SkillTable>>, assets: Res<AssetServer>,
+    (skill_tables, status_bar, status_catalogs, status_slots): (Res<Assets<crate::gameplay::skills::SkillTable>>,
+        Res<effects::StatusBar>, Res<Assets<effects::Catalog>>, Query<&effects::EffectSlot>), assets: Res<AssetServer>,
     (old, mut transforms): (Query<Entity, With<Tooltip>>, Query<&mut Transform, With<Tooltip>>),
     (mut meshes, mut materials): (ResMut<Assets<Mesh>>, ResMut<Assets<UiMaterial>>),
     mut last: Local<Option<(Card, u32, bool)>>) {
@@ -55,6 +70,9 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
     let mut content: Option<(String,String,Option<String>)> = None;
     let mut anchor = None;
     let mut detail = None;
+    // Cards over status effects open above or below them, clear of their bar
+    // (the placement's vertical-first order).
+    let mut above = false;
     let template = layouts.get(&data.tooltip);
     if enabled && point.is_some() {
         let hovered = windows.iter().filter(|(_,_,v,_)| **v != Visibility::Hidden)
@@ -137,7 +155,11 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
                             "BuyTabBtn" => "Buy", "RestoreTabBtn" => "Buy back",
                             "PrevPageBtn" => "Previous page", "NextPageBtn" => "Next page", _ => "",
                         }.into()
-                    } else { loaded.layouts.iter().filter_map(|(h,_,_)| layouts.get(h)).find(|l| l.window == w.0)
+                    // gui.window.exclusiveactivatoncode_title / recalledsignin_title.
+                    } else if w.0 == "gamebar" && b.id.ends_with("/ExclsiveactiveCodeBtn") { "Return Link".into() }
+                    else if w.0 == "gamebar" && b.id.ends_with("/RecalledSignInBtn") { "Return Check-in".into() }
+                    else if let Some(name) = social_button(&w.0, b.id.rsplit('/').next().unwrap_or("")) { name.into() }
+                    else { loaded.layouts.iter().filter_map(|(h,_,_)| layouts.get(h)).find(|l| l.window == w.0)
                         .and_then(|l| l.widgets.iter().find(|x| x.id.starts_with(&format!("{}/",b.id)) && x.text.as_ref().is_some_and(|t| !t.text.is_empty() && t.text != "Text")))
                         .and_then(|w| w.text.as_ref()).map_or_else(|| title(b.id.rsplit('/').next().unwrap_or("")), |t| t.text.clone()) };
                     if !c.enabled(b) { body = "Currently unavailable".into(); }
@@ -169,8 +191,18 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
             }
             if !heading.is_empty() { content = Some((heading,body.trim().to_owned(),icon)); }
         } else if let Some(p) = point {
+            // The status effects (above the action bar, under a monster's panel):
+            // click-through, so not buttons, but each explains itself.
+            let offset_of = |row: usize| { let name = if row == effects::TARGET { HOVER_WINDOW } else { "bottombar" };
+                windows.iter().find(|(w,_,v,_)| w.0 == name && **v != Visibility::Hidden).map(|(_,_,_,tf)| window_offset(tf)) };
+            let effect = effects::card(p, offset_of, screen.width, &status_bar,
+                status_catalogs.get(&status_bar.catalog), &status_slots, net.as_deref(), template);
+            if let Some((card, rect)) = effect {
+                detail = Some(card);
+                anchor = Some(rect);
+                above = true;
             // Non-button gauges and currency amounts also explain themselves.
-            if let Some((w,_,_,tf)) = windows.iter().filter(|(_,c,v,tf)| **v != Visibility::Hidden && c.covers(p-window_offset(tf),screen.width))
+            } else if let Some((w,_,_,tf)) = windows.iter().filter(|(_,c,v,tf)| **v != Visibility::Hidden && c.covers(p-window_offset(tf),screen.width))
                 .max_by(|a,b|a.3.translation.z.total_cmp(&b.3.translation.z)) {
                 if let Some(layout) = loaded.layouts.iter().filter_map(|(h,_,_)| layouts.get(h)).find(|l|l.window==w.0) {
                     for widget in layout.widgets.iter().rev().filter(|x| !x.hidden && contains(x.k,x.rect,p-window_offset(tf),screen.width)) {
@@ -207,7 +239,7 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
         card
     }));
     let key = card.as_ref().map(|c| (c.clone(), screen.scale.to_bits(), template.is_some()));
-    let at = card.as_ref().zip(anchor).map(|(c,a)| card::placement(a,Vec2::new(c.width,c.height()),Vec2::new(screen.width,BASE_H),compact));
+    let at = card.as_ref().zip(anchor).map(|(c,a)| card::placement(a,Vec2::new(c.width,c.height()),Vec2::new(screen.width,BASE_H),compact || above));
     if *last == key {
         if let Some((at,scale))=at { for mut tf in &mut transforms { tf.translation=screen.world(0.0,at.x,at.y).extend(850.0); tf.scale=Vec3::splat(scale); } }
         return;
@@ -232,6 +264,7 @@ mod tests {
             .init_resource::<Screen>().init_resource::<Loaded>().init_resource::<settings::Settings>()
             .init_resource::<Pointer>().init_resource::<hotbar::Hotbar>().init_resource::<dialogue::Presentation>()
             .init_resource::<items::Interaction>().init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<effects::StatusBar>().init_asset::<effects::Catalog>()
             .add_systems(Update,(overlay,items::overlay).chain());
         app.world_mut().resource_mut::<settings::Settings>().current.advanced_tooltips=false;
         let dir=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/interface");

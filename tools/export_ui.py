@@ -409,6 +409,10 @@ for source in sorted((Path(root) / "textures" / "ui").glob("icon_notifications_*
 # 0x1403ACD74): rage, mana, adrenaline, steam.
 for name in ("rage", "mana", "adrenaline", "steam"):
     tex.get("ui/statusbar_bottombar_" + name)
+# The social window's rows: the online / offline status and the class icons
+# (UI::SocialWidget's list elements, release261 0x14052c55c).
+for name in ("status_online", "status_offline", "member_warrior", "member_wizard", "member_ranger", "member_dwarf"):
+    tex.get("ui/icon_" + name)
 for table in ("_Template_NPC", "_Template_StateObject"):
     for (brush,) in con.execute(f"SELECT DISTINCT LocationMapIcon FROM {table}"):
         if brush:
@@ -426,6 +430,10 @@ if "inventory" in only or "tradingscreen" in only:
 if "inventory" in only:
     from equipment_visuals import export_equipment
     export_equipment(catalog, assets)
+if "bottombar" in only:
+    # The status effects above the action bar (BuffBar): which, where, their icons.
+    from status_catalog import export_status
+    print("status effects:", export_status(catalog, tex, loca, assets))
 if "npcscreen" in only or "tradingscreen" in only:
     from dialogue_catalog import export_dialogue
     print("NPC dialogue:", export_dialogue(catalog, tex, loca, assets))

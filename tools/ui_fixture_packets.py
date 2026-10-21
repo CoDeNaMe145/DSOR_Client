@@ -146,5 +146,23 @@ if static and static.is_file():
 # Queued for PvP.
 record("queue", pvp.encode_matchmaking_info(pvp.MatchMakingInfo(0, 100, 1, "")))
 
+# The social window: a group (us, the offline "Debug" mage, its leader; one member
+# on another map, one offline), a guild, and the players a search found (more
+# than the List's 19 rows: it scrolls).
+from dso_server.protocol import social_protocol as sp
+summary = lambda cid, name, where, cls, level, **k: sp.PlayerSummary(0, 0, cid, 0, name, where, cls, level, **k)
+group = (summary(1, "Debug", "a0200_kingscity", 1, 40, role=0), summary(2, "Brenna", "a0302_wildforest", 2, 37, role=1),
+         summary(3, "Corwin", "a0200_kingscity", 0, 41, online=False, available=False, group_invitable=False, role=1))
+record("group", sp.encode_group_status(sp.GroupStatus(0, 7, 1, 1, False, group, "Debug's group", False, "")))
+stamp = (2026, 10, 1, 12, 0, 0)
+guild = tuple(sp.GuildMember(cid, 0, name, cls, level, online, online, False, rank, stamp)
+              for cid, name, cls, level, online, rank in [(1, "Debug", 1, 40, True, 2), (2, "Brenna", 2, 37, True, 1), (4, "Dagny", 3, 22, True, 0),
+                                                          (5, "Eskil", 0, 55, False, 0), (6, "Freya", 1, 18, False, 0), (7, "Gunnar", 3, 61, True, 1)])
+record("guild", sp.encode_guild_status(sp.GuildStatus(0, 3, "Knights of Duria", 1, True, 1, len(guild), guild)))
+found = [("Brenna", 2, 37), ("Hilde", 0, 12), ("Ivar", 3, 44), ("Jorun", 1, 29), ("Kari", 2, 8), ("Leif", 0, 52), ("Maren", 1, 33),
+         ("Njal", 3, 19), ("Oda", 2, 47), ("Pelle", 0, 25), ("Ragna", 1, 60), ("Sigrun", 3, 14), ("Torvald", 0, 38), ("Ulla", 2, 21),
+         ("Vidar", 1, 49), ("Yrsa", 3, 31), ("Asger", 0, 5), ("Bodil", 2, 57), ("Dag", 1, 16), ("Embla", 3, 42), ("Fenja", 0, 27), ("Geir", 2, 35)]
+record("player_search", sp.encode_player_query_result(1, tuple(summary(100 + n, name, "", cls, level) for n, (name, cls, level) in enumerate(found))))
+
 out.write_text(json.dumps(records, indent=1) + "\n", encoding="utf-8")
 print(f"wrote {len(records)} fixture packets to {out}: quests {[q for q, _ in chosen]}, events {events}, helmet {helmet}, gems {gems}, recipe book {recipe['book']}")

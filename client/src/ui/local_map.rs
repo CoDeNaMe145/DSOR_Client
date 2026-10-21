@@ -136,9 +136,13 @@ pub(super) struct MapGeometry {
     scale: f32,
 }
 
-/// Camera right/down projected onto the ground. Reference UI coordinates are
-/// already Y-down; Follows performs their one conversion to the Y-up UI camera.
-/// Treating +Z as map-up here mirrored the terrain relative to the world view.
+/// The camera's heading on the ground, without its pitch: the map is seen from
+/// straight above, turned so that the way the camera looks is map-up. Reference
+/// UI coordinates are already Y-down; Follows performs their one conversion to
+/// the Y-up UI camera. Treating +Z as map-up here mirrored the terrain relative
+/// to the world view.
+/// FAILURE (2026-10-21): projected through the whole camera rotation, the map
+/// kept the camera's 45° pitch and showed the zone squashed, as if tilted.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct GroundProjection {
     right: Vec2,
@@ -152,7 +156,9 @@ impl GroundProjection {
     }
 
     fn from_rotation(rotation: Quat) -> Self {
-        Self { right: (rotation * Vec3::X).xz(), down: (rotation * Vec3::NEG_Y).xz() }
+        // An unrolled camera's right is level; map-down points back at the camera.
+        let right = (rotation * Vec3::X).xz().normalize_or_zero();
+        Self { right, down: right.perp() }
     }
 
     fn project(self, position: Vec3) -> Vec2 {
@@ -292,10 +298,13 @@ mod tests {
                     min: Vec2::splat(-20.0), origin: view.origin, scale: 2.0 };
                 let ui = follow_transform(&Screen::default(), view.k, true);
                 let start = Vec3::new(3.0, 0.0, 5.0);
+                // Seen from straight above: the camera's yaw turns the map, its pitch must not squash it.
+                let yaw = Quat::from_rotation_y(camera.rotation.to_euler(EulerRot::YXZ).0);
                 for heading in 0..8 {
                     let rotation = Quat::from_rotation_y(heading as f32 * std::f32::consts::FRAC_PI_4);
                     let facing = rotation * Vec3::Z;
-                    let expected = (camera.rotation.inverse() * facing).xy() * map.scale;
+                    let local = yaw.inverse() * facing;
+                    let expected = Vec2::new(local.x, -local.z) * map.scale;
                     let rendered = ui.transform_point(map.project(start + facing).extend(0.0))
                         - ui.transform_point(map.project(start).extend(0.0));
                     assert!(rendered.xy().distance(expected) < 1.0e-4, "world and map must move in the same screen direction");

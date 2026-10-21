@@ -428,6 +428,31 @@ impl Body for GroupStatus {
     }
 }
 
+/// PlayerQueryResultCommand (181), NOT actor-scoped: the query id echoed, then the
+/// players found as GroupStatus's rows (PlayerSocialInfo). The server fills a
+/// row's map field with the player's guild, its three flags with whether the
+/// player is online, its role with 0xFF.
+/// SOURCE: dso-server-production protocol/social_protocol.py
+///   encode_player_query_result (:344-355); services/social.py _handle_player_query.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PlayerQueryResult {
+    pub query_id: u32,
+    pub players: Vec<GroupMember>,
+}
+
+impl Body for PlayerQueryResult {
+    fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self { query_id: r.u32()?, players: counted(r, MOST, "player query result count", GroupMember::decode)? })
+    }
+    fn encode(&self, w: &mut BitWriter) {
+        w.u32(self.query_id);
+        w.count(self.players.len());
+        for p in &self.players {
+            p.encode(w);
+        }
+    }
+}
+
 /// GroupFoundationResponseCommand (153), NOT actor-scoped: u8 status (0 made, 1
 /// refused), u32 tick, str message (the refusal's text). A GroupStatus follows.
 /// SOURCE: dso-server-production protocol/social_protocol.py

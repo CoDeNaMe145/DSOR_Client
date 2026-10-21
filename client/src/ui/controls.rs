@@ -16,6 +16,7 @@ pub(super) mod systems;
 pub(super) mod template;
 pub(crate) mod settings;
 pub(super) mod hotbar;
+pub(super) mod effects;
 mod tooltips;
 pub(super) use tooltips::overlay as tooltips;
 
@@ -188,6 +189,11 @@ fn section(window: &str, id: &str) -> Section {
     }
     if window == "gamebar" && parts.iter().any(|p| matches!(*p, "Premium" | "Deluxe" | "bgAutoplay" | "autoplay" | "SigninBtn" | "CameBackSignInBtn" | "SeasonPassBtn")) {
         return Section::Hidden;
+    }
+    // The comeback event's Return Link and Return Check-in buttons: shown unless
+    // the player hid them (Settings > General; settings::sync sets the pages).
+    if window == "gamebar" {
+        for group in settings::GAMEBAR_OPTIONAL { if parts.contains(&group) { return Section::Page(group, 1); } }
     }
     Section::Always
 }
@@ -1045,6 +1051,8 @@ pub(super) fn interact(
         Action::Logout => { pointer.logout = true; *visibility = Visibility::Hidden; }
         Action::Talent(id) => pointer.talent = Some(id),
         Action::Travel(map) => { pointer.travel = Some(map); *visibility = Visibility::Hidden; }
+        // A social window row: the player menu, where the cursor is (social::context_menu).
+        Action::System(systems::Request::Player(name)) => { social.target = Some(name); social.menu_at_cursor = true; }
         Action::System(request) => { let request = systems::clicked(request, &mut controls); pointer.system.push(request); }
         Action::Respawn(at_exit, on_spot) => {
             respawn.0 = Some((at_exit, on_spot));
@@ -1082,11 +1090,14 @@ pub(super) fn edit_text(
         };
         if enter || event.key_code == KeyCode::Escape {
             pointer.focus = None;
-            // Enter sends the chat line, on the window's channel.
+            // Enter sends the chat line, on the window's channel; in the social
+            // window's search panel, it searches.
             if let (true, Ok((_, w, mut c, _, _))) = (enter, windows.get_mut(root)) {
                 if w.0 == CHAT_WINDOW {
                     let typed = c.entries.insert(id, TextEntry::default()).map(|e| e.text).unwrap_or_default();
                     chat.submit(crate::network::chat::Kind::channel(c.pages.get("chat_channel").copied().unwrap_or(0)), &typed);
+                } else if w.0 == systems::SOCIAL {
+                    pointer.system.push(systems::Request::SocialSearch);
                 }
             }
             continue;
