@@ -455,10 +455,11 @@ enum ValueKind {
     EffectTime(u8, u8),
 }
 
-/// A currency counter short enough for its slot of the currency bar: whole up to
+/// The gold counter short enough for its slot of the currency bar: whole up to
 /// 999999, then thousands (1000k .. 99999k), then millions (100kk ..), so a
-/// big purse no longer runs under the next coin's icon. The user's account of
-/// the original's counters (2026-10-22): 1000000 shows 1000k, 100000k 100kk.
+/// big purse no longer runs under the silver icon. Only gold, as the original
+/// (the user's account, 2026-10-22: 1000000 shows 1000k, 100000k 100kk; the
+/// other currencies keep their whole numbers).
 fn short_count(n: u64) -> String {
     match n {
         0..1_000_000 => n.to_string(),
@@ -1501,10 +1502,10 @@ fn update_values(
             ValueKind::Gold => short_count(copper as u64 / 10_000),
             ValueKind::Silver => (copper / 100 % 100).to_string(),
             ValueKind::Copper => (copper % 100).to_string(),
-            ValueKind::Andermant => short_count(figures.andermant.unwrap_or(0) as u64),
-            ValueKind::Honor => short_count(figures.honor.unwrap_or(0) as u64),
-            ValueKind::Draken => short_count(figures.draken.unwrap_or(0) as u64),
-            ValueKind::Glyphs => short_count(figures.glyphs.unwrap_or(0) as u64),
+            ValueKind::Andermant => figures.andermant.unwrap_or(0).to_string(),
+            ValueKind::Honor => figures.honor.unwrap_or(0).to_string(),
+            ValueKind::Draken => figures.draken.unwrap_or(0).to_string(),
+            ValueKind::Glyphs => figures.glyphs.unwrap_or(0).to_string(),
             ValueKind::Level => figures.level.map(|l| l.to_string()).unwrap_or_else(|| "-".to_owned()),
             ValueKind::XpPercent => format!("{:.0}%", figures.xp * 100.0),
             ValueKind::WisdomLevel => figures.wisdom.0.to_string(),
