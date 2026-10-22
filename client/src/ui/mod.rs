@@ -455,6 +455,18 @@ enum ValueKind {
     EffectTime(u8, u8),
 }
 
+/// A currency counter short enough for its slot of the currency bar: whole up to
+/// 999999, then thousands (1000k .. 99999k), then millions (100kk ..), so a
+/// big purse no longer runs under the next coin's icon. The user's account of
+/// the original's counters (2026-10-22): 1000000 shows 1000k, 100000k 100kk.
+fn short_count(n: u64) -> String {
+    match n {
+        0..1_000_000 => n.to_string(),
+        1_000_000..100_000_000 => format!("{}k", n / 1_000),
+        _ => format!("{}kk", n / 1_000_000),
+    }
+}
+
 /// The character sheet's widgets crate::gameplay::stats fills.
 const SHEET_WIDGETS: &[&str] = &[
     "CharacterClass", "Guildname", "Level", "NextLevel", "XP", "BaseDamage", "AttackSpeed", "LMKSkill", "RMKSkill",
@@ -1486,13 +1498,13 @@ fn update_values(
             ValueKind::EssenceKey => settings.current.label("essence"),
             ValueKind::BarNumber => (hotbar.active + 1).to_string(),
             ValueKind::Fixed(n) => n.to_string(),
-            ValueKind::Gold => (copper / 10_000).to_string(),
+            ValueKind::Gold => short_count(copper as u64 / 10_000),
             ValueKind::Silver => (copper / 100 % 100).to_string(),
             ValueKind::Copper => (copper % 100).to_string(),
-            ValueKind::Andermant => figures.andermant.unwrap_or(0).to_string(),
-            ValueKind::Honor => figures.honor.unwrap_or(0).to_string(),
-            ValueKind::Draken => figures.draken.unwrap_or(0).to_string(),
-            ValueKind::Glyphs => figures.glyphs.unwrap_or(0).to_string(),
+            ValueKind::Andermant => short_count(figures.andermant.unwrap_or(0) as u64),
+            ValueKind::Honor => short_count(figures.honor.unwrap_or(0) as u64),
+            ValueKind::Draken => short_count(figures.draken.unwrap_or(0) as u64),
+            ValueKind::Glyphs => short_count(figures.glyphs.unwrap_or(0) as u64),
             ValueKind::Level => figures.level.map(|l| l.to_string()).unwrap_or_else(|| "-".to_owned()),
             ValueKind::XpPercent => format!("{:.0}%", figures.xp * 100.0),
             ValueKind::WisdomLevel => figures.wisdom.0.to_string(),
@@ -1666,6 +1678,17 @@ mod outline_tests {
 #[cfg(test)]
 mod residency_tests {
     use super::*;
+
+    #[test]
+    fn currency_counters_shorten_to_k_and_kk() {
+        assert_eq!(short_count(999_999), "999999");
+        assert_eq!(short_count(1_000_000), "1000k");
+        assert_eq!(short_count(9_999_999), "9999k");
+        assert_eq!(short_count(99_999_999), "99999k");
+        assert_eq!(short_count(100_000_000), "100kk");
+        assert_eq!(short_count(1_000_000_000), "1000kk");
+        assert_eq!(short_count(0), "0");
+    }
 
     /// The area a fan covers, and whether every rim point is in the box.
     fn fan(art: &Art) -> (f32, Vec<[f32; 2]>) {
