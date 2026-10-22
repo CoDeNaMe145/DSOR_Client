@@ -816,9 +816,10 @@ pub(in crate::ui) fn send(
             Request::Sticker(template) => commands.push(ClientCommand::UseStickerBookItem(inventory::UseStickerBookItem { template })),
             // A second click on the sticker previewed uses it, if owned.
             Request::Pick(id) => {
-                let owned = views.album.stickers.iter().any(|s| s.id == id && s.owned);
-                if state.album_sticker.as_ref() == Some(&id) && owned {
-                    commands.push(ClientCommand::UseStickerBookItem(inventory::UseStickerBookItem { template: id }));
+                // Named as the server owns it (album::Sticker::server_key).
+                let owned = views.album.stickers.iter().find(|s| s.id == id && s.owned).map(|s| s.server_key().to_owned());
+                if let (true, Some(template)) = (state.album_sticker.as_ref() == Some(&id), owned) {
+                    commands.push(ClientCommand::UseStickerBookItem(inventory::UseStickerBookItem { template }));
                 } else {
                     state.album_sticker = Some(id);
                 }
