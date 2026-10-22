@@ -64,6 +64,10 @@ pub(in crate::ui) struct Sticker {
     pub name: String,
     pub icon: Icon,
     pub owned: bool,
+    /// The name the server owns it under (Net::stickerbook's key: the item's
+    /// resource id, mythical_mount_manticore_01, not the sticker's
+    /// sb_mount_wild_31_...): what a favourite request names. Empty: `id`.
+    pub key: String,
     pub favourite: bool,
     pub addable: bool,
     pub upgradable: bool,
@@ -71,6 +75,13 @@ pub(in crate::ui) struct Sticker {
     pub origin: String,
     pub background: String,
     pub offer: String,
+}
+
+impl Sticker {
+    /// The name to send for it: the server's key once owned, else its id.
+    pub(in crate::ui) fn server_key(&self) -> &str {
+        if self.key.is_empty() { &self.id } else { &self.key }
+    }
 }
 
 /// A row of the category list: a category (its top book) or a book under it.
@@ -106,16 +117,24 @@ pub(in crate::ui) struct Album {
     pub scroll: usize,
 }
 
+/// A sticker's owned entry: the server keys them by resource id (the sticker's
+/// item template, customization.py `StickerbookEntry(2, 0, resource_id)`), not
+/// by the sticker's id; either is accepted. Before, an unlocked mount stayed
+/// "not owned" and its second click did nothing.
+fn owned_entry<'a>(book: &'a std::collections::HashMap<String, StickerbookEntry>, id: &str, def: &crate::gameplay::systems::StickerDef) -> Option<&'a StickerbookEntry> {
+    book.get(id).or_else(|| def.items.iter().find_map(|t| book.get(t)))
+}
+
 pub(super) fn album(sources: &Sources) -> Album {
     let catalog = sources.catalog;
     let state = sources.state;
     let net = sources.net;
     let book_of = |id: &str| catalog.stickerbooks.iter().find(|b| b.id == id);
     let sticker = |id: &String, def: &crate::gameplay::systems::StickerDef| {
-        let entry = net.stickerbook.get(id);
+        let entry = owned_entry(&net.stickerbook, id, def);
         let owned = entry.is_some_and(|e| e.state >= StickerbookEntry::OWNED);
         Sticker {
-            id: id.clone(), book: def.book.clone(), name: def.name.clone(),
+            id: id.clone(), key: entry.map(|e| e.id.clone()).unwrap_or_default(), book: def.book.clone(), name: def.name.clone(),
             icon: def.items.first().map(|t| sources.icon(t, None)).unwrap_or_default(),
             owned, favourite: entry.is_some_and(|e| e.state == StickerbookEntry::FAVOURITE),
             addable: !owned && def.items.iter().any(|t| !sources.carried(t).is_empty()),
@@ -144,7 +163,7 @@ pub(super) fn album(sources: &Sources) -> Album {
     let front = chosen == FRONT_BOOK;
     let top = book_of(&chosen).is_some_and(|b| b.subcategory < 0);
     let stickers: Vec<Sticker> = all.iter().filter(|(id, def)| {
-        if front { net.stickerbook.get(*id).is_some_and(|e| e.state == StickerbookEntry::FAVOURITE) }
+        if front { owned_entry(&net.stickerbook, id, def).is_some_and(|e| e.state == StickerbookEntry::FAVOURITE) }
         else if top { book_of(&def.book).is_some_and(|b| b.category == category) }
         else { def.book == chosen }
     }).map(|(id, def)| sticker(id, def)).collect();
@@ -199,7 +218,7 @@ fn grid(source: &Layout, layout: &mut Layout, page: &str, stickers: &[Sticker], 
             if has_part(&w.id, "FlagButtonFav") && sticker.favourite { if let Some(art) = &mut w.art { art.tex = Some(FAVOURITE.into()); } }
             let name = leaf(&w.id).to_owned();
             match name.as_str() {
-                "FlagButtonFav" => w.event = format!("Sys:Favorite:{}:{}", sticker.id, u8::from(!sticker.favourite)),
+                "FlagButtonFav" => w.event = format!("Sys:Favorite:{}:{}", sticker.server_key(), u8::from(!sticker.favourite)),
                 "FlagButtonAdd" => w.event = format!("Sys:Add:{}", sticker.id),
                 "UpgradeButton" => w.event = format!("Sys:Upgrade:{}", sticker.id),
                 _ => {}
@@ -260,7 +279,7 @@ pub(super) fn prepare_album(source: &Layout, album: &Album) -> Layout {
             "TextLabel" if id.ends_with("/background_headline/TextLabel") => set_text(w, &preview.map_or_else(|| album.title.clone(), |s| s.name.clone())),
             "OriginIconLabel" => if let Some(s) = preview { w.art = Some(image_art(w.rect, texture_path(&s.origin))); },
             "background_image" | "background_t" => if let Some(s) = preview.filter(|s| !s.background.is_empty()) { w.art = Some(image_art(w.rect, texture_path(&s.background))); },
-            "FlagButtonFav" if id.contains("/background_image/") => if let Some(s) = preview { w.event = format!("Sys:Favorite:{}:{}", s.id, u8::from(!s.favourite)); },
+            "FlagButtonFav" if id.contains("/background_image/") => if let Some(s) = preview { w.event = format!("Sys:Favorite:{}:{}", s.server_key(), u8::from(!s.favourite)); },
             "PaymentButton" => if let Some(s) = preview { w.event = format!("Sys:Buy:{}", s.offer); },
             _ => {}
         }
@@ -429,6 +448,25 @@ mod tests {
         let items = format!("{FRONT}/AdvertisementArtwork/AdvertisedItems");
         assert_eq!(find(&prepared, &format!("{items}/ItemSlot0/Button0")).event, "Sys:AlbumBook:sb_pets:s2");
         assert!(ids.contains(&format!("{items}/ItemSlot0/Icon0/Image")) && !ids.iter().any(|id| id.contains("/ItemSlot1")));
+    }
+
+    #[test]
+    fn a_sticker_is_owned_under_its_item_s_resource_id() {
+        let def: crate::gameplay::systems::StickerDef = serde_json::from_value(serde_json::json!({
+            "name": "Manticore", "book": "sb_mounts_wild_animals", "items": ["mythical_mount_manticore_01"] })).unwrap();
+        let entry = |id: &str, state| StickerbookEntry { state, unknown_u32_0: 0, id: id.into() };
+        let id = "sb_mount_wild_31_mythical_mount_manticore_01";
+        // The server's unlock (StickerbookItemInfo): keyed by the resource id.
+        let book = std::collections::HashMap::from([("mythical_mount_manticore_01".to_owned(), entry("mythical_mount_manticore_01", 2))]);
+        assert_eq!(owned_entry(&book, id, &def).map(|e| e.id.as_str()), Some("mythical_mount_manticore_01"));
+        // Keyed by the sticker id still works; nothing owned, nothing found.
+        let book = std::collections::HashMap::from([(id.to_owned(), entry(id, 3))]);
+        assert_eq!(owned_entry(&book, id, &def).map(|e| e.state), Some(3));
+        assert!(owned_entry(&std::collections::HashMap::new(), id, &def).is_none());
+        // A favourite request names the key the server owns it under.
+        let s = Sticker { id: id.into(), key: "mythical_mount_manticore_01".into(), ..Default::default() };
+        assert_eq!(s.server_key(), "mythical_mount_manticore_01");
+        assert_eq!(Sticker { id: id.into(), ..Default::default() }.server_key(), id);
     }
 
     #[test]
