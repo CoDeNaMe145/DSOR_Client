@@ -788,7 +788,7 @@ button it shows either acts or shows its disabled face.
   its banners (counters switch them), the new stickers and the favourites;
   a book's page with its text, a 6 x 4 grid, the preview (name, origin,
   background, favourite flag, its offer) and the book's progress with its
-  rewards (`StickerbookRewardItems`). A click previews a sticker, a second
+  rewards (`StickerbookRewardItems`). A click previews a sticker, a right
   click uses it. The exporter no longer adds the invented `AlbumPage` /
   `AlbumCategory` widgets (`tools/collector_catalog.py` is gone).
 - **Transmog desk.** The 2026 customization window: skins and dyes tabs, the

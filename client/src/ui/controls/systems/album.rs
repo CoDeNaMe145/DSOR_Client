@@ -215,11 +215,12 @@ pub(super) fn list_limit(album: &Album) -> usize {
     album.books.len() - fitting
 }
 
-/// The sticker cells of a grid: a click previews, the flags favour, add, upgrade.
-fn grid(source: &Layout, layout: &mut Layout, page: &str, stickers: &[Sticker], origin: (f32, f32), columns: usize, preview: Option<&str>) {
+/// The sticker cells of a grid: a click previews, the flags favour, add, upgrade;
+/// up to `cells`, the free places show the empty cell's backing.
+fn grid(source: &Layout, layout: &mut Layout, page: &str, stickers: &[Sticker], origin: (f32, f32), columns: usize, cells: usize, preview: Option<&str>) {
+    let offset = |i: usize| (origin.0 - CELL_ORIGIN.0 + (i % columns) as f32 * CELL.0, origin.1 - CELL_ORIGIN.1 + (i / columns) as f32 * CELL.1);
     for (i, sticker) in stickers.iter().enumerate() {
-        let (col, row) = (i % columns, i / columns);
-        let (dx, dy) = (origin.0 - CELL_ORIGIN.0 + col as f32 * CELL.0, origin.1 - CELL_ORIGIN.1 + row as f32 * CELL.1);
+        let (dx, dy) = offset(i);
         let replacement = format!("{page}/Sticker{i}");
         let shown = preview == Some(sticker.id.as_str());
         // The flags (favourite star, add, upgrade) come before the icon in the
@@ -228,6 +229,11 @@ fn grid(source: &Layout, layout: &mut Layout, page: &str, stickers: &[Sticker], 
         //   the star underneath").
         let mut flags = Vec::new();
         for mut w in clone_at(source, ENTRY, &replacement, dx, dy) {
+            // The empty cell's backing (after the icon in the layout) is for
+            // places without a sticker.
+            // FAILURE (2026-10-23): drawn over every icon, owned stickers looked
+            //   locked (the user's favourites beside the original's).
+            if has_part(&w.id, "EmptyBackground") { continue; }
             rename(&mut w, "TemplateSlot", "Slot");
             rename(&mut w, "TemplateIcon", "Icon");
             if (has_part(&w.id, "FlagLabelPremium") && sticker.origin != PREMIUM_ORIGIN) || (has_part(&w.id, "highlight") && !shown)
@@ -252,6 +258,10 @@ fn grid(source: &Layout, layout: &mut Layout, page: &str, stickers: &[Sticker], 
             if w.id.contains("/Slot/FlagLabel") { flags.push(w); } else { layout.widgets.push(w); }
         }
         layout.widgets.extend(flags);
+    }
+    for i in stickers.len()..cells {
+        let (dx, dy) = offset(i);
+        layout.widgets.extend(clone_at(source, ENTRY, &format!("{page}/Sticker{i}"), dx, dy).filter(|w| has_part(&w.id, "EmptyBackground")));
     }
 }
 
@@ -357,9 +367,9 @@ pub(super) fn prepare_album(source: &Layout, album: &Album) -> Layout {
     let shown: Vec<Sticker> = album.stickers.iter().skip(album.page * if album.front { FRONT_COLUMNS * FRONT_ROWS } else { PER_PAGE })
         .take(if album.front { FRONT_COLUMNS * FRONT_ROWS } else { PER_PAGE }).cloned().collect();
     if album.front {
-        grid(source, &mut layout, FRONT, &shown, FRONT_ORIGIN, FRONT_COLUMNS, None);
+        grid(source, &mut layout, FRONT, &shown, FRONT_ORIGIN, FRONT_COLUMNS, FRONT_COLUMNS * FRONT_ROWS, None);
     } else {
-        grid(source, &mut layout, PAGE, &shown, CELL_ORIGIN, COLUMNS, preview.map(|s| s.id.as_str()));
+        grid(source, &mut layout, PAGE, &shown, CELL_ORIGIN, COLUMNS, shown.len(), preview.map(|s| s.id.as_str()));
         // The book's rewards along its bar, at their counts.
         if let (Some(bar), Some(root)) = (source.widgets.iter().find(|w| w.id == BAR), source.widgets.iter().find(|w| w.id == REWARD)) {
             let total = album.progress.1.max(1) as f32;
@@ -390,6 +400,7 @@ mod tests {
             (format!("{LIST}/TemplateSubCategory"), "Button", false), (format!("{LIST}/TemplateSubCategory/normal"), "Label", false), (format!("{LIST}/TemplateSubCategory/normal/TextLabel"), "TextLabel", true),
             (ENTRY.into(), "Label", false), (format!("{ENTRY}/TemplateSlot/FlagLabel/FlagButtonFav"), "Button", false), (format!("{ENTRY}/TemplateSlot/FlagLabel/FlagButtonAdd"), "Button", false),
             (format!("{ENTRY}/TemplateSlot/FlagLabel/UpgradeButton"), "Button", false), (format!("{ENTRY}/TemplateIcon"), "Icon", true), (format!("{ENTRY}/TemplateIcon/highlight"), "Label", false),
+            (format!("{ENTRY}/EmptyBackground"), "Slot", false),
             (format!("{PAGE}/background_info/TextLabel_fav"), "TextLabel", true), (format!("{PAGE}/background_info/TextLabel_info"), "TextLabel", true),
             (format!("{PAGE}/pages/PageNumText"), "TextLabel", true), (format!("{PAGE}/pages/NextPageBtn"), "Button", false),
             (image.clone(), "Label", false), (format!("{image}/background_headline/TextLabel"), "TextLabel", true), (format!("{image}/FlagButtonFav"), "Button", false), (format!("{image}/OriginIconLabel"), "Label", false),
@@ -427,6 +438,8 @@ mod tests {
         assert_eq!(find(&prepared, &format!("{PAGE}/Sticker0/Slot/FlagLabel/FlagButtonFav")).art.as_ref().unwrap().tex.as_deref(), Some(FAVOURITE));
         assert_eq!(find(&prepared, &format!("{PAGE}/Sticker1/Slot/FlagLabel/FlagButtonAdd")).event, "Sys:Add:s2");
         assert_eq!(find(&prepared, &format!("{PAGE}/Sticker1/Icon/Image")).art.as_ref().unwrap().color[3], FADED);
+        // No empty backing over a sticker, none past a book's stickers.
+        assert!(!ids.iter().any(|id| id.ends_with("/EmptyBackground")));
         // The preview: the sticker's name, origin, icon, favourite flag; no offer for an owned one.
         let image = format!("{PREVIEW}/previewBackground/background_image");
         assert_eq!(text_of(&prepared, &format!("{image}/background_headline/TextLabel")), "Horse");
@@ -461,6 +474,11 @@ mod tests {
         let ids: Vec<_> = prepared.widgets.iter().map(|w| w.id.clone()).collect();
         assert!(!ids.iter().any(|id| id.starts_with(PAGE)));
         assert_eq!(find(&prepared, &format!("{FRONT}/Sticker0")).rect[1], 192.0 + FRONT_ORIGIN.1 - CELL_ORIGIN.1);
+        // The favourite's icon is bare; the other 29 places show the empty backing.
+        let empty: Vec<_> = ids.iter().filter(|id| id.ends_with("/EmptyBackground")).collect();
+        assert_eq!(empty.len(), FRONT_COLUMNS * FRONT_ROWS - 1);
+        assert!(!ids.contains(&format!("{FRONT}/Sticker0/EmptyBackground")) && ids.contains(&format!("{FRONT}/Sticker29/EmptyBackground")));
+        assert_eq!(find(&prepared, &format!("{FRONT}/Sticker11/EmptyBackground")).rect[0], find(&prepared, &format!("{FRONT}/Sticker1/EmptyBackground")).rect[0]);
         assert_eq!(find(&prepared, &format!("{FRONT}/AdvertisementArtwork")).art.as_ref().unwrap().tex.as_deref(), Some("textures/ui_collectorsalbum/stickerbookbanner_pets_en_crunch.png"));
         let counters = format!("{FRONT}/AdvertisementArtwork/DealsCounterLabel");
         assert_eq!(find(&prepared, &format!("{counters}/Counter0")).event, "Sys:Banner:0");
