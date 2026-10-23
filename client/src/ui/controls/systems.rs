@@ -192,6 +192,10 @@ pub(crate) struct State {
     /// The album's book open (None: the front page), the sticker previewed,
     /// the front page's banner.
     pub album_book: Option<String>,
+    /// The category whose books the list shows under it (its top book), apart
+    /// from the book shown: as in the original, a category opens and closes its
+    /// list and the page keeps the last book opened.
+    pub album_open: Option<String>,
     pub album_sticker: Option<String>,
     pub album_banner: usize,
     pub rank_start: u32,
@@ -825,9 +829,23 @@ pub(in crate::ui) fn send(
                 }
             }
             Request::AlbumBook(book, sticker) => {
-                state.album_book = Some(book);
-                state.album_sticker = sticker;
-                state.pages.remove(ALBUM);
+                // A category with books under it only opens or closes their list;
+                // the page keeps the book shown. A book (or a category without
+                // books) is shown, its category's list open.
+                // FAILURE (2026-10-23): a second click on Mounts did not close it;
+                //   the original (the user's release261_192 shots) closes the list
+                //   and still shows the last book.
+                let def = catalog.stickerbooks.iter().find(|b| b.id == book);
+                let top_of = |category| catalog.stickerbooks.iter().find(|b| b.category == category && b.subcategory < 0).map(|t| t.id.clone());
+                let has_books = def.is_some_and(|d| d.subcategory < 0 && catalog.stickerbooks.iter().any(|b| b.category == d.category && b.subcategory >= 0));
+                if has_books {
+                    state.album_open = if state.album_open.as_deref() == Some(book.as_str()) { None } else { Some(book) };
+                } else {
+                    state.album_open = def.filter(|d| d.subcategory >= 0).and_then(|d| top_of(d.category));
+                    state.album_book = Some(book);
+                    state.album_sticker = sticker;
+                    state.pages.remove(ALBUM);
+                }
             }
             Request::Banner(n) => state.album_banner = n,
             Request::Favorite(id, favorite) => commands.push(ClientCommand::SetStickerbookFavorite(proto::SetStickerbookFavorite { id, favorite })),

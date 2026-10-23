@@ -163,8 +163,9 @@ pub(super) fn album(sources: &Sources) -> Album {
     let mut books = Vec::new();
     for top in &tops {
         let title = if top.id == FRONT_BOOK { "Favorites".to_owned() } else { top.title.clone() };
-        books.push(Book { id: top.id.clone(), title, sub: false, selected: top.id == chosen });
-        if top.category != category || top.id == FRONT_BOOK { continue; }
+        let open = state.album_open.as_deref() == Some(top.id.as_str());
+        books.push(Book { id: top.id.clone(), title, sub: false, selected: open || top.id == chosen });
+        if !open || top.id == FRONT_BOOK { continue; }
         let mut subs: Vec<_> = catalog.stickerbooks.iter().filter(|b| b.category == top.category && b.subcategory >= 0).collect();
         subs.sort_by_key(|b| (b.priority, b.subcategory));
         books.extend(subs.iter().map(|b| Book { id: b.id.clone(), title: b.title.clone(), sub: true, selected: b.id == chosen }));
