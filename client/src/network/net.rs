@@ -1626,7 +1626,7 @@ fn actor_stream(command: &ServerCommand) -> bool {
         | ServerCommand::NewTrap(_) | ServerCommand::TrapTripped(_) | ServerCommand::DiscardTrap(_)
         | ServerCommand::Skill(_) | ServerCommand::TargetSkill(_) | ServerCommand::BulletSkill(_)
         | ServerCommand::TargetBulletSkill(_) | ServerCommand::TargetPointBulletSkill(_) | ServerCommand::ShiftedSkill(_)
-        | ServerCommand::NewItem(_) | ServerCommand::DiscardItem(_))
+        | ServerCommand::SustainedSkill(_) | ServerCommand::NewItem(_) | ServerCommand::DiscardItem(_))
 }
 
 pub(crate) fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
@@ -1771,6 +1771,8 @@ pub(crate) fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u3
         ServerCommand::TargetBulletSkill(c) => net.skill_event(actor, &c.base, c.server.as_ref(), c.points.clone(), Some(c.target)),
         ServerCommand::TargetPointBulletSkill(c) => net.skill_event(actor, &c.base, c.server.as_ref(), c.points.clone(), None),
         ServerCommand::ShiftedSkill(c) => net.skill_event(actor, &c.base, c.server.as_ref(), c.points.clone(), None),
+        // A summon's channelled beam (the Machine Gun Turret): its execute sequence plays on it.
+        ServerCommand::SustainedSkill(c) => net.skill_event(actor, &c.base, c.server.as_ref(), Vec::new(), None),
         ServerCommand::NewNpc(n) => {
             let Some(actor) = actor else { return };
             let guid: String = n.guid.iter().map(|b| format!("{b:02X}")).collect();
