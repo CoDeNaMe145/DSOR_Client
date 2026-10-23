@@ -56,7 +56,7 @@ pub(super) fn clean_text(raw: &str) -> String {
 
 #[allow(clippy::too_many_arguments)]
 pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018, &WindowControls, &Visibility, &Transform), Without<Tooltip>>,
-    primary: Query<&Window, With<PrimaryWindow>>, screen: Res<Screen>, settings: Res<settings::Settings>, (pointer,keys):(Res<Pointer>,Res<ButtonInput<KeyCode>>),
+    primary: Query<&Window, With<PrimaryWindow>>, screen: Res<Screen>, settings: Res<settings::Settings>, (pointer,keys,figures):(Res<Pointer>,Res<ButtonInput<KeyCode>>,Res<crate::ui::Figures>),
     net: Option<NonSend<crate::network::net::Net>>, hotbar: Res<hotbar::Hotbar>,
     (data, catalogs, dialogue): (Res<items::Data>, Res<Assets<items::Catalog>>, Res<dialogue::Presentation>), layouts: Res<Assets<Layout>>, loaded: Res<Loaded>,
     (skill_tables, status_bar, status_catalogs, status_slots): (Res<Assets<crate::gameplay::skills::SkillTable>>,
@@ -203,20 +203,36 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
                 anchor = Some(rect);
                 above = true;
             // Non-button gauges and currency amounts also explain themselves.
-            } else if let Some((w,_,_,tf)) = windows.iter().filter(|(_,c,v,tf)| **v != Visibility::Hidden && c.covers(p-window_offset(tf),screen.width))
+            } else if let Some((w,wc,_,tf)) = windows.iter().filter(|(_,c,v,tf)| **v != Visibility::Hidden && c.covers(p-window_offset(tf),screen.width))
                 .max_by(|a,b|a.3.translation.z.total_cmp(&b.3.translation.z)) {
                 if let Some(layout) = loaded.layouts.iter().filter_map(|(h,_,_)| layouts.get(h)).find(|l|l.window==w.0) {
-                    for widget in layout.widgets.iter().rev().filter(|x| !x.hidden && contains(x.k,x.rect,p-window_offset(tf),screen.width)) {
-                        let tip = if widget.id.contains("andermant") { Some("Andermant") } else if widget.id.contains("VirtualCurrency") { Some("Coins: 100 copper = 1 silver; 100 silver = 1 gold") }
-                        else if widget.id.contains("bottombar_xp_bar") { Some("Experience: earn experience to level up") } else if widget.id.contains("bottombar_wisdom_bar") { Some("Ancient Wisdom") }
-                        else { match gauge_of(&widget.id) { Some(Gauge::Health | Gauge::HealthBar) => Some("Health"), Some(Gauge::Resource | Gauge::ResourceBar) => Some("Skill resource"), _ => None } };
-                        if let Some(tip) = tip {
-                            content=Some((tip.into(),String::new(),None));
-                            let [l,t,r,b] = widget.rect;
-                            let offset = window_offset(tf) + Vec2::new(widget.k*(screen.width-BASE_W),0.0);
-                            anchor = Some([l+offset.x,t+offset.y,r+offset.x,b+offset.y]);
-                            break;
-                        }
+                    // The smallest area under the cursor that explains itself: the
+                    // coins' box reaches down over the Badges of Honor row, which
+                    // showed the coins' line there.
+                    let tip_of = |id: &str| -> Option<String> {
+                        // The game's own lines: gui.window acString / ecString.
+                        if id.contains("andermant") { Some("Andermant".into()) } else if id.contains("VirtualCurrency") { Some("Coins: 100 copper = 1 silver; 100 silver = 1 gold".into()) }
+                        // The bars' own lines (gui.window bottomBarXp, bottomBarHealth,
+                        // bottomBarRage / Mana / Stamina / MechanicResource).
+                        // FAILURE (2026-10-24): "Health", "Experience: earn experience to
+                        //   level up" without the numbers (the user's shots beside the original's).
+                        else if id.contains("bottombar_xp_bar") { Some(figures.xp_points.map_or_else(|| "Experience points".to_owned(), |(n, of)| format!("{n} / {of} Experience points"))) }
+                        else if id.contains("bottombar_wisdom_bar") { Some("Ancient Wisdom".into()) }
+                        else { match gauge_of(id) {
+                            Some(Gauge::Health | Gauge::HealthBar) => Some(format!("{:.0} / {:.0} Health Points", figures.health.0, figures.health.1)),
+                            Some(Gauge::Resource | Gauge::ResourceBar) => Some(format!("{:.0} / {:.0} {}", figures.resource.0, figures.resource.1,
+                                ["Rage points", "Mana points", "concentration", "Steam"][wc.spells.class.min(3) as usize])),
+                            _ => None } }
+                    };
+                    let area = |r: [f32; 4]| (r[2] - r[0]).abs() * (r[3] - r[1]).abs();
+                    let hit = layout.widgets.iter().rev().filter(|x| !x.hidden && contains(x.k,x.rect,p-window_offset(tf),screen.width))
+                        .filter_map(|w| tip_of(&w.id).map(|t| (w, t)))
+                        .min_by(|(a, _), (b, _)| area(a.rect).total_cmp(&area(b.rect)));
+                    if let Some((widget, tip)) = hit {
+                        content=Some((tip,String::new(),None));
+                        let [l,t,r,b] = widget.rect;
+                        let offset = window_offset(tf) + Vec2::new(widget.k*(screen.width-BASE_W),0.0);
+                        anchor = Some([l+offset.x,t+offset.y,r+offset.x,b+offset.y]);
                     }
                 }
             }

@@ -778,7 +778,7 @@ mod tests {
         assert_eq!(*app.world().get::<Visibility>(skills).unwrap(), Visibility::Inherited, "typing must consume shortcuts");
 
         let mut values = app.world_mut().query::<(&Value, &Text2d)>();
-        for (kind, expected, count) in [(ValueKind::WisdomLevel, "0", 2), (ValueKind::WisdomProgress, "0%", 1), (ValueKind::WisdomPoints, "Available Points: 0", 1)] {
+        for (kind, expected, count) in [(ValueKind::WisdomLevel, "0", 1), (ValueKind::BarWisdomLevel, "Wisdom Level 0", 1), (ValueKind::WisdomProgress, "", 1), (ValueKind::WisdomPoints, "Available Points: 0", 1)] {
             let actual: Vec<_> = values.iter(app.world()).filter(|(v, _)| v.0 == kind).map(|(_, t)| t.0.as_str()).collect();
             assert_eq!(actual, vec![expected; count]);
         }
