@@ -434,9 +434,14 @@ struct Bullet {
 const BULLET_LAG: f32 = 0.067;
 
 
-/// A caster carried by its skill (Jump, Charge): from `from` to `to` between the
-/// skill's LoopStartFrame and HitFrame, in an arc for a jump.
-/// UNVERIFIED: the arc's height; the frames bounding the flight.
+/// A caster carried by its skill (Jump, Charge) along the ground from `from` to
+/// `to`: a jump between its LoopStartFrame and LoopStartFrame + HitFrame (see
+/// perform), a charge on its bullet's flight. A jump's height is its clip's: the
+/// leap clips lift the Hips themselves (warrior_1h_skill_08 to 5.6 m, ranger
+/// 3.2 m, the dwarf's 2.7-3.2 m) and touch down at frame 18.
+/// FAILURE (2026-10-23): an added 1.8 m arc stacked on the clip's, and the flight
+/// ended at HitFrame (frame 11), so the character and the camera reached the
+/// landing point while the model still hung 5 m up ("the jump is still weird").
 #[derive(Component)]
 struct SkillMove {
     from: Vec3,
@@ -444,9 +449,15 @@ struct SkillMove {
     delay: f32,
     t: f32,
     duration: f32,
-    arc: f32,
     /// A charge: the caster is its bullet (see perform).
     charge: Option<Charge>,
+}
+
+/// A ShiftedSkill's (Shifted, Jump) HitFrame after its release, seconds: scaled by
+/// the attack speed, except a long falling impact (25 frames or more keeps its
+/// authored length; DSOR_Server gameplay/combat_entities.py shifted_skill_phases).
+fn shifted_hit(skill: &SkillDef, rate: f32) -> f32 {
+    skill.hit_frame as f32 / FPS / if skill.hit_frame < 25 { rate } else { 1.0 }
 }
 
 /// What a charging caster draws: its bullet's loop sequence on it while it runs,
@@ -457,9 +468,6 @@ struct Charge {
     bullet_impact: String,
     impact: String,
 }
-
-/// A jump's peak height over the straight line, units.
-const JUMP_ARC: f32 = 1.8;
 
 /// Something to do a little later in a skill (a bullet leaving the hand, an impact).
 #[derive(Component)]
@@ -696,7 +704,10 @@ fn perform(
     }
     if matches!(skill.kind.as_str(), "Jump" | "Charge" | "ChargeThrough") {
         let start = skill.loop_start as f32 / FPS / rate;
-        let end = (skill.hit_frame.max(skill.loop_start + 1)) as f32 / FPS / rate;
+        // A jump lands on its hit tick, LoopStartFrame + HitFrame after the cast,
+        // as a Shifted skill (the same ShiftedSkill command; 0x946F17): enraging
+        // leap at frame 15 (its clip touches down at 18), ranger jump at 17.
+        let end = if skill.kind == "Jump" { start + shifted_hit(skill, rate) } else { (skill.hit_frame.max(skill.loop_start + 1)) as f32 / FPS / rate };
         let mut duration = (end - start).max(0.05);
         // A charge's caster rides its bullet: placed on the bullet's straight
         // flight to the target point, its loop sequence on the caster (it holds
@@ -723,7 +734,6 @@ fn perform(
             delay: start,
             t: 0.0,
             duration,
-            arc: if skill.kind == "Jump" { JUMP_ARC } else { 0.0 },
             charge,
         });
     }
@@ -735,10 +745,10 @@ fn perform(
             "Shifted" | "Teleport" | "Jump" => point,
             _ => at,
         };
-        // Shifted: on its hit tick, start + LoopStartFrame + HitFrame (0x946F17;
-        // lightning strike 44, meteor 65).
+        // Shifted and Jump: on its hit tick, start + LoopStartFrame + HitFrame
+        // (0x946F17; lightning strike 44, meteor 65, enraging leap 15).
         let after = match skill.kind.as_str() {
-            "Shifted" => skill.loop_start as f32 / FPS / rate + skill.hit_frame as f32 / FPS / if skill.hit_frame < 25 { rate } else { 1.0 },
+            "Shifted" | "Jump" => skill.loop_start as f32 / FPS / rate + shifted_hit(skill, rate),
             _ => skill.hit_frame as f32 / FPS / rate,
         };
         // A bullet's impact is drawn where it ends (fly_bullets), a charge's where
@@ -2292,8 +2302,7 @@ fn carry_casters(
         if m.t < m.delay {
             continue;
         }
-        let mut p = m.from.lerp(m.to, k);
-        p.y += m.arc * 4.0 * k * (1.0 - k);
+        let p = m.from.lerp(m.to, k);
         tf.translation = p;
         if let (Some(c), Some(sequences)) = (m.charge.as_mut(), sequences) {
             if c.player.is_none() && k < 1.0 {
@@ -2788,6 +2797,25 @@ mod reach_tests {
         let ranged = skill("RangedTarget", 10.0);
         assert!(!beyond_reach(&ranged, Vec3::ZERO, Vec3::new(10.2, 5.0, 0.0), 0.3, Some(4.0)));
         assert!(beyond_reach(&ranged, Vec3::ZERO, at(10.4), 0.3, Some(4.0)));
+    }
+}
+
+#[cfg(test)]
+mod jump_tests {
+    use super::*;
+
+    #[test]
+    fn a_jump_lands_on_its_hit_tick_after_its_release() {
+        let skill = |loop_start: u32, hit_frame: u32| -> SkillDef { serde_json::from_value(serde_json::json!({
+            "id": "enragingleap", "type": "Jump", "hit_frame": hit_frame, "loop_start": loop_start, "unblock": 9, "motion_unblock": 9,
+            "range": 10.0, "cooldown": 5.0, "execute": {}, "impact": ""
+        })).unwrap() };
+        // Enraging Leap: released at frame 4, down at 4 + 11 = 15 (its clip at 18), not at 11.
+        let leap = skill(4, 11);
+        assert!((leap.loop_start as f32 / FPS + shifted_hit(&leap, 1.0) - 15.0 / FPS).abs() < 1e-6);
+        // Faster with the attack speed; a long fall (25 frames or more) keeps its length.
+        assert!((shifted_hit(&leap, 2.0) - 11.0 / FPS / 2.0).abs() < 1e-6);
+        assert!((shifted_hit(&skill(21, 33), 2.0) - 33.0 / FPS).abs() < 1e-6);
     }
 }
 

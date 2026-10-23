@@ -142,8 +142,12 @@ fn item_cell(window: &str, action: &Action) -> Option<Cell> {
 fn use_consumable(state: &InventoryState, catalog: &Catalog, id: u32) -> Option<dsor_proto::commands::ClientCommand> {
     let item = state.items.get(&id)?;
     let meta = catalog.items.get(&item.template)?;
+    // Mounts, pets, costumes and shadow souls are used too, by one right click as
+    // in the original (the user, 2026-10-23: "it has to be right click"); the
+    // server summons or wears one and sends it away again (equip_toggle).
     if item.third == 0 || !state.movable(id) || !matches!(state.location(id), Some(Place::Bag(_) | Place::Extra(_)))
-        || !matches!(meta.item_category.as_str(), "Consumable" | "InstantConsumable" | "SkinConsumable" | "RecipeConsumable" | "ConsumablePaymentItem") { return None; }
+        || !matches!(meta.item_category.as_str(), "Consumable" | "InstantConsumable" | "SkinConsumable" | "RecipeConsumable" | "ConsumablePaymentItem"
+            | "Mount" | "Pet" | "Mercenary" | "Switchable" | "Costume" | "TempCostume") { return None; }
     Some(crate::gameplay::inventory::command(id, dsor_proto::commands::inventory::Inventory::USE, vec![]))
 }
 fn ingredient<'a>(catalog: &'a Catalog, w: &WindowControls, slot: usize) -> Option<&'a Ingredient> {
@@ -351,8 +355,8 @@ pub fn input(mut ui:ResMut<Interaction>,mut pointer:ResMut<Pointer>,mut windows:
     let hovered=windows.iter().filter(|(_,_,_,v,_)|**v!=Visibility::Hidden)
         .find_map(|(e,n,c,_,_)|c.hovered.and_then(|b|item_cell(&n.0,&c.buttons[b].action).map(|cell|(e,cell))));
     // Right-click sells a carried stack while a shop that buys is open (the
-    // server keeps it in the buyback list), else acts on carried consumables.
-    // Equipment, essences and mounts retain their drag/double-click controls.
+    // server keeps it in the buyback list), else uses carried consumables, mounts,
+    // pets and costumes. Equipment and essences keep their drag/double-click controls.
     let trading=windows.iter().any(|(_,n,_,v,_)|n.0==super::trade::WINDOW && *v!=Visibility::Hidden);
     if mouse.just_pressed(MouseButton::Right) && !busy {
         if let Some((root,cell))=hovered {
@@ -873,7 +877,7 @@ mod tests {
     }
 
     #[test]
-    fn pets_are_used_by_a_double_click_and_worn_slots_still_glow_for_a_dragged_piece() {
+    fn pets_are_used_by_a_click_and_worn_slots_still_glow_for_a_dragged_piece() {
         let catalog: Catalog = serde_json::from_value(serde_json::json!({
             "items": {
                 "pet_epic": {"name":"Mortis Doll","description":"","category":"Pet","icon":"p.png","max_stack":1,"required_level":1,"slots":[],
@@ -895,10 +899,11 @@ mod tests {
             placements: vec![(1, 0), (2, 1)], storage_sizes: [0, 0, 224, 0, 0, 0], ..default()
         });
         state.allocation.slots.push((3, vec![3]));
-        // A double click uses (summons) a pet, as a mount; a right click leaves it alone.
-        let used = equip_toggle(&state, &catalog, 1, 1, "warrior");
-        assert_eq!(format!("{used:?}"), format!("{:?}", Some(crate::gameplay::inventory::command(1, dsor_proto::commands::inventory::Inventory::USE, vec![]))));
-        assert!(use_consumable(&state, &catalog, 1).is_none());
+        // A right click, or a double click, uses (summons) a pet; gloves are not used.
+        let used = Some(crate::gameplay::inventory::command(1, dsor_proto::commands::inventory::Inventory::USE, vec![]));
+        assert_eq!(format!("{:?}", equip_toggle(&state, &catalog, 1, 1, "warrior")), format!("{used:?}"));
+        assert_eq!(format!("{:?}", use_consumable(&state, &catalog, 1)), format!("{used:?}"));
+        assert!(use_consumable(&state, &catalog, 2).is_none());
         // Dragging the second gloves: their slot glows though gloves are worn; not for a mage, not before the drag starts.
         let drag = |active| Interaction { drag: Some(DragItem { id: 2, revision: 0, origin: Vec2::ZERO, active, root: Entity::PLACEHOLDER }), ..default() };
         assert_eq!(drop_targets(&drag(true), &state, &catalog, 1, 0), 1 << 3);
