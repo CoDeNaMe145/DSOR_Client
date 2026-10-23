@@ -269,6 +269,13 @@ pub struct StatusDef {
     /// Its MovementBonus: added to the run speed while it lasts.
     #[serde(default)]
     pub movement_bonus: f32,
+    /// Its StartModifiers switch the holder's movement off ("ActorFeature:off,
+    /// Movement,RegularSkills"; tools/export_skills.py holds_movement): held
+    /// in place while it lasts, as the server holds the player's moves.
+    /// FAILURE: debuff_cc_petrify has no StartAnimation, so a petrified player
+    /// walked on and the server snapped them back every 0.3 s.
+    #[serde(default)]
+    pub holds: bool,
 }
 
 impl StatusDef {
@@ -2518,7 +2525,7 @@ fn status_visuals(
         })
     };
     let mut start = |commands: &mut Commands, def: &StatusDef, key: (u32, u32), holder: Option<Entity>, anchor: Entity, seconds: Option<f32>| {
-        if let Some(h) = holder.filter(|_| !def.animation.is_empty() || HOLDING_STATUSES.contains(&def.id.as_str())) {
+        if let Some(h) = holder.filter(|_| !def.animation.is_empty() || def.holds || HOLDING_STATUSES.contains(&def.id.as_str())) {
             holds.0.push((h, def.animation.clone(), seconds.filter(|s| *s > 0.0).unwrap_or(def.duration)));
         }
         // The same instance again: extended, not drawn twice.

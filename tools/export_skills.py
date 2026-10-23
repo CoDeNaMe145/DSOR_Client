@@ -386,6 +386,17 @@ def ride_modifiers(text):
             except ValueError:
                 pass
     return mount, bonus
+def holds_movement(text):
+    """Whether StartModifiers switch the holder's movement off
+    ("ActorFeature:off,Movement,RegularSkills": debuff_cc_petrify, which has
+    no StartAnimation). SOURCE: DSOR_Server gameplay/local_combat_state.py
+    parse_disabled_actor_features, which locks the server's moves the same."""
+    for part in (text or "").split(";"):
+        kind, _, args = part.partition(":")
+        values = [v.strip().casefold() for v in args.split(",") if v.strip()]
+        if kind.strip().casefold() == "actorfeature" and values[:1] == ["off"] and "movement" in values[1:]:
+            return True
+    return False
 for r in db.execute("select rowid, * from _Template_StatusEffect order by rowid"):
     mount, bonus = ride_modifiers(r["StartModifiers"])
     status[r["rowid"] - 1] = {
@@ -400,6 +411,7 @@ for r in db.execute("select rowid, * from _Template_StatusEffect order by rowid"
         "stop_animation": r["StopAnimation"] or "",
         "mount": mount,
         "movement_bonus": bonus,
+        "holds": holds_movement(r["StartModifiers"]),
     }
 
 os.makedirs(os.path.join(assets, "skills"), exist_ok=True)
