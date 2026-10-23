@@ -371,6 +371,36 @@ fn match_scene_camera(
     }
 }
 
+/// Every camera on the window takes the window's new size on the frame it
+/// changes: the overlay draws into the scene camera's textures with a depth
+/// texture of its own size.
+/// CONTRACT: bevy's camera_system refreshes a camera's size on a WindowResized
+///   message or a change of its projection. A size set in code
+///   (`Window::resolution`, the UI replay's `window_size`) reaches winit in
+///   `Last` and its message comes a frame later: the scene camera, whose
+///   projection is written every frame, took the new size at once, the overlay
+///   kept its old depth texture over the shared new colour, and wgpu stopped the
+///   client ("Attachments have differing sizes"). Resizes by the player
+///   (dragging, maximizing, fullscreen) send the message on the same frame.
+fn follow_window_size(
+    windows: Query<(Entity, &Window), (With<PrimaryWindow>, Changed<Window>)>,
+    mut cameras: Query<(&Camera, &bevy::camera::RenderTarget, &mut Projection)>,
+) {
+    let Ok((primary, window)) = windows.single() else { return };
+    let size = window.physical_size();
+    if size.x == 0 || size.y == 0 { return; }
+    for (camera, target, mut projection) in &mut cameras {
+        let on_window = match target {
+            bevy::camera::RenderTarget::Window(bevy::window::WindowRef::Primary) => true,
+            bevy::camera::RenderTarget::Window(bevy::window::WindowRef::Entity(e)) => *e == primary,
+            _ => false,
+        };
+        if on_window && camera.physical_target_size().is_some_and(|s| s != size) {
+            projection.set_changed();
+        }
+    }
+}
+
 /// A window's root: its name, shown or not.
 #[derive(Component)]
 pub(crate) struct Window2018(pub(crate) String);
@@ -574,6 +604,7 @@ impl Plugin for UiPlugin {
             .add_systems(Update, follow_screen)
             .add_systems(Update, follow_outlines.after(follow_screen))
             .add_systems(PostUpdate, match_scene_camera.after(crate::rendering::graphics::ApplyGraphics))
+            .add_systems(PostUpdate, follow_window_size.before(bevy::camera::CameraUpdateSystems))
             .add_systems(PostUpdate, npc_hover::show
                 .after(crate::rendering::highlight::pick)
                 .before(TransformSystems::Propagate))
@@ -1713,6 +1744,37 @@ mod residency_tests {
         app.update();
         assert!(app.world().get::<Hdr>(overlay).is_none());
         assert_eq!(app.world().get::<CameraMainTextureUsages>(overlay).unwrap().0, CameraMainTextureUsages::default().0);
+    }
+
+    #[test]
+    fn overlay_takes_a_window_size_set_in_code_with_the_scene_camera() {
+        use bevy::window::{WindowCreated, WindowScaleFactorChanged};
+        let mut app = App::new();
+        app.add_message::<WindowResized>().add_message::<WindowCreated>().add_message::<WindowScaleFactorChanged>()
+            .add_message::<bevy::asset::AssetEvent<Image>>()
+            .init_resource::<Assets<Image>>().init_resource::<bevy::render::texture::ManualTextureViews>()
+            .add_systems(PostUpdate, (follow_window_size.before(bevy::camera::CameraUpdateSystems),
+                bevy::render::camera::camera_system.in_set(bevy::camera::CameraUpdateSystems)));
+        let window = app.world_mut().spawn((Window::default(), PrimaryWindow)).id();
+        app.world_mut().get_mut::<Window>(window).unwrap().resolution.set(1920.0, 1080.0);
+        let scene = app.world_mut().spawn(Camera3d::default()).id();
+        let overlay = app.world_mut().spawn((Camera2d, UiCamera)).id();
+        app.update();
+        let sizes = |app: &App| [scene, overlay].map(|e| app.world().get::<Camera>(e).unwrap().physical_target_size());
+        assert_eq!(sizes(&app), [Some(UVec2::new(1920, 1080)); 2]);
+        // A window change that keeps the size (the cursor moving) touches no camera.
+        let before = app.world().entity(overlay).get_ref::<Projection>().unwrap().last_changed();
+        app.world_mut().get_mut::<Window>(window).unwrap().set_cursor_position(Some(Vec2::new(10.0, 10.0)));
+        app.update();
+        assert_eq!(app.world().entity(overlay).get_ref::<Projection>().unwrap().last_changed(), before);
+        // Smaller, then larger: the size is set in code and no WindowResized
+        // arrives yet; the game writes the scene camera's projection every frame.
+        for (w, h) in [(1024, 768), (1600, 900)] {
+            app.world_mut().get_mut::<Window>(window).unwrap().resolution.set(w as f32, h as f32);
+            app.world_mut().get_mut::<Projection>(scene).unwrap().set_changed();
+            app.update();
+            assert_eq!(sizes(&app), [Some(UVec2::new(w, h)); 2]);
+        }
     }
 
     #[test]
