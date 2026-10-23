@@ -303,9 +303,20 @@ pub(crate) fn spawn_model(commands: &mut Commands, assets: &AssetServer, graphic
             },
         ))
         .id();
-    commands.spawn((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(path))), ChildOf(e), Transform::default(), Visibility::default()));
+    commands.spawn((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(path))), ModelScene, ChildOf(e), Transform::default(), Visibility::default()));
     e
 }
+
+/// The instance of a whole model's own scene under its actor. Its rig is looked
+/// for there only: effects attached to the actor are glTF scenes too, with
+/// their own animation players and joints.
+/// FAILURE (2026-10-23): the Herald's PermanentStatusEffect (Boss02Idle) puts
+///   effects/boss_02_idle under it as it appears. setup_models bound that
+///   effect's animation player, gone with the effect half a second later: the
+///   Herald stood in its bind pose and no skill animation ever played ("le
+///   boss est en animation idle").
+#[derive(Component)]
+pub(crate) struct ModelScene;
 
 #[derive(Component)]
 struct ModelSetup {
@@ -536,7 +547,7 @@ fn spawn_monsters(
                     },
                 ))
                 .id();
-            commands.spawn((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(path))), ChildOf(e), Transform::default(), Visibility::default()));
+            commands.spawn((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(path))), ModelScene, ChildOf(e), Transform::default(), Visibility::default()));
             e
         };
         // A looping start state (asleep, burrowed...) is kept; Idle otherwise.
@@ -664,6 +675,7 @@ fn setup_models(
     mut pending: Query<(Entity, &ModelSetup, &mut CharacterAnim, Option<&mut Monster>)>,
     children: Query<&Children>,
     players: Query<(), With<AnimationPlayer>>,
+    model_scenes: Query<(), With<ModelScene>>,
     names: Query<&Name>,
     targets: Query<(), (With<AnimationTargetId>, Without<AnimatedBy>)>,
     skinned: Query<&SkinnedMesh>,
@@ -682,7 +694,12 @@ fn setup_models(
     let Some(table) = anims.get(&data.anims) else { return };
     for (e, setup, mut anim, mut monster) in &mut pending {
         let Some(gltf) = gltfs.get(&setup.gltf) else { continue };
-        let Some(player) = children.iter_descendants(e).find(|c| players.contains(*c)) else { continue };
+        // Its own scene's rig, not an effect's (ModelScene). A model spawned
+        // without the marker (tests) is searched whole.
+        let scene = children.get(e).ok()
+            .and_then(|c| c.iter().find(|c| model_scenes.contains(*c)))
+            .unwrap_or(e);
+        let Some(player) = children.iter_descendants(scene).find(|c| players.contains(*c)) else { continue };
         let set_file = sets.get(&setup.sets);
         if set_file.is_none() && !assets.load_state(&setup.sets).is_failed() {
             continue;
@@ -692,7 +709,7 @@ fn setup_models(
             warn!("model {:?}: no character set {}", setup.gltf.path(), setup.set);
         }
         let mut bones = HashMap::new();
-        for d in children.iter_descendants(e) {
+        for d in children.iter_descendants(scene) {
             if let Ok(n) = names.get(d) {
                 bones.entry(n.as_str().to_owned()).or_insert(d);
             }
@@ -710,12 +727,12 @@ fn setup_models(
             }
         }
         if let Some(set) = set {
-            vary_model(&mut commands, &joints, &skinned, &children, e, &bones, set);
+            vary_model(&mut commands, &joints, &skinned, &children, scene, &bones, set);
         }
         // Its own copies of its character materials: its template's dyes, and a
         // HitColor of its own.
         let mut own = Vec::new();
-        for d in children.iter_descendants(e) {
+        for d in children.iter_descendants(scene) {
             let Ok(MeshMaterial3d(h)) = surfaces.get(d) else { continue };
             let Some(mut m) = surface_assets.get(h).cloned() else { continue };
             if m.extension.params.p0.x as u32 != crate::rendering::surfaces::Kind::Character as u32 {
