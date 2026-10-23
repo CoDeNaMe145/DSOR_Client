@@ -104,9 +104,10 @@ fn equipment_cannot_be_dropped_into_an_essence_socket() {
 }
 
 #[test]
-fn inventory_right_click_only_acts_on_consumables_even_while_trading() {
+fn inventory_right_click_only_acts_on_usable_items_even_while_trading() {
     for trading in [false,true] {
-        for (template,usable) in [("potion",true),("elixir",true),("instant",true),("essence",false),("helmet",false),("mount",false)] {
+        // A mount is used by a right click too, as in the original (the user, 2026-10-23).
+        for (template,usable) in [("potion",true),("elixir",true),("instant",true),("essence",false),("helmet",false),("mount",true)] {
             let (mut app,window,inventory,_)=app();
             snapshot(&mut app,template,Place::Bag(0));
             if trading {
