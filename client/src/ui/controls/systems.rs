@@ -834,7 +834,7 @@ pub(in crate::ui) fn send(
             Request::Upgrade(id) => commands.push(ClientCommand::UpgradeStickerbookItem(proto::UpgradeStickerbookItem { id })),
             Request::AddSticker(id) => {
                 let sources = Sources { net: &net, catalog, items: None, names: None, state: &state, class: None };
-                let item = catalog.stickers.get(&id).into_iter().flat_map(|s| s.items.iter()).find_map(|t| sources.carried(t).first().copied());
+                let item = catalog.stickers.get(&id).into_iter().flat_map(album::templates).find_map(|t| sources.carried(t).first().copied());
                 if let Some(item) = item { commands.push(ClientCommand::AddStickerbookFromInventory(proto::AddStickerbookFromInventory { item })); wait = true; }
             }
             Request::Salvage => {

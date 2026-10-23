@@ -121,8 +121,18 @@ pub(in crate::ui) struct Album {
 /// item template, customization.py `StickerbookEntry(2, 0, resource_id)`), not
 /// by the sticker's id; either is accepted. Before, an unlocked mount stayed
 /// "not owned" and its second click did nothing.
+/// A pet owned at a higher tier is keyed by that tier's item (the highest wins).
 fn owned_entry<'a>(book: &'a std::collections::HashMap<String, StickerbookEntry>, id: &str, def: &crate::gameplay::systems::StickerDef) -> Option<&'a StickerbookEntry> {
-    book.get(id).or_else(|| def.items.iter().find_map(|t| book.get(t)))
+    book.get(id).or_else(|| templates(def).filter_map(|t| book.get(t)).last())
+}
+
+/// The item templates that fill a sticker: its own, then its rarity tiers'
+/// (`upgrades`: "template:cost", _Template_StickerbookItem.RarityUpgradeItems).
+/// Any of them is added to the album (DSOR_Server gameplay/stickerbook_state.py
+/// load_sticker_definition accepts a tier's item and keys it by that item).
+/// FAILURE (2026-10-23): an Epic Mortis Doll in the bag could not be added.
+pub(super) fn templates(def: &crate::gameplay::systems::StickerDef) -> impl Iterator<Item = &str> {
+    def.items.iter().map(String::as_str).chain(def.upgrades.iter().map(|u| u.rsplit_once(':').map_or(u.as_str(), |(t, _)| t)))
 }
 
 pub(super) fn album(sources: &Sources) -> Album {
@@ -133,12 +143,15 @@ pub(super) fn album(sources: &Sources) -> Album {
     let sticker = |id: &String, def: &crate::gameplay::systems::StickerDef| {
         let entry = owned_entry(&net.stickerbook, id, def);
         let owned = entry.is_some_and(|e| e.state >= StickerbookEntry::OWNED);
+        // The tier owned shows (its rarity's background), else the sticker's own item.
+        let tier = entry.map(|e| e.id.as_str()).filter(|k| templates(def).any(|t| t == *k));
         Sticker {
             id: id.clone(), key: entry.map(|e| e.id.clone()).unwrap_or_default(), book: def.book.clone(), name: def.name.clone(),
-            icon: def.items.first().map(|t| sources.icon(t, None)).unwrap_or_default(),
+            icon: tier.or(def.items.first().map(String::as_str)).map(|t| sources.icon(t, None)).unwrap_or_default(),
             owned, favourite: entry.is_some_and(|e| e.state == StickerbookEntry::FAVOURITE),
-            addable: !owned && def.items.iter().any(|t| !sources.carried(t).is_empty()),
-            upgradable: owned && !def.upgrades.is_empty(),
+            addable: !owned && templates(def).any(|t| !sources.carried(t).is_empty()),
+            // Not at its last tier.
+            upgradable: owned && templates(def).last().is_some_and(|last| tier != Some(last)) && !def.upgrades.is_empty(),
             origin: def.origin.clone(), background: def.background.clone(), offer: def.offer.clone(),
         }
     };
@@ -467,6 +480,20 @@ mod tests {
         let s = Sticker { id: id.into(), key: "mythical_mount_manticore_01".into(), ..Default::default() };
         assert_eq!(s.server_key(), "mythical_mount_manticore_01");
         assert_eq!(Sticker { id: id.into(), ..Default::default() }.server_key(), id);
+    }
+
+    #[test]
+    fn a_pet_counts_its_rarity_tiers() {
+        let def: crate::gameplay::systems::StickerDef = serde_json::from_value(serde_json::json!({
+            "name": "Mortis Doll", "book": "sb_pets_tamed_enemies", "items": ["pet_mortis_phase2_uncommon"],
+            "upgrades": ["pet_mortis_phase2_magic:5", "pet_mortis_phase2_rare:25", "pet_mortis_phase2_epic:50"] })).unwrap();
+        assert_eq!(templates(&def).collect::<Vec<_>>(),
+            ["pet_mortis_phase2_uncommon", "pet_mortis_phase2_magic", "pet_mortis_phase2_rare", "pet_mortis_phase2_epic"]);
+        // The server keys an Epic added from the bag by the Epic's item; the highest tier owned wins.
+        let entry = |id: &str| (id.to_owned(), StickerbookEntry { state: 2, unknown_u32_0: 0, id: id.into() });
+        let id = "sb_pet_enemies_20_pet_mortis_phase2";
+        let book = std::collections::HashMap::from([entry("pet_mortis_phase2_uncommon"), entry("pet_mortis_phase2_epic")]);
+        assert_eq!(owned_entry(&book, id, &def).map(|e| e.id.as_str()), Some("pet_mortis_phase2_epic"));
     }
 
     #[test]
