@@ -247,8 +247,10 @@ pub struct Net {
     /// each (progress, then the completion's year, day, hour, minute, second, 0,
     /// weekday, month; zeros while open).
     pub achievements: HashMap<String, [u32; 9]>,
-    /// The events running (EventUpdate 221, entries flagged on), as the window
-    /// lists them (crate::world::props keeps their flags for the props).
+    /// The global events we were told of (EventUpdate 221), running or not, in
+    /// the order first told; the event window picks its tabs from them
+    /// (crate::ui::controls::systems::events::shown). Map-local entries switch
+    /// their map's event sets only (crate::world::props keeps those flags).
     pub events: Vec<dsor_proto::commands::player::ScheduleEntry>,
     /// The premium shop's offers (OcpOfferResponse 270).
     pub ocp_offers: Vec<dsor_proto::commands::inventory::OcpOffer>,
@@ -1889,7 +1891,23 @@ pub(crate) fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u3
         ServerCommand::AchievementInfo(a) => {
             for (id, values) in a.achievements { net.achievements.insert(id, values); }
         }
-        ServerCommand::EventUpdate(e) => net.events = e.entries.into_iter().filter(|e| e.flag).collect(),
+        // Incremental: a known event is updated in place, a new one added; one
+        // left out stays as it was (the server sends a removed event as
+        // inactive, and single map-local entries mid-session).
+        // EVIDENCE: release261 EventUpdateCommand handler (0x1401F19C8) updates
+        //   the known ids and sets up the others, never discarding; map-local
+        //   entries go to the map's controllers, outside Game::EventSystem.
+        // FAILURE (before 2026-10-23): every update replaced the list, so a
+        //   dungeon's map-event update emptied the window of the running events
+        //   and gave its map-local events tabs.
+        ServerCommand::EventUpdate(e) => {
+            for entry in e.entries.into_iter().filter(|e| !e.map_local) {
+                match net.events.iter_mut().find(|known| known.identifier == entry.identifier) {
+                    Some(known) => *known = entry,
+                    None => net.events.push(entry),
+                }
+            }
+        }
         ServerCommand::OcpOfferResponse(o) => net.ocp_offers = o.offers,
         ServerCommand::ItemCustomizationInfo(i) => net.skins = i.items,
         ServerCommand::HonorRankingPage(p) => net.ranking = Some(p),

@@ -38,7 +38,7 @@ fn server_generated_props_and_events_decode_and_preserve_every_bit() {
                 ServerCommand::EventUpdate(events) => {
                     assert_eq!(*actor, None);
                     assert_eq!(events.entries.len(), 3);
-                    assert!(events.entries.iter().all(|e| e.unknown_bit_3));
+                    assert!(events.entries.iter().all(|e| e.scheduled));
                     assert!(events.entries[1].map_local);
                     assert_eq!(events.entries[1].key, "a0200_crafting_npc_exchange");
                 }

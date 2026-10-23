@@ -66,7 +66,8 @@ def export_systems(database, root, godot, assets):
     # Events: what the event window shows of each (UI::EventProgressWidget):
     # its title and text, the hints (bullet points with their artwork), the
     # items it advertises, its banner, the buttons it offers
-    # (AdditionalEventElements) and its progress bar's reward thresholds.
+    # (AdditionalEventElements), its progress bar's reward thresholds, and its
+    # Category, which decides whether the window lists it at all.
     bars = {r["Id"]: r for r in q("SELECT Id, EventRewardItems, EventRewardCurrency, EventCollectibles FROM _Template_EventProgressBar")}
     events = {}
     for r in q("SELECT * FROM _Template_Events"):
@@ -94,6 +95,7 @@ def export_systems(database, root, godot, assets):
             collectible = collectibles[0] if collectibles else ""
         events[r["Id"]] = dict(
             title=text(f"db.event.table_{r['Id']}Title", text(f"db.event.table_{r['Id']}ShortTitle", get("Name") or r["Id"])),
+            category=get("Category") or "",
             description=text(f"db.event.table_{r['Id']}Progress")[:600], teleport=get("TeleportTarget") or "", icon=texture(get("IconBrush")),
             hints=[dict(text=text(f"gui.window.event_{h}", h), icon=artworks[n] if n < len(artworks) else "") for n, h in enumerate(hints)],
             advertised=split(get("AdvertisedItems"))[:12], label=texture(get("EventLabel")), banner=texture(get("BannerIcon")),

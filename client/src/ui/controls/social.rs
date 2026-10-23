@@ -254,6 +254,7 @@ pub(in crate::ui) fn column(
     mut sprites: Query<(&mut Sprite, &mut Transform), (Without<Column>, Without<Window2018>)>,
     mut test: Local<bool>,
     mut systems: ResMut<super::systems::State>,
+    catalogs: Res<Assets<crate::gameplay::systems::SystemsCatalog>>,
 ) {
     let now = time.elapsed_secs_f64();
     // DSOR_TEST_NOTIFICATIONS=group|booking|login: a group invitation, a credited
@@ -347,7 +348,10 @@ pub(in crate::ui) fn column(
     if matches!(note.note_type, EVENT_ONCE | EVENT_KEPT) {
         let id = params(&note)["eventId"].as_u64().map(|v| v as u32);
         if let Some(net) = net.as_mut() {
-            if let Some(tab) = id.and_then(|id| net.events.iter().position(|e| e.identifier == id)) {
+            let fallback = crate::gameplay::systems::SystemsCatalog::default();
+            let catalog = catalogs.get(&systems.catalog).unwrap_or(&fallback);
+            let minute = super::systems::unix_seconds() / 60;
+            if let Some(tab) = id.and_then(|id| super::systems::events::shown(net, catalog, minute).position(|e| e.identifier == id)) {
                 systems.event = tab;
                 systems.event_page = None;
             }

@@ -1,6 +1,6 @@
 //! The event window (eventwindow, UI::EventProgressWidget).
 //!
-//! A tab per running event (EventUpdate) with the event's icon; the open one
+//! A tab per running event it lists (EventUpdate, `shown`) with the event's icon; the open one
 //! shows its artwork (EventLabel) behind its title, its text and hints (the
 //! bullet points with their artwork), the time left, the items it advertises,
 //! its useful offers (the Andermant shop's, bought from their slots), the
@@ -17,8 +17,10 @@
 //!   EventCollectibles).
 use super::super::template::{clip_y, clone_at, has_part, icon_layers, image_art, is_template, leaf, make_button, selected, set_text, shift, without, wrap, Icon};
 use super::Sources;
-use crate::gameplay::systems::texture_path;
+use crate::gameplay::systems::{texture_path, SystemsCatalog};
+use crate::network::net::Net;
 use crate::ui::Layout;
+use dsor_proto::commands::player::ScheduleEntry;
 
 const INLAY: &str = "Canvas/Eventwindow/BackGroundLabel/Inlay";
 const TEXT: &str = "Canvas/Eventwindow/BackGroundLabel/Inlay/LabelArtwork/TextList/TextLabel";
@@ -91,11 +93,36 @@ fn pages<T: Clone>(rewards: impl Iterator<Item = (u32, u32, T)>) -> Vec<Vec<(u32
     out
 }
 
+/// The events the window has tabs for, at most MOST_TABS: the running ones
+/// whose Category it lists and whose end is after `minute` (minutes since the
+/// epoch: the view's clock input). Silent events (the Wanted Thief's, the
+/// anniversary challenges') and sales run unseen; StandardHidden ones only
+/// stay out of the upcoming events' bar, which is not drawn (a scheduled event
+/// waits for its start).
+/// EVIDENCE: release261 0x140153374 fills UI::EventProgressWidget from
+///   Game::EventSystem: Category (0x140980A70: Standard 0, StandardHidden 1,
+///   Silent 2, Sale 3, HighlightSale 4) not 2, 3 or 4, and active, or scheduled
+///   and not StandardHidden.
+/// FAILURE (before 2026-10-23): every event flagged on had a tab, so the
+///   Silent event_wanted_thief_silent showed as an empty "Event Wanted Thief
+///   Silent" with the default icon.
+pub(in crate::ui) fn shown<'a>(net: &'a Net, catalog: &'a SystemsCatalog, minute: u64) -> impl Iterator<Item = &'a ScheduleEntry> {
+    net.events.iter().filter(move |e| {
+        let category = catalog.events.get(&e.key).map_or("", |d| d.category.as_str());
+        let listed = !["Silent", "Sale", "HighlightSale"].iter().any(|c| c.eq_ignore_ascii_case(category));
+        // The server never expires an event it already sent while we stay.
+        let ended = e.date[0] > 0 && epoch(e.date) <= minute * 60;
+        e.flag && !e.map_local && listed && !ended
+    }).take(MOST_TABS)
+}
+
 pub(super) fn events(sources: &Sources) -> Events {
     let net = sources.net;
-    let open = sources.state.event.min(net.events.len().min(MOST_TABS).saturating_sub(1));
+    let minute = now() / 60;
+    let running: Vec<&ScheduleEntry> = shown(net, sources.catalog, minute).collect();
+    let open = sources.state.event.min(running.len().saturating_sub(1));
     let shop = net.npc_dialogue.offers.get(super::shop::ITEM_SHOP);
-    let list: Vec<Event> = net.events.iter().take(MOST_TABS).enumerate().map(|(n, e)| {
+    let list: Vec<Event> = running.into_iter().enumerate().map(|(n, e)| {
         let def = sources.catalog.events.get(&e.key);
         let reached = net.event_progress.get(&e.identifier).map(|p| p[0]);
         let pages = pages(def.map(|d| d.rewards.iter().map(|r| (r.page, r.at, r.item.clone())).collect::<Vec<_>>()).unwrap_or_default().into_iter());
@@ -133,7 +160,7 @@ pub(super) fn events(sources: &Sources) -> Events {
             participating: net.event_participation.get(&e.identifier).copied(),
         }
     }).collect();
-    Events { list, open, minute: now() / 60 }
+    Events { list, open, minute }
 }
 
 fn now() -> u64 {
@@ -330,6 +357,33 @@ mod tests {
     use super::*;
     use super::super::super::template::fixture::{find, layout, text_of};
     use super::super::EVENTS;
+
+    #[test]
+    fn the_window_lists_the_running_events_its_category_shows() {
+        use crate::gameplay::systems::EventDef;
+        use crate::network::net::on_command;
+        use dsor_proto::commands::{player::EventUpdate, ServerCommand};
+        let def = |category: &str| EventDef { title: category.into(), category: category.into(), ..Default::default() };
+        let catalog = SystemsCatalog { events: [("standard", "Standard"), ("hidden", "StandardHidden"), ("silent", "Silent"), ("sale", "Sale"),
+            ("highlight", "HighlightSale")].into_iter().map(|(key, category)| (key.to_owned(), def(category))).collect(), ..Default::default() };
+        let entry = |id: u32, key: &str, flag: bool| ScheduleEntry { identifier: id, key: key.into(), flag, date: [2099, 1, 1, 0, 0, 0], ..Default::default() };
+        let update = |entries| ServerCommand::EventUpdate(EventUpdate { entries });
+        let mut world = bevy::prelude::World::new();
+        world.init_resource::<bevy::prelude::Time<bevy::time::Real>>();
+        crate::network::net::start_offline(&mut world, 1, 0);
+        let mut net = world.non_send_mut::<Net>();
+        on_command(&mut net, update(vec![entry(1, "standard", true), entry(2, "hidden", true), entry(3, "silent", true), entry(4, "sale", true),
+            entry(5, "highlight", true), entry(6, "unknown_event", true), ScheduleEntry { date: [2026, 10, 1, 0, 0, 0], ..entry(7, "standard", true) },
+            entry(8, "standard", false)]), None);
+        // A dungeon's map-event update mid-session leaves the global events be.
+        on_command(&mut net, update(vec![ScheduleEntry { key: "boss06_phase_0".into(), flag: true, map_local: true, ..Default::default() }]), None);
+        let minute = epoch([2026, 10, 23, 12, 0, 0]) / 60;
+        let ids = |net: &Net| shown(net, &catalog, minute).map(|e| e.identifier).collect::<Vec<_>>();
+        assert_eq!(ids(&net), [1, 2, 6]);
+        // A removed event comes as inactive; a new one joins after the others.
+        on_command(&mut net, update(vec![entry(2, "hidden", false), entry(9, "standard", true)]), None);
+        assert_eq!(ids(&net), [1, 6, 9]);
+    }
 
     #[test]
     fn the_event_window_shows_the_open_event() {

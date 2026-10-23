@@ -68,6 +68,10 @@ pub struct EventReward {
 #[derive(Deserialize, Debug, Clone, Default, PartialEq)]
 pub struct EventDef {
     pub title: String,
+    /// Standard, StandardHidden, Silent, Sale or HighlightSale: which the event
+    /// window lists (crate::ui::controls::systems::events::shown).
+    #[serde(default)]
+    pub category: String,
     #[serde(default)]
     pub description: String,
     /// "map:entry" the event's Start button travels to.

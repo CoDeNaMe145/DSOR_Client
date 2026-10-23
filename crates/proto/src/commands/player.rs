@@ -1313,17 +1313,22 @@ impl Body for CurrencyChanged {
     }
 }
 
-/// One event-schedule record (reader sub_A5CD0F): u32 id, string key, three bits
-/// (flag, map_local, unknown); when map_local is clear, six u32 blanks, six u32 date
-/// parts (y, m, d, h, min, s) and a counted string list.
+/// One event-schedule record (reader sub_A5CD0F): u32 id, string key, four bits
+/// (flag = active, map_local, stopped, scheduled); when map_local is clear, six
+/// u32 blanks (the start), six u32 date parts (the end: y, m, d, h, min, s, UTC)
+/// and a counted string list.
+/// EVIDENCE: release261 ClientPlayerManager's EventUpdateCommand handler
+///   (0x1401F19C8) passes the third bit to EventSystem::SetGameEventStopped
+///   (0x140987564) and the fourth to SetGameEventScheduled (0x1409875D0); a
+///   map-local entry only switches its map's event controller.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ScheduleEntry {
     pub identifier: u32,
     pub key: String,
     pub flag: bool,
     pub map_local: bool,
-    pub unknown_bit_2: bool,
-    pub unknown_bit_3: bool,
+    pub stopped: bool,
+    pub scheduled: bool,
     pub blanks: [u32; 6],
     pub date: [u32; 6],
     pub parameters: Vec<String>,
@@ -1344,8 +1349,8 @@ impl Body for EventUpdate {
                 key: r.string()?,
                 flag: r.bit()?,
                 map_local: r.bit()?,
-                unknown_bit_2: r.bit()?,
-                unknown_bit_3: r.bit()?,
+                stopped: r.bit()?,
+                scheduled: r.bit()?,
                 ..Default::default()
             };
             if !e.map_local {
@@ -1364,8 +1369,8 @@ impl Body for EventUpdate {
             w.string(&e.key);
             w.bit(e.flag);
             w.bit(e.map_local);
-            w.bit(e.unknown_bit_2);
-            w.bit(e.unknown_bit_3);
+            w.bit(e.stopped);
+            w.bit(e.scheduled);
             if !e.map_local {
                 for v in e.blanks.iter().chain(&e.date) {
                     w.u32(*v);

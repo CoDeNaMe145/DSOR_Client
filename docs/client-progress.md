@@ -709,7 +709,10 @@ ActiveEvents, WantedThiefInfoRequest, the ranking requests).
   method "external").
 - **Events**: a tab per running event (EventUpdate 221), the open one's title
   and text, the time left (ends in `date`), its progress (224), a teleport to
-  its area (the catalogue's TeleportTarget, Travel 93).
+  its area (the catalogue's TeleportTarget, Travel 93). EventUpdate is
+  incremental (merged by event id); map-local entries, ended events and the
+  Silent, Sale and HighlightSale categories get no tab, as in the original
+  (`systems::events::shown`, since 2026-10-23).
 - **Collector's album**: a grid per category page (the front page lists the
   favourites), owned stickers bright and usable (UseStickerBookItem 309),
   the others faded with Add when a carried item fills them (307), favourite

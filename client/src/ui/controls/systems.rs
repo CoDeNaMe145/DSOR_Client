@@ -797,7 +797,7 @@ pub(in crate::ui) fn send(
                 }
             }
             Request::Teleport => {
-                let key = net.events.get(state.event).map(|e| e.key.clone()).unwrap_or_default();
+                let key = views.events.list.get(views.events.open).map(|e| e.key.clone()).unwrap_or_default();
                 if let Some((map, entry)) = catalog.events.get(&key).and_then(|e| e.teleport.split_once(':')) {
                     commands.push(ClientCommand::Travel(player::Travel { source: String::new(), map: map.to_owned(), entry: entry.to_owned(), force: false }));
                 }
