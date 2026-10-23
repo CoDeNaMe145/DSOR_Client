@@ -621,6 +621,17 @@ fn spawn_monsters(
             if !seq.tracks.is_empty() {
                 play(&mut commands, seq, Some(entity), entity, false);
             }
+            // It rises where it appeared before it walks: the server sets an
+            // event's or a summon's monsters on their way at once (StartupDuration
+            // 0: the Herald's broodlings), and the walk took the body over a tenth
+            // of a second into its rise, so they came running out of nowhere ("les
+            // mobs invoques n'ont pas d'animation d'entree", 2026-10-23). Its
+            // records still arrive meanwhile; it catches up with them after.
+            // UNVERIFIED: whether the original holds the body for its start list.
+            if let Some((_, end)) = rise {
+                let hold = end as f32 / 25.0;
+                commands.entity(entity).entry::<RemotePlayer>().and_modify(move |mut r| r.held = r.held.max(hold));
+            }
         }
     }
 }
