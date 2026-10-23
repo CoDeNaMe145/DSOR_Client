@@ -213,7 +213,7 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
                 anchor = Some(rect);
                 above = true;
             // Non-button gauges and currency amounts also explain themselves.
-            } else if let Some((w,_,_,tf)) = windows.iter().filter(|(_,c,v,tf)| **v != Visibility::Hidden && c.covers(p-window_offset(tf),screen.width))
+            } else if let Some((w,wc,_,tf)) = windows.iter().filter(|(_,c,v,tf)| **v != Visibility::Hidden && c.covers(p-window_offset(tf),screen.width))
                 .max_by(|a,b|a.3.translation.z.total_cmp(&b.3.translation.z)) {
                 if let Some(layout) = loaded.layouts.iter().filter_map(|(h,_,_)| layouts.get(h)).find(|l|l.window==w.0) {
                     // The currency bar as drawn in game (its layout keeps other money displays).
@@ -221,8 +221,17 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
                     for widget in layout.widgets.iter().rev().filter(|x| drawn(x) && contains(x.k,x.rect,p-window_offset(tf),screen.width)) {
                         let tip = if w.0 == currency::BAR { currency::tip(&widget.id, &figures.wallet) }
                         else if widget.id.contains("andermant") { Some("Andermant".into()) } else if widget.id.contains("VirtualCurrency") { Some("Coins: 100 copper = 1 silver; 100 silver = 1 gold".into()) }
-                        else if widget.id.contains("bottombar_xp_bar") { Some("Experience: earn experience to level up".into()) } else if widget.id.contains("bottombar_wisdom_bar") { Some("Ancient Wisdom".into()) }
-                        else { match gauge_of(&widget.id) { Some(Gauge::Health | Gauge::HealthBar) => Some("Health".into()), Some(Gauge::Resource | Gauge::ResourceBar) => Some("Skill resource".into()), _ => None } };
+                        // The bars' own lines (gui.window bottomBarXp, bottomBarHealth,
+                        // bottomBarRage / Mana / Stamina / MechanicResource).
+                        // FAILURE (2026-10-24): "Health", "Experience: earn experience to
+                        //   level up" without the numbers (the user's shots beside the original's).
+                        else if widget.id.contains("bottombar_xp_bar") { Some(figures.xp_points.map_or_else(|| "Experience points".to_owned(), |(n, of)| format!("{n} / {of} Experience points"))) }
+                        else if widget.id.contains("bottombar_wisdom_bar") { Some("Ancient Wisdom".into()) }
+                        else { match gauge_of(&widget.id) {
+                            Some(Gauge::Health | Gauge::HealthBar) => Some(format!("{:.0} / {:.0} Health Points", figures.health.0, figures.health.1)),
+                            Some(Gauge::Resource | Gauge::ResourceBar) => Some(format!("{:.0} / {:.0} {}", figures.resource.0, figures.resource.1,
+                                ["Rage points", "Mana points", "concentration", "Steam"][wc.spells.class.min(3) as usize])),
+                            _ => None } };
                         if let Some(tip) = tip {
                             content=Some((tip,String::new(),None));
                             let [l,t,r,b] = widget.rect;

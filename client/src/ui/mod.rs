@@ -481,6 +481,10 @@ enum ValueKind {
     XpPercent,
     WisdomLevel,
     WisdomProgress,
+    /// The bottom bar's level labels: "Level {0:i}" (levelShort) and "Wisdom
+    /// Level {0:i}" (wisdomLevelShort), as the original's bars read.
+    BarLevel,
+    BarWisdomLevel,
     WisdomPoints,
     LocationName,
     Name,
@@ -522,6 +526,8 @@ struct Figures {
     health: (f32, f32),
     resource: (f32, f32),
     xp: f32,
+    /// Total experience and the next level's (net.xp), for the bar's tooltip.
+    xp_points: Option<(u32, u32)>,
     /// The server starts wisdom at zero; keep that default until progression is decoded.
     wisdom: (u32, f32),
     wisdom_points: u32,
@@ -797,9 +803,14 @@ fn value_of(id: &str) -> Option<ValueKind> {
         "copper_display" => ValueKind::Copper,
         "andermant_display" => ValueKind::Andermant,
         "template_amount" if id == controls::currency::PICKED_AMOUNT => ValueKind::Picked,
-        "Level" if id.contains("ProgressBar_xp") || id.contains("/bottombar_xp_bar/") => ValueKind::Level,
+        // The bottom bar reads "Level 36" / "Wisdom Level 6" and shows no
+        // percentages (the user's release261_192 shots; the numbers are its
+        // tooltips').
+        // FAILURE (2026-10-24): ours read "55 ... 82%" and "0 ... 0%".
+        "Level" if id.contains("/bottombar_xp_bar/") => ValueKind::BarLevel,
+        "Level" if id.contains("ProgressBar_xp") => ValueKind::Level,
         "XP" if id.contains("/bottombar_xp_bar/") => ValueKind::XpPercent,
-        "Level" if id.contains("/bottombar_wisdom_bar/") => ValueKind::WisdomLevel,
+        "Level" if id.contains("/bottombar_wisdom_bar/") => ValueKind::BarWisdomLevel,
         "Wisdom" if id.contains("/bottombar_wisdom_bar/") => ValueKind::WisdomProgress,
         "LevelLabel" if id.contains("/WisdomLabel/") => ValueKind::WisdomLevel,
         "AvailablePoints" if id.contains("/WisdomLabel/") => ValueKind::WisdomPoints,
@@ -1492,6 +1503,9 @@ fn read_figures(net: Option<NonSend<crate::network::net::Net>>, mut figures: Res
         if figures.xp != f {
             figures.xp = f;
         }
+        if figures.xp_points != Some((total, ceiling)) {
+            figures.xp_points = Some((total, ceiling));
+        }
     }
     // The currencies come with server commands: read again when one came.
     if *wallet_seen != Some(net.ui_revision) {
@@ -1584,9 +1598,10 @@ fn update_values(
             ValueKind::Andermant => controls::currency::clamped(wallet.andermant, 9),
             ValueKind::Picked => controls::currency::clamped(wallet.balance(&shown.id), 10),
             ValueKind::Level => figures.level.map(|l| l.to_string()).unwrap_or_else(|| "-".to_owned()),
-            ValueKind::XpPercent => format!("{:.0}%", figures.xp * 100.0),
+            ValueKind::XpPercent | ValueKind::WisdomProgress => String::new(),
             ValueKind::WisdomLevel => figures.wisdom.0.to_string(),
-            ValueKind::WisdomProgress => format!("{:.0}%", figures.wisdom.1 * 100.0),
+            ValueKind::BarLevel => figures.level.map(|l| format!("Level {l}")).unwrap_or_default(),
+            ValueKind::BarWisdomLevel => format!("Wisdom Level {}", figures.wisdom.0),
             ValueKind::WisdomPoints => format!("Available Points: {}", figures.wisdom_points),
             ValueKind::LocationName => current_map.as_ref().map(|m| m.name.split_once('_').map_or(m.name.as_str(), |(_, name)| name).replace('_', " ")).unwrap_or_else(|| "Map".to_owned()),
             ValueKind::Name => figures.name.clone(),
