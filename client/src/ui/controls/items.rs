@@ -20,6 +20,9 @@ pub struct Appearance { pub icon: String, pub config: String, #[serde(default)] 
 /// _Template_IconConfig: the background follows the item's rarity, or is fixed.
 #[derive(Deserialize)]
 pub struct IconConfig { pub rarity: bool, pub background: String, #[serde(default)] pub frame: String }
+/// The rarities in ItemInfo.kind's order, as the catalog names them
+/// (rarity_backgrounds follows it).
+const RARITIES: [&str; 8] = ["Common", "Uncommon", "Magic", "Rare", "Epic", "Unique", "Set", "Mythic"];
 #[derive(Deserialize)]
 pub struct Ingredient { pub template: String, pub tab: String, pub rarity: usize, pub slot: usize, pub class_name: String, pub unlock: u32 }
 #[derive(Deserialize)]
@@ -62,8 +65,11 @@ impl Catalog {
         let icon = look.map(|a| a.icon.as_str()).filter(|i| !i.is_empty()).or_else(|| def.map(|d| d.icon.as_str()).filter(|i| !i.is_empty()));
         let config = look.map(|a| a.config.as_str()).filter(|c| !c.is_empty()).or_else(|| def.map(|d| d.icon_config.as_str()));
         let config = config.and_then(|c| self.icon_configs.get(c));
+        // Without an item (the album, shops, rewards) the template's own rarity.
+        // FAILURE (2026-10-23): every pet sticker had the Common background.
         let background = config.and_then(|c| if c.rarity {
-            let rarity = item.map(|i| i.kind as usize).unwrap_or(0);
+            let rarity = item.map(|i| i.kind as usize)
+                .or_else(|| def.and_then(|d| RARITIES.iter().position(|r| *r == d.rarity))).unwrap_or(0);
             self.rarity_backgrounds.get(rarity).map(String::as_str)
         } else { Some(c.background.as_str()) }).filter(|b| !b.is_empty());
         let frame = config.map(|c| c.frame.as_str()).filter(|f| !f.is_empty());
@@ -233,7 +239,11 @@ fn equip_toggle(state:&InventoryState, catalog:&Catalog, id:u32, level:u32, clas
     let item=state.items.get(&id)?; let meta=catalog.items.get(&item.template)?;
     // A mount is used, not worn: InventoryItemAction 0x13 starts its cast, and
     // again takes it away (DSOR_Server services/inventory_map.py, "use operation").
-    if meta.item_category=="Mount" {
+    // Pets, costumes and shadow souls the same: the server summons or wears one
+    // and sends it away again, nothing consumed ("Costumes and pets are
+    // ``Switchable`` items", "Shadow souls are reusable companions"). None has a slot.
+    // FAILURE (2026-10-23): a Mortis Doll in the bag did nothing on any click.
+    if matches!(meta.item_category.as_str(), "Mount" | "Pet" | "Mercenary" | "Switchable" | "Costume" | "TempCostume") {
         return Some(crate::gameplay::inventory::command(id,dsor_proto::commands::inventory::Inventory::USE,vec![]));
     }
     if let Some(Place::Equipment(_))=state.location(id) {
@@ -245,6 +255,30 @@ fn equip_toggle(state:&InventoryState, catalog:&Catalog, id:u32, level:u32, clas
     let slot=meta.slots.iter().copied().find(|s|state.at(Place::Equipment(*s)).is_none()).unwrap_or(meta.slots[0]);
     state.drop_on(id,Place::Equipment(slot),meta.max_stack)
 }
+
+/// Whether an item may be worn in equipment `slot`: one of its slots, identified,
+/// its level reached, its class ours (or any).
+fn wearable(item:Option<&ItemInfo>, meta:Option<&Definition>, slot:i8, level:u32, class:u8)->bool {
+    !item.is_some_and(|i|i.flag_0) && meta.is_some_and(|m|m.slots.contains(&slot) && m.required_level<=level
+        && (m.class_name.is_empty() || m.class_name=="any" || m.class_name==["warrior","mage","ranger","dwarf"][class.min(3) as usize]))
+}
+
+/// The equipment slots the dragged item may go to (bit n: slot n), worn or empty.
+fn drop_targets(ui:&Interaction, state:&InventoryState, catalog:&Catalog, level:u32, class:u8)->u64 {
+    let Some(item)=ui.drag.as_ref().filter(|d|d.active).and_then(|d|state.items.get(&d.id)) else{return 0};
+    let meta=catalog.items.get(&item.template);
+    meta.map_or(0,|m|m.slots.iter().filter(|s|(0..64).contains(*s) && wearable(Some(item),meta,**s,level,class)).fold(0,|bits,s|bits|1<<*s))
+}
+
+/// While an item is dragged, the equipment slots it may go to glow, taken or not,
+/// as the original's do: fx_icon_glow, tinted pale blue, its line on the slot's
+/// frame (the texture's line spans 50 of its 128 pixels).
+/// UNVERIFIED: the original draws its highlight in code; the look is matched by
+///   eye to a release261_192 screenshot (gloves dragged over worn gloves).
+/// FAILURE (2026-10-23): nothing showed where a dragged item could go.
+const DROP_GLOW: &str = "textures/ui/fx_icon_glow.png";
+const DROP_GLOW_SCALE: f32 = 128.0 / 50.0;
+const DROP_GLOW_TINT: [f32; 4] = [0.6, 0.85, 1.0, 0.85];
 
 /// What a right click looks up: the open shop (selling) and the travel items.
 #[derive(bevy::ecs::system::SystemParam)]
@@ -392,9 +426,7 @@ pub fn input(mut ui:ResMut<Interaction>,mut pointer:ResMut<Pointer>,mut windows:
                 if let Some(target)=place(cell,c) {
                     let source=net.inventory.items.get(&d.id);
                     let meta=source.and_then(|i|catalog.items.get(&i.template));
-                    let valid=if let Place::Equipment(slot)=target {!source.is_some_and(|i|i.flag_0) && meta.is_some_and(|m|m.slots.contains(&slot)
-                        && m.required_level <= net.level.unwrap_or(1)
-                        && (m.class_name.is_empty() || m.class_name=="any" || m.class_name==["warrior","mage","ranger","dwarf"][c.spells.class.min(3) as usize]))} else{true};
+                    let valid=if let Place::Equipment(slot)=target {wearable(source,meta,slot,net.level.unwrap_or(1),c.spells.class)} else{true};
                     if let Some(cmd)=valid.then(||net.inventory.drop_on(d.id,target,meta.map_or(1,|m|m.max_stack))).flatten() {
                         net.send(&cmd);ui.pending=Some((net.inventory.revision,time.elapsed_secs_f64()));
                     }
@@ -471,11 +503,12 @@ fn color(catalog:&Catalog,item:Option<&ItemInfo>)->Color {
 
 #[allow(clippy::too_many_arguments,clippy::type_complexity)]
 pub fn render(mut commands:Commands,windows:Query<(Entity,&Window2018,&WindowControls,&Visibility)>,net:Option<NonSend<crate::network::net::Net>>,
-    data:Res<Data>,catalogs:Res<Assets<Catalog>>,assets:Res<AssetServer>,screen:Res<Screen>,old:Query<Entity,With<Contents>>,
-    mut last:Local<Option<(Entity,u64,usize,u8,usize,usize,u32,u32,u8,usize)>>) {
+    data:Res<Data>,catalogs:Res<Assets<Catalog>>,assets:Res<AssetServer>,screen:Res<Screen>,old:Query<Entity,With<Contents>>,ui:Res<Interaction>,
+    mut last:Local<Option<(Entity,u64,usize,u8,usize,usize,u32,u32,u8,usize,u64)>>) {
     let Some(catalog)=catalogs.get(&data.catalog) else{return}; let Some(net)=net else{return};
     let window=windows.iter().find(|(_,n,_,v)|n.0=="inventory" && **v!=Visibility::Hidden);
-    let key=window.map(|(e,_,c,_)|(e,net.inventory.revision,c.bag,c.inventory,c.ingredient,c.rarity,screen.width.to_bits(),screen.scale.to_bits(),c.spells.class,c.overflow_page));
+    let targets=window.map_or(0,|(_,_,c,_)|drop_targets(&ui,&net.inventory,catalog,net.level.unwrap_or(1),c.spells.class));
+    let key=window.map(|(e,_,c,_)|(e,net.inventory.revision,c.bag,c.inventory,c.ingredient,c.rarity,screen.width.to_bits(),screen.scale.to_bits(),c.spells.class,c.overflow_page,targets));
     if *last==key {return;} *last=key; for e in &old {commands.entity(e).despawn();}
     let Some((root,_,c,_))=window else{return};
     let group=commands.spawn((Contents,Transform::from_xyz(0.0,0.0,WINDOW_ITEMS_DEPTH),Visibility::Inherited,ChildOf(root))).id();
@@ -488,6 +521,11 @@ pub fn render(mut commands:Commands,windows:Query<(Entity,&Window2018,&WindowCon
         //   their frames ("ceux equipes prennent pas la taille entiere du slot").
         let grow=if matches!(cell,Cell::Equipment(_)) {EQUIPMENT_FRAME_MARGIN} else {0.0};
         let [l,t,r,bt]=[b.rect[0]-grow,b.rect[1]-grow,b.rect[2]+grow,b.rect[3]+grow];let pos=screen.world(b.k,l,t);let size=Vec2::new(r-l,bt-t);
+        if let Cell::Equipment(slot)=cell { if (0..64).contains(&slot) && targets & (1<<slot)!=0 {
+            let glow=size*DROP_GLOW_SCALE; let [cr,cg,cb,ca]=DROP_GLOW_TINT;
+            commands.spawn((Sprite{image:assets.load(DROP_GLOW),custom_size:Some(glow),color:Color::srgba(cr,cg,cb,ca),..default()},Anchor::CENTER,
+                Transform::from_translation(Vec3::new(pos.x+size.x/2.0,pos.y-size.y/2.0,0.4)),RenderLayers::layer(LAYER),ChildOf(group)));
+        }}
         let locked=place(cell,c).is_some_and(|p|!matches!(p,Place::Equipment(_)) && p.cell()>=net.inventory.capacity(p));
         if locked {commands.spawn((Sprite::from_color(Color::srgba(0.01,0.01,0.01,0.8),size),Anchor::TOP_LEFT,Transform::from_translation(pos.extend(0.0)),RenderLayers::layer(LAYER),ChildOf(group)));continue;}
         let Some(d)=displayed(cell,c,&net.inventory,catalog) else{continue};
@@ -832,5 +870,39 @@ mod tests {
         assert!(!c.section_visible(Section::BagFourthRow));
         c.overflow_page=1;
         assert_eq!(place(Cell::Bag(0),&c),Some(Place::Overflow(21)));
+    }
+
+    #[test]
+    fn pets_are_used_by_a_double_click_and_worn_slots_still_glow_for_a_dragged_piece() {
+        let catalog: Catalog = serde_json::from_value(serde_json::json!({
+            "items": {
+                "pet_epic": {"name":"Mortis Doll","description":"","category":"Pet","icon":"p.png","max_stack":1,"required_level":1,"slots":[],
+                    "class_name":"","rarity":"Epic","icon_config":"item_pet","item_category":"Pet"},
+                "gloves": {"name":"Gloves","description":"","category":"Gloves","icon":"g.png","max_stack":1,"required_level":1,"slots":[3],
+                    "class_name":"warrior","rarity":"Common","item_category":"Armor"}
+            },
+            "ingredients": [], "colors": {},
+            "icon_configs": {"item_pet": {"rarity": true, "background": "", "frame": "f.png"}},
+            "rarity_backgrounds": ["c.png", "u.png", "m.png", "r.png", "e.png"]
+        })).unwrap();
+        // Without an item (the album, shops) the template's rarity; a carried one its own.
+        assert_eq!(catalog.icon_parts("pet_epic", None).1, Some("e.png"));
+        assert_eq!(catalog.icon_parts("pet_epic", Some(&ItemInfo { kind: 2, template: "pet_epic".into(), ..default() })).1, Some("m.png"));
+        let mut state = InventoryState::default();
+        state.apply(InventoryInfo {
+            items: vec![ItemInfo { id: 1, third: 1, template: "pet_epic".into(), ..default() }, ItemInfo { id: 2, third: 1, template: "gloves".into(), ..default() },
+                ItemInfo { id: 3, third: 1, template: "gloves".into(), ..default() }],
+            placements: vec![(1, 0), (2, 1)], storage_sizes: [0, 0, 224, 0, 0, 0], ..default()
+        });
+        state.allocation.slots.push((3, vec![3]));
+        // A double click uses (summons) a pet, as a mount; a right click leaves it alone.
+        let used = equip_toggle(&state, &catalog, 1, 1, "warrior");
+        assert_eq!(format!("{used:?}"), format!("{:?}", Some(crate::gameplay::inventory::command(1, dsor_proto::commands::inventory::Inventory::USE, vec![]))));
+        assert!(use_consumable(&state, &catalog, 1).is_none());
+        // Dragging the second gloves: their slot glows though gloves are worn; not for a mage, not before the drag starts.
+        let drag = |active| Interaction { drag: Some(DragItem { id: 2, revision: 0, origin: Vec2::ZERO, active, root: Entity::PLACEHOLDER }), ..default() };
+        assert_eq!(drop_targets(&drag(true), &state, &catalog, 1, 0), 1 << 3);
+        assert_eq!(drop_targets(&drag(true), &state, &catalog, 1, 1), 0);
+        assert_eq!(drop_targets(&drag(false), &state, &catalog, 1, 0), 0);
     }
 }
