@@ -89,8 +89,8 @@ pub(crate) enum Request {
     Buy(String),
     /// Use an owned sticker (a mount, a costume, a pet, an emote).
     Sticker(String),
-    /// Preview a sticker; again, use it (owned).
-    Pick(String),
+    /// Preview a sticker; a right click (true) also uses it, if owned.
+    Pick(String, bool),
     /// Open an album book, a sticker of it previewed.
     AlbumBook(String, Option<String>),
     /// Show the album's n-th banner.
@@ -435,7 +435,7 @@ pub(super) fn action(window: &str, w: &Widget) -> Option<Action> {
             "Buy" => Request::Buy(arg.to_owned()),
             "Event" => Request::Event(arg.parse().ok()?),
             "Sticker" => Request::Sticker(arg.to_owned()),
-            "Pick" => Request::Pick(arg.to_owned()),
+            "Pick" => Request::Pick(arg.to_owned(), false),
             "AlbumBook" => match arg.split_once(':') { Some((book, sticker)) => Request::AlbumBook(book.to_owned(), Some(sticker.to_owned())), None => Request::AlbumBook(arg.to_owned(), None) },
             "Banner" => Request::Banner(arg.parse().ok()?),
             "Favorite" => Request::Favorite(bare.to_owned(), flag),
@@ -523,6 +523,24 @@ pub(super) fn clicked(mut request: Request, controls: &mut WindowControls) -> Re
     request
 }
 
+/// What a right click on a button asks for: an album sticker is used (a left
+/// click only shows it in the preview).
+// FAILURE (2026-10-23): a second left click on the sticker previewed used it;
+//   the user found that unusable: one right click uses it.
+pub(super) fn right_clicked(action: &Action) -> Option<Request> {
+    match action {
+        Action::System(Request::Pick(id, _)) => Some(Request::Pick(id.clone(), true)),
+        _ => None,
+    }
+}
+
+/// Use an owned sticker of the album shown, named as the server owns it
+/// (album::Sticker::server_key); None for one not collected.
+fn use_sticker(album: &album::Album, id: &str) -> Option<ClientCommand> {
+    album.stickers.iter().find(|s| s.id == id && s.owned)
+        .map(|s| ClientCommand::UseStickerBookItem(inventory::UseStickerBookItem { template: s.server_key().to_owned() }))
+}
+
 /// The lists the wheel scrolls: (window, page shown (group, page), key, rect, k).
 /// Paged ones turn instead (scrolled).
 const SCROLL_AREAS: [(&str, Option<(&str, u8)>, &str, [f32; 4], f32); 10] = [
@@ -604,7 +622,7 @@ pub(super) fn tooltip(request: &Request) -> Option<(&'static str, String)> {
         Request::ShopTab(_) => ("Premium shop", "Andermant and special offers.".into()),
         Request::Redeem => ("Redeem", String::new()),
         Request::Buy(_) => ("Buy", String::new()),
-        Request::Pick(_) => ("Sticker", "Shows it in the preview; click it again to use it.".into()),
+        Request::Pick(..) => ("Sticker", "Shows it in the preview; a right click uses it.".into()),
         Request::AlbumBook(..) => ("Open", "Opens this part of the album.".into()),
         Request::Banner(_) => ("Banner", String::new()),
         Request::Favorite(_, true) => ("Add to favourites", String::new()),
@@ -818,15 +836,10 @@ pub(in crate::ui) fn send(
             }
             Request::Redeem => net.social_notes.push("Vouchers are not redeemed on this server.".to_owned()),
             Request::Sticker(template) => commands.push(ClientCommand::UseStickerBookItem(inventory::UseStickerBookItem { template })),
-            // A second click on the sticker previewed uses it, if owned.
-            Request::Pick(id) => {
-                // Named as the server owns it (album::Sticker::server_key).
-                let owned = views.album.stickers.iter().find(|s| s.id == id && s.owned).map(|s| s.server_key().to_owned());
-                if let (true, Some(template)) = (state.album_sticker.as_ref() == Some(&id), owned) {
-                    commands.push(ClientCommand::UseStickerBookItem(inventory::UseStickerBookItem { template }));
-                } else {
-                    state.album_sticker = Some(id);
-                }
+            // A sticker clicked is shown in the preview; right-clicked, also used.
+            Request::Pick(id, use_it) => {
+                if use_it { commands.extend(use_sticker(&views.album, &id)); }
+                if state.album_sticker.as_ref() != Some(&id) { state.album_sticker = Some(id); }
             }
             Request::AlbumBook(book, sticker) => {
                 // A category with books under it only opens or closes their list;
@@ -1093,6 +1106,20 @@ mod tests {
         assert_eq!(action(LEADERBOARDS, &widget("PagePlayer", "a/ScrollToMe")), Some(Action::System(Request::Page(Paging::Player))));
         assert_eq!(action(SHEET, &widget("ShowPVPTitle", "a/RadioButtonShowPVPTitle")), Some(Action::System(Request::Title(2, String::new()))));
         assert_eq!(action("inventory", &widget("Close", "a/b")), None);
+    }
+
+    #[test]
+    fn a_click_previews_a_sticker_and_a_right_click_uses_an_owned_one() {
+        let pick = action(ALBUM, &widget("Sys:Pick:sb_x", "a/b")).unwrap();
+        assert_eq!(pick, Action::System(Request::Pick("sb_x".into(), false)));
+        assert_eq!(right_clicked(&pick), Some(Request::Pick("sb_x".into(), true)));
+        assert_eq!(right_clicked(&Action::System(Request::Favorite("sb_x".into(), true))), None);
+        // Used under the server's key; a sticker not collected is only shown.
+        let owned = album::Sticker { id: "sb_x".into(), key: "mount_x".into(), owned: true, ..Default::default() };
+        let missing = album::Sticker { id: "sb_y".into(), ..Default::default() };
+        let shown = album::Album { stickers: vec![owned, missing], ..Default::default() };
+        assert!(matches!(use_sticker(&shown, "sb_x"), Some(ClientCommand::UseStickerBookItem(u)) if u.template == "mount_x"));
+        assert!(use_sticker(&shown, "sb_y").is_none());
     }
 
     /// docs/ui.md, "Per-frame cost". FAILURE (2026-10-21): every view was

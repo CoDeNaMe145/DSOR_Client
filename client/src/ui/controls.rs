@@ -1015,6 +1015,13 @@ pub(super) fn interact(
     let hit = hovered.filter(|(e, index)| windows.get(*e).is_ok_and(|(_, _, c, _, _)| c.enabled(&c.buttons[*index])));
     if !window.focused || blocked || pointer.down.is_some_and(|(e, _)| !windows.get(e).is_ok_and(|(_, _, _, v, _)| *v != Visibility::Hidden)) { pointer.down = None; }
     let mut clicked = pointer.update(hit, mouse.just_pressed(MouseButton::Left), mouse.just_released(MouseButton::Left));
+    // A right click on an album sticker uses it (systems::right_clicked).
+    if mouse.just_pressed(MouseButton::Right) {
+        if let Some(request) = hit.and_then(|(e, i)| windows.get(e).ok().and_then(|(_, _, c, _, _)| systems::right_clicked(&c.buttons[i].action))) {
+            info!("ui right click: {request:?}");
+            pointer.system.push(request);
+        }
+    }
     if spells::drag(&mut pointer, &windows, &mouse, hit, top.map(|(e, _, _)| e), point, window.focused && !blocked && modal.is_none()) {
         clicked = None;
     }
