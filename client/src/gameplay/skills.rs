@@ -663,41 +663,7 @@ fn perform(
     }
     let dir = Quat::from_rotation_y(facing) * Vec3::Z;
     match (skill.kind.as_str(), &skill.bullet) {
-        ("Shifted", _) if !skill.shifted.is_empty() => {
-            // What falls on the aimed point (the lightning bolt, the meteor, the
-            // singularity's start): SkillBulletId names a sequence for every Shifted
-            // skill. EVIDENCE: BulletSkillVisualizer 0x5ECA7A / 0x5EC837: from
-            // start + LoopStartFrame, at the target point turned to the aim heading,
-            // stretched to last HitFrame ticks.
-            // The stretch is the sequence's phase track, not its whole length: the
-            // tail (meteor_bullet 50..100, lightningstrike_bullet 30..50) plays
-            // after the impact at that same rate. EVIDENCE (release261):
-            // ConnectWithTrackSequencer 0x14034cc84 passes numPhaseFrames (the
-            // phase track's end - start, 0x14034d19f) to
-            // ShiftedSkillVisualizer::CalculateSequenceFPS 0x14034a714, which
-            // returns numPhaseFrames / (HitFrame * 0.04 s). FAILURE: the whole
-            // length played meteor 1.2 s and lightning 0.56 s ahead of their damage.
-            let impact_rate = if skill.hit_frame < 25 { rate } else { 1.0 };
-            let visual_rate = sequences
-                .0
-                .get(&skill.shifted)
-                .map(|q| {
-                    let frames = q
-                        .tracks
-                        .iter()
-                        .find_map(|t| match t {
-                            Track::Phase { start, end } if end > start => Some((end - start) as f32),
-                            _ => None,
-                        })
-                        .unwrap_or(q.length as f32);
-                    frames / skill.hit_frame.max(1) as f32 * impact_rate
-                })
-                .unwrap_or(1.0);
-            commands.spawn(Pending {
-                after: skill.loop_start as f32 / FPS / rate,
-                what: PendingKind::Sequence { name: skill.shifted.clone(), at: Transform::from_translation(point).with_rotation(entity_rotation(facing)), rate: visual_rate },
-            });
-        }
+        ("Shifted", _) if !skill.shifted.is_empty() => shifted_fall(commands, skill, sequences, point, facing, rate),
         ("Charge" | "ChargeThrough", Some(_)) => {}
         (_, Some(b)) => {
             // EVIDENCE: the start (0x9BFFDC): a look-at frame on the aim, StartOffset
@@ -779,6 +745,84 @@ fn perform(
                 what: PendingKind::Sequence {
                     name: skill.impact.clone(),
                     at: Transform::from_translation(impact_at).with_rotation(entity_rotation(facing)),
+                    rate: 1.0,
+                },
+            });
+        }
+    }
+}
+
+/// What falls on one ground point of a Shifted skill (perform; every further
+/// point of a multi-bullet one, remote_skills).
+fn shifted_fall(commands: &mut Commands, skill: &SkillDef, sequences: &SequenceTable, point: Vec3, facing: f32, rate: f32) {
+    // What falls on the aimed point (the lightning bolt, the meteor, the
+    // singularity's start): SkillBulletId names a sequence for every Shifted
+    // skill. EVIDENCE: BulletSkillVisualizer 0x5ECA7A / 0x5EC837: from
+    // start + LoopStartFrame, at the target point turned to the aim heading,
+    // stretched to last HitFrame ticks.
+    // The stretch is the sequence's phase track, not its whole length: the
+    // tail (meteor_bullet 50..100, lightningstrike_bullet 30..50) plays
+    // after the impact at that same rate. EVIDENCE (release261):
+    // ConnectWithTrackSequencer 0x14034cc84 passes numPhaseFrames (the
+    // phase track's end - start, 0x14034d19f) to
+    // ShiftedSkillVisualizer::CalculateSequenceFPS 0x14034a714, which
+    // returns numPhaseFrames / (HitFrame * 0.04 s). FAILURE: the whole
+    // length played meteor 1.2 s and lightning 0.56 s ahead of their damage.
+    let impact_rate = if skill.hit_frame < 25 { rate } else { 1.0 };
+    let visual_rate = sequences
+        .0
+        .get(&skill.shifted)
+        .map(|q| {
+            let frames = q
+                .tracks
+                .iter()
+                .find_map(|t| match t {
+                    Track::Phase { start, end } if end > start => Some((end - start) as f32),
+                    _ => None,
+                })
+                .unwrap_or(q.length as f32);
+            frames / skill.hit_frame.max(1) as f32 * impact_rate
+        })
+        .unwrap_or(1.0);
+    commands.spawn(Pending {
+        after: skill.loop_start as f32 / FPS / rate,
+        what: PendingKind::Sequence { name: skill.shifted.clone(), at: Transform::from_translation(point).with_rotation(entity_rotation(facing)), rate: visual_rate },
+    });
+}
+
+/// Shifted: its impact on its hit tick, start + LoopStartFrame + HitFrame
+/// (0x946F17; lightning strike 44, meteor 65).
+fn shifted_impact_after(skill: &SkillDef, rate: f32) -> f32 {
+    skill.loop_start as f32 / FPS / rate + shifted_hit(skill, rate)
+}
+
+/// A multi-bullet Shifted skill's further ground points, after the first that
+/// perform played: its fall and its impact on each. A point sent twice (the
+/// server repeats them to fill BulletCount when fewer players are in reach)
+/// plays once.
+/// FAILURE: only the first point played; the Herald's and the Horseman's
+/// other meteors hit unseen.
+fn shifted_extra_points(commands: &mut Commands, skill: &SkillDef, sequences: &SequenceTable, points: &[[f32; 3]], facing: f32, rate: f32) {
+    if skill.kind != "Shifted" || points.len() < 2 {
+        return;
+    }
+    let rate = if skill.scale_timing { rate.clamp(0.1, 10.0) } else { 1.0 };
+    let mut played: Vec<Vec3> = vec![Vec3::from(points[0])];
+    for p in &points[1..] {
+        let point = Vec3::from(*p);
+        if played.iter().any(|q| q.distance_squared(point) < 1e-4) {
+            continue;
+        }
+        played.push(point);
+        if !skill.shifted.is_empty() {
+            shifted_fall(commands, skill, sequences, point, facing, rate);
+        }
+        if !skill.impact.is_empty() && skill.impact != "empty_sequence" {
+            commands.spawn(Pending {
+                after: shifted_impact_after(skill, rate),
+                what: PendingKind::Sequence {
+                    name: skill.impact.clone(),
+                    at: Transform::from_translation(point).with_rotation(entity_rotation(facing)),
                     rate: 1.0,
                 },
             });
@@ -1195,6 +1239,7 @@ fn remote_skills(
             .map(|f| (base as f32 / f as f32).clamp(0.1, 10.0))
             .unwrap_or(1.0);
         perform(&mut commands, skill, sequences, e, character, tf.translation, facing, point, Some(ev.actor), aim, ev.target, rate);
+        shifted_extra_points(&mut commands, skill, sequences, &ev.points, facing, rate);
     }
 }
 
