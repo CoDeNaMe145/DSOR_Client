@@ -417,6 +417,9 @@ struct Button {
     authored_enabled: bool,
     states: u8,
     spell: Option<spells::Spell>,
+    /// A slot's art depth in its window (spawn_windows): items::render draws
+    /// its drop highlight there, under the widgets after it.
+    depth: f32,
 }
 
 #[derive(Component)]
@@ -447,6 +450,11 @@ pub(super) struct WindowControls {
 }
 
 impl WindowControls {
+    /// A slot widget's art depth (spawn_windows), where its drop highlight goes.
+    pub(super) fn set_depth(&mut self, id: &str, depth: f32) {
+        if let Some(b) = self.buttons.iter_mut().find(|b| b.id == id) { b.depth = depth; }
+    }
+
     pub(super) fn new(layout: &Layout) -> Self {
         let buttons = layout.widgets.iter()
             .filter(|w| layout.window != "locationmap" && !w.hidden
@@ -455,7 +463,7 @@ impl WindowControls {
             .map(|w| Button {
                 id: w.id.clone(), k: w.k, rect: w.rect,
                 section: section(&layout.window, &w.id), action: action(&layout.window, w), authored_enabled: w.enabled,
-                spell: w.spell.clone(),
+                spell: w.spell.clone(), depth: 0.0,
                 states: layout.widgets.iter().filter(|s| !s.hidden && s.button.as_ref() == Some(&w.id))
                     .filter_map(|s| s.state.as_deref().and_then(State::parse)).fold(0, |bits, state| bits | state.bit()),
             }).collect();
@@ -1292,7 +1300,7 @@ mod tests {
     fn hover_press_disabled_and_release_use_authored_states() {
         let mut c = WindowControls::new(&fixture("inventory", serde_json::json!([])));
         c.buttons.push(Button { id: "Close".into(), k: 0.0, rect: [0.0; 4], section: Section::Always,
-            action: Action::Close, authored_enabled: true, states: 31, spell: None });
+            action: Action::Close, authored_enabled: true, states: 31, spell: None, depth: 0.0 });
         assert_eq!(c.state(0), State::Normal);
         c.hovered = Some(0);
         assert_eq!(c.state(0), State::Hover);
