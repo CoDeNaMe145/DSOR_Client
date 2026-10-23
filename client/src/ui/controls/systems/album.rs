@@ -221,6 +221,11 @@ fn grid(source: &Layout, layout: &mut Layout, page: &str, stickers: &[Sticker], 
         let (dx, dy) = (origin.0 - CELL_ORIGIN.0 + col as f32 * CELL.0, origin.1 - CELL_ORIGIN.1 + row as f32 * CELL.1);
         let replacement = format!("{page}/Sticker{i}");
         let shown = preview == Some(sticker.id.as_str());
+        // The flags (favourite star, add, upgrade) come before the icon in the
+        // layout; drawn after it, over its corner.
+        // FAILURE (2026-10-23): the icon covered the favourite star ("you can see
+        //   the star underneath").
+        let mut flags = Vec::new();
         for mut w in clone_at(source, ENTRY, &replacement, dx, dy) {
             rename(&mut w, "TemplateSlot", "Slot");
             rename(&mut w, "TemplateIcon", "Icon");
@@ -243,8 +248,9 @@ fn grid(source: &Layout, layout: &mut Layout, page: &str, stickers: &[Sticker], 
                 set_text(&mut w, "");
                 layout.widgets.extend(layers);
             }
-            layout.widgets.push(w);
+            if w.id.contains("/Slot/FlagLabel") { flags.push(w); } else { layout.widgets.push(w); }
         }
+        layout.widgets.extend(flags);
     }
 }
 

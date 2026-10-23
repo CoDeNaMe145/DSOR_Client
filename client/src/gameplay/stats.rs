@@ -310,9 +310,11 @@ fn compute(
     riding: Query<&crate::actors::mounts::Riding, With<crate::network::net::LocalPlayer>>,
     calculated: Res<CharacterStats>,
 ) {
-    // Twice a second is plenty for a window of figures.
+    // Twice a second is plenty for a window of figures, but a new calculation
+    // (equipment, level, effects: update_stats) shows at once.
+    // FAILURE (2026-10-23): a piece put on took up to 0.5 s to reach the sheet.
     *next -= time.delta_secs();
-    if *next > 0.0 {
+    if *next > 0.0 && !calculated.is_changed() {
         return;
     }
     *next = 0.5;

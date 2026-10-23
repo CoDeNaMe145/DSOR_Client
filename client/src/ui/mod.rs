@@ -793,6 +793,20 @@ fn value_of(id: &str) -> Option<ValueKind> {
 
 /// The quick slots by wire slot: Shift + left button = 0, right button = 1, keys
 /// 1-5 = 2-6 (crate::gameplay::skills), 6 and 7 the bar's last two.
+/// Where a quick slot draws its item. The potion slots' buttons (41.5 px) take
+/// in their hover glow around the round slot (33.1 px, PotionSlot*'s
+/// bottombar_slot_round_empty_potion); the potion sits inside the circle,
+/// centred, about 70 % of its width (the user's release261_192 bar).
+/// FAILURE (2026-10-23): drawn over the whole button, the potion spilled over the
+///   slot's ring ("wtf is with that potion, it looks so wrong").
+fn slot_icon_rect(slot: usize, rect: [f32; 4]) -> [f32; 4] {
+    const POTION: f32 = 33.1 * 0.7;
+    if !(13..=16).contains(&slot) { return rect; }
+    let [l, t, r, b] = rect;
+    let (cx, cy, h) = ((l + r) * 0.5, (t + b) * 0.5, POTION * 0.5);
+    [cx - h, cy - h, cx + h, cy + h]
+}
+
 fn quick_slot_of(id: &str) -> Option<usize> {
     if id.contains("/Frame5/") || id.contains("/icon_bg/") {
         return controls::hotbar::slot_leaf(id.rsplit('/').next()?);
@@ -1048,7 +1062,7 @@ fn spawn_windows(
             if let Some(slot) = quick_slot_of(&w.id) {
                 controls.region(w.k, w.rect, Gate::default());
                 let p = parent(&mut commands, w.k, true);
-                commands.spawn((QuickSlot { slot, k: w.k, rect: w.rect, shown: None }, Transform::from_xyz(0.0, 0.0, WINDOW_ITEMS_DEPTH), Visibility::Inherited, ChildOf(p)));
+                commands.spawn((QuickSlot { slot, k: w.k, rect: slot_icon_rect(slot, w.rect), shown: None }, Transform::from_xyz(0.0, 0.0, WINDOW_ITEMS_DEPTH), Visibility::Inherited, ChildOf(p)));
             }
             // The status effects' slots: no artwork and no hit region (click-through).
             if let Some((row, slot)) = controls::effects::slot_of(&w.id) {
