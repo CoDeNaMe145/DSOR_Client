@@ -98,7 +98,7 @@ fn response(rate: f32, dt: f32) -> f32 {
 
 /// Smooth the displayed heading only; movement and network aim use `facing`.
 /// Quaternion interpolation takes the short arc across the +/-pi boundary.
-fn turn_towards(rotation: Quat, facing: f32, dt: f32) -> Quat {
+pub(crate) fn turn_towards(rotation: Quat, facing: f32, dt: f32) -> Quat {
     let target = Quat::from_rotation_y(facing);
     if rotation.angle_between(target) < 0.001 {
         target
@@ -179,6 +179,14 @@ pub struct Net {
     /// Monsters to place (NewMonsterCommand 48), for crate::actors::monsters; they leave
     /// with DiscardMonster (49) through `remote_gone`, as they move as remote actors.
     pub monster_spawns: Vec<MonsterSpawn>,
+    /// Players' summons on the map (a Shadow Soul, a turret...). Discarded, they
+    /// leave through `summons_gone` instead, for crate::actors::monsters to play
+    /// their despawn.
+    pub(crate) summons: std::collections::HashSet<u32>,
+    pub(crate) summons_gone: Vec<u32>,
+    /// Our faction (NewPlayer), what each monster's is judged against
+    /// (Faction::stance); offline, the one the server gives every player.
+    pub(crate) faction: dsor_proto::commands::actors::Faction,
     /// Health of monsters (MonsterUpdate 50): actor, health, maximum.
     pub monster_health: Vec<(u32, u32, u32)>,
     /// Retained while visuals load and after corpse disposal. A late spawn or
@@ -317,6 +325,11 @@ pub struct Net {
     /// crate::actors::mounts finds the ride effects among them (an element
     /// without details is the removal).
     pub mount_events: Vec<(u32, u16, u32, bool)>,
+    /// The same, for crate::actors::pets (the pet effects among them).
+    pub pet_events: Vec<(u32, u16, u32, bool)>,
+    /// Actors revived with a cooldown (ReviveCommand's u32): their pet revived
+    /// them and leaves with its alternative despawn (crate::actors::pets).
+    pub pet_revivals: Vec<u32>,
     pub location_events: Vec<LocationEvent>,
     /// Offline play: status effects by name (holder, status id, seconds), for
     /// crate::gameplay::skills (online they come by wire index in `status_events`).
@@ -428,12 +441,27 @@ fn sat(v: u64) -> u32 {
 }
 
 /// One NewMonsterCommand: its _Template_Monster blueprint and where (map frame).
+#[derive(Default)]
 pub struct MonsterSpawn {
     pub actor: u32,
     pub blueprint: String,
     pub position: Vec3,
     pub health: u32,
     pub level: u32,
+    /// Whose summon it is (NewMonster summoner: a Shadow Soul's owner, 1 for
+    /// ours), 0 for the map's monsters.
+    pub summoner: u32,
+    /// NewMonster category (1 a player's summon, 2 a map companion) and the
+    /// server tick it appeared on, the same to a newcomer who meets it later:
+    /// only a fresh summon plays its SummonSequence.
+    pub category: u8,
+    pub spawn_tick: u32,
+    /// How a summon is turned as it appears (the server's yaw + pi, as a
+    /// MoveCommand's facing byte).
+    pub facing: f32,
+    /// Not an enemy: our faction's stance toward its is not Hostile
+    /// (Faction::stance; our own soul, a peer's outside PvP, an escort).
+    pub friendly: bool,
 }
 
 /// Another player, drawn from NewRemotePlayer and moved by their MoveCommands.
@@ -854,6 +882,13 @@ pub fn now_ms(time: &Time<Real>) -> u64 {
 /// The local actor of the offline character.
 pub const OFFLINE_ACTOR: u32 = 0x5FFF_FFFF;
 
+/// The faction the release261 server gives every player in NewPlayer
+/// (protocol/gameplay_commands.py: 0x00010002, type 0, first flag set): ours
+/// offline, until a NewPlayer says otherwise.
+const PLAYER_FACTION: dsor_proto::commands::actors::Faction = dsor_proto::commands::actors::Faction {
+    faction_id: dsor_proto::commands::actors::PLAYER_FACTION, unknown_u32_0: 1, faction_type: 0, unknown_flag_0: true, unknown_flag_1: false,
+};
+
 /// A class's starting quick bar for the offline character (left button, right
 /// button, keys 1-5).
 pub fn default_bar(class: u8) -> Vec<Option<String>> {
@@ -900,6 +935,9 @@ pub fn start_offline(world: &mut World, class: u8, gender: u8) {
         map_markers: default(),
         npc_dialogue: default(),
         monster_spawns: Vec::new(),
+        summons: Default::default(),
+        summons_gone: Vec::new(),
+        faction: PLAYER_FACTION,
         max_health: None,
         level: Some(1),
         xp: None,
@@ -958,6 +996,8 @@ pub fn start_offline(world: &mut World, class: u8, gender: u8) {
         actor_effects_stamp: 0,
         ui_revision: 0,
         mount_events: Vec::new(),
+        pet_events: Vec::new(),
+        pet_revivals: Vec::new(),
         location_events: Vec::new(),
         named_status_events: Vec::new(),
         location_gone: Vec::new(),
@@ -988,16 +1028,21 @@ pub fn start_offline(world: &mut World, class: u8, gender: u8) {
 /// Records are {"frame": N, "hex": server_packet, "bits": exact_bit_count}.
 /// DSOR_EQUIPMENT_REPLAY replays the inventory and remote outfits only;
 /// DSOR_PACKET_REPLAY every command (the local player's as our offline actor),
-/// for the windows' fixtures (tools/ui_fixture_packets.py).
+/// for the windows' fixtures (tools/ui_fixture_packets.py). There, a record
+/// {"frame": N, "capture": "<png>"} saves a screenshot and {"frame": N, "quit":
+/// true} ends the run: what a scripted sequence of packets shows
+/// (tools/summon_fixture_packets.py).
 #[cfg(not(target_arch = "wasm32"))]
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn replay_equipment(
+    mut commands: Commands,
     mut net: NonSendMut<Net>,
+    real: Res<Time<Real>>,
     characters: Query<&Character>,
     loading: Res<crate::screens::loading::LoadingScreen>,
     mut loaded: Local<bool>,
     mut records: Local<std::collections::VecDeque<(u32, bool, Vec<(ServerCommand, Option<u32>)>)>>,
-    mut frame: Local<u32>,
+    (mut frame, mut shots, mut quit): (Local<u32>, Local<Vec<(u32, String)>>, Local<Option<u32>>),
 ) {
     if !net.offline { return; }
     if !*loaded {
@@ -1006,6 +1051,9 @@ fn replay_equipment(
             let Ok(path) = std::env::var(variable) else { continue };
             let values = std::fs::read(path).ok().and_then(|data| serde_json::from_slice::<Vec<serde_json::Value>>(&data).ok());
             for record in values.into_iter().flatten() {
+                let at = record["frame"].as_u64().unwrap_or(0) as u32;
+                if let (true, Some(path)) = (every, record["capture"].as_str()) { shots.push((at, path.to_owned())); continue; }
+                if every && record["quit"].as_bool() == Some(true) { *quit = Some(at); continue; }
                 let Some(hex) = record["hex"].as_str() else { continue };
                 let data: Option<Vec<u8>> = hex.as_bytes().chunks(2).map(|b| std::str::from_utf8(b).ok().and_then(|s| u8::from_str_radix(s, 16).ok())).collect();
                 if let Some(data) = data {
@@ -1018,15 +1066,35 @@ fn replay_equipment(
         }
         records.make_contiguous().sort_by_key(|r| r.0);
     }
-    if records.is_empty() { return; }
+    if records.is_empty() && shots.is_empty() && quit.is_none() { return; }
     if *frame == 0 && (loading.active() || characters.is_empty() || !characters.iter().all(Character::outfit_ready)) { return; }
     *frame += 1;
+    for (_, path) in shots.extract_if(.., |(at, _)| *at <= *frame) {
+        info!("packet replay frame {}: screenshot {path} ({:.2} s)", *frame, real.elapsed_secs());
+        commands.spawn(bevy::render::view::screenshot::Screenshot::primary_window())
+            .observe(bevy::render::view::screenshot::save_to_disk(path));
+    }
+    if quit.is_some_and(|at| *frame >= at) {
+        commands.write_message(AppExit::Success);
+        *quit = None;
+    }
     while records.front().is_some_and(|r| r.0 <= *frame) {
-        let (_, every, commands) = records.pop_front().unwrap();
-        info!("packet replay frame {}", *frame);
-        for (command, actor) in commands {
+        let (_, every, batch) = records.pop_front().unwrap();
+        info!("packet replay frame {} ({:.2} s)", *frame, real.elapsed_secs());
+        for (mut command, actor) in batch {
             if every {
-                // The server's local player actor (1) is our offline actor.
+                // The server's local player actor (1) is our offline actor, also
+                // as a summon's owner and in blows; a summon appears now, on our
+                // clock.
+                let local = |a: &mut u32| if *a == 1 { *a = OFFLINE_ACTOR };
+                match &mut command {
+                    ServerCommand::NewMonster(m) => {
+                        local(&mut m.summoner);
+                        if m.spawn_tick != 0 { m.spawn_tick = net.server_tick(now_ms(&real)); }
+                    }
+                    ServerCommand::Hit(h) => { local(&mut h.attacker); local(&mut h.combat_value_owner); }
+                    _ => {}
+                }
                 on_command(&mut net, command, actor.map(|a| if a == 1 { OFFLINE_ACTOR } else { a }));
             } else if matches!(command, ServerCommand::InventoryInfo(_) | ServerCommand::ItemUpdate(_)) {
                 on_command(&mut net, command, Some(OFFLINE_ACTOR));
@@ -1171,6 +1239,9 @@ pub(crate) fn start_session(world: &mut World, config: NetConfig) {
         map_markers: default(),
         npc_dialogue: default(),
         monster_spawns: Vec::new(),
+        summons: Default::default(),
+        summons_gone: Vec::new(),
+        faction: PLAYER_FACTION,
         max_health: None,
         level: None,
         xp: None,
@@ -1229,6 +1300,8 @@ pub(crate) fn start_session(world: &mut World, config: NetConfig) {
         actor_effects_stamp: 0,
         ui_revision: 0,
         mount_events: Vec::new(),
+        pet_events: Vec::new(),
+        pet_revivals: Vec::new(),
         location_events: Vec::new(),
         named_status_events: Vec::new(),
         location_gone: Vec::new(),
@@ -1274,7 +1347,8 @@ impl Net {
         self.requested.remove(&actor);
     }
 
-    /// An actor leaves on a server discard; its entity goes in apply_remotes.
+    /// An actor leaves on a server discard; its entity goes in apply_remotes, a
+    /// summon's after its despawn (crate::actors::monsters).
     pub(crate) fn discard_actor(&mut self, actor: u32) {
         self.monster_ranks.remove(&actor);
         self.forget_actor(actor);
@@ -1283,7 +1357,7 @@ impl Net {
         self.monster_vitals.remove(&actor);
         self.hits.retain(|(a, _)| *a != actor);
         self.kills.retain(|(a, _)| *a != actor);
-        self.remote_gone.push(actor);
+        if self.summons.remove(&actor) { self.summons_gone.push(actor); } else { self.remote_gone.push(actor); }
         if self.actor_effects.remove(&actor).is_some() { self.actor_effects_stamp += 1; }
     }
 
@@ -1471,6 +1545,8 @@ fn pump(
                 net.npc_spawns.clear();
                 net.npc_gone.clear();
                 net.monster_spawns.clear();
+                net.summons.clear();
+                net.summons_gone.clear();
                 net.monster_health.clear();
                 net.actor_effects.clear();
                 net.hits.clear();
@@ -1553,7 +1629,7 @@ fn actor_stream(command: &ServerCommand) -> bool {
         | ServerCommand::NewItem(_) | ServerCommand::DiscardItem(_))
 }
 
-fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
+pub(crate) fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
     if !actor_stream(&command) { net.touch_ui(); }
     net.props.receive(&command);
     net.map_markers.receive(&command, actor);
@@ -1563,6 +1639,10 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
             net.inventory = default();
             net.local_appearance_dirty = false;
             net.corrections = default();
+            net.faction = dsor_proto::commands::actors::Faction {
+                faction_id: p.composite_words[0], unknown_u32_0: p.composite_words[1], faction_type: p.composite_enum as u8,
+                unknown_flag_0: p.composite_flags[0], unknown_flag_1: p.composite_flags[1],
+            };
             let desc = CharacterDesc {
                 class: p.parts[0],
                 gender: p.parts[1],
@@ -1659,6 +1739,7 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
                     info!("status effect {} on us for {:.2} s (instance {})", e.index, e.duration as f32 / 25.0, e.instance);
                 }
                 net.mount_events.push((actor.unwrap_or(e.source), e.index, e.instance, e.tail.is_some()));
+                net.pet_events.push((actor.unwrap_or(e.source), e.index, e.instance, e.tail.is_some()));
                 net.status_events.push(StatusEvent {
                     // release261: the holder is the command's actor (e.source is
                     // who caused it).
@@ -1712,6 +1793,10 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
             let (health, _) = *net.monster_vitals.entry(actor).or_insert((sat(m.health), sat(m.max_health)));
             if health == 0 { return; }
             debug!("monster {} actor {actor:#x} at {:?}", m.blueprint, m.position);
+            let friendly = net.faction.stance(&m.faction) != dsor_proto::commands::actors::Stance::Hostile;
+            // A player's summon (a Shadow Soul following its owner, a turret, a
+            // map's escort) leaves through its despawn.
+            if m.summoner != 0 { net.summons.insert(actor); } else { net.summons.remove(&actor); }
             net.monster_ranks.insert(actor, m.rank);
             net.monster_spawns.push(MonsterSpawn {
                 actor,
@@ -1719,6 +1804,11 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
                 position: Vec3::from(m.position),
                 health,
                 level: m.level,
+                summoner: m.summoner,
+                category: m.category,
+                spawn_tick: m.spawn_tick,
+                facing: m.heading + std::f32::consts::PI,
+                friendly,
             });
         }
         ServerCommand::NewItem(c) => net.item_drops.push(c.item),
@@ -1895,13 +1985,19 @@ fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
                 net.death.dialog = true;
             }
         }
-        ServerCommand::Revive(_) => {
+        ServerCommand::Revive(r) => {
             if let Some(a) = actor {
                 if Some(a) == net.local_actor {
                     let chosen = net.death.chosen;
                     net.death = DeathState { chosen, ..default() };
                 }
                 net.revives.push(a);
+                // EVIDENCE: the ReviveCommand handler 0x1401cb46c sends the actor
+                //   ActivateAlternativeDespawnSequence(true) and starts its
+                //   PetInstantRespawnCoolDown timer when the u32 is not 0.
+                if r.cooldown != 0 {
+                    net.pet_revivals.push(a);
+                }
             }
         }
         ServerCommand::ItemUpdate(update) => {

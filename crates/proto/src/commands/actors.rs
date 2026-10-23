@@ -56,6 +56,42 @@ pub struct Faction {
     pub unknown_flag_1: bool,
 }
 
+/// How one faction stands toward another (Faction::stance).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stance {
+    None,
+    Neutral,
+    Ally,
+    Hostile,
+}
+
+impl Faction {
+    /// What `self` (the viewer) makes of `target`: only Hostile may be attacked
+    /// (PlayerInputProperty::IsEnemy 0x14018d290 asks for it).
+    /// EVIDENCE: dro_client64.exe (July 2026) stance test 0x14091b3b8, in order:
+    ///   either FactionType -1: none; target type 1, or 2 toward 3: neutral; 3
+    ///   toward 2, the same FactionId, or one side's second flag with the other's
+    ///   type 0: ally; then hostile when both first flags are set, the types
+    ///   differ or the second flags differ; else neutral.
+    /// NOT DONE: the world's modes (ally in modes 5/6, hostile under flag 4) and the
+    ///   target's Damage blocker, which the test also reads.
+    pub fn stance(&self, target: &Faction) -> Stance {
+        let (f, t) = (self.faction_type as i8, target.faction_type as i8);
+        if f == -1 || t == -1 {
+            Stance::None
+        } else if t == 1 || (f == 2 && t == 3) {
+            Stance::Neutral
+        } else if (f == 3 && t == 2) || self.faction_id == target.faction_id
+            || (self.unknown_flag_1 && t == 0) || (target.unknown_flag_1 && f == 0) {
+            Stance::Ally
+        } else if (self.unknown_flag_0 && target.unknown_flag_0) || f != t || self.unknown_flag_1 != target.unknown_flag_1 {
+            Stance::Hostile
+        } else {
+            Stance::Neutral
+        }
+    }
+}
+
 impl Body for Faction {
     fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
         Ok(Self {
@@ -80,6 +116,22 @@ impl Body for Faction {
 /// The client refuses an attribute id at or above this (v < 0x39 at 0x8D8F52).
 pub const MOST_ATTRIBUTES: u8 = 57;
 
+/// The FactionIds the release261 server gives: the monsters', the players' and the
+/// player-owned one of summons (type 0, as the players': not hostile to them) and
+/// of fixed tower hazards (type 2: still enemies for Faction::stance, whatever
+/// the server's comment says).
+/// SOURCE: release261 server gameplay/local_monster_state.py (_load_monster:
+///   0x00010004 when non_targetable, else 0x00010001, type 2;
+///   load_player_summon_spawn: 0x00010004, type 0), protocol/gameplay_commands.py
+///   (NewPlayer: 0x00010002, type 0, first flag set) and
+///   services/presence_visuals.py _player_summon_group_for_viewer (a summon of a
+///   PvP-hostile player goes to its viewer as 0x00010001 with type 2).
+pub const MONSTER_FACTION: u32 = 0x0001_0001;
+pub const PLAYER_FACTION: u32 = 0x0001_0002;
+pub const PLAYER_OWNED_FACTION: u32 = 0x0001_0004;
+/// FactionType of the monsters (and of a PvP enemy's summon).
+pub const HOSTILE_FACTION_TYPE: u8 = 2;
+
 /// NewMonsterCommand (release261: 42): a creature's description.
 /// SOURCE: dso-server-production protocol/gameplay_protocol.py:2372-2394
 ///   (_write_new_monster_body). Against 2018: u64 current and u64 maximum health and
@@ -96,18 +148,30 @@ pub struct NewMonster {
     pub unknown_u32_98: u32,
     /// Copied to GameMonster+64, printed as the level by the info panel.
     pub level: u32,
-    pub unknown_f32_0: f32,
+    /// production field_a0: a summon's heading as it appears (its owner's yaw), 0
+    /// for the others.
+    pub heading: f32,
     /// World position (description frame), three float32.
     pub position: [f32; 3],
-    pub unknown_u8_0: u8,
-    pub unknown_u32_0: u32,
-    /// +0x98: shares the player's FactionId for a summon.
+    /// production category (actor +0x134): 0 a monster, 1 a player's summon, 2 a
+    /// map companion (an escort the map gives the player). 1 and 2 play their
+    /// SummonSequence when fresh (see spawn_tick).
+    pub category: u8,
+    /// production field_c4 (actor +0x130): the server tick it appeared on, 0 for
+    /// the map's monsters; sent again unchanged to whoever comes near it later.
+    /// EVIDENCE: dro_client64.exe (July 2026) NewMonster handler 0x1401ff7b4;
+    ///   ActorSequenceProperty::OnActivate 0x14012ea48 plays "spawn/" +
+    ///   SummonSequence for categories 1 and 2 under 11 ticks after it.
+    pub spawn_tick: u32,
+    /// +0x98: the monster's faction, against the viewer's (Faction::stance).
     pub faction: Faction,
-    /// +0xA8: the actor that summoned it, 0 for none (copied to GameMonster+0xF4).
+    /// +0xA8: the actor that summoned it, 0 for none (actor +0x164); the local
+    /// player's own summons name it as actor 1. Its blows are the summoner's
+    /// floating numbers (HitCommand's handler 0x1401c4050, July 2026 build).
     pub summoner: u32,
     pub unknown_flag_0: bool,
     /// The PvP team id, 0xFFFFFFFF for none.
-    pub unknown_u32_1: u32,
+    pub team: u32,
     /// production field_e4, always false (meaning UNKNOWN).
     pub unknown_flag_e4: bool,
     /// _Template_MonsterRanks id.
@@ -127,14 +191,14 @@ impl Body for NewMonster {
             max_health: r.u64()?,
             unknown_u32_98: r.u32()?,
             level: r.u32()?,
-            unknown_f32_0: r.f32()?,
+            heading: r.f32()?,
             position: r.vec3()?,
-            unknown_u8_0: r.u8()?,
-            unknown_u32_0: r.u32()?,
+            category: r.u8()?,
+            spawn_tick: r.u32()?,
             faction: Faction::decode(r)?,
             summoner: r.u32()?,
             unknown_flag_0: r.bit()?,
-            unknown_u32_1: r.u32()?,
+            team: r.u32()?,
             unknown_flag_e4: r.bit()?,
             rank: r.string()?,
             rme_type: r.string()?,
@@ -150,14 +214,14 @@ impl Body for NewMonster {
         w.u64(self.max_health);
         w.u32(self.unknown_u32_98);
         w.u32(self.level);
-        w.f32(self.unknown_f32_0);
+        w.f32(self.heading);
         w.vec3(self.position);
-        w.u8(self.unknown_u8_0);
-        w.u32(self.unknown_u32_0);
+        w.u8(self.category);
+        w.u32(self.spawn_tick);
         self.faction.encode(w);
         w.u32(self.summoner);
         w.bit(self.unknown_flag_0);
-        w.u32(self.unknown_u32_1);
+        w.u32(self.team);
         w.bit(self.unknown_flag_e4);
         w.string(&self.rank);
         w.string(&self.rme_type);

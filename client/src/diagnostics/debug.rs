@@ -394,7 +394,7 @@ impl Ctx<'_, '_> {
             MONSTERS => {
                 let actor = debug.next_actor;
                 debug.next_actor += 1;
-                self.debug_monsters.spawns.push(crate::network::net::MonsterSpawn { actor, blueprint: name.to_owned(), position: at, health: 100, level: 1 });
+                self.debug_monsters.spawns.push(crate::network::net::MonsterSpawn { actor, blueprint: name.to_owned(), position: at, health: 100, level: 1, ..default() });
                 debug.spawned.push((Ref::Monster(actor), format!("monster {name}")));
                 debug.selected = Some(debug.spawned.len() - 1);
                 debug.status = format!("monster {name}");

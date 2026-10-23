@@ -61,8 +61,13 @@ fn interact(
     item: Option<Res<crate::world::drops::ItemHover>>,
     mut dialogue: ResMut<crate::gameplay::dialogue::Dialogue>,
     mut target: ResMut<PropTarget>,
-    mut net: NonSendMut<crate::network::net::Net>,
+    net: Option<NonSendMut<crate::network::net::Net>>,
 ) {
+    // The map viewer (--character) has no game session: no player controller
+    // walks to a prop, no server takes the interaction.
+    // FAILURE (2026-10-23): required, the parameter panicked the map viewer as
+    //   soon as gameplay was ready ("Non-send data not found").
+    let Some(mut net) = net else { target.pending = None; return };
     let Ok((tf, mut player)) = players.single_mut() else { target.pending = None; return };
     if let Some((entity, at, approach)) = target.pending {
         let Ok((_, prop, _, _)) = props.get(entity) else { target.pending = None; return };

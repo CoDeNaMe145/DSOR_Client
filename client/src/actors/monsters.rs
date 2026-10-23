@@ -71,9 +71,18 @@ pub struct MonsterTemplate {
     /// SummonSequence: played on it as it appears, when summoned.
     #[serde(default)]
     pub summon: String,
-    /// A player's minion (MinionType): always summoned.
+    /// MinionType is set (tools/export_monsters.py). A player's minion has one
+    /// (minion_player_mercenary...), but so do most monsters: their scaling
+    /// progression (Main_Monster_Progression). Summons are told by NewMonster's
+    /// category; see spawn_monsters for the map's monsters.
     #[serde(default)]
     pub minion: bool,
+    /// DespawnSequence: played on a summon that leaves alive (DiscardMonster),
+    /// for DespawnDuration seconds before it is gone.
+    #[serde(default)]
+    pub despawn: String,
+    #[serde(default)]
+    pub despawn_s: f32,
     /// Seconds of its anim set's "Spawn" clip (the guardian rising), 0 if none.
     #[serde(default)]
     pub spawn_s: f32,
@@ -198,6 +207,16 @@ pub struct Monster {
     pub height: f32,
     /// Its navigation footprint (MonsterTemplate::footprint), not scaled.
     pub footprint: Option<f32>,
+    /// The player whose summon it is (NewMonster summoner; 1, or our offline
+    /// actor, for our own), 0 for the map's monsters.
+    pub summoner: u32,
+    /// Whether we may attack it: our faction's stance toward its is Hostile
+    /// (Faction::stance): the cursor picks it, bullets stop on it. Not our own
+    /// summons, nor a peer's outside PvP, nor an escort.
+    pub targetable: bool,
+    /// Its KillCommand said it leaves (Kill::despawn): its DespawnSequence plays
+    /// instead of its death.
+    despawn: bool,
     /// Per row and instance: the hit tick it last played and its sequence player.
     hits: [[(Option<u32>, Option<Entity>); INSTANCES]; 7],
     heavy: Option<Entity>,
@@ -211,10 +230,12 @@ impl Monster {
 
 /// Animation completion owns disposal; a bounded fallback also removes bodies
 /// whose rig never loads or whose animation is stopped by visibility culling.
+/// A summon's despawn goes at its DespawnDuration instead (`despawn_at`).
 #[derive(Component)]
 struct MonsterDeath {
     sequence: Option<Entity>,
     fallback_at: f32,
+    despawn_at: Option<f32>,
 }
 
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
@@ -372,7 +393,7 @@ impl Plugin for MonstersPlugin {
             .add_systems(PostUpdate, (own_player_materials, apply_shader_colors).chain())
             .add_systems(PreUpdate, hover.after(crate::ui::input::CaptureUiInput))
             .add_systems(Startup, load)
-            .add_systems(Update, (spawn_monsters, setup_models, monster_health, hits_and_kills, start_deaths)
+            .add_systems(Update, (spawn_monsters, setup_models, monster_health, hits_and_kills, start_deaths, despawn_summons)
                 .chain().in_set(MonsterSystems).before(crate::network::net::NetSystems))
             // Animation completion is known in PostUpdate, but lighting and
             // visibility still queue commands for the corpse's attached effects
@@ -407,7 +428,7 @@ fn spawn_monsters(
     assets: Res<AssetServer>,
     existing: Query<(Entity, &RemotePlayer)>,
     mut debug: ResMut<DebugMonsters>,
-    time: Res<Time>,
+    (time, real): (Res<Time>, Res<Time<Real>>),
     (skill_data, seqs): (Option<Res<SkillData>>, Res<Assets<SequenceTable>>),
     (nav, meshes): (Option<Res<crate::world::nav::CurrentNav>>, Res<Assets<crate::world::nav::NavMesh>>),
 ) {
@@ -426,10 +447,11 @@ fn spawn_monsters(
                     test.placed = true;
                     test.at = position;
                 }
-                placed.push(MonsterSpawn { actor: 0x6000_0000 + k as u32, blueprint, position, health: 100, level: 1 });
+                placed.push(MonsterSpawn { actor: 0x6000_0000 + k as u32, blueprint, position, health: 100, level: 1, ..default() });
             }
         }
     }
+    let now_tick = net.as_ref().map(|n| n.server_tick(now_ms(&real)));
     let (queue, vitals) = match net {
         Some(net) => {
             let net = net.into_inner();
@@ -446,7 +468,7 @@ fn spawn_monsters(
             debug.delayed.push((after - dt, template, at));
         } else {
             debug.summoned += 1;
-            queue.push(MonsterSpawn { actor: OFFLINE_SUMMONS + debug.summoned, blueprint: template, position: at, health: 100, level: 1 });
+            queue.push(MonsterSpawn { actor: OFFLINE_SUMMONS + debug.summoned, blueprint: template, position: at, health: 100, level: 1, ..default() });
         }
     }
     if queue.is_empty() {
@@ -473,7 +495,9 @@ fn spawn_monsters(
         };
         let mesh = nav.as_ref().and_then(|n| meshes.get(&n.0));
         let position = crate::network::net::remote_ground_position(mesh, spawn.position);
-        let transform = Transform::from_translation(position);
+        // A summon turns as its owner did when it came (a monster, until it moves).
+        let facing = if spawn.summoner != 0 { spawn.facing } else { 0.0 };
+        let transform = Transform::from_translation(position).with_rotation(Quat::from_rotation_y(facing));
         let skeleton = t.graphics.strip_prefix("characters/").unwrap_or(&t.graphics).to_owned();
         let entity = if skeleton == "uniskel" || skeleton == "uniskel_dwarf" {
             let outfit = data
@@ -516,9 +540,10 @@ fn spawn_monsters(
             e
         };
         // A looping start state (asleep, burrowed...) is kept; Idle otherwise.
-        if t.loop_start && t.state != "Idle" {
+        let state = standing_state(&t.state);
+        if t.loop_start && state != "Idle" {
             let mut anim = CharacterAnim::default();
-            anim.state = AnimState::Named(t.state.clone());
+            anim.state = AnimState::Named(state.to_owned());
             commands.entity(entity).insert(anim);
         }
         commands.entity(entity).insert((
@@ -533,27 +558,56 @@ fn spawn_monsters(
                 radius: t.radius.max(0.3),
                 height: t.height.max(1.0),
                 footprint: t.footprint,
+                summoner: spawn.summoner,
+                targetable: !spawn.friendly,
+                despawn: false,
                 hits: Default::default(),
                 heavy: None,
             },
-            RemotePlayer { actor: spawn.actor, target: position, facing: 0.0, still_for: 1.0, held: 0.0, held_until_tick: None,
+            RemotePlayer { actor: spawn.actor, target: position, facing, still_for: 1.0, held: 0.0, held_until_tick: None,
                 run_speed: t.run_speed.filter(|s| *s > 0.0), ..default() },
         ));
+        if spawn.summoner != 0 {
+            commands.entity(entity).insert(crate::actors::character::RelaxedIdle);
+        }
         // A summon appears through its SummonSequence (arcanemanifestation's
-        // guardian rising, summontree's tree growing): without it they stood
-        // there at once ("pas d'animation d'apparition").
-        // UNVERIFIED: online, which spawns are summons -- the minions only here.
-        let summoned = t.minion || (OFFLINE_SUMMONS..OFFLINE_SUMMONS + 0x0100_0000).contains(&spawn.actor);
-        if summoned && !t.summon.is_empty() {
-            if let Some(seq) = skill_data.as_ref().and_then(|d| seqs.get(d.sequences())).and_then(|s| s.0.get(&t.summon)) {
-                let mut seq = seq.clone();
-                // Its rise, the anim set's Spawn row: the SummonSequence holds
-                // only the effects around it.
-                if t.spawn_s > 0.0 {
-                    let end = (t.spawn_s * 25.0).ceil() as i32;
-                    seq.tracks.push(crate::gameplay::skills::Track::Anim { name: "Spawn".into(), speed: 1.0, start: 0, end });
-                    seq.length = seq.length.max(end as u32);
-                }
+        // guardian rising, summontree's tree growing, a Shadow Soul coming out
+        // of its smoke): without it they stood there at once ("pas d'animation
+        // d'apparition"). Its rise, the anim set's Spawn row, goes with it: the
+        // SummonSequence holds only the effects around it.
+        // EVIDENCE: dro_client64.exe (July 2026) ActorSequenceProperty::OnActivate
+        //   0x14012ea48: categories 1 and 2 play "spawn/" + SummonSequence under 11
+        //   ticks after NewMonster's spawn tick; the StartAnimationState list
+        //   (0x14014e83c: each entry once, the last looping) plays on every
+        //   NewMonster. So a summon met later (a newcomer, walking into view) only
+        //   rises, without the smoke.
+        // UNVERIFIED: the map's own monsters (category 0, no spawn tick) rise
+        //   through their SummonSequence when they have a MinionType, as before;
+        //   the original plays their start list instead (most have no Spawn
+        //   length exported) and their SpecialSpawnSequence when fresh.
+        let sequences = skill_data.as_ref().and_then(|d| seqs.get(d.sequences()));
+        let rise = (t.spawn_s > 0.0).then(|| {
+            let end = (t.spawn_s * 25.0).ceil() as i32;
+            (crate::gameplay::skills::Track::Anim { name: "Spawn".into(), speed: 1.0, start: 0, end }, end as u32)
+        });
+        let summon = sequences.and_then(|s| s.0.get(&t.summon));
+        let summoned = if matches!(spawn.category, 1 | 2) {
+            now_tick.is_none_or(|now| (now.wrapping_sub(spawn.spawn_tick) as i32) < SUMMON_FRESH_TICKS)
+        } else {
+            t.minion || (OFFLINE_SUMMONS..OFFLINE_SUMMONS + 0x0100_0000).contains(&spawn.actor)
+        };
+        let sequence = match (summoned, summon) {
+            (true, Some(seq)) => Some(seq.clone()),
+            _ if matches!(spawn.category, 1 | 2) && t.state.split(';').next().map(str::trim) == Some("Spawn") =>
+                Some(crate::gameplay::skills::Sequence { length: 0, repeat: false, tracks: Vec::new() }),
+            _ => None,
+        };
+        if let Some(mut seq) = sequence {
+            if let Some((track, end)) = rise.clone() {
+                seq.tracks.push(track);
+                seq.length = seq.length.max(end);
+            }
+            if !seq.tracks.is_empty() {
                 play(&mut commands, seq, Some(entity), entity, false);
             }
         }
@@ -562,6 +616,17 @@ fn spawn_monsters(
 
 /// Actor ids of the monsters offline play summons.
 const OFFLINE_SUMMONS: u32 = 0x6200_0000;
+
+/// How many ticks after its spawn tick a summon still plays its SummonSequence
+/// (ActorSequenceProperty::OnActivate 0x14012ea48: under 11, 0.44 s). Counted
+/// signed: a clock of ours behind the server's still finds it fresh.
+const SUMMON_FRESH_TICKS: i32 = 11;
+
+/// The state a monster stands in from a StartAnimationState: the last of a list
+/// ("Spawn;Idle": the Spawn played once as it appears, see spawn_monsters).
+fn standing_state(start: &str) -> &str {
+    start.rsplit(';').map(str::trim).find(|s| !s.is_empty()).unwrap_or("Idle")
+}
 
 /// A whole model whose scene is in: show the set's skins only, give it the set's
 /// body, and drive its own animation player through the AnimSet's rows.
@@ -735,6 +800,8 @@ fn hits_and_kills(
     let templates = templates.get(&data.templates);
     let mut blows = Vec::new();
     let mut deaths = Vec::new();
+    // Killed with the despawn bit: they leave rather than die (Kill::despawn).
+    let mut leaving = Vec::new();
     // Offline the test blows are the local player's own.
     let mut local = LOCAL_TEST;
     match net.as_deref_mut() {
@@ -759,7 +826,10 @@ fn hits_and_kills(
                     text: h.combat_text,
                 });
             }
-            deaths.extend(std::mem::take(&mut net.kills).into_iter().map(|(victim, _)| victim));
+            for (victim, kill) in std::mem::take(&mut net.kills) {
+                if kill.despawn { leaving.push(victim); }
+                deaths.push(victim);
+            }
         }
         None => {
             // DSOR_TEST_HIT=<seconds>[,critical]: offline blows on the test monster.
@@ -889,8 +959,14 @@ fn hits_and_kills(
         // included (attacker = victim = the player: potions, regeneration); the
         // others only when it gave them. EVIDENCE: HitCommand's handler
         // 0x1401cbd13 (dro_client64): the victim's test 0x1401cc0d0 jumps
-        // straight to the texts.
-        if let (Some(v), true) = (victim_entity, mine || (blow.attacker == local && blow.victim != blow.attacker)) {
+        // straight to the texts. Its summons' blows (a Shadow Soul's) are its own
+        // too: the attacker is a monster whose summoner is the local player.
+        // EVIDENCE: the July 2026 build's handler 0x1401c4050 (0x1401ce6a4: a
+        //   monster with actor +0x164, NewMonster's summoner, local); a second
+        //   test of actor +0x168 (0x1401ce5c8) is not known and not done.
+        let given = blow.attacker == local
+            || monsters.iter().any(|(_, m, _)| m.actor == blow.attacker && m.summoner == local);
+        if let (Some(v), true) = (victim_entity, mine || (given && blow.victim != blow.attacker)) {
             use crate::ui::combat_text::*;
             // The server's type, when it names one, in place of each branch's own
             // (0x1401cbdbe: the string at +0x88 read as a CombatTextType, -1 when
@@ -964,6 +1040,7 @@ fn hits_and_kills(
             continue;
         };
         m.health = 0;
+        m.despawn |= leaving.contains(&victim);
     }
 }
 
@@ -978,23 +1055,90 @@ fn start_deaths(
     mut hovered: ResMut<Hovered>,
     mut info: ResMut<HoverInfo>,
 ) {
+    let sequences = skills.as_ref().and_then(|s| seqs.get(s.sequences()));
     for (e, m, mut anim) in &mut monsters {
         if m.health > 0 && !anim.dead { continue; }
-        anim.dead = true;
-        anim.state = AnimState::Named("Death".into());
-        anim.speed = 1.0;
-        anim.replay();
-        let seq = templates.get(&data.templates).and_then(|t| t.0.get(&m.template))
-            .and_then(|t| skills.as_ref().and_then(|s| seqs.get(s.sequences())).and_then(|s| s.0.get(&t.death)));
-        let fallback = seq.map_or(5.0, |s| s.length.max(1) as f32 / 25.0);
-        let sequence = seq.map(|s| crate::skills::play_death(&mut commands, s.clone(), e));
-        commands.entity(e).insert(MonsterDeath { sequence, fallback_at: time.elapsed_secs() + fallback })
-            .remove::<(crate::actors::picking::PickBoxes, crate::actors::picking::PickModel)>();
+        let t = templates.get(&data.templates).and_then(|t| t.0.get(&m.template));
+        let death = if m.despawn {
+            despawn(&mut commands, e, &mut anim, t, sequences, time.elapsed_secs())
+        } else {
+            anim.dead = true;
+            anim.state = AnimState::Named("Death".into());
+            anim.speed = 1.0;
+            anim.replay();
+            let seq = t.and_then(|t| sequences.and_then(|s| s.0.get(&t.death)));
+            let fallback = seq.map_or(5.0, |s| s.length.max(1) as f32 / 25.0);
+            let sequence = seq.map(|s| crate::skills::play_death(&mut commands, s.clone(), e));
+            MonsterDeath { sequence, fallback_at: time.elapsed_secs() + fallback, despawn_at: None }
+        };
+        commands.entity(e).insert(death).remove::<(crate::actors::picking::PickBoxes, crate::actors::picking::PickModel)>();
         if hovered.0.is_some_and(|(target, _)| target == e) {
             hovered.0 = None;
             info.0 = None;
         }
     }
+}
+
+/// A player's summon the server discarded while it stood (a Shadow Soul replaced
+/// by another, its owner gone): it leaves as one killed with the despawn bit
+/// does (`despawn`), not at once as other discarded actors (apply_remotes). One
+/// already dying finishes its death.
+/// DEVIATION: the original removes any discarded actor at once (DiscardMonster
+///   handler 0x1401ff3c8, dro_client64.exe July 2026: EntityManager::RemoveEntity)
+///   and plays a DespawnSequence only on a KillCommand with the despawn bit,
+///   leaving the discard to the server after DespawnDuration. The release261
+///   server never sends that kill (services/combat_resolution.py field_78=False)
+///   and discards a replaced soul at once (services/player_summons.py), so without
+///   this a soul would only ever vanish.
+#[allow(clippy::too_many_arguments)]
+fn despawn_summons(
+    mut commands: Commands,
+    time: Res<Time>,
+    net: Option<NonSendMut<Net>>,
+    skills: Option<Res<SkillData>>,
+    seqs: Res<Assets<SequenceTable>>,
+    data: Res<MonsterData>,
+    templates: Res<Assets<MonsterTemplates>>,
+    mut monsters: Query<(Entity, &Monster, &mut CharacterAnim, Has<MonsterDeath>)>,
+    (mut hovered, mut info): (ResMut<Hovered>, ResMut<HoverInfo>),
+) {
+    let Some(mut net) = net else { return };
+    if net.summons_gone.is_empty() { return; }
+    let gone = std::mem::take(&mut net.summons_gone);
+    let now = time.elapsed_secs();
+    let sequences = skills.as_ref().and_then(|s| seqs.get(s.sequences()));
+    for (e, m, mut anim, dying) in &mut monsters {
+        if dying || !gone.contains(&m.actor) { continue; }
+        let t = templates.get(&data.templates).and_then(|t| t.0.get(&m.template));
+        let death = despawn(&mut commands, e, &mut anim, t, sequences, now);
+        commands.entity(e).insert(death).remove::<(crate::actors::picking::PickBoxes, crate::actors::picking::PickModel)>();
+        if hovered.0.is_some_and(|(target, _)| target == e) {
+            hovered.0 = None;
+            info.0 = None;
+        }
+    }
+}
+
+/// A monster leaving rather than dying (Kill::despawn, a summon's discard): its
+/// DespawnSequence (a Shadow Soul's smoke, its body hidden from frame 6), the
+/// anim set's Despawn row beneath it, and its removal after DespawnDuration
+/// (else the sequence's length; at once with neither).
+/// EVIDENCE: ActorSequenceProperty::OnKillReceived 0x140130294 (dro_client64.exe
+///   July 2026) plays "despawn/" + DespawnSequence for a despawn kill, no Death
+///   clip. DespawnDuration has no reader in the client (only the template
+///   loader 0x1408754d8): it is the server's wait before the discard, used here
+///   as ours.
+fn despawn(commands: &mut Commands, e: Entity, anim: &mut CharacterAnim, t: Option<&MonsterTemplate>,
+    sequences: Option<&SequenceTable>, now: f32) -> MonsterDeath {
+    let seq = t.and_then(|t| sequences.and_then(|s| s.0.get(&t.despawn)));
+    let seconds = t.map_or(0.0, |t| t.despawn_s).max(0.0);
+    let seconds = if seconds > 0.0 { seconds } else { seq.map_or(0.0, |s| s.length as f32 / 25.0) };
+    anim.dead = true;
+    anim.state = AnimState::Named("Despawn".into());
+    anim.speed = 1.0;
+    anim.replay();
+    let sequence = seq.filter(|_| seconds > 0.0).map(|s| crate::skills::play_death(commands, s.clone(), e));
+    MonsterDeath { sequence, fallback_at: now + seconds, despawn_at: Some(now + seconds) }
 }
 
 fn remove_corpses(
@@ -1007,10 +1151,14 @@ fn remove_corpses(
 ) {
     let _profile = crate::diagnostics::hud::FrameSpan::new("monsters::remove_corpses");
     for (e, m, anim, death) in &monsters {
-        let pending = death.sequence.and_then(|s| sequences.get(s).ok())
-            .is_some_and(|(_, s)| s.has_pending_animation());
-        let finished = anim.playback_finished(&players);
-        if pending || !finished.unwrap_or(time.elapsed_secs() >= death.fallback_at) { continue; }
+        if let Some(at) = death.despawn_at {
+            if time.elapsed_secs() < at { continue; }
+        } else {
+            let pending = death.sequence.and_then(|s| sequences.get(s).ok())
+                .is_some_and(|(_, s)| s.has_pending_animation());
+            let finished = anim.playback_finished(&players);
+            if pending || !finished.unwrap_or(time.elapsed_secs() >= death.fallback_at) { continue; }
+        }
         for (s, player) in &sequences {
             if player.visual_actors().any(|actor| actor == e) {
                 player.despawn(&mut commands, s);
@@ -1045,7 +1193,8 @@ fn hover(
     if let Some(ray) = ray {
         let (o, d) = (ray.origin, *ray.direction);
         for (e, at, m, anim, shown, boxes) in &monsters {
-            if !m.is_alive(anim) || !shown.get() {
+            // Ours, a peer's summon outside PvP, an escort: never a target.
+            if !m.targetable || !m.is_alive(anim) || !shown.get() {
                 continue;
             }
             // The client's picking boxes on the joints (crate::actors::picking); the
@@ -1087,7 +1236,7 @@ fn hover(
             let eye = at.translation();
             best = monsters
                 .iter()
-                .filter(|(_, _, m, a, shown, _)| m.is_alive(a) && shown.get())
+                .filter(|(_, _, m, a, shown, _)| m.targetable && m.is_alive(a) && shown.get())
                 .map(|(e, g, m, _, _, _)| (g.translation().distance(eye), e, m.actor))
                 .min_by(|a, b| a.0.total_cmp(&b.0));
         }

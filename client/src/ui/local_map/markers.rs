@@ -337,7 +337,8 @@ pub(in crate::ui) fn update(
         if anim.is_some_and(|a| a.dead) || monster.is_some_and(|m| m.health == 0) { continue; }
         let style = if local { Some(Style::player()) }
         else if let Some(npc) = npc { icon.and_then(|i| state.npc_style(npc.actor, &i.0)) }
-        else if let Some(remote) = remote { Some(Style::dot(state.hostile(remote.actor, monster.is_some()))) }
+        // A summon of ours or a peer's outside PvP is a friend's dot.
+        else if let Some(remote) = remote { Some(Style::dot(state.hostile(remote.actor, monster.is_some_and(|m| m.targetable)))) }
         else { icon.and_then(|i| Style::authored(&i.0)) };
         if let Some(style) = style {
             let position = map.project(at.translation());

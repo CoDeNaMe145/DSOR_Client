@@ -124,9 +124,46 @@ fn grounding_never_changes_authoritative_horizontal_position() {
 }
 
 fn monster_snapshot(health: u64) -> ServerCommand {
-    ServerCommand::NewMonster(dsor_proto::commands::actors::NewMonster {
-        blueprint: "test".into(), health, max_health: 100, level: 1, ..default()
+    use dsor_proto::commands::actors::{Faction, NewMonster, HOSTILE_FACTION_TYPE, MONSTER_FACTION};
+    ServerCommand::NewMonster(NewMonster {
+        blueprint: "test".into(), health, max_health: 100, level: 1,
+        faction: Faction { faction_id: MONSTER_FACTION, faction_type: HOSTILE_FACTION_TYPE, ..default() }, ..default()
     })
+}
+
+/// A Shadow Soul's NewMonster batch as the release261 server sends it to `viewer`
+/// (tools/summon_vectors.py: soul_owner, soul_peer, soul_hostile).
+fn soul_batch(viewer: &str) -> Vec<(ServerCommand, Option<u32>)> {
+    let vectors: Vec<serde_json::Value> = serde_json::from_str(include_str!("../../../../crates/proto/tests/data/summon_release261.json")).unwrap();
+    let v = vectors.into_iter().find(|v| v["name"] == viewer).unwrap();
+    let hex = v["hex"].as_str().unwrap();
+    let bytes: Vec<u8> = (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap()).collect();
+    dsor_proto::commands::decode_message(&bytes, v["bits"].as_u64().unwrap() as usize).unwrap()
+}
+
+#[test]
+fn a_shadow_soul_comes_as_a_summon_and_leaves_through_its_despawn() {
+    for (viewer, friendly) in [("soul_owner", true), ("soul_peer", true), ("soul_hostile", false)] {
+        let mut app = app();
+        let mut net = app.world_mut().non_send_mut::<Net>();
+        for (command, actor) in soul_batch(viewer) {
+            on_command(&mut net, command, actor);
+        }
+        let spawn = &net.monster_spawns[0];
+        assert_eq!((spawn.actor, spawn.blueprint.as_str(), spawn.health, spawn.friendly), (0x10600, "mercenary_ancient_watcher", 5000, friendly), "{viewer}");
+        // Its owner (us: actor 1), stamped when it appeared, turned as its owner
+        // was (yaw 0.5).
+        assert_eq!((spawn.summoner, spawn.category, spawn.spawn_tick), (if viewer == "soul_owner" { 1 } else { 0x2000001 }, 1, 123456));
+        assert!((spawn.facing - (0.5 + std::f32::consts::PI)).abs() < 1e-6);
+        assert!(net.summons.contains(&0x10600));
+        on_command(&mut net, ServerCommand::DiscardMonster(default()), Some(0x10600));
+        assert_eq!((net.summons_gone.as_slice(), net.remote_gone.as_slice()), (&[0x10600][..], &[][..]));
+        // A monster of the map leaves at once, as before.
+        on_command(&mut net, monster_snapshot(100), Some(41));
+        assert!(net.monster_spawns.iter().any(|s| s.actor == 41 && s.summoner == 0 && !s.friendly));
+        on_command(&mut net, ServerCommand::DiscardMonster(default()), Some(41));
+        assert_eq!(net.remote_gone, [41]);
+    }
 }
 
 /// The windows rebuild their views when ui_revision moves (docs/ui.md,

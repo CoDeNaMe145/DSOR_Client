@@ -23,6 +23,21 @@ Useful environment variables natively: `DSOR_ASSETS=<dir>` (asset folder),
 `DSOR_SHOT_AFTER_CAST=<seconds>,<png>` screenshots it),
 `DSOR_NO_DECALS=1`.
 
+`DSOR_PACKET_REPLAY=<json>` with `--play 1 0` replays server packets offline,
+frame by frame after loading (`{"frame", "hex", "bits"}` records, the server's
+actor 1 as the offline player); a `{"frame", "capture": "<png>"}` record saves a
+screenshot then and `{"frame", "quit": true}` ends the run.
+`tools/ui_fixture_packets.py` writes such fixtures for the windows,
+`tools/summon_fixture_packets.py` a Shadow Soul's life around the player
+(spawn, following, a fight, a PvP enemy's soul, its despawn) with captures.
+`tools/pet_fixture_packets.py` does the same for pets: ours comes out, follows
+and is swapped, another player's phoenix follows them, revives them (a
+ReviveCommand with a cooldown) and leaves with its revival, then they go.
+`DSOR_TEST_PET=<pet>[,<seconds>]` gives the offline player a pet without
+packets, 3 s after the loading screen, and sends it away that many seconds
+later; `DSOR_SHOT_PET=<s>[:<s>...],<file>` screenshots at those times after it
+is called.
+
 ## Performance diagnostics
 
 The HUD (top left) shows FPS, CPU milliseconds per frame (main + render), total

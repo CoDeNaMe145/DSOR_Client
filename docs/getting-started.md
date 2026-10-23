@@ -123,6 +123,7 @@ the commits touched, for instance:
 | `tools/export_skills.py` (sequences, statuses) | `export_skills.py`, then `export_deco.py` |
 | `tools/export_deco.py` (town guards, townsfolk, animals) | `export_skills.py`, then `export_deco.py` |
 | `tools/export_monsters.py` (summons) | `export_monsters.py` |
+| `tools/export_pets.py` (pets) | `export_pets.py <export_win32> <assets> --database <server>/data/db/static.db4` |
 | `tools/export_audio.py` (prepared sound files) | `export_audio.py <export_win32> <assets>`; see [audio preparation](assets.md#audio-preparation) |
 | DB4 props/travel points | `dsor-levels props --assets assets --db-root <server>/data/maps --static-db <server>/data/db/static.db4` |
 | `tools/embed_animators.py` (effect fades, decals) | `embed_animators.py <export_win32>/models <assets>` |
@@ -135,6 +136,11 @@ Mount rendering needs both `characters/mounts.json` and the `mount` /
 `export_skills.py`. Without them the summon cast can finish without displaying
 the mount. Use the same static database version as the server: status-effect
 wire IDs depend on its row order.
+
+Pets need `characters/pets.json` (`export_pets.py`, after `export_monsters.py`
+and `export_skills.py`): which status effects put out a pet, and each pet's
+model, speeds and sequences. Without it the client logs that it did not load
+and draws no pets; nothing else changes.
 
 `export_deco.py` adds its animation sets to `characters/anims.json`, so it must
 run after `export_skills.py` and after any `character_tables.py` run. Any tool

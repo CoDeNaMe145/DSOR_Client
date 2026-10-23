@@ -519,7 +519,10 @@ pub struct Kill {
     pub kill_tick: u32,
     /// +0x54: the killing skill's bullet index, 0xFFFFFFFF for none.
     pub bullet_index: u32,
-    /// Whether the body is removed (consumer not traced).
+    /// +0x44: it leaves rather than dies: its DespawnSequence plays instead of the
+    /// Death clip and DeathSequence (ActorSequenceProperty::OnKillReceived
+    /// 0x140130294, dro_client64.exe July 2026). The release261 server never sets
+    /// it (services/combat_resolution.py field_78=False).
     pub despawn: bool,
 }
 

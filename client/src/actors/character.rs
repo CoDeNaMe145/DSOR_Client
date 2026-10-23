@@ -316,6 +316,15 @@ impl CharacterDesc {
     }
 }
 
+/// An actor that stands as a player does (drive_animations): its anim set's
+/// Idle_Hub out of combat, Idle while it fights (track_player_combat). A
+/// player's summon (crate::actors::monsters): a Shadow Soul's Idle is its
+/// battle stance (retinue_ancient_watcher_01_idle_bat), its Idle_Hub at rest.
+/// INFERRED: from those rows, as the players' own; the original's choice for
+///   monsters was not traced. A set without Idle_Hub plays Idle throughout.
+#[derive(Component)]
+pub(crate) struct RelaxedIdle;
+
 /// Logical animation states, the rows of anims.xml.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[allow(dead_code)]
@@ -1363,10 +1372,12 @@ struct VariedChild;
 
 /// Read blows before the monster systems consume them. Healing and regeneration
 /// do not put either participant in combat; blocked/immune attacks still do.
+#[allow(clippy::type_complexity)]
 fn track_player_combat(
     net: Option<NonSend<crate::network::net::Net>>,
     mut players: Query<(Option<&crate::network::net::LocalPlayer>, Option<&crate::network::net::RemotePlayer>, &mut CharacterAnim),
-        (Or<(With<crate::network::net::LocalPlayer>, With<crate::network::net::RemotePlayer>)>, Without<crate::actors::monsters::Monster>)>,
+        (Or<(With<crate::network::net::LocalPlayer>, With<crate::network::net::RemotePlayer>)>,
+            Or<(Without<crate::actors::monsters::Monster>, With<RelaxedIdle>)>)>,
 ) {
     let Some(net) = net else { return };
     if net.hits.is_empty() && net.kills.is_empty() { return; }
@@ -1384,7 +1395,7 @@ fn track_player_combat(
 pub(crate) fn drive_animations(
     time: Res<Time>,
     mut frame: Local<u32>,
-    mut characters: Query<(Entity, &mut CharacterAnim, &GlobalTransform, &InheritedVisibility, Option<&mut AnimLod>, Option<&crate::screens::selection::Preview>, Option<&crate::actors::npc::NpcVisualPending>, Option<&Character>)>,
+    mut characters: Query<(Entity, &mut CharacterAnim, &GlobalTransform, &InheritedVisibility, Option<&mut AnimLod>, Option<&crate::screens::selection::Preview>, Option<&crate::actors::npc::NpcVisualPending>, Option<&Character>, Has<RelaxedIdle>)>,
     visibility: Option<Res<crate::rendering::anim_cull::AnimationVisibility>>,
     targets: Query<(Entity, &AnimatedBy)>,
     mut commands: Commands,
@@ -1400,13 +1411,15 @@ pub(crate) fn drive_animations(
         .map(|(_, g, _)| crate::world::map::camera_focus(g, me.iter().next().map(|p| p.translation()), 0.0));
     let near = |p: Vec3| focus.is_none_or(|f| Vec2::new(p.x - f.x, p.z - f.z).length() <= crate::world::map::CULL_DISTANCE);
     *frame = frame.wrapping_add(1);
-    for (entity, mut anim, at, shown, mut lod, preview, pending, character) in &mut characters {
-        if let Some(character) = character.filter(|c| c.desc.look.is_none()) {
+    for (entity, mut anim, at, shown, mut lod, preview, pending, character, relaxed) in &mut characters {
+        let as_player = character.filter(|c| c.desc.look.is_none());
+        if as_player.is_some() || relaxed {
             // Advance even while the rig is loading or culled. Resolve standing
             // here, after movement and sequences have chosen their logical state.
             anim.combat_remaining = if anim.dead { 0.0 } else { (anim.combat_remaining - time.delta_secs()).max(0.0) };
             if !anim.dead && matches!(anim.state, AnimState::Idle | AnimState::IdleHub) {
-                anim.state = if anim.combat_remaining > 0.0 || character.riding.is_some() { AnimState::Idle } else { AnimState::IdleHub };
+                let riding = as_player.is_some_and(|c| c.riding.is_some());
+                anim.state = if anim.combat_remaining > 0.0 || riding { AnimState::Idle } else { AnimState::IdleHub };
                 anim.speed = 1.0;
             }
         }

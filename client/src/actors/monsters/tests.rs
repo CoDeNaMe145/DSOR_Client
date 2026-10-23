@@ -5,7 +5,7 @@ use std::time::Duration;
 
 pub(crate) fn monster(actor: u32, health: u32) -> Monster {
     Monster { actor, template: "test".into(), health, max_health: 100, level: 1,
-        radius: 0.5, height: 2.0, footprint: None, hits: default(), heavy: None }
+        radius: 0.5, height: 2.0, footprint: None, summoner: 0, targetable: true, despawn: false, hits: default(), heavy: None }
 }
 
 fn app() -> App {
@@ -54,7 +54,7 @@ fn monsters_spawn_on_the_movement_plane_before_the_first_move() {
     ]));
     app.insert_resource(CurrentNav(mesh));
     app.world_mut().resource_mut::<DebugMonsters>().spawns.push(MonsterSpawn {
-        actor: 41, blueprint: "test".into(), position: Vec3::new(0., -2.58, 0.), health: 100, level: 1,
+        actor: 41, blueprint: "test".into(), position: Vec3::new(0., -2.58, 0.), health: 100, level: 1, ..default()
     });
     app.world_mut().run_system_once(spawn_monsters).unwrap();
     let mut query = app.world_mut().query::<(&Transform, &RemotePlayer)>();
@@ -70,7 +70,7 @@ fn death_received_while_templates_load_cannot_spawn_a_ghost_later() {
     let handle = spawn_assets(&mut app);
     let templates = app.world_mut().resource_mut::<Assets<MonsterTemplates>>().remove(handle.id()).unwrap();
     app.world_mut().non_send_mut::<Net>().monster_spawns.push(MonsterSpawn {
-        actor: 41, blueprint: "test".into(), position: Vec3::ZERO, health: 100, level: 1,
+        actor: 41, blueprint: "test".into(), position: Vec3::ZERO, health: 100, level: 1, ..default()
     });
     app.world_mut().run_system_once(spawn_monsters).unwrap();
     assert_eq!(app.world().non_send::<Net>().monster_spawns.len(), 1);
@@ -239,7 +239,7 @@ fn cleanup_removes_attached_sequence_players() {
     let sequence = app.world_mut().run_system_once(move |mut commands: Commands| {
         crate::skills::play_attached(&mut commands, crate::skills::Sequence { length: 1000, repeat: false, tracks: Vec::new() }, root)
     }).unwrap();
-    app.world_mut().entity_mut(root).insert(MonsterDeath { sequence: None, fallback_at: 0.0 });
+    app.world_mut().entity_mut(root).insert(MonsterDeath { sequence: None, fallback_at: 0.0, despawn_at: None });
     app.world_mut().run_system_once(remove_corpses).unwrap();
     assert!(app.world().get_entity(root).is_err());
     assert!(app.world().get_entity(sequence).is_err());
@@ -256,7 +256,7 @@ fn corpse_effect_lights_survive_post_update_and_are_removed_before_the_next_fram
         .add_plugins((TransformPlugin, LightPlugin));
     crate::net::start_offline(app.world_mut(), 1, 0);
     let root = spawn(&mut app, 41);
-    app.world_mut().entity_mut(root).insert(MonsterDeath { sequence: None, fallback_at: 0.0 });
+    app.world_mut().entity_mut(root).insert(MonsterDeath { sequence: None, fallback_at: 0.0, despawn_at: None });
     let point = app.world_mut().spawn((PointLight::default(), Transform::default(), ChildOf(root))).id();
     let spot = app.world_mut().spawn((SpotLight::default(), Transform::default(), ChildOf(root))).id();
     let survivor = app.world_mut().spawn((PointLight::default(), Transform::default())).id();
@@ -276,4 +276,157 @@ fn corpse_effect_lights_survive_post_update_and_are_removed_before_the_next_fram
     app.world_mut().get_mut::<Transform>(survivor).unwrap().translation.x = 3.0;
     app.update();
     assert_eq!(app.world().get::<Sphere>(survivor).unwrap().center.x, 3.0);
+}
+
+#[test]
+fn a_monster_stands_in_the_last_state_of_its_start_list() {
+    assert_eq!(standing_state("Spawn;Idle"), "Idle");
+    assert_eq!(standing_state("Idle_Hub;Idle"), "Idle");
+    assert_eq!(standing_state("Sleep"), "Sleep");
+    assert_eq!(standing_state(""), "Idle");
+}
+
+/// A Shadow Soul's template, its rise and its despawn (as exported from
+/// mercenary_ancient_watcher: Spawn;Idle, DespawnDuration 1.2 s).
+fn soul_assets(app: &mut App) {
+    use crate::skills::{Sequence, Track};
+    spawn_assets(app);
+    let templates = app.world_mut().resource_mut::<Assets<MonsterTemplates>>().add(serde_json::from_str::<MonsterTemplates>(
+        r#"{"soul":{"graphics":"characters/test","set":"","anim_set":"","state":"Spawn;Idle","loop":true,"minion":true,
+            "summon":"soul_spawn","death":"soul_death","despawn":"soul_despawn","despawn_s":1.2,"spawn_s":0.4}}"#).unwrap());
+    app.world_mut().resource_mut::<MonsterData>().templates = templates;
+    let sequence = |name: &str| Sequence { length: 40, repeat: false, tracks: vec![Track::Anim { name: name.into(), speed: 1.0, start: 0, end: 10 }] };
+    let sequences = app.world_mut().resource_mut::<Assets<SequenceTable>>().add(SequenceTable([
+        ("soul_spawn".to_owned(), sequence("Spawn")), ("soul_despawn".to_owned(), sequence("Death")),
+    ].into_iter().collect()));
+    app.insert_resource(SkillData::for_test(sequences));
+}
+
+/// As its NewMonster leaves it (crate::network::net's remote_tests decode one).
+fn soul(app: &mut App, actor: u32, tick: u32, friendly: bool) -> Entity {
+    let summoner = if friendly { app.world().non_send::<Net>().local_actor.unwrap() } else { 0x2000001 };
+    app.world_mut().non_send_mut::<Net>().summons.insert(actor);
+    app.world_mut().non_send_mut::<Net>().monster_spawns.push(MonsterSpawn {
+        actor, blueprint: "soul".into(), position: Vec3::ZERO, health: 100, level: 60,
+        summoner, category: 1, spawn_tick: tick, facing: 1.0, friendly,
+    });
+    app.world_mut().run_system_once(spawn_monsters).unwrap();
+    let mut monsters = app.world_mut().query::<(Entity, &Monster)>();
+    monsters.iter(app.world()).find(|(_, m)| m.actor == actor).unwrap().0
+}
+
+fn now_tick(app: &App) -> u32 {
+    app.world().non_send::<Net>().server_tick(now_ms(app.world().resource::<Time<Real>>()))
+}
+
+#[test]
+fn a_fresh_shadow_soul_comes_out_of_its_smoke_and_one_met_later_only_rises() {
+    let mut app = app();
+    crate::net::start_offline(app.world_mut(), 1, 0);
+    soul_assets(&mut app);
+    let now = now_tick(&app);
+    let ours = soul(&mut app, 0x10600, now, true);
+    let monster = app.world().get::<Monster>(ours).unwrap();
+    assert!(!monster.targetable, "our own soul is no target");
+    assert!(app.world().get::<crate::actors::character::RelaxedIdle>(ours).is_some());
+    assert_eq!(app.world().get::<RemotePlayer>(ours).unwrap().facing, 1.0);
+    assert!(app.world().get::<Transform>(ours).unwrap().rotation.angle_between(Quat::from_rotation_y(1.0)) < 1e-5);
+    // Spawn;Idle stands in Idle: its Spawn is played by the sequence.
+    assert_eq!(app.world().get::<CharacterAnim>(ours).unwrap().state, AnimState::Idle);
+    // Met later (a newcomer, or it walked into view): the server's tick is old.
+    let theirs = soul(&mut app, 0x10601, now.wrapping_sub(2000), false);
+    assert!(app.world().get::<Monster>(theirs).unwrap().targetable, "a PvP enemy's soul is a target");
+    let mut players = app.world_mut().query::<&SequencePlayer>();
+    for actor in [ours, theirs] {
+        assert_eq!(players.iter(app.world()).filter(|p| p.visual_actors().any(|a| a == actor)).count(), 1, "both rise");
+    }
+    // The fresh one's is its SummonSequence (1.6 s of smoke); the other's only
+    // the 0.4 s Spawn clip.
+    for _ in 0..6 { app.update(); }
+    let mut players = app.world_mut().query::<&SequencePlayer>();
+    assert_eq!(players.iter(app.world()).filter(|p| p.visual_actors().any(|a| a == ours)).count(), 1);
+    assert_eq!(players.iter(app.world()).filter(|p| p.visual_actors().any(|a| a == theirs)).count(), 0);
+}
+
+#[test]
+fn a_discarded_shadow_soul_plays_its_despawn_and_leaves_after_its_duration() {
+    let mut app = app();
+    crate::net::start_offline(app.world_mut(), 1, 0);
+    soul_assets(&mut app);
+    app.add_systems(Update, despawn_summons.after(start_deaths));
+    let now = now_tick(&app);
+    let root = soul(&mut app, 0x10600, now, true);
+    app.world_mut().entity_mut(root).insert(InheritedVisibility::VISIBLE);
+    {
+        let mut net = app.world_mut().non_send_mut::<Net>();
+        net.discard_actor(0x10600);
+        assert_eq!(net.summons_gone, [0x10600], "a summon leaves through its despawn, not at once");
+    }
+    app.update();
+    let death = app.world().get::<MonsterDeath>(root).expect("despawning");
+    assert!(death.despawn_at.is_some() && death.sequence.is_some());
+    let anim = app.world().get::<CharacterAnim>(root).unwrap();
+    assert!(anim.dead, "no longer a target nor moved");
+    assert!(app.world().get::<crate::actors::picking::PickModel>(root).is_none());
+    for _ in 0..9 { app.update(); }
+    assert!(app.world().get_entity(root).is_ok(), "it stays for its DespawnDuration");
+    for _ in 0..4 { app.update(); }
+    assert!(app.world().get_entity(root).is_err());
+    assert!(app.world().non_send::<Net>().summons_gone.is_empty());
+}
+
+#[test]
+fn a_dying_shadow_soul_discarded_finishes_its_death() {
+    let mut app = app();
+    crate::net::start_offline(app.world_mut(), 1, 0);
+    soul_assets(&mut app);
+    app.add_systems(Update, despawn_summons.after(start_deaths));
+    let now = now_tick(&app);
+    let root = soul(&mut app, 0x10600, now, false);
+    app.world_mut().get_mut::<Monster>(root).unwrap().health = 0;
+    app.update();
+    let deadline = app.world().get::<MonsterDeath>(root).unwrap().fallback_at;
+    app.world_mut().non_send_mut::<Net>().discard_actor(0x10600);
+    app.update();
+    let death = app.world().get::<MonsterDeath>(root).unwrap();
+    assert_eq!((death.despawn_at, death.fallback_at), (None, deadline), "its death is not cut short");
+}
+
+#[test]
+fn our_shadow_souls_blows_show_as_ours() {
+    let mut app = app();
+    crate::net::start_offline(app.world_mut(), 1, 0);
+    let victim = spawn(&mut app, 41);
+    let local = app.world().non_send::<Net>().local_actor.unwrap();
+    for (actor, summoner) in [(0x10600, local), (0x10601, 0x2000001)] {
+        let soul = spawn(&mut app, actor);
+        let mut m = app.world_mut().get_mut::<Monster>(soul).unwrap();
+        (m.summoner, m.targetable) = (summoner, false);
+    }
+    app.world_mut().non_send_mut::<Net>().hits.extend([
+        (41, dsor_proto::commands::combat::Hit { attacker: 0x10600, victim_health: 80, victim_max_health: 100, damage: 20, ..default() }),
+        // Another player's soul: not ours, whoever the combat value names.
+        (41, dsor_proto::commands::combat::Hit { attacker: 0x10601, combat_value_owner: local, victim_health: 60, victim_max_health: 100, damage: 20, ..default() }),
+    ]);
+    app.update();
+    let texts = &app.world().resource::<crate::ui::combat_text::CombatTexts>().0;
+    assert_eq!(texts.len(), 1);
+    assert_eq!(texts[0].0, victim);
+    assert_eq!(app.world().get::<Monster>(victim).unwrap().health, 60);
+}
+
+#[test]
+fn a_kill_with_the_despawn_bit_plays_the_despawn_instead_of_the_death() {
+    let mut app = app();
+    crate::net::start_offline(app.world_mut(), 1, 0);
+    soul_assets(&mut app);
+    let now = now_tick(&app);
+    let root = soul(&mut app, 0x10600, now.wrapping_sub(2000), true);
+    app.world_mut().non_send_mut::<Net>().kills.push((0x10600, dsor_proto::commands::combat::Kill { despawn: true, ..default() }));
+    app.update();
+    let death = app.world().get::<MonsterDeath>(root).expect("leaving");
+    assert!(death.despawn_at.is_some() && death.sequence.is_some());
+    assert_eq!(app.world().get::<CharacterAnim>(root).unwrap().state, AnimState::Named("Death".into()), "the soul_despawn sequence's own clip");
+    for _ in 0..14 { app.update(); }
+    assert!(app.world().get_entity(root).is_err(), "gone after its DespawnDuration");
 }

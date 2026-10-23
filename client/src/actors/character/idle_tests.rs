@@ -105,3 +105,25 @@ fn idle_selection_preserves_actions_mounts_npcs_and_death_and_expires_without_a_
     step(&mut world, 0.0);
     assert_eq!(world.get::<CharacterAnim>(npc).unwrap().state, AnimState::Idle);
 }
+
+#[test]
+fn a_shadow_soul_rests_relaxed_and_takes_its_battle_stance_when_it_fights() {
+    let mut world = World::new();
+    world.init_resource::<Time>();
+    world.init_resource::<Time<Real>>();
+    crate::network::net::start_offline(&mut world, 1, 0);
+    let soul =world.spawn((RemotePlayer { actor: 0x10600, ..default() }, crate::actors::monsters::tests::monster(0x10600, 100),
+        RelaxedIdle, CharacterAnim::default(), GlobalTransform::default(), InheritedVisibility::VISIBLE)).id();
+    let monster = world.spawn((RemotePlayer { actor: 41, ..default() }, crate::actors::monsters::tests::monster(41, 100),
+        CharacterAnim::default(), GlobalTransform::default(), InheritedVisibility::VISIBLE)).id();
+    step(&mut world, 0.0);
+    assert_eq!(world.get::<CharacterAnim>(soul).unwrap().state, AnimState::IdleHub);
+    assert_eq!(world.get::<CharacterAnim>(monster).unwrap().state, AnimState::Idle);
+    world.non_send_mut::<Net>().hits = vec![(41, Hit { attacker: 0x10600, damage: 20, ..default() })];
+    world.run_system_once(track_player_combat).unwrap();
+    step(&mut world, 0.0);
+    assert_eq!(world.get::<CharacterAnim>(soul).unwrap().state, AnimState::Idle);
+    assert_eq!(world.get::<CharacterAnim>(monster).unwrap().combat_remaining, 0.0, "a monster of the map stands as it is");
+    step(&mut world, COMBAT_IDLE_SECONDS + 0.5);
+    assert_eq!(world.get::<CharacterAnim>(soul).unwrap().state, AnimState::IdleHub);
+}

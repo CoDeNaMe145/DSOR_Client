@@ -108,6 +108,8 @@ echo "[convert] Nebula states and tables (log: $logs/post.log)"
     # The systems windows' data (achievements, events, dailies, the album, recipes...).
     python3 "$tools/systems_catalog.py" "$root/db/static.db4" "$root" "$godot" "$out"
     python3 "$tools/export_skills.py" "$root" "$out"
+    # Pets (after the monsters' anim sets and the sequences it checks).
+    python3 "$tools/export_pets.py" "$root" "$out"
     python3 "$tools/export_npcs.py" "$root" "$out"
     python3 "$tools/export_exits.py" "$root" "$out"
     python3 "$tools/export_ambience.py" "$root" "$out"

@@ -236,3 +236,20 @@ fn prop_residency_uses_a_buffer_and_ignores_height() {
     assert!(!prop_near(Vec3::new(91., 0., 0.), Vec3::ZERO, true));
     assert!(prop_near(Vec3::new(91., 0., 0.), Vec3::new(40., 0., 0.), false));
 }
+
+/// FAILURE (2026-10-23): the map viewer (--character, no Net) panicked in
+/// `interact` as soon as gameplay was ready.
+#[test]
+fn prop_clicks_wait_for_a_game_session() {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .init_resource::<ButtonInput<MouseButton>>().init_resource::<ButtonInput<KeyCode>>()
+        .init_resource::<crate::ui::input::UiInput>().init_resource::<crate::gameplay::dialogue::Dialogue>()
+        .init_resource::<PropTarget>()
+        .add_systems(Update, interact);
+    app.world_mut().spawn((Transform::default(), crate::network::net::LocalPlayer::default()));
+    app.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(MouseButton::Left);
+    app.update();
+    app.update();
+    assert!(app.world().resource::<PropTarget>().pending.is_none());
+}

@@ -7,4 +7,5 @@ pub(crate) mod mounts;
 pub(crate) mod nameplate;
 pub(crate) mod npc;
 mod npc_markers;
+pub(crate) mod pets;
 pub(crate) mod picking;

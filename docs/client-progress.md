@@ -1044,3 +1044,149 @@ buttons. `profile_native_maps.py kingscity social-open` (debug build, the social
 window open and filled): `ui work` 0 in every window after loading. Logs and
 crops: `.local/logs/social/`, `.local/logs/map-fps/kingscity-social-open*`. Not
 yet tried online against the live server.
+## Pets (2026-10-23)
+
+Players' pets now come out at their side, follow them and leave, as the client
+does it (`client/src/actors/pets.rs`, its module comment cites the addresses).
+
+- **Protocol.** Nothing new: the live server only runs the pet's persistent
+  status effect (`services/customization.py` `_toggle_switchable_sticker`; the
+  local initialization's StatusEffect batch; a remote player's
+  `_remote_status_snapshot`). The effect's StartModifiers name the pet
+  (`Pet:PetMonster,pet_frogman#~`) and the client makes it from
+  `_Template_PetMonster`; the server never sees it. `Net::pet_events` carries
+  every StatusEffect element, as `mount_events` does for mounts.
+- **Behaviour, from dro_client64.exe** (`Properties::PetProperty`,
+  `PetMovementProperty`, `PetSequenceProperty`, decompiled from the
+  `.reverse-current` Ghidra project): the pet appears 2.3 behind its master to
+  the left (4.3 while riding: `Messaging::Mount`), turned as its master, plays
+  its SummonSequence (and PermanentSequence, looping); walks to its master once
+  farther than 2.4 (4.4 riding) and stops 1.7 (4.2) from it, at its RunSpeed
+  times its master's speed factor; is put back at its place past 20; plays its
+  AlternativeIdleSequence after standing 30 s, then every 30-60 s; when its
+  effect ends its other sequences stop, it plays its DeathSequence while still
+  following (its movement lives on; once that animation is over its own idle
+  or run takes over again, the sequencer's idle restart being off for pets)
+  and goes after DespawnTime. A master leaving the view or the map takes its
+  pet at once, a leaving one too (`PetProperty::OnDeactivate`). A new pet's
+  effect arriving before the old one's end (the server's order) swaps them.
+- **Phoenixes.** A ReviveCommand whose u32 (cooldown) is not 0 marks the
+  revived player's pet (`ActivateAlternativeDespawnSequence`): it then leaves
+  with its AlternativeDeathSequence (`pet_phoenix_revive`). The live server
+  sends every revive with 0 and has no pet revival, so this only shows with
+  such a packet (the fixture below).
+- **Not interactive.** Pets carry no Monster, Npc or RemotePlayer: nothing
+  hovers, highlights, targets or hits them. They show and hide with their
+  master; their sequences' effects use the actor frame as monsters' do.
+- **Assets.** `tools/export_pets.py` writes `characters/pets.json` (328 pet
+  effects, 178 pets; `convert_assets.sh` runs it after `export_skills.py`). It
+  only reads `sequences.json`, so VFX edits are untouched. Ten pets whose
+  SummonSequence has no animation get their Spawn clip's length (`spawn_s`).
+  Two pets name a skin as their CharacterSet (`pet_pixie_golden_01`,
+  `pet_little_bloodmage_01`); the model loader refuses an unknown set, so they
+  get the skin list holding that skin (`pet_pixie_golden`,
+  `pet_little_bloodmage`). `pet_fire_slime_S8`'s PermanentSequence is not in
+  the October client at all (no pack or `sequences.freg` entry): nothing plays.
+- `DSOR_TEST_PET=<pet>[,<seconds>]` gives the offline player a pet 3 s after the
+  loading screen; `DSOR_SHOT_PET=<s>[:<s>...],<file>` captures at those times.
+  `tools/pet_fixture_packets.py` writes a `DSOR_PACKET_REPLAY` fixture from the
+  live server's own encoders (sticker status entries, their removal, a remote
+  player and its status snapshot, `encode_revive`, DiscardPlayer).
+- Following stays an approximation: PathEngine follows the master's agent in
+  its library (`PathEngineActorProperty::MoveGotoTarget`); here the pet walks
+  straight on the navigation mesh, along `NavMesh::path` where that is blocked,
+  re-routed every 0.5 s.
+- Noticed, not changed: the client takes NewRemotePlayer's position as world
+  coordinates, while the server sends `last_move.relative_position`
+  (map-relative) for a player who has moved; such a player (and its pet) would
+  first appear off by the map's centre until its next MoveCommand.
+
+Verified: **12 client tests** (placement, thresholds, spawn once the model is
+in, following, teleport, dismissal, following while leaving and despawn time,
+a swap in one batch, the master leaving with or without a leaving pet, a master
+not in yet, hiding with the master, a cooldown revive's alternative despawn);
+the whole suite passes (391, 15 ignored). Offline Kingscity captures
+(`DSOR_TEST_PET` + `DSOR_SHOT_PET`, debug build): the frogman rising, standing,
+its Despawn and butterflies; the dragon's blue spawn, hover, Death and despawn
+light. Replay of `pet_fixture_packets.py` through the client's decoder: our
+frogman out, following a jump and stopping short, swapped for the dragon in one
+packet, a remote player's phoenix following them and playing
+`pet_phoenix_revive` after a cooldown revive, gone with its player, our dragon
+sent away. `profile_native_maps.py kingscity` back to back in a quiet machine,
+with a dragon out vs without: p50 5.58-5.83 ms vs 5.70-6.08 ms, `ui work` 0
+after loading. Logs: `.local/logs/map-fps/kingscity-pets-*3/4`. Not yet seen
+online against the live server.
+
+## Shadow Souls: players' summons (2026-10-23)
+
+A player's Shadow Soul (`item_mercenary_*`) now comes out beside them, follows
+them, fights and leaves as the live server publishes it; other players' souls
+too, attackable when their owner is a PvP enemy. The original client's handling
+was checked in the July 2026 `dro_client64.exe` decompile (addresses in the
+code comments).
+
+- **Server.** The live tree turns the soul's status
+  (`minion_mercenary_*`, StartModifiers `ShadowSoul:<monster>`) into an ordinary
+  player summon (`services/customization.py` `_activate_mercenary`,
+  `services/player_summons.py`): vicinity + NewMonster to every viewer (again,
+  unchanged, to a newcomer), monster MoveCommands as it follows its owner (it
+  stops 4 m away, runs at monsters within 11 m of the owner), its attacks as
+  monster skill commands, its blows as Hits naming it the attacker,
+  DiscardMonster when another soul replaces it or its owner leaves. In PvP a
+  hostile player's skills can kill it (`services/pvp_combat.py`). Monsters never
+  target or damage summons in the live tree: the client draws such hits and
+  deaths (the soul's hit and death sequences) but the server sends none.
+  Activating one already works: quick slot 9 ("Companion", H) sends
+  UseStickerBookItem, the mercenary bag's Use the inventory command.
+- **Protocol.** NewMonster's unnamed fields are named from the server's
+  `load_player_summon_spawn` and the client's handler: `heading` (the owner's
+  yaw), `category` (1 a player's summon, 2 a map companion), `spawn_tick` (0 for
+  the map's monsters), `team`. `Faction::stance` is the client's stance test
+  (0x14091b3b8, without the world modes and the Damage blocker): our faction
+  (NewPlayer's: 0x00010002, type 0) is hostile to the monsters (type 2) and to a
+  PvP enemy's soul, neutral to our own soul, peers' souls and map companions
+  (type 0). Tower hazards stay enemies, as before. `tools/summon_vectors.py` +
+  `crates/proto/tests/summon_release261.rs` check it against the server's bytes
+  for the owner, a peer, a PvP enemy, a companion, a monster and a hazard.
+- **Not a target.** Monsters our stance is not Hostile to are not hovered (no
+  attack cursor, outline, info window or click attack), player bullets fly
+  through them, a friendly soul's own bullets (Viridis' arrows) strike monsters
+  instead of players, and the local map shows them as friends' dots.
+- **Appearing.** A soul turns as its owner faced. Fresh (under 11 ticks after its
+  spawn tick, as the original's OnActivate) it plays its SummonSequence (the
+  smoke) with its Spawn clip; met later (a newcomer, walking into view) it only
+  plays the Spawn clip of its StartAnimationState (`Spawn;Idle`).
+- **Leaving.** The original plays a DespawnSequence only on a KillCommand with
+  the despawn bit and removes on DiscardMonster; both are done
+  (`Kill::despawn`). The live server never sends that kill and discards a
+  replaced soul at once, so a summon's discard also plays its despawn
+  (`Net::summons`, `monsters::despawn_summons`, a marked DEVIATION): its
+  DespawnSequence (the smoke, the body hidden from frame 6), removal after
+  DespawnDuration (1.2 s); a dying soul finishes its death.
+- **Fighting.** Its blows show as our floating numbers when the attacker's
+  summoner is us (the original's Hit handler); souls (`RelaxedIdle`) stand in
+  Idle_Hub at rest and their battle Idle for 5 s after a blow, as players.
+- **Replay captures.** `DSOR_PACKET_REPLAY` records `{"frame", "capture"}` and
+  `{"frame", "quit"}`; `tools/summon_fixture_packets.py` scripts a soul's life
+  around the offline player from the server's own builders.
+- Found, not changed (map monsters): the original plays a monster's
+  StartAnimationState list on every NewMonster (`Spawn;Idle`: 4443 templates,
+  3820 without an exported Spawn length, 227 Spawn clips exported as loops) and
+  its SpecialSpawnSequence only when fresh, never its SummonSequence; this
+  client plays the SummonSequence of any template with a MinionType (most:
+  the scaling progression) each time it comes into view, and no start list.
+
+Verified (in an isolated `CARGO_TARGET_DIR`: a session's worktree built into
+`target/` and overwrote `dsor-proto`): **391 client tests passed** (15 ignored;
+10 new: a fresh vs a met-later soul, despawn timing, a dying soul's discard, a
+despawn kill, the summoner's numbers, bullets on both sides, the stance, the
+start-state list, NewMonster from the server's bytes) and every proto suite (5
+new summon tests). Offline Kingscity captures (`summon_fixture_packets.py`,
+debug build): the soul rising beside the player, running after it, striking a
+skeleton with our number, a PvP enemy's Ember Knight, our soul's despawn smoke
+and removal. Under load (another session compiling) the soul's model can take
+over a second to load the first time, after its rise. `profile_native_maps.py
+kingscity` with a soul standing by vs none: `ui work` 0 after loading in both
+(first build p50 6.1-6.5 vs 5.9-6.2 ms; the final build's timings were swamped
+by another session's load). Logs: `.local/logs/map-fps/kingscity-shadowsoul-*`.
+Not yet seen online: no character on the live server owns a soul.

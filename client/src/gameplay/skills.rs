@@ -411,7 +411,8 @@ struct Bullet {
     radius: f32,
     /// Who shot it (monsters' bullets do not hit monsters).
     caster: Entity,
-    /// Keep the collision side after the caster's corpse has been disposed.
+    /// Keep the collision side after the caster's corpse has been disposed: a
+    /// hostile monster's (it strikes players), else a player's or an ally's.
     from_monster: bool,
     /// Offline play: the aimed monster, struck when the bullet reaches it.
     target: Option<u32>,
@@ -779,7 +780,9 @@ pub(crate) fn play_death(commands: &mut Commands, seq: Sequence, actor: Entity) 
     player
 }
 
-fn play_with(commands: &mut Commands, seq: Sequence, actor: Option<Entity>, anchor: Entity, looping: bool, follow: bool) -> Entity {
+/// A sequence on `actor` (its animation, hide tracks) whose effects are placed at
+/// `anchor`, carried by it when `follow`, again and again when `looping`.
+pub(crate) fn play_with(commands: &mut Commands, seq: Sequence, actor: Option<Entity>, anchor: Entity, looping: bool, follow: bool) -> Entity {
     let n = seq.tracks.len();
     commands
         .spawn(SequencePlayer { seq, on_death: false, t: 0.0, actor, anchor, looping, follow, stop: false, superseded: false, rate: 1.0, started: vec![false; n], spawned: vec![None; n], bases: vec![Mat4::IDENTITY; n] })
@@ -1173,7 +1176,7 @@ fn run_pending(
     mut pending: Query<(Entity, &mut Pending)>,
     mut movers: Query<&mut Transform, With<Character>>,
     anims: Query<&CharacterAnim>,
-    monsters: Query<(), With<crate::monsters::Monster>>,
+    monsters: Query<&crate::monsters::Monster>,
 ) {
     let _profile = crate::diagnostics::hud::FrameSpan::new("skills::run_pending");
     let Some(sequences) = seqs.get(&data.sequences) else { return };
@@ -1234,7 +1237,9 @@ fn run_pending(
                             static_collision: def.static_collision,
                             radius: def.radius.max(0.3),
                             caster: *caster,
-                            from_monster: monsters.contains(*caster),
+                            // A friendly summon's (a Shadow Soul's arrow) flies as
+                            // a player's: through players, into monsters.
+                            from_monster: monsters.get(*caster).is_ok_and(|m| m.targetable),
                             target: *target,
                             dying: None,
                             caster_actor: *caster_actor,
@@ -1490,8 +1495,9 @@ fn fly_bullets(
                 }
             };
             if !from_monster {
+                // Our own summons and other allies stand in the way of nothing.
                 for (gt, m, a) in &monsters {
-                    if m.is_alive(a) {
+                    if m.targetable && m.is_alive(a) {
                         consider(&mut contacts, m.actor, gt.translation(), m.radius, m.height);
                     }
                 }
@@ -1642,7 +1648,7 @@ pub(crate) fn play_sequences(
     transforms: Query<&GlobalTransform>,
     cameras: Query<&GlobalTransform, (With<Camera3d>, Without<crate::rendering::highlight::HighlightCamera>)>,
     mut shake: ResMut<CameraShake>,
-    (locals, remotes): (Query<&LocalPlayer>, Query<&RemotePlayer>),
+    (locals, remotes, pets): (Query<&LocalPlayer>, Query<&RemotePlayer>, Query<(), With<crate::actors::pets::Pet>>),
     mut point_lights: Query<(&mut PointLight, &mut Transform), Without<Character>>,
     mut colors: ResMut<crate::actors::monsters::ShaderColors>,
     // A character's own Transform: current the frame its skill starts, where its
@@ -1754,10 +1760,10 @@ pub(crate) fn play_sequences(
                         let mut place = track_transform(&curved(at, &curves_of(&track), "graphicstrans", frame));
                         let mut base = Mat4::IDENTITY;
                         // CONTRACT: every actor, dressed character or whole-model
-                        //   monster (RemotePlayer without Character).
+                        //   monster (RemotePlayer without Character) or pet.
                         // FAILURE: monsters were left out: their effects burst behind
                         //   them ("certains fx sont dans leur dos").
-                        if joint.is_empty() && (characters.contains(p.anchor) || remotes.contains(p.anchor)) {
+                        if joint.is_empty() && (characters.contains(p.anchor) || remotes.contains(p.anchor) || pets.contains(p.anchor)) {
                             base = Transform::from_rotation(entity_rotation(0.0)).to_matrix();
                             place = Transform::from_matrix(base * place.to_matrix());
                         }
@@ -1793,7 +1799,7 @@ pub(crate) fn play_sequences(
                                 // As the level's lights: Nebula's colour x intensity, falling
                                 // off linearly to its range (crate::rendering::lighting::point_light).
                                 crate::rendering::lighting::point_light(*color, *intensity, *range),
-                                if characters.contains(p.anchor) || remotes.contains(p.anchor) {
+                                if characters.contains(p.anchor) || remotes.contains(p.anchor) || pets.contains(p.anchor) {
                                     Transform::from_rotation(entity_rotation(0.0)) * track_transform(at)
                                 } else {
                                     track_transform(at)
@@ -3042,6 +3048,46 @@ mod bullet_tests {
         let projectile = app.world_mut().spawn((b, Transform::default())).id();
         app.world_mut().run_system_once(fly_bullets).unwrap();
         assert!(app.world().get_entity(projectile).is_ok(), "a dead caster's projectile must still pass through monsters");
+    }
+
+    #[test]
+    fn a_bullet_flies_through_our_shadow_soul_into_the_monster_behind_it() {
+        let mut app = App::new();
+        app.init_resource::<Time>().init_resource::<Time<Real>>()
+            .init_resource::<Assets<NavMesh>>().init_resource::<crate::monsters::DebugMonsters>();
+        crate::net::start_offline(app.world_mut(), 1, 0);
+        app.world_mut().resource_mut::<Time>().advance_by(std::time::Duration::from_secs(1));
+        let mut soul = crate::monsters::tests::monster(41, 100);
+        soul.targetable = false;
+        app.world_mut().spawn((soul, CharacterAnim::default(), GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 2.0))));
+        app.world_mut().spawn((crate::monsters::tests::monster(42, 100), CharacterAnim::default(),
+            GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 6.0))));
+        let projectile = app.world_mut().spawn((bullet(Vec3::new(0.0, 1.0, 0.0), Vec3::Z * 10.0, 0.3), Transform::default())).id();
+        app.world_mut().run_system_once(fly_bullets).unwrap();
+        assert_eq!(app.world().resource::<crate::monsters::DebugMonsters>().blows, [(42, 0)]);
+        assert!(app.world().get_entity(projectile).is_err());
+    }
+
+    #[test]
+    fn a_shadow_souls_arrow_strikes_monsters_and_a_pvp_enemys_strikes_players() {
+        let mut app = App::new();
+        app.init_resource::<Time>().init_resource::<Assets<SequenceTable>>();
+        let table = app.world_mut().resource_mut::<Assets<SequenceTable>>().add(SequenceTable(HashMap::new()));
+        app.insert_resource(SkillData::for_test(table));
+        let def: BulletDef = serde_json::from_str(r#"{"loop":"","impact":"","death":"","motion":"Straight",
+            "velocity":22.0,"lifetime":0.86,"radius":0.2,"start":[0.0,1.5,0.0]}"#).unwrap();
+        for (targetable, from_monster) in [(false, false), (true, true)] {
+            let mut soul = crate::monsters::tests::monster(0x10600, 100);
+            soul.targetable = targetable;
+            let caster = app.world_mut().spawn((soul, CharacterAnim::default())).id();
+            app.world_mut().spawn(Pending { after: 0.0, what: PendingKind::Bullet { from: Vec3::Y, dir: Vec3::Z, def: def.clone(),
+                impact: String::new(), to: None, caster, caster_actor: Some(0x10600), aim: None, target: None } });
+            app.world_mut().run_system_once(run_pending).unwrap();
+            let mut bullets = app.world_mut().query::<(Entity, &Bullet)>();
+            let (e, b) = bullets.single(app.world()).unwrap();
+            assert_eq!(b.from_monster, from_monster, "a soul that is {}", if targetable { "hostile" } else { "ours" });
+            app.world_mut().despawn(e);
+        }
     }
 
     #[test]
