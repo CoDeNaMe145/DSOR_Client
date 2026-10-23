@@ -1071,6 +1071,16 @@ fn cast_input(
     // does a melee skill with no target of its own (approaches).
     let targeted = matches!(skill.kind.as_str(), "MeleeTarget" | "RangedTarget");
     let target_actor = if targeted { aimed.map(|(_, _, a, ..)| a) } else { None };
+    // A target skill without a target does not go out: the server drops it before
+    // any effect (production services/player_combat.py: "Target loss is a no-op
+    // before mount, resource, cooldown, or hit side effects"), so it only drew a
+    // swing that hit nothing, and on a mount it neither dismounted nor struck.
+    // FAILURE (2026-10-24): "I can still attack while mounted"; "I seem to miss a
+    //   lot of my attacks" (swings with no damage).
+    // UNVERIFIED: whether the original swings into the air (Shift) without a target.
+    if targeted && target_actor.is_none() {
+        return;
+    }
     if let (true, Some((e, at, _, radius, _, footprint))) = (approaches(skill), aimed) {
         if beyond_reach(skill, tf.translation, at, radius, footprint) {
             player.target = Some(at);
