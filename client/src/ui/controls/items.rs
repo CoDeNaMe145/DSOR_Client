@@ -174,7 +174,20 @@ struct Split { id:u32, revision:u64, target:Place, total:u32 }
 pub struct Interaction { drag:Option<DragItem>, split:Option<Split>, pending:Option<(u64,f64)>,
     /// The item DESTROY_DIALOG asks about.
     destroy:Option<u32> }
-impl Interaction { pub(super) fn cancel_drag(&mut self)->bool { self.drag.take().is_some() } }
+impl Interaction {
+    pub(super) fn cancel_drag(&mut self)->bool { self.drag.take().is_some() }
+    /// The item being dragged, once the drag is under way.
+    fn lifted(&self)->Option<u32> { self.drag.as_ref().filter(|d|d.active).map(|d|d.id) }
+}
+
+/// Whether a cell draws its item: not the one being dragged out of it, which
+/// the cursor carries meanwhile (the ingredient tab's totals stay), as the
+/// original (its dragged ring's slot shows the empty ring) and the hotbar.
+/// FAILURE (2026-10-23): a worn ring dragged off showed twice, in its slot and
+///   under the cursor (the user's screenshot).
+fn drawn(cell:Cell, item:Option<&ItemInfo>, lifted:Option<u32>)->bool {
+    matches!(cell,Cell::Ingredient(_)) || lifted.is_none_or(|id|item.is_none_or(|i|i.id!=id))
+}
 
 /// An item dropped on the world, out of every window, is destroyed once this
 /// dialog is confirmed: confirmdialog's DeleteItem variant (the item in its
@@ -275,16 +288,36 @@ fn drop_targets(ui:&Interaction, state:&InventoryState, catalog:&Catalog, level:
 }
 
 /// While an item is dragged, the equipment slots it may go to glow, taken or not,
-/// as the original's do: fx_icon_glow, tinted pale blue, its line on the slot's
-/// frame (the texture's line spans 50 of its 128 pixels).
-/// UNVERIFIED: the original draws its highlight in code; the look is matched by
-///   eye to a release261_192 screenshot (gloves dragged over worn gloves).
+/// as the original's do: the inventory layout's own slot_highlight (a pale blue
+/// line 15 % inside its rect, fading out to the rect's edge, a faint white fill
+/// within), stretched over the slot's frame, drawn over the slot's background,
+/// under its empty-slot icon and the item's icon.
+/// Measured on the user's release261_192 shot (rings dragged, Xerines): the
+/// line's square is 0.68-0.70 of the frame, (179, 219, 240) at its peak; the
+/// empty ring stays dark over the fill; a worn ring covers the line, its fade
+/// showing between the frame and the icon.
 /// FAILURE (2026-10-23): nothing showed where a dragged item could go.
-const DROP_GLOW: &str = "textures/ui/fx_icon_glow.png";
-const DROP_GLOW_SCALE: f32 = 128.0 / 50.0;
-/// FAILURE (2026-10-23): at alpha 0.85 it was "2/3x as bright" as the original's
-///   (the user's rings, side by side).
-const DROP_GLOW_TINT: [f32; 4] = [0.7, 0.88, 1.0, 0.32];
+/// FAILURE (2026-10-23): fx_icon_glow tinted pale blue spread a teal haze far
+///   past the frames ("still looks off"; the user's rings, side by side).
+const DROP_HIGHLIGHT: &str = "Canvas/slot_highlight";
+
+/// The layout's slot_highlight as a mesh over the unit square (x to 1, y down
+/// to -1), to be scaled over a slot's frame, and its texture.
+fn drop_highlight(layout:&Layout)->Option<(Mesh,Option<String>)> {
+    let w=layout.widgets.iter().find(|w|w.id==DROP_HIGHLIGHT)?;
+    let mut art=w.art.clone()?; let [l,t,r,b]=w.rect;
+    for p in art.pos.chunks_exact_mut(2) { p[0]=(p[0]-l)/(r-l); p[1]=-(p[1]-t)/(b-t); }
+    let mut run=Run::default(); run.push(&art,0.0);
+    Some((run.mesh(),art.tex))
+}
+
+/// DSOR_TEST_DROP_SLOTS=8,9, offline: those equipment slots glow as under a
+/// drag (screenshots; offline drags are refused).
+fn test_drop_slots(offline:bool)->u64 {
+    static SLOTS:std::sync::OnceLock<u64>=std::sync::OnceLock::new();
+    if !offline {return 0;}
+    *SLOTS.get_or_init(||std::env::var("DSOR_TEST_DROP_SLOTS").map_or(0,|v|v.split(',').filter_map(|s|s.trim().parse::<u32>().ok()).filter(|s|*s<64).fold(0,|bits,s|bits|1<<s)))
+}
 
 /// What a right click looks up: the open shop (selling) and the travel items.
 #[derive(bevy::ecs::system::SystemParam)]
@@ -510,13 +543,19 @@ fn color(catalog:&Catalog,item:Option<&ItemInfo>)->Color {
 #[allow(clippy::too_many_arguments,clippy::type_complexity)]
 pub fn render(mut commands:Commands,windows:Query<(Entity,&Window2018,&WindowControls,&Visibility)>,net:Option<NonSend<crate::network::net::Net>>,
     data:Res<Data>,catalogs:Res<Assets<Catalog>>,assets:Res<AssetServer>,screen:Res<Screen>,old:Query<Entity,With<Contents>>,ui:Res<Interaction>,
-    mut last:Local<Option<(Entity,u64,usize,u8,usize,usize,u32,u32,u8,usize,u64)>>) {
+    mut last:Local<Option<(Entity,u64,usize,u8,usize,usize,u32,u32,u8,usize,u64,Option<u32>)>>,(layouts,loaded):(Res<Assets<Layout>>,Res<crate::ui::Loaded>),
+    (mut meshes,mut materials):(ResMut<Assets<Mesh>>,ResMut<Assets<UiMaterial>>),mut highlight:Local<Option<(Handle<Mesh>,Handle<UiMaterial>)>>) {
     let Some(catalog)=catalogs.get(&data.catalog) else{return}; let Some(net)=net else{return};
     let window=windows.iter().find(|(_,n,_,v)|n.0=="inventory" && **v!=Visibility::Hidden);
-    let targets=window.map_or(0,|(_,_,c,_)|drop_targets(&ui,&net.inventory,catalog,net.level.unwrap_or(1),c.spells.class));
-    let key=window.map(|(e,_,c,_)|(e,net.inventory.revision,c.bag,c.inventory,c.ingredient,c.rarity,screen.width.to_bits(),screen.scale.to_bits(),c.spells.class,c.overflow_page,targets));
+    let targets=window.map_or(0,|(_,_,c,_)|drop_targets(&ui,&net.inventory,catalog,net.level.unwrap_or(1),c.spells.class)|test_drop_slots(net.offline));
+    let lifted=ui.lifted();
+    let key=window.map(|(e,_,c,_)|(e,net.inventory.revision,c.bag,c.inventory,c.ingredient,c.rarity,screen.width.to_bits(),screen.scale.to_bits(),c.spells.class,c.overflow_page,targets,lifted));
     if *last==key {return;} *last=key; for e in &old {commands.entity(e).despawn();}
     let Some((root,_,c,_))=window else{return};
+    if targets!=0 && highlight.is_none() {
+        *highlight=loaded.layouts.iter().filter_map(|(h,_,_)|layouts.get(h)).find(|l|l.window=="inventory").and_then(drop_highlight)
+            .map(|(mesh,tex)|(meshes.add(mesh),materials.add(material(tex.map(|t|assets.load(t))))));
+    }
     let group=commands.spawn((Contents,Transform::from_xyz(0.0,0.0,WINDOW_ITEMS_DEPTH),Visibility::Inherited,ChildOf(root))).id();
     for b in &c.buttons {
         let Action::Item(cell)=b.action else{continue}; if !c.section_visible(b.section) {continue;}
@@ -527,14 +566,15 @@ pub fn render(mut commands:Commands,windows:Query<(Entity,&Window2018,&WindowCon
         //   their frames ("ceux equipes prennent pas la taille entiere du slot").
         let grow=if matches!(cell,Cell::Equipment(_)) {EQUIPMENT_FRAME_MARGIN} else {0.0};
         let [l,t,r,bt]=[b.rect[0]-grow,b.rect[1]-grow,b.rect[2]+grow,b.rect[3]+grow];let pos=screen.world(b.k,l,t);let size=Vec2::new(r-l,bt-t);
-        if let Cell::Equipment(slot)=cell { if (0..64).contains(&slot) && targets & (1<<slot)!=0 {
-            let glow=size*DROP_GLOW_SCALE; let [cr,cg,cb,ca]=DROP_GLOW_TINT;
-            commands.spawn((Sprite{image:assets.load(DROP_GLOW),custom_size:Some(glow),color:Color::srgba(cr,cg,cb,ca),..default()},Anchor::CENTER,
-                Transform::from_translation(Vec3::new(pos.x+size.x/2.0,pos.y-size.y/2.0,0.4)),RenderLayers::layer(LAYER),ChildOf(group)));
+        if let (Cell::Equipment(slot),Some((mesh,glow)))=(cell,highlight.as_ref()) { if (0..64).contains(&slot) && targets & (1<<slot)!=0 {
+            // At its slot widget's depth; a slot without art (the essences' AmmoAlt) has none: over the window.
+            let z=if b.depth>0.0 {b.depth-WINDOW_ITEMS_DEPTH} else {0.02};
+            commands.spawn((Mesh2d(mesh.clone()),MeshMaterial2d(glow.clone()),Transform::from_translation(pos.extend(z)).with_scale(size.extend(1.0)),
+                RenderLayers::layer(LAYER),ChildOf(group)));
         }}
         let locked=place(cell,c).is_some_and(|p|!matches!(p,Place::Equipment(_)) && p.cell()>=net.inventory.capacity(p));
         if locked {commands.spawn((Sprite::from_color(Color::srgba(0.01,0.01,0.01,0.8),size),Anchor::TOP_LEFT,Transform::from_translation(pos.extend(0.0)),RenderLayers::layer(LAYER),ChildOf(group)));continue;}
-        let Some(d)=displayed(cell,c,&net.inventory,catalog) else{continue};
+        let Some(d)=displayed(cell,c,&net.inventory,catalog).filter(|d|drawn(cell,d.item,lifted)) else{continue};
         // Unidentified (ItemInfo flag_0, DSOR_Server world_loot_protocol NeedsIdentify):
         // greyed under a question mark until a right click identifies it.
         let unidentified=d.item.is_some_and(|i|i.flag_0);
@@ -911,5 +951,27 @@ mod tests {
         assert_eq!(drop_targets(&drag(true), &state, &catalog, 1, 0), 1 << 3);
         assert_eq!(drop_targets(&drag(true), &state, &catalog, 1, 1), 0);
         assert_eq!(drop_targets(&drag(false), &state, &catalog, 1, 0), 0);
+        // The gloves dragged leave their cell empty once the drag is under way; the others stay.
+        let (gloves, other) = (state.items.get(&2), state.items.get(&3));
+        assert_eq!((drag(true).lifted(), drag(false).lifted()), (Some(2), None));
+        assert!(!drawn(Cell::Bag(1), gloves, drag(true).lifted()));
+        assert!(drawn(Cell::Bag(1), gloves, drag(false).lifted()));
+        assert!(drawn(Cell::Equipment(3), other, drag(true).lifted()));
+        assert!(drawn(Cell::Ingredient(0), gloves, drag(true).lifted()));
+    }
+
+    #[test]
+    fn the_drop_highlight_is_the_layout_s_own_spread_over_the_unit_square() {
+        let mut layout = crate::ui::controls::template::fixture::layout("inventory", &[(DROP_HIGHLIGHT, "Slot", false)]);
+        let w = &mut layout.widgets[0];
+        w.rect = [100.0, 200.0, 170.0, 270.0];
+        // Its corners and a vertex of its line (15 % inside), as the layout's.
+        w.art = Some(Art { tex: Some("textures/ui/deco_elemente.png".into()), pos: vec![100.0, 200.0, 170.0, 270.0, 110.5, 210.5],
+            uv: vec![0.9; 6], color: vec![1.0; 12], idx: vec![0, 1, 2] });
+        let (mesh, tex) = drop_highlight(&layout).unwrap();
+        let Some(bevy::mesh::VertexAttributeValues::Float32x3(pos)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else { panic!() };
+        assert_eq!(pos, &vec![[0.0, 0.0, 0.0], [1.0, -1.0, 0.0], [0.15, -0.15, 0.0]]);
+        assert_eq!(tex.as_deref(), Some("textures/ui/deco_elemente.png"));
+        assert!(drop_highlight(&crate::ui::controls::template::fixture::layout("inventory", &[])).is_none());
     }
 }

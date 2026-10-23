@@ -1104,6 +1104,7 @@ fn spawn_windows(
                     controls.region(w.k, bounds(&art.pos), gate.clone());
                 }
                 depth += depth_step;
+                if w.kind == "Slot" { controls.set_depth(&w.id, depth); }
                 if let Some(which) = gauge {
                     // Its own mesh and material, cut to the fill.
                     let k = w.k;
