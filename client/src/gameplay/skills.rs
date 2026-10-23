@@ -628,8 +628,28 @@ fn perform(
     }
     let column = character.map(weapon_column).unwrap_or_else(|| "empty".into());
     if let Some(seq) = skill.execute_for(&column).and_then(|n| sequences.0.get(n)) {
-        let entity = play(commands, seq.clone(), Some(actor), actor, false);
+        // A Sustained skill's execute sequence repeats (dwarf_tower_default_beam:
+        // repeat, 101 frames, its beam fx over 0..101) for as long as the skill
+        // runs; the server only renews it every 125 ticks (local_combat_state.py
+        // SUSTAINED_SKILL_PLAYBACK_INTERVAL_SECONDS). Played once, the Machine
+        // Gun Turret's beam went out for a second or more before each renewal
+        // ("le FX s'arrete alors que l'animation continue", 2026-10-23). A
+        // renewal while its loop still runs keeps that loop; the loop ends with
+        // its actor, or when a newer skill or a walk takes the actor over.
+        let looping = skill.kind == "Sustained" && seq.repeat;
+        let length = seq.length;
+        let entity = play(commands, seq.clone(), Some(actor), actor, looping);
         commands.queue(move |world: &mut World| {
+            if looping {
+                let mut players = world.query::<(Entity, &SequencePlayer)>();
+                let running = players.iter(world).any(|(e, p)| {
+                    e != entity && p.looping && !p.stop && !p.superseded && p.actor == Some(actor) && p.anchor == actor && p.seq.length == length
+                });
+                if running {
+                    world.entity_mut(entity).despawn();
+                    return;
+                }
+            }
             if let Some(mut sequence) = world.get_mut::<SequencePlayer>(entity) { sequence.rate = rate; }
         });
     }
@@ -1705,6 +1725,11 @@ pub(crate) fn play_sequences(
                 || remotes.get(a).is_ok_and(|r| r.still_for <= 0.0)
         }) {
             p.superseded = true;
+        }
+        // A Sustained skill's loop on its actor (perform) ends once something
+        // else takes the actor over; it has no length of its own to run out.
+        if p.superseded && p.looping && !p.follow && p.actor == Some(p.anchor) {
+            p.stop = true;
         }
         let interrupted = !p.on_death && p.actor.is_some_and(|a| anims.get(a).is_ok_and(|a| a.dead));
         let anchor_alive = exists.contains(p.anchor) && !interrupted;
