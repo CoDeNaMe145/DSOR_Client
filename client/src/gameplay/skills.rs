@@ -1494,6 +1494,16 @@ fn fly_bullets(
                     contacts.push((s, actor, p, radius));
                 }
             };
+            // A homing bullet also ends on the actor it homes on, of either side:
+            // the Tactical Turret's support missile (minionskill_coveringfireturret,
+            // a TargetBulletSkill at its owner) flies from a friendly summon, so its
+            // owner stood in its way of nothing. It reached him, hid inside him and
+            // lingered its whole 10 s LifeTime with no impact, one more each cast
+            // ("des bombes qui disparaissent sur moi").
+            let homed = b.target.filter(|_| b.homing);
+            let player_id = |local: Option<&LocalPlayer>, remote: Option<&RemotePlayer>| {
+                local.map(|l| l.actor).or(remote.map(|r| r.actor)).unwrap_or(u32::MAX)
+            };
             if !from_monster {
                 // Our own summons and other allies stand in the way of nothing.
                 for (gt, m, a) in &monsters {
@@ -1501,11 +1511,21 @@ fn fly_bullets(
                         consider(&mut contacts, m.actor, gt.translation(), m.radius, m.height);
                     }
                 }
+                for (pe, gt, local, remote) in &players {
+                    let id = player_id(local, remote);
+                    if pe != b.caster && homed == Some(id) {
+                        consider(&mut contacts, id, gt.translation(), PLAYER_RADIUS, PLAYER_HEIGHT);
+                    }
+                }
             } else {
                 for (pe, gt, local, remote) in &players {
                     if pe != b.caster {
-                        let id = local.map(|l| l.actor).or(remote.map(|r| r.actor)).unwrap_or(u32::MAX);
-                        consider(&mut contacts, id, gt.translation(), PLAYER_RADIUS, PLAYER_HEIGHT);
+                        consider(&mut contacts, player_id(local, remote), gt.translation(), PLAYER_RADIUS, PLAYER_HEIGHT);
+                    }
+                }
+                for (gt, m, a) in &monsters {
+                    if homed == Some(m.actor) && m.is_alive(a) {
+                        consider(&mut contacts, m.actor, gt.translation(), m.radius, m.height);
                     }
                 }
             }
@@ -1548,7 +1568,9 @@ fn fly_bullets(
         };
         debug!("bullet ends ({how}) at {at:?}, struck {struck:?} ({now:.2} s)");
         // Offline nobody answers the shot: the monster it reached takes the blow.
-        if let (true, Some(actor)) = (offline && b.snapped.is_none(), struck.or(b.target.filter(|a| b.to_point && actors.contains_key(a)))) {
+        // Not on a side it supports: the turret's missile at its owner.
+        let ally = struck.is_some_and(|s| b.from_monster == monsters.iter().any(|(_, m, _)| m.actor == s));
+        if let (true, Some(actor)) = (offline && b.snapped.is_none() && !ally, struck.or(b.target.filter(|a| b.to_point && actors.contains_key(a)))) {
             debug_monsters.blows.push((actor, 0));
         }
         let name = if ending == 1 { b.death.clone() } else { b.impact.clone() };
@@ -3016,6 +3038,28 @@ mod bullet_tests {
                 "neither collision, homing nor a late server hit may retrigger the corpse");
             assert!(app.world().get_entity(projectile).is_err(), "the live target behind it still receives the projectile");
         }
+    }
+
+    #[test]
+    fn a_friendly_summons_homing_missile_ends_on_the_owner_it_homes_on() {
+        // The Tactical Turret's support missile at its owner: it lingered, unseen,
+        // inside him for its whole LifeTime instead of striking him.
+        let mut app = App::new();
+        app.init_resource::<Time>().init_resource::<Time<Real>>()
+            .init_resource::<Assets<NavMesh>>().init_resource::<crate::monsters::DebugMonsters>();
+        crate::net::start_offline(app.world_mut(), 1, 0);
+        app.world_mut().resource_mut::<Time>().advance_by(std::time::Duration::from_millis(100));
+        app.world_mut().run_system_once(|mut commands: Commands| {
+            let e = crate::actors::character::spawn_character(&mut commands, default(), Transform::IDENTITY);
+            commands.entity(e).insert((GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 0.3)), { let mut l = LocalPlayer::default(); l.actor = 7; l }));
+        }).unwrap();
+        let mut b = bullet(Vec3::new(0.0, 1.0, 0.0), Vec3::Z * 4.0, 0.1);
+        b.homing = true;
+        b.target = Some(7);
+        let missile = app.world_mut().spawn((b, Transform::default())).id();
+        app.world_mut().run_system_once(fly_bullets).unwrap();
+        assert!(app.world().get_entity(missile).is_err(), "the missile ends on its owner");
+        assert!(app.world().resource::<crate::monsters::DebugMonsters>().blows.is_empty(), "a support missile is no blow");
     }
 
     #[test]
