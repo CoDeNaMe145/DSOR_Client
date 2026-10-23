@@ -140,7 +140,8 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
                 Action::Membership => { heading = "Membership".into(); body = if net.as_ref().is_some_and(|n| n.inventory.premium) { "Membership active. Open the membership page for details." } else { "Open the membership page." }.into(); }
                 Action::Close => { heading = "Close".into(); body = "Press Esc".into(); }
                 // A row is its own description; the systems' buttons say what they do.
-                Action::QuestSelect(_) | Action::QuestGroup(_) => return,
+                // A 3D preview's turning area is the figure itself.
+                Action::QuestSelect(_) | Action::QuestGroup(_) | Action::DragRotate => return,
                 Action::QuestCancel(_) => { heading = "Stop quest".into(); body = "The quest leaves your log; you can take it again.".into(); }
                 Action::QuestCompact(compact) => heading = if *compact { "Hide the objectives" } else { "Show the objectives" }.into(),
                 Action::QuestTrack(delta) => heading = if *delta < 0 { "Previous quest" } else { "Next quest" }.into(),

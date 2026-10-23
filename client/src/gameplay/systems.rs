@@ -186,6 +186,38 @@ pub struct StickerDef {
     /// New: the album's front page advertises it.
     #[serde(default)]
     pub new: bool,
+    /// What the album's preview turns for each of its items (crate::ui::preview).
+    /// Empty in catalogs exported before it: the preview shows the icon.
+    #[serde(default)]
+    pub looks: Vec<StickerLook>,
+}
+
+/// What a sticker's item shows once used (tools/systems_catalog.py): one of
+/// its fields is set, or none (a decoration: an effect only).
+#[derive(Deserialize, Debug, Clone, Default, PartialEq)]
+pub struct StickerLook {
+    pub item: String,
+    /// The class it is for (CharClass: "warrior", "mage"...); empty: every class.
+    #[serde(default)]
+    pub class: String,
+    /// The status effect it starts, by wire index.
+    #[serde(default)]
+    pub status: Option<u32>,
+    /// A costume's skin part (SkinModifier).
+    #[serde(default)]
+    pub skin: String,
+    /// An emote's animation state (StartAnimation).
+    #[serde(default)]
+    pub animation: String,
+    /// A mount (_Template_Mount, characters/mounts.json).
+    #[serde(default)]
+    pub mount: String,
+    /// A pet (_Template_PetMonster, characters/pets.json).
+    #[serde(default)]
+    pub pet: String,
+    /// A Shadow Soul's monster (characters/monster_templates.json).
+    #[serde(default)]
+    pub monster: String,
 }
 
 #[derive(Deserialize, Debug, Clone, Default, PartialEq)]

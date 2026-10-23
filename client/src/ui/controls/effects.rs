@@ -494,7 +494,13 @@ fn fixture_effects(spec: &str, catalog: &Catalog, now: u32, first: u32) -> Vec<S
     for (n, entry) in spec.split(',').enumerate() {
         let mut parts = entry.split(':');
         let id = parts.next().unwrap_or("").trim();
-        let Some((&index, _)) = catalog.effects.iter().find(|(_, e)| e.id == id) else {
+        // `#<wire index>`: an effect the HUD does not show (a Shadow Soul's
+        // minion_mercenary_*, which crate::ui::preview reads).
+        let index = match id.strip_prefix('#') {
+            Some(index) => index.parse().ok(),
+            None => catalog.effects.iter().find(|(_, e)| e.id == id).map(|(&index, _)| index),
+        };
+        let Some(index) = index else {
             warn!("status effect fixture: {id} is not an effect the HUD shows");
             continue;
         };
@@ -524,7 +530,8 @@ pub(in crate::ui) struct Fixture {
 /// the offline game: the player's in its statistics):
 /// DSOR_TEST_EFFECTS gives the player these effects; DSOR_TEST_TARGET_EFFECTS
 /// gives them to each monster when it is first hovered (DSOR_TEST_TARGET=1
-/// hovers the nearest one). Same format: `<id>[:seconds[:stacks[:p0/p1...]]],...`.
+/// hovers the nearest one). Same format: `<id>[:seconds[:stacks[:p0/p1...]]],...`,
+/// `#<wire index>` in place of the id for an effect the bar does not show.
 pub(in crate::ui) fn fixture(net: Option<NonSendMut<Net>>, bar: Res<StatusBar>, catalogs: Res<Assets<Catalog>>,
     hovered: Res<Hovered>, time: Res<Time<Real>>, mut state: Local<Fixture>) {
     if !state.read {

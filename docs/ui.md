@@ -209,11 +209,83 @@ be hovered: moving the pointer onto them leaves the monster.
 preference, it waits for Apply.
 
 `DSOR_TEST_EFFECTS=<id>[:seconds[:stacks[:p0/p1...]]],...` gives the offline
-player these effects (seconds 0: permanent), for captures with
+player these effects (seconds 0: permanent; `#<wire index>` in place of the id
+for an effect the bar does not show, such as a Shadow Soul's
+`minion_mercenary_*` for the inventory's preview), for captures with
 `DSOR_UI_REPLAY`; they also count in the offline character statistics.
 `DSOR_TEST_TARGET_EFFECTS` (same format) gives them to each monster when it is
 first hovered; with `DSOR_TEST_MONSTER` and `DSOR_TEST_TARGET=1` (the nearest
 live monster counts as hovered) no pointer is needed.
+
+## 3D previews: the inventory's figure and the album's sticker
+
+`client/src/ui/preview.rs` draws the turning 3D views the layouts leave room
+for:
+
+- the inventory's `figur` (exported hidden: a runtime render target): the
+  player's character, dressed as in the world, playing its `Inventory`
+  animation state, on the equipment and trinket pages; on the mercenary page,
+  the player's Shadow Soul at rest (`Idle_Hub`) when one runs (its
+  `minion_mercenary_*` effect is among the player's status effects), else the
+  page's empty placeholder;
+- the album's preview box (Categorypage `background_image`, under its
+  headline): the sticker picked, as the original shows it -- a costume on the
+  player, an emote the player plays again and again, the player riding a
+  mount, a pet, a Shadow Soul. A decoration (trail, ground marker, aura,
+  wings) only starts effects: the box shows its icon, as do stickers in a
+  catalog exported before the looks below.
+
+Hold the left button over the area (its DragRotate buttons) and move
+sideways to turn the subject.
+
+Each view is a stage: an image its own camera draws (before the interface,
+which samples it), of a subject standing far under the maps on a render layer
+only that camera sees (26 to 28), with a studio light of its own. The
+inventory's character and its Shadow Soul are separate stages: turning the
+pages shows each at once, as it was left. The map's sun,
+fog, ambience and post effects never reach it. Its camera carries
+`HighlightCamera` so that every scene-camera query (`With<Camera3d>,
+Without<HighlightCamera>`) leaves it out. The window draws the image as one of
+its widgets, in its drawing order: `prepare_inventory` and the album's prepare
+give that widget the stage's texture name (`preview:inventory`,
+`preview:mercenary`, `preview:album`), which `spawn_windows` binds to the
+image. `ui.wgsl` undoes
+the multisampled edges' premultiplied colour, so silhouettes blend cleanly. A
+resize remakes the images at the interface's resolution.
+
+A new subject dresses hidden behind the one shown and replaces it once ready,
+so picking stickers never flashes an empty box. Once it has posed for a few
+frames, the camera frames it from what it draws (its skinned meshes' bounds
+through their posed joints, as Bevy culls them; a character's parts carry a
+fixed box and a body variation moves its joints off its skin, so neither
+serves): its lowest point on the area's floor mark (the inventory's `shadow`
+label, the album's payment button; a hovering pet's belly), the whole subject
+in view whichever way it turns, with room for an emote's leaps, through a
+narrow (10 degree) lens from the front left like the original's
+`InventoryCamPosition`.
+
+What a sticker shows comes from `tools/systems_catalog.py`: each sticker's
+`looks`, one per item, give the item's class (`CharClass`; the player's
+class's item is shown), the status effect it starts (`StatusEffectId`, wire
+index `rowid - 1`) and what that effect shows: a skin part (`SkinModifier`,
+worn on a slot of its own so its mask culls what it covers), a mount (the cast
+effect's ride, `ActorStatusEffect` in its DoneModifiers, then `Mounted:Mount`),
+a pet (`Pet:PetMonster`), a Shadow Soul's monster (`ShadowSoul`) or an emote's
+animation (`StartAnimation`). Models come from `characters/mounts.json`,
+`pets.json` and `monster_templates.json`. Re-export the systems catalog to add
+the looks.
+
+DEVIATION: the original frames each sticker with its own camera
+(`_Template_StickerbookItem` CameraPosition, CameraCharactorHeight,
+CameraAngleOfView) and lights the stages with `_Globals`' InventoryLight
+colours; here every subject is framed from its joints and lit alike.
+Emote props (the Stormball flags) and decorations' effects are particles,
+drawn outside the actors' hierarchy, so the previews leave them out.
+
+A closed window's stage costs nothing: its camera is off and its subject is
+parked (its animation stops). `preview::choose` compares a few revisions each
+frame (the windows' pages, the player's look, the views, the player's effects)
+and builds a subject only when one moved (`UiWork::previews`).
 
 ## Per-frame cost
 
@@ -249,7 +321,8 @@ What this means for new interface code:
   counters alone (see `closed_windows_are_not_prepared_every_frame`,
   `views_are_built_only_for_open_windows_and_only_when_something_changed`,
   `the_quest_list_is_rebuilt_only_when_something_changed`,
-  `the_status_rows_are_reassigned_only_when_what_they_show_changes`).
+  `the_status_rows_are_reassigned_only_when_what_they_show_changes`,
+  `subjects_are_built_when_what_they_show_changes_and_never_on_idle_frames`).
 - **Something that counts down** (the status effects' time labels) computes
   when it next reads differently and does nothing until then
   (`controls::effects::sync`).
@@ -599,17 +672,17 @@ for the selected NPC in offline mode, including categories, prices and buyback.
 - Inventory sorting, bank access, slot purchases and additional item actions
   (use, sell, repair, identify, sockets and customization) need their controllers.
   Equipment comparison tooltips remain.
-- Character preview render targets and list scrolling are not implemented.
+- List scrolling is not implemented. The transmog desk still shows the skin's
+  icon where the game turns the character wearing it; the album and the
+  inventory turn theirs (see "3D previews" above).
 - The quest log's pages, the album, the events, the leaderboards, the PvP
   queue, the premium shop and the NPC desks (salvage, the `gemdeskwb` gem desk,
   workbench, transmog) are bound on their 2026 layouts
   (`client/src/ui/controls/systems.rs`, see docs/client-progress.md "The
   systems' windows" and "The systems' windows on their 2026 layouts"), and so
   is the social window; talent allocation is not drawn yet. Lists scroll with the
-  wheel; their scroll handles follow but cannot be dragged. The album and the
-  transmog desk show the sticker's or skin's icon where the game turns a 3D
-  preview; the transmog desk's eye toggles have no server command and are
-  hidden.
+  wheel; their scroll handles follow but cannot be dragged. The transmog desk's
+  eye toggles have no server command and are hidden.
 
 
 ## Settings, shortcuts and hover descriptions

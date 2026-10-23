@@ -152,6 +152,50 @@ def export_systems(database, root, godot, assets):
                                  upgrades=split(r["RarityUpgradeItems"]), priority=int(r["Priority"] or 0),
                                  origin=texture(r["IconBrush"]), background=texture(r["BackgroundTexture"]),
                                  offer=r["StickerbookOffer"] or "", new=bool(r["IsNew"]))
+    # What the album's preview turns for each of a sticker's items
+    # (client/src/ui/preview.rs): the class it is for (CharClass; the original
+    # keeps the player's class's, StickerbookWidget::FilterStickerbookItemsByPlayerClass),
+    # the status effect it starts (StatusEffectId; its wire index is its rowid - 1)
+    # and what that effect shows: a costume's skin part (SkinModifier), a mount
+    # (the cast effect's ride, ActorStatusEffect in its DoneModifiers, whose
+    # Mounted:Mount names it), a pet (Pet:PetMonster), a Shadow Soul's monster
+    # (ShadowSoul), else an emote's animation state (StartAnimation). The
+    # decorations (trails, ground markers, auras, backs) only start effects.
+    statuses = {r["Id"]: r for r in q("SELECT rowid, Id, StartModifiers, DoneModifiers, StartAnimation FROM _Template_StatusEffect")}
+    item_rows = {r["Id"]: r for r in q("SELECT Id, StatusEffectId, CharClass FROM _Template_Item")}
+
+    def modifier(status, name):
+        for m in str(status["StartModifiers"] or "").split(";"):
+            m = m.split("#")[0].strip()
+            if m.startswith(name + ":"):
+                return m[len(name) + 1:].split(",")
+        return []
+
+    def sticker_look(item):
+        r = item_rows.get(item)
+        s = statuses.get(r["StatusEffectId"] or "") if r else None
+        if s is None:
+            return None
+        out = dict(item=item, status=int(s["rowid"]) - 1)
+        if r["CharClass"]:
+            out["class"] = r["CharClass"]
+        ride = re.search(r"ActorStatusEffect:addae,([^,;]+)", s["DoneModifiers"] or "")
+        mount = modifier(statuses[ride.group(1)], "Mounted") if ride and ride.group(1) in statuses else []
+        pet, skin, soul = modifier(s, "Pet"), modifier(s, "SkinModifier"), modifier(s, "ShadowSoul")
+        if len(mount) > 1:
+            out["mount"] = mount[1]
+        elif len(pet) > 1 and pet[0] == "PetMonster":
+            out["pet"] = pet[1]
+        elif skin:
+            out["skin"] = skin[0]
+        elif soul:
+            out["monster"] = soul[0]
+        elif s["StartAnimation"]:
+            out["animation"] = s["StartAnimation"]
+        return out
+
+    for sticker in stickers.values():
+        sticker["looks"] = [look for look in map(sticker_look, sticker["items"]) if look]
     album_banners = [texture(f"{r['TexturePrefix']}en{r['TextureSuffix'] or ''}")
                      for r in q("SELECT TexturePrefix, TextureSuffix FROM _Template_StickerbookBanner WHERE IsActive<>0 ORDER BY Priority, rowid")]
 

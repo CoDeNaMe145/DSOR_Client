@@ -7,8 +7,9 @@
 //! its title and text, its stickers' grid (six by four a page, the owned ones
 //! bright; a click shows one in the preview, a second click uses an owned
 //! one: a mount, a costume, a pet, an emote), the preview (its name, origin,
-//! background, favourite flag, its offer to buy) and the book's progress: the
-//! stickers collected along a bar with the book's rewards.
+//! background, favourite flag, its offer to buy, the sticker turning in 3D --
+//! crate::ui::preview -- or, where it has no model, its icon) and the book's
+//! progress: the stickers collected along a bar with the book's rewards.
 //! SOURCE: DSOR_Server services/customization.py (_handle_use_stickerbook_item,
 //!   _handle_add_stickerbook_from_inventory, _handle_item_customization),
 //!   protocol/item_customization_protocol.py (the skin must fit the item's slot
@@ -45,8 +46,11 @@ const FRONT_ROWS: usize = 3;
 /// The category list: from 109 to 603.
 const LIST_TOP: f32 = 109.0;
 const LIST_BOTTOM: f32 = 603.0;
-/// The preview's sticker, in its turning area.
+/// The preview's sticker icon, in its turning area (no model to turn).
 const PREVIEW_ICON: [f32; 4] = [741.0, 245.0, 881.0, 385.0];
+/// The widget drawing the sticker turning (crate::ui::preview's album stage),
+/// over the preview's background, under its flags and offer.
+pub(in crate::ui) const TURNING: &str = "Canvas/Collectorsalbum/BackGroundLabel/Inlay/Categorypage/background_preview/previewBackground/background_image/Turning";
 const FRONT_BOOK: &str = "sb_frontpage";
 const FAVOURITE: &str = "textures/ui/sticker_favorite.png";
 const PREMIUM_ORIGIN: &str = "ui/icon_origin_premium";
@@ -218,8 +222,8 @@ pub(super) fn prepare_album(source: &Layout, album: &Album) -> Layout {
         is_template(id) || id.contains("/AnimUnlock") || id.contains("/AnimUse") || id.contains("/AnimIconGlow")
             || has_part(id, "FlagLabelCategory") || has_part(id, "FlagLabelSubcategory")
             || (album.front && id.starts_with(PAGE)) || (!album.front && id.starts_with(FRONT))
-            // The preview turns no model: its sticker's icon shows instead.
-            || id.starts_with(&format!("{PREVIEW}/previewBackground/background_image/DragRotateAreaLabel"))
+            // Nothing to turn without a sticker.
+            || (album.preview.is_none() && id.starts_with(&format!("{PREVIEW}/previewBackground/background_image/DragRotateAreaLabel")))
             || id.ends_with("/OriginIconLabel1") || id.contains("/ProgressLabel/ItemTemplates")
             || (album.preview.as_ref().is_none_or(|s| !s.owned) && id.contains("/background_image/FlagButtonFav"))
             || (album.preview.as_ref().is_none_or(|s| s.origin.is_empty()) && id.ends_with("/OriginIconLabel"))
@@ -229,6 +233,18 @@ pub(super) fn prepare_album(source: &Layout, album: &Album) -> Layout {
             || id.split('/').find_map(|p| p.strip_prefix("ItemSlot")).and_then(|n| n.parse::<usize>().ok()).is_some_and(|n| id.contains("/Firstpage/AdvertisementArtwork/AdvertisedItems/") && n >= album.new.len())
     });
     let preview = album.preview.as_ref();
+    // The sticker turning, drawn over the preview's background (the
+    // TURNING widget, controls::Section shows it or the icon below).
+    let image = format!("{PREVIEW}/previewBackground/background_image");
+    if let (Some(_), Some(at)) = (preview, layout.widgets.iter().position(|w| w.id == image)) {
+        let stage = crate::ui::preview::Stage::Album;
+        let mut w = layout.widgets[at].clone();
+        w.id = TURNING.to_owned();
+        w.kind = "Label".into();
+        (w.event, w.button, w.state, w.text, w.hidden, w.rect) = (String::new(), None, None, None, false, stage.area());
+        w.art = Some(crate::ui::preview::quad_art(w.rect, stage));
+        layout.widgets.insert(at + 1, w);
+    }
     let mut extra = Vec::new();
     for w in &mut layout.widgets {
         let id = w.id.clone();
@@ -337,7 +353,7 @@ mod tests {
             (format!("{ENTRY}/TemplateSlot/FlagLabel/UpgradeButton"), "Button", false), (format!("{ENTRY}/TemplateIcon"), "Icon", true), (format!("{ENTRY}/TemplateIcon/highlight"), "Label", false),
             (format!("{PAGE}/background_info/TextLabel_fav"), "TextLabel", true), (format!("{PAGE}/background_info/TextLabel_info"), "TextLabel", true),
             (format!("{PAGE}/pages/PageNumText"), "TextLabel", true), (format!("{PAGE}/pages/NextPageBtn"), "Button", false),
-            (format!("{image}/background_headline/TextLabel"), "TextLabel", true), (format!("{image}/FlagButtonFav"), "Button", false), (format!("{image}/OriginIconLabel"), "Label", false),
+            (image.clone(), "Label", false), (format!("{image}/background_headline/TextLabel"), "TextLabel", true), (format!("{image}/FlagButtonFav"), "Button", false), (format!("{image}/OriginIconLabel"), "Label", false),
             (format!("{image}/DragRotateAreaLabel"), "Label", false), (format!("{PREVIEW}/PaymentButton"), "Button", false),
             (BAR.into(), "Label", false), (format!("{BAR}/progress"), "Label", false), (format!("{BAR}/ProgressBarTextLabel"), "TextLabel", true),
             (REWARD.into(), "Label", false), (format!("{REWARD}/Linie/ItemSlot/Icon"), "Icon", true),
@@ -378,7 +394,13 @@ mod tests {
         assert_eq!(find(&prepared, &format!("{image}/OriginIconLabel")).art.as_ref().unwrap().tex.as_deref(), Some("textures/ui/icon_origin_event.png"));
         assert_eq!(find(&prepared, &format!("{image}/FlagButtonFav")).event, "Sys:Favorite:s1:0");
         assert_eq!(find(&prepared, &format!("{PREVIEW}/Sticker/Image")).rect, PREVIEW_ICON);
-        assert!(!ids.iter().any(|id| id.contains("/PaymentButton") || id.contains("DragRotateAreaLabel") || id.contains("/pages/NextPageBtn")));
+        assert!(!ids.iter().any(|id| id.contains("/PaymentButton") || id.contains("/pages/NextPageBtn")));
+        // ...and the sticker turning over the preview's background, which
+        // its DragRotate buttons turn (crate::ui::preview; the page shows one).
+        let turning = find(&prepared, TURNING);
+        assert_eq!((turning.art.as_ref().unwrap().tex.as_deref(), turning.rect), (Some("preview:album"), crate::ui::preview::Stage::Album.area()));
+        assert_eq!(ids.iter().position(|id| id == TURNING), ids.iter().position(|id| *id == image).map(|i| i + 1));
+        assert!(ids.contains(&format!("{image}/DragRotateAreaLabel")));
         // The progress: collected of the book's; its reward along the bar.
         assert_eq!(text_of(&prepared, &format!("{BAR}/ProgressBarTextLabel")), "1 / 2");
         assert!(ids.contains(&format!("{INLAY}/Categorypage/ProgressLabel/Reward0/Linie/ItemSlot/Icon/Image")));
@@ -386,6 +408,9 @@ mod tests {
         let selling = prepare_album(&album_source(), &Album { preview: Some(missing.clone()), ..album.clone() });
         assert_eq!(find(&selling, &format!("{PREVIEW}/PaymentButton")).event, "Sys:Buy:global_x_RC_01");
         assert!(!selling.widgets.iter().any(|w| w.id.contains("/background_image/FlagButtonFav")));
+        // No sticker picked: nothing to turn.
+        let none = prepare_album(&album_source(), &Album { preview: None, ..album.clone() });
+        assert!(!none.widgets.iter().any(|w| w.id == TURNING || w.id.contains("DragRotateAreaLabel")));
     }
 
     #[test]

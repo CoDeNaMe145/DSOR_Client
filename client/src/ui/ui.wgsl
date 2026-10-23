@@ -8,7 +8,9 @@ struct UiMaterial {
     // World-space rectangle kept: min x, min y, max x, max y.
     clip: vec4<f32>,
     // x: 1 when textured; y: additional transparency (0 for ordinary UI);
-    // z: preserve authored alpha over a window's textured backing.
+    // z: preserve authored alpha over a window's textured backing; w: 1 for a
+    // 3D preview's image (crate::ui::preview), whose multisampled edges hold
+    // their colour times their coverage.
     flags: vec4<f32>,
 }
 
@@ -27,7 +29,11 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     // The atlas back to its stored (gamma) values, times the gamma vertex colour.
     var c = vec4<f32>(1.0);
     if material.flags.x > 0.5 {
-        c = vec4<f32>(linear_to_srgb(t.rgb), t.a);
+        var rgb = t.rgb;
+        if material.flags.w > 0.5 && t.a > 0.0 {
+            rgb = rgb / t.a;
+        }
+        c = vec4<f32>(linear_to_srgb(rgb), t.a);
     }
 #ifdef VERTEX_COLORS
     c = c * in.color;

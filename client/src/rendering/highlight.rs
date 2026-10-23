@@ -35,6 +35,8 @@ const ENEMY: Vec4 = Vec4::new(0.8, 0.0, 0.0, 1.0);
 /// "default" and "Ally" (UNVERIFIED).
 const DEFAULT: Vec4 = Vec4::new(1.0, 1.0, 1.0, 1.0);
 /// The camera that draws the highlighted actor alone.
+/// The interface's preview cameras (crate::ui::preview::PreviewCamera) carry it
+/// too: every query for the scene camera leaves it out (`Without<HighlightCamera>`).
 #[derive(Component)]
 pub struct HighlightCamera;
 
@@ -180,7 +182,7 @@ fn relayer(
     excluded: Query<(), Or<(With<NoHighlight>, With<crate::rendering::materials::FacesViewer>)>>,
     meshes: Query<(), With<Mesh3d>>,
     on_layer: Query<Entity, With<OnHighlightLayer>>,
-    mut camera: Query<&mut Camera, With<HighlightCamera>>,
+    mut camera: Query<&mut Camera, (With<HighlightCamera>, Without<crate::ui::PreviewCamera>)>,
     target: Option<Res<Target>>,
     mut materials: ResMut<Assets<OutlineMaterial>>,
 ) {
@@ -223,7 +225,7 @@ fn relayer(
 /// The highlight camera sees exactly what the game camera sees.
 fn follow_camera(
     main: Query<(&Transform, &Projection), (With<Camera3d>, Without<HighlightCamera>)>,
-    mut highlight: Query<(&mut Transform, &mut Projection), With<HighlightCamera>>,
+    mut highlight: Query<(&mut Transform, &mut Projection), (With<HighlightCamera>, Without<crate::ui::PreviewCamera>)>,
 ) {
     let (Ok((tf, proj)), Ok((mut htf, mut hproj))) = (main.single(), highlight.single_mut()) else { return };
     *htf = *tf;
@@ -240,7 +242,7 @@ fn fit_target(
     target: Option<ResMut<Target>>,
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<OutlineMaterial>>,
-    mut camera: Query<&mut RenderTarget, With<HighlightCamera>>,
+    mut camera: Query<&mut RenderTarget, (With<HighlightCamera>, Without<crate::ui::PreviewCamera>)>,
 ) {
     let (Ok(w), Some(mut t)) = (windows.single(), target) else { return };
     let size = UVec2::new(w.physical_width(), w.physical_height());

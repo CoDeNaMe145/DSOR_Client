@@ -1190,3 +1190,61 @@ kingscity` with a soul standing by vs none: `ui work` 0 after loading in both
 (first build p50 6.1-6.5 vs 5.9-6.2 ms; the final build's timings were swamped
 by another session's load). Logs: `.local/logs/map-fps/kingscity-shadowsoul-*`.
 Not yet seen online: no character on the live server owns a soul.
+
+## 3D previews: the inventory's figure and the album's sticker (2026-10-23)
+
+The layouts' runtime render targets are drawn (`client/src/ui/preview.rs`,
+docs/ui.md "3D previews"):
+
+- **Inventory.** The equipment and trinket pages' `figur` shows the player's
+  character, dressed as in the world, playing its `Inventory` state; the
+  mercenary page shows the player's Shadow Soul at rest when its
+  `minion_mercenary_*` effect runs on the player (the live server puts it there,
+  `services/customization.py` `_activate_mercenary`), else the page's empty
+  placeholder. The character and the soul are separate stages, so turning the
+  pages shows each at once.
+- **Collector's album.** The preview box turns the sticker picked, as the
+  original does it (decompiled `UI::StickerbookWidget`: the player's own
+  character, `Idle_Hub`; a mount shows the player riding it): a costume on the
+  player (one more skin part, its mask culls what it covers), an emote the
+  player plays again and again, the player on a mount, a pet, a Shadow Soul.
+  Decorations (trails, ground markers, auras, wings) only start particle
+  effects and keep their icon, as do stickers of a catalog exported without
+  looks.
+- **Turning.** The areas' DragRotate buttons now turn the subject while the
+  left button is held (no click sound, no hover card).
+- **Data.** `tools/systems_catalog.py` adds each sticker's `looks`: per item,
+  its CharClass, its status effect's wire index, and what that effect shows
+  (`SkinModifier`; the cast effect's ride and its `Mounted:Mount`;
+  `Pet:PetMonster`; `ShadowSoul`; `StartAnimation`). On the October 2026
+  database: 135 costumes, 112 emotes (+6 skins), 238 of 238 mounts, 188 pets
+  (+3 community), 5 Shadow Souls; the 107 decorations have none. Re-export the
+  systems catalog to get them.
+- **Rendering.** Each stage is an image its own camera draws (layers 26 to 28,
+  far under the maps, studio light, no map look); it carries `HighlightCamera`
+  so every scene-camera query (`With<Camera3d>, Without<HighlightCamera>`)
+  leaves it out, and highlight.rs's three own queries leave `PreviewCamera`
+  out. A window draws the image as a widget of the texture name
+  `preview:<stage>` in its own drawing order; `ui.wgsl` undoes the
+  multisampled edges' premultiplied colour. The camera frames a subject from
+  its vertices, skinned on the CPU once it has posed (a character's parts carry
+  a fixed box, its joints sit off its body under a variation, and bevy's
+  skinned bounds grow as joints turn).
+- **Fixture.** `DSOR_TEST_EFFECTS=#<wire index>` gives the offline player an
+  effect the bar does not show (`#6380:0`: the Ancient Watcher's).
+
+FAILURE (fixed before landing): measured in its bind pose the moment it was
+ready, the Blue Dragonspawn (drawn hovering 1.7 to 2.6 above its root) was
+framed under its body and culled: an empty box.
+
+Validation: `cargo test -p dsor-client` 396 passed (new: framing, sticker
+resolution, the inventory's figures, idle `UiWork::previews`, the preview
+areas' pages and DragRotate, the album's turning widget); `--ignored` 14 of 15,
+the Kingscity doorway lighting test failing as before. Offline captures (debug
+build, Kingscity, `--play 1 0`, UI replays): the character, turned, on the
+trinket page and the Ancient Watcher in the inventory; a Shadow Soul, a costume,
+an emote, a mount and a pet in the album. `profile_native_maps.py kingscity`:
+`ui work` 0 in every window with the previews closed (p50 6.7 ms), and with the
+inventory open one preview built while loading then 0 (p50 7.9 ms: the window
+and its turning character). Captures, routes and logs: `.local/logs/preview/`,
+`.local/logs/map-fps/kingscity-preview-*`. Not yet seen online.

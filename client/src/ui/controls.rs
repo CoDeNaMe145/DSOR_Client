@@ -85,6 +85,10 @@ enum Section {
     #[default]
     Always,
     Inventory(u8),
+    /// The inventory's mercenary page: its Shadow Soul's figure (true), or the
+    /// empty placeholder (false) while there is none (crate::ui::preview sets
+    /// the "shadow_soul" page).
+    Mercenary(bool),
     InventoryReturn,
     OverflowFooter,
     BagFourthRow,
@@ -156,11 +160,19 @@ fn section(window: &str, id: &str) -> Section {
     // a sub-headline bar stood still under the scrolling rows ("ca ecrit sur les
     // sous menus", "les epees restent").
     if window == "charactersheet" && id.contains("/CharacterStatsArea/Template") { return Section::Hidden; }
+    // The album's preview box: its sticker turning (crate::ui::preview), or
+    // the sticker's icon.
+    if window == systems::ALBUM {
+        if id.contains("/background_image/DragRotateAreaLabel") || id.ends_with(systems::album::TURNING) { return Section::Page(super::preview::ALBUM_MODEL, 0b10); }
+        if id.contains("/background_preview/Sticker/") { return Section::Page(super::preview::ALBUM_MODEL, 0b01); }
+    }
     if let Some(section) = panels::section(window, &parts) { return section; }
     if let Some(section) = social::section(window, &parts) { return section; }
     if window == "inventory" {
         if id.contains("/unten/Label_bg/Label_empty") { return Section::OverflowFooter; }
         if id.contains("/unten/Label_bg/icon_area/TemplateSlot#3_") { return Section::BagFourthRow; }
+        if id.contains("/mercenary/label_empty/") && id.ends_with("/figur") { return Section::Mercenary(true); }
+        if id.contains("/mercenary/label_empty/") && id.ends_with("/empty") { return Section::Mercenary(false); }
         for (name, page) in [("oben", 0), ("IngredientBag", 1), ("TrinketBag", 2), ("mercenary", 3)] {
             if parts.contains(&name) { return Section::Inventory(page); }
         }
@@ -258,6 +270,8 @@ enum Action {
     Travel(String),
     /// A systems window's request (systems::send carries it out).
     System(systems::Request),
+    /// Held, it turns its window's 3D preview with the cursor (crate::ui::preview).
+    DragRotate,
 }
 
 fn action(window: &str, w: &Widget) -> Action {
@@ -273,6 +287,7 @@ fn action(window: &str, w: &Widget) -> Action {
     if let Some(spell) = &w.spell { return if w.event == "InspectTalent" { Action::Talent(spell.id.clone()) } else { Action::Spell }; }
     if w.kind == "TextEntry" { return Action::Edit(w.id.clone()); }
     if w.event == "Close" { return Action::Close; }
+    if w.event == "DragRotate" { return Action::DragRotate; }
     if let Some(action) = social::action(window, w) { return action; }
     if let Some(action) = trade::action(window, w) { return action; }
     if let Some(action) = systems::action(window, w) { return action; }
@@ -513,11 +528,18 @@ impl WindowControls {
         if self.pages.get(group).copied().unwrap_or(0) != page { self.pages.insert(group, page); }
     }
 
+    /// A group's page shown (Section::Page), 0 by default.
+    pub(super) fn page(&self, group: &str) -> u8 { self.pages.get(group).copied().unwrap_or(0) }
+
+    /// The inventory's page: 0 equipment, 1 ingredients, 2 trinkets, 3 mercenary.
+    pub(super) fn inventory_page(&self) -> u8 { self.inventory }
+
     fn section_visible(&self, section: Section) -> bool {
         match section {
             Section::Always => true,
             Section::SettingsRow(row) => row < self.pages.get("settings_rows").copied().unwrap_or(7) as usize,
             Section::Inventory(page) => self.inventory == page,
+            Section::Mercenary(soul) => self.inventory == 3 && (self.page("shadow_soul") != 0) == soul,
             Section::InventoryReturn => self.inventory != 0,
             Section::OverflowFooter => self.bag == items::OVERFLOW,
             Section::BagFourthRow => self.bag != items::OVERFLOW,
@@ -637,9 +659,19 @@ pub(super) struct Pointer {
     travel: Option<String>,
     /// The systems windows' requests, for systems::send.
     system: Vec<systems::Request>,
+    /// A DragRotate button held: its window and the cursor's x last frame; the
+    /// reference pixels it moved since crate::ui::preview::turn last took them.
+    turn: Option<(Entity, f32)>,
+    turned: Option<(Entity, f32)>,
 }
 
 impl Pointer {
+    /// The window whose preview DragRotate turns, and by how far the cursor
+    /// moved sideways (reference pixels); taken once.
+    pub(super) fn take_turn(&mut self) -> Option<(Entity, f32)> {
+        self.turned.take()
+    }
+
     /// The (bar, slot) a spell is being dragged from (spells::DragSpell::lifted).
     pub(super) fn lifted_slot(&self) -> Option<(usize, usize)> {
         self.spell_drag.as_ref().and_then(|d| d.lifted())
@@ -989,6 +1021,20 @@ pub(super) fn interact(
     if settings::drag_slider(&mut pointer, &windows, &mouse, point, width, window.focused && !blocked, &mut settings) {
         clicked = None;
     }
+    // A DragRotate button held, even once the cursor leaves it: its sideways
+    // movement turns the window's preview (crate::ui::preview::turn).
+    let turning = pointer.down.filter(|(e, i)| mouse.pressed(MouseButton::Left)
+        && windows.get(*e).is_ok_and(|(_, _, c, _, _)| c.buttons.get(*i).is_some_and(|b| b.action == Action::DragRotate)));
+    match (turning, point) {
+        (Some((root, _)), Some(p)) => {
+            if let Some((_, last)) = pointer.turn.filter(|(r, _)| *r == root) {
+                let moved = pointer.turned.filter(|(r, _)| *r == root).map_or(0.0, |(_, d)| d) + p.x - last;
+                if moved != 0.0 { pointer.turned = Some((root, moved)); }
+            }
+            pointer.turn = Some((root, p.x));
+        }
+        _ => pointer.turn = None,
+    }
     if !mouse.pressed(MouseButton::Left) { pointer.down = None; }
     for (e, _, mut controls, visibility, _) in &mut windows {
         controls.hovered = hovered.filter(|(root, _)| *root == e).map(|(_, i)| i);
@@ -997,6 +1043,8 @@ pub(super) fn interact(
     let Some((entity, index)) = clicked else { return };
     let Ok((_, name, mut controls, mut visibility, _)) = windows.get_mut(entity) else { return };
     let action = controls.buttons[index].action.clone();
+    // Letting go of a turned preview is no click.
+    if action == Action::DragRotate { return; }
     if let Some(audio) = audio.as_mut() {
         audio.ui(if matches!(action, Action::Close) { "ui/general/ui_close_screen" } else { "ui/general/ui_click" });
     }
@@ -1052,7 +1100,7 @@ pub(super) fn interact(
                 if w.0 == CHAT_WINDOW { c.pages.insert("chat_channel", channel); }
             }
         }
-        Action::Spell | Action::Unavailable => {}
+        Action::Spell | Action::Unavailable | Action::DragRotate => {}
         Action::Social(clicked) => social.clicked = Some(clicked),
         Action::QuestSelect(id) => quest_ui.selected = Some(id),
         Action::QuestCancel(id) => quest_ui.cancel = Some(id),
@@ -1179,6 +1227,32 @@ mod tests {
 
     fn button(id: &str, event: &str) -> Widget {
         serde_json::from_value(serde_json::json!({"id":id,"type":"Button","event":event,"k":0.5,"rect":[0,0,20,20],"hidden":false})).unwrap()
+    }
+
+    /// The 3D previews' places (crate::ui::preview): the mercenary page's
+    /// Shadow Soul or its empty placeholder; the album's sticker turning, with
+    /// its DragRotate buttons, or its icon.
+    #[test]
+    fn the_preview_areas_show_their_model_or_its_placeholder() {
+        let mut inventory = WindowControls::new(&fixture("inventory", serde_json::json!([])));
+        let visible = |c: &WindowControls, window: &str, id: &str| c.section_visible(section(window, id));
+        let page = "Canvas/PositioningLabel/Label_texture/mercenary/label_empty/deco_verlauf_character";
+        let (figure, empty) = (format!("{page}/figur"), format!("{page}/empty"));
+        let (figure, empty) = (figure.as_str(), empty.as_str());
+        assert!(!visible(&inventory, "inventory", figure) && !visible(&inventory, "inventory", empty), "another page");
+        inventory.inventory = 3;
+        assert!(!visible(&inventory, "inventory", figure) && visible(&inventory, "inventory", empty), "no Shadow Soul");
+        inventory.set_page("shadow_soul", 1);
+        assert!(visible(&inventory, "inventory", figure) && !visible(&inventory, "inventory", empty));
+        let mut album = WindowControls::new(&fixture(systems::ALBUM, serde_json::json!([])));
+        let image = "Canvas/Collectorsalbum/BackGroundLabel/Inlay/Categorypage/background_preview/previewBackground/background_image";
+        let icon = "Canvas/Collectorsalbum/BackGroundLabel/Inlay/Categorypage/background_preview/Sticker/Image";
+        let drag = format!("{image}/DragRotateAreaLabel/DragRotateAreaButton01");
+        assert!(visible(&album, systems::ALBUM, icon) && !visible(&album, systems::ALBUM, systems::album::TURNING) && !visible(&album, systems::ALBUM, &drag));
+        album.set_page(super::super::preview::ALBUM_MODEL, 1);
+        assert!(!visible(&album, systems::ALBUM, icon) && visible(&album, systems::ALBUM, systems::album::TURNING) && visible(&album, systems::ALBUM, &drag));
+        assert!(visible(&album, systems::ALBUM, image), "the box itself shows either way");
+        assert_eq!(action(systems::ALBUM, &button(&drag, "DragRotate")), Action::DragRotate);
     }
 
     #[test]

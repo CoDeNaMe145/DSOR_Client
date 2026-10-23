@@ -44,6 +44,8 @@ mod dialogue;
 pub(crate) use controls::items::Catalog;
 mod local_map;
 mod npc_hover;
+mod preview;
+pub(crate) use preview::PreviewCamera;
 mod selection;
 #[cfg(not(target_arch = "wasm32"))]
 mod replay;
@@ -520,6 +522,8 @@ pub(crate) struct UiWork {
     pub quest_lists: u64,
     /// The status effect bar's slots assigned (controls::effects::sync).
     pub status_bars: u64,
+    /// 3D preview subjects built (preview::choose): a character, a model.
+    pub previews: u64,
 }
 
 pub struct UiPlugin;
@@ -530,6 +534,7 @@ impl Plugin for UiPlugin {
         app.add_plugins(Material2dPlugin::<UiMaterial>::default())
             .add_plugins(selection::SelectionUiPlugin)
             .add_plugins(cursor::CursorPlugin)
+            .add_plugins(preview::PreviewPlugin)
             .init_asset::<Layout>()
             .init_asset::<SkillIcons>()
             .init_asset::<local_map::MapNames>()
@@ -579,6 +584,11 @@ impl Plugin for UiPlugin {
                 Update,
                 ((dialogue::sync, controls::party::sync, controls::quests::sync, controls::systems::sync, spawn_windows, controls::sync_chat).chain(), controls::spells::sync, controls::items::sync, (controls::items::pins::update, controls::keyboard).chain(), controls::interact, (controls::settings::sync, controls::settings::sliders, controls::hotbar::input, controls::spells::apply_drop).chain(), read_figures, controls::edit_text, controls::items::input, controls::order_windows, (update_fills, update_values, update_slots, (local_map::update, local_map::update_markers, local_map::appearance).chain(), (controls::effects::fixture, controls::effects::sync, controls::effects::draw).chain()), controls::chat_rows, controls::sheet::rows, controls::paint, (controls::items::render, controls::items::destroy_dialog), (controls::spells::overlay, controls::items::overlay, controls::tooltips), show_hover_window, death_dialog, (controls::trade::sync, controls::social::column, controls::social::context_menu, controls::social::answer, controls::systems::send, controls::social::dialogs, controls::trade::render).chain()).chain().after(crate::actors::monsters::MonsterHoverInfo).before(crate::network::net::NetSystems).run_if(crate::screens::loading::gameplay_ready),
             );
+        // The 3D previews: once this frame's clicks moved the pages and the
+        // views were rebuilt.
+        app.add_systems(Update, (preview::resize, preview::choose, preview::reveal, preview::turn, preview::encore).chain()
+            .after(controls::interact).after(controls::systems::sync).before(controls::paint)
+            .run_if(crate::screens::loading::gameplay_ready));
         #[cfg(not(target_arch = "wasm32"))]
         app.add_systems(PreUpdate, replay::run.after(bevy::input::InputSystems)
             .before(bevy::ui::UiSystems::Focus).run_if(|login: Option<Res<crate::LoginGate>>,
@@ -834,6 +844,7 @@ fn spawn_windows(
     views: Res<controls::systems::Views>,
     mut windows: Query<(Entity, &Window2018, &Visibility, &mut WindowControls)>,
     mut work: ResMut<UiWork>,
+    previews: Option<Res<preview::Previews>>,
 ) {
     let known = players.iter().next().map(|c| c.desc.class);
     let class = known.or(loaded.resource_class).unwrap_or(1);
@@ -902,6 +913,8 @@ fn spawn_windows(
             prepared = controls::effects::prepare_target(layout); &prepared
         } else if layout.window == controls::items::DESTROY_DIALOG {
             prepared = controls::items::prepare_destroy(layout); &prepared
+        } else if layout.window == "inventory" {
+            prepared = preview::prepare_inventory(layout); &prepared
         } else { layout };
         // DSOR_UI_OPEN=inventory,...: menus open from the start (screenshots).
         let open = npc_window || std::env::var("DSOR_UI_OPEN").is_ok_and(|v| v.split(',').any(|w| w == layout.window));
@@ -932,8 +945,10 @@ fn spawn_windows(
                 commands.spawn((Follows { k, flip }, tf, Visibility::Inherited, ChildOf(root))).id()
             })
         };
-        let atlas = |tex: &Option<String>| tex.as_ref().map(|t| {
-            if t == "textures/ui/npcscreen.png" || t == "textures/ui/struktur_hell.png" {
+        let atlas = |tex: &Option<String>| tex.as_ref().and_then(|t| {
+            // A 3D preview's image (preview::Stage::texture).
+            if let Some(stage) = preview::Stage::of_texture(t) { return previews.as_ref().and_then(|p| p.image(stage)); }
+            Some(if t == "textures/ui/npcscreen.png" || t == "textures/ui/struktur_hell.png" {
                 // The authored speech tails use UVs above 1 to select wrapped
                 // atlas regions. Clamping cuts off every tail after the first.
                 // The lists' light rows tile their texture (u -1 to 3.5 across
@@ -946,7 +961,7 @@ fn spawn_windows(
                         ..bevy::image::ImageSamplerDescriptor::linear()
                     });
                 }).load(t.clone())
-            } else { assets.load::<Image>(t.clone()) }
+            } else { assets.load::<Image>(t.clone()) })
         });
         let mut run: Option<Run> = None;
         let mut depth = 0.0f32;
@@ -962,10 +977,15 @@ fn spawn_windows(
             // The character page shades its own textured backing. Preserve its
             // authored opacity so the dark-panel adjustment cannot erase it.
             appearance.flags.z = (layout.window == "charactersheet") as u32 as f32;
+            // A 3D preview's image: its multisampled edges are premultiplied
+            // by their coverage (ui.wgsl).
+            let stage = run.tex.as_deref().and_then(preview::Stage::of_texture);
+            if stage.is_some() { appearance.flags.w = 1.0; }
             let m = materials.add(appearance);
             let z = run.z;
             let gate = run.gate.clone();
-            commands.spawn((Mesh2d(meshes.add(run.mesh())), MeshMaterial2d(m), Transform::from_xyz(0.0, 0.0, z), RenderLayers::layer(LAYER), ChildOf(parent), Element { root, gate }, Visibility::Hidden));
+            let mut mesh = commands.spawn((Mesh2d(meshes.add(run.mesh())), MeshMaterial2d(m), Transform::from_xyz(0.0, 0.0, z), RenderLayers::layer(LAYER), ChildOf(parent), Element { root, gate }, Visibility::Hidden));
+            if let Some(stage) = stage { mesh.insert(preview::Quad(stage)); }
         };
         let wanted_resource = resource_bar(class);
         // The map is a runtime overlay with no legacy frame or hit regions,
