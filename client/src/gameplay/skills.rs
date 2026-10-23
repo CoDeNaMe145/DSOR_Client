@@ -93,6 +93,9 @@ pub struct SkillDef {
     pub id: String,
     #[serde(rename = "type")]
     pub kind: String,
+    /// _Template_Skill.Targeting: Actor, Radius, Angle, Cone or User.
+    #[serde(default)]
+    pub targeting: String,
     #[serde(default = "scale_timing_default")]
     pub scale_timing: bool,
     pub hit_frame: u32,
@@ -913,12 +916,34 @@ pub fn skill_cost_by_id(data: &SkillData, tables: &Assets<SkillTable>, id: &str,
 /// hit reached from there. A shape-less monster keeps its capsule, as the server.
 /// Ranged targets keep the flat distance plus the capsule (the server measures
 /// those against the capsule; UNVERIFIED against the original).
+/// An untargeted melee skill (type Melee: mightyswing, mighty360, stab...)
+/// aimed at a monster is measured the same way: 2018 Validate 0x5E3C61 checks
+/// every skill type against the clicked actor with one test (0x00A3522D,
+/// centre distance minus the target's radius).
 fn beyond_reach(skill: &SkillDef, caster: Vec3, target: Vec3, capsule: f32, footprint: Option<f32>) -> bool {
-    if skill.kind == "MeleeTarget" {
+    if matches!(skill.kind.as_str(), "MeleeTarget" | "Melee") {
         caster.distance(target) - footprint.unwrap_or(capsule) > skill.range
     } else {
         Vec2::new(target.x - caster.x, target.z - caster.z).length() > skill.range + capsule
     }
+}
+
+/// Whether a cast aimed at a monster out of reach walks to it and strikes
+/// there, rather than going off where the player stands.
+/// EVIDENCE (dro_client.exe 2018): the slot handler 0x4C1440 calls
+///   ClientSkillValidator::Validate 0x5E3C61; with the clicked actor its
+///   ValidateTarget 0x00A34FDD keeps the actor's position as the aim for melee
+///   types (SkillInfo type flags 0x9BAF5D bit 0: Melee 0, MeleeTarget 1, parsed
+///   by 0x9BC159) unless the targeting (0x9BC260: Actor 0, Radius 1, Angle 2,
+///   Cone 3, User 4) is User, which aims at the caster. Out of range (17) a
+///   melee type is not cast (flags bit 1 clear) and 0x4C0D2D posts
+///   Messaging::SkillPerformed instead. UNVERIFIED: that message's consumer
+///   (taken to be the walk into range, as for MeleeTarget).
+/// FAILURE: a Melee skill on the left button (mighty360) struck the air where
+///   the player stood when a monster in front was clicked, instead of walking
+///   to it (2026-10-24).
+fn approaches(skill: &SkillDef) -> bool {
+    matches!(skill.kind.as_str(), "MeleeTarget" | "RangedTarget") || (skill.kind == "Melee" && skill.targeting != "User")
 }
 
 fn cast_input(
@@ -1030,10 +1055,11 @@ fn cast_input(
         .or_else(|| std::env::var("DSOR_TEST_SLOT").is_ok().then(|| tf.translation + Quat::from_rotation_y(player.facing) * Vec3::Z * 3.0)) else { return };
     // A target skill on a monster beyond its reach walks there first, as the 2018
     // client does (ClientSkillValidator 0x5E3C61 answers 17, out of range; its
-    // caller 0x4C1553 casts after approaching, 0x4BDEC4); see beyond_reach.
+    // caller 0x4C1553 casts after approaching, 0x4BDEC4); see beyond_reach. So
+    // does a melee skill with no target of its own (approaches).
     let targeted = matches!(skill.kind.as_str(), "MeleeTarget" | "RangedTarget");
     let target_actor = if targeted { aimed.map(|(_, _, a, ..)| a) } else { None };
-    if let (true, Some((e, at, _, radius, _, footprint))) = (targeted, aimed) {
+    if let (true, Some((e, at, _, radius, _, footprint))) = (approaches(skill), aimed) {
         if beyond_reach(skill, tf.translation, at, radius, footprint) {
             player.target = Some(at);
             *queued = Some((slot, e));
@@ -2896,6 +2922,28 @@ mod reach_tests {
         let ranged = skill("RangedTarget", 10.0);
         assert!(!beyond_reach(&ranged, Vec3::ZERO, Vec3::new(10.2, 5.0, 0.0), 0.3, Some(4.0)));
         assert!(beyond_reach(&ranged, Vec3::ZERO, at(10.4), 0.3, Some(4.0)));
+    }
+
+    #[test]
+    fn untargeted_melee_on_a_monster_walks_into_reach_but_self_centred_skills_do_not() {
+        let with = |kind: &str, targeting: &str, range: f32| {
+            let mut s = skill(kind, range);
+            s.targeting = targeting.into();
+            s
+        };
+        // mighty360 (Melee, Radius, 6): measured as targeted melee is.
+        let spin = with("Melee", "Radius", 6.0);
+        assert!(approaches(&spin));
+        let at = |d: f32| Vec3::new(d, 0.0, 0.0);
+        assert!(!beyond_reach(&spin, Vec3::ZERO, at(6.5), 0.3, Some(0.525)));
+        assert!(beyond_reach(&spin, Vec3::ZERO, at(6.6), 0.3, Some(0.525)));
+        assert!(approaches(&with("Melee", "Angle", 3.5)));
+        assert!(approaches(&with("Melee", "Cone", 10.0)));
+        // A shout or an aura goes off where the player stands.
+        assert!(!approaches(&with("Melee", "User", 2.0)));
+        assert!(approaches(&with("MeleeTarget", "Actor", 1.75)));
+        assert!(!approaches(&with("Ranged", "Radius", 25.0)));
+        assert!(!approaches(&with("Shifted", "Radius", 15.0)));
     }
 }
 
