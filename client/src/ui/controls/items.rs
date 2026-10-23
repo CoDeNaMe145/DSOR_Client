@@ -282,7 +282,9 @@ fn drop_targets(ui:&Interaction, state:&InventoryState, catalog:&Catalog, level:
 /// FAILURE (2026-10-23): nothing showed where a dragged item could go.
 const DROP_GLOW: &str = "textures/ui/fx_icon_glow.png";
 const DROP_GLOW_SCALE: f32 = 128.0 / 50.0;
-const DROP_GLOW_TINT: [f32; 4] = [0.6, 0.85, 1.0, 0.85];
+/// FAILURE (2026-10-23): at alpha 0.85 it was "2/3x as bright" as the original's
+///   (the user's rings, side by side).
+const DROP_GLOW_TINT: [f32; 4] = [0.7, 0.88, 1.0, 0.32];
 
 /// What a right click looks up: the open shop (selling) and the travel items.
 #[derive(bevy::ecs::system::SystemParam)]

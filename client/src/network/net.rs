@@ -2343,6 +2343,13 @@ fn click_to_move(
     if ui.blocks(MouseButton::Left) || !buttons.pressed(MouseButton::Left) || keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) {
         return;
     }
+    // The right button held casts its skill over and over (crate::gameplay::skills
+    // cast_input): it wins over walking, the player stays where it is, as in the
+    // original. FAILURE (2026-10-23): both buttons held walked the warrior across
+    // the bridge between his hits; the original's stands still (the user's videos).
+    if !ui.blocks(MouseButton::Right) && buttons.pressed(MouseButton::Right) {
+        return;
+    }
     // Dead, or held by the revival: no walking (the server refuses it anyway).
     if net.as_ref().is_some_and(|n| n.death.dead || time.elapsed_secs() < n.death.held_until) {
         return;
