@@ -133,7 +133,7 @@ const RESPAWN_COST: u32 = 40;
 const INSTANT_RESPAWN_COST: u32 = 120;
 
 fn is_menu(name: &str) -> bool {
-    MENU_WINDOWS.iter().any(|(n, _, _)| *n == name) || NAV_WINDOWS.contains(&name) || dialogue::WINDOWS.contains(&name) || name == "unstackwindow" || name == controls::items::DESTROY_DIALOG || name == DEATH_WINDOW || name == CHAT_MENU || name == controls::settings::WINDOW
+    MENU_WINDOWS.iter().any(|(n, _, _)| *n == name) || NAV_WINDOWS.contains(&name) || dialogue::WINDOWS.contains(&name) || name == "unstackwindow" || name == controls::items::DESTROY_DIALOG || name == controls::logout::WINDOW || name == DEATH_WINDOW || name == CHAT_MENU || name == controls::settings::WINDOW
         || SOCIAL_WINDOWS.iter().any(|(n, _)| *n == name) || controls::systems::DESKS.iter().any(|(n, _)| *n == name)
 }
 
@@ -613,7 +613,7 @@ impl Plugin for UiPlugin {
                 .before(bevy::sprite_render::check_entities_needing_specialization::<UiMaterial>))
             .add_systems(
                 Update,
-                ((dialogue::sync, controls::party::sync, controls::quests::sync, controls::systems::sync, spawn_windows, controls::sync_chat).chain(), controls::spells::sync, controls::items::sync, (controls::items::pins::update, controls::keyboard).chain(), controls::interact, (controls::settings::sync, controls::settings::sliders, controls::hotbar::input, controls::spells::apply_drop).chain(), read_figures, controls::edit_text, controls::items::input, controls::order_windows, (update_fills, update_values, update_slots, (local_map::update, local_map::update_markers, local_map::appearance).chain(), (controls::effects::fixture, controls::effects::sync, controls::effects::draw).chain()), controls::chat_rows, controls::sheet::rows, controls::paint, (controls::items::render, controls::items::destroy_dialog), (controls::spells::overlay, controls::items::overlay, controls::tooltips), show_hover_window, death_dialog, (controls::trade::sync, controls::social::column, controls::social::context_menu, controls::social::answer, controls::systems::send, controls::social::dialogs, controls::trade::render).chain()).chain().after(crate::actors::monsters::MonsterHoverInfo).before(crate::network::net::NetSystems).run_if(crate::screens::loading::gameplay_ready),
+                ((dialogue::sync, controls::party::sync, controls::quests::sync, controls::systems::sync, spawn_windows, controls::sync_chat).chain(), controls::spells::sync, controls::items::sync, (controls::items::pins::update, controls::keyboard).chain(), controls::interact, (controls::settings::sync, controls::settings::sliders, controls::hotbar::input, controls::spells::apply_drop).chain(), read_figures, controls::edit_text, controls::items::input, controls::order_windows, (update_fills, update_values, update_slots, (local_map::update, local_map::update_markers, local_map::appearance).chain(), (controls::effects::fixture, controls::effects::sync, controls::effects::draw).chain()), controls::chat_rows, controls::sheet::rows, controls::paint, (controls::items::render, controls::items::destroy_dialog), (controls::spells::overlay, controls::items::overlay, controls::tooltips), show_hover_window, death_dialog, (controls::trade::sync, controls::social::column, controls::social::context_menu, controls::social::answer, controls::logout::dialog, controls::systems::send, controls::social::dialogs, controls::trade::render).chain()).chain().after(crate::actors::monsters::MonsterHoverInfo).before(crate::network::net::NetSystems).run_if(crate::screens::loading::gameplay_ready),
             );
         // The 3D previews: once this frame's clicks moved the pages and the
         // views were rebuilt.
@@ -659,6 +659,7 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>, mut quest_ui: ResMut<
     let mut loaded = Loaded { icons: assets.load("interface/skills.icons.json"), map_names: assets.load("interface/maps.names.json"), ..default() };
     loaded.layouts.push((assets.load("interface/unstackwindow.ui.json"), 600.0, None));
     loaded.layouts.push((assets.load(format!("interface/{}.ui.json", controls::items::DESTROY_DIALOG)), 610.0, None));
+    loaded.layouts.push((assets.load(format!("interface/{}.ui.json", controls::logout::WINDOW)), 612.0, None));
     loaded.layouts.push((assets.load("interface/settingswindow2.ui.json"), 550.0, None));
     loaded.layouts.push((assets.load(format!("interface/{CHAT_WINDOW}.ui.json")), CHAT_DEPTH, None));
     loaded.layouts.push((assets.load(format!("interface/{CHAT_MENU}.ui.json")), CHAT_DEPTH + 3.0, None));
@@ -958,6 +959,8 @@ fn spawn_windows(
             prepared = controls::effects::prepare_target(layout); &prepared
         } else if layout.window == controls::items::DESTROY_DIALOG {
             prepared = controls::items::prepare_destroy(layout); &prepared
+        } else if layout.window == controls::logout::WINDOW {
+            prepared = controls::logout::prepare(layout); &prepared
         } else if layout.window == "inventory" {
             prepared = preview::prepare_inventory(layout); &prepared
         } else { layout };
