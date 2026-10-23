@@ -689,6 +689,14 @@ fn perform(
             let from = at + right * o.x + Vec3::Y * o.y - dir * o.z;
             // The point's own ground height, so the grenade lands on it uphill too.
             let to = (skill.kind == "RangedTargetPoint").then(|| Vec3::new(point.x, point.y + o.y, point.z));
+            // Not aimed at an actor, a bullet dips or climbs to the aimed point at the
+            // hand's height: level on flat ground; shot from a cliff it flies down
+            // and its StaticCollision stops it on the ground below.
+            // EVIDENCE: the user's release261_192 recording (a mage on a Wild Forest
+            //   cliff: the missiles go down to the lower ground and burst there).
+            // FAILURE (2026-10-24): shot downhill, ours flew on level at the hand's
+            //   height, over everything below.
+            let aim = aim.or(Some(Vec3::new(point.x, point.y + o.y, point.z)));
             for k in 0..skill.bullet_count.max(1) {
                 commands.spawn(Pending {
                     after: ((skill.loop_start as f32 / FPS).max(skill.emit_delay) + k as f32 * skill.emit_delay) / rate,
@@ -3003,6 +3011,31 @@ mod cooldown_tests {
 mod combat_idle_tests {
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
+
+    #[test]
+    fn a_bullet_shot_down_from_a_cliff_aims_at_the_point_below_at_hand_height() {
+        let mut world = World::new();
+        let skill: SkillDef = serde_json::from_value(serde_json::json!({
+            "id": "test_missile", "type": "Ranged", "hit_frame": 1, "loop_start": 0,
+            "unblock": 2, "motion_unblock": 2, "range": 10.0, "cooldown": 0.0, "execute": {}, "impact": "",
+            "bullet": {"loop": "", "impact": "", "death": "", "motion": "Straight", "velocity": 20.0,
+                "lifetime": 1.0, "radius": 0.3, "start": [0.0, 1.5, -1.0], "static_collision": true}
+        })).unwrap();
+        let caster = world.spawn_empty().id();
+        // From 4 units up, at a point 8 ahead below; and at an actor's chest.
+        for (aim, expected) in [(None, Vec3::new(0.0, 1.5, 8.0)), (Some(Vec3::new(0.0, 0.9, 8.0)), Vec3::new(0.0, 0.9, 8.0))] {
+            let skill = skill.clone();
+            world.run_system_once(move |mut commands: Commands| {
+                perform(&mut commands, &skill, &SequenceTable(default()), caster, None,
+                    Vec3::Y * 4.0, 0.0, Vec3::new(0.0, 0.0, 8.0), None, aim, None, 1.0);
+            }).unwrap();
+            let mut pending = world.query::<&Pending>();
+            let aims: Vec<_> = pending.iter(&world).filter_map(|p| match &p.what { PendingKind::Bullet { aim, .. } => Some(*aim), _ => None }).collect();
+            assert_eq!(aims, vec![Some(expected)]);
+            let ids: Vec<Entity> = world.query_filtered::<Entity, With<Pending>>().iter(&world).collect();
+            for e in ids { world.despawn(e); }
+        }
+    }
 
     #[test]
     fn casting_unarmed_enters_combat_even_without_an_execute_sequence() {
