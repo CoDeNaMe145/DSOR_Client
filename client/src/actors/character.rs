@@ -1330,7 +1330,11 @@ fn apply_variations(
         let mut joints = set.p0();
         let mut moved = Vec::new();
         for (e, tf, mut j) in &mut joints {
-            if !tf.is_changed() || j.written == Some((tf.translation, tf.scale)) {
+            // A joint varied after its scene came in, and no clip moves it (a
+            // monster whose Idle clip the model lacks: minion_teslaturret's
+            // all-0.4 variation), has an unchanged Transform: applied once anyway,
+            // or its vertices shrink about joints left at full-size offsets.
+            if (!tf.is_changed() && j.written.is_some()) || j.written == Some((tf.translation, tf.scale)) {
                 continue;
             }
             j.raw = (tf.translation, tf.scale);

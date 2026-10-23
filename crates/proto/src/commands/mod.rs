@@ -198,6 +198,7 @@ server_commands! {
     75 => TargetBulletSkill(combat::TargetBulletSkill),
     73 => TargetPointBulletSkill(combat::TargetPointBulletSkill),
     74 => ShiftedSkill(combat::ShiftedSkill),
+    76 => SustainedSkill(combat::SustainedSkill),
     77 => SkillStop(combat::SkillStop),
     79 => StatusEffect(combat::StatusEffect),
     107 => Hit(combat::Hit),

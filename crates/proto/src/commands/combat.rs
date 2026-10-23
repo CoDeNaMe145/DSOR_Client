@@ -375,6 +375,55 @@ impl Body for SkillStop {
     }
 }
 
+/// SustainedSkillCommand (76), server -> client: a summon's channelled beam or
+/// cone (the dwarf's Machine Gun Turret, minionskill_machinegunturret).
+/// SkillBase, then a repeated loop header (skill, aim, tick); after the actor,
+/// the ordinary server data and a second timing/placement block with no
+/// trailing bit.
+/// SOURCE (release261_192): dso-server-production protocol/combat_protocol.py
+///   encode_monster_attack_batch, SustainedSkillServerCommand branch.
+/// FAILURE: undecoded, the turret's beam (dwarf_tower_default_beam) was never
+///   drawn although the server dealt its damage ("on voit bien le FX de la
+///   mitrailleuse ?", 2026-10-23).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SustainedSkill {
+    pub base: SkillBase,
+    pub loop_skill_id: u16,
+    pub loop_heading: f32,
+    pub loop_tick: u32,
+    pub server: Option<SkillServerData>,
+    pub sustained: Option<SustainedData>,
+}
+
+/// SustainedSkill's second slot-9 block.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct SustainedData {
+    pub impact_tick: u32,
+    pub hit_range: u32,
+    pub hit_frame: u32,
+    pub motion_unblock_frame: u32,
+    pub unblock_frame: u32,
+    pub position: [f32; 4],
+}
+
+impl SustainedData {
+    fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            impact_tick: r.u32()?, hit_range: r.u32()?, hit_frame: r.u32()?,
+            motion_unblock_frame: r.u32()?, unblock_frame: r.u32()?,
+            position: [r.f32()?, r.f32()?, r.f32()?, r.f32()?],
+        })
+    }
+    fn encode(&self, w: &mut BitWriter) {
+        for v in [self.impact_tick, self.hit_range, self.hit_frame, self.motion_unblock_frame, self.unblock_frame] { w.u32(v); }
+        for v in self.position { w.f32(v); }
+    }
+}
+
+skill_body!(SustainedSkill,
+    |r, base| Ok(Self { base, loop_skill_id: r.u16()?, loop_heading: r.f32()?, loop_tick: r.u32()?, server: None, sustained: None }),
+    |c, w| { w.u16(c.loop_skill_id); w.f32(c.loop_heading); w.u32(c.loop_tick); });
+
 impl ServerCommand {
     /// Read what a command's slot 9 holds past the 32-bit actor (the skill commands'
     /// server data). Called by the decoder right after the actor.
@@ -386,6 +435,10 @@ impl ServerCommand {
             Self::TargetBulletSkill(c) => c.server = Some(SkillServerData::decode(r, false)?),
             Self::TargetPointBulletSkill(c) => c.server = Some(SkillServerData::decode(r, true)?),
             Self::ShiftedSkill(c) => c.server = Some(SkillServerData::decode(r, true)?),
+            Self::SustainedSkill(c) => {
+                c.server = Some(SkillServerData::decode(r, false)?);
+                c.sustained = Some(SustainedData::decode(r)?);
+            }
             _ => {}
         }
         Ok(())
@@ -394,6 +447,13 @@ impl ServerCommand {
     /// Write what follows the actor in slot 9 (mirror of decode_actor_slot_tail). A
     /// skill command without server data gets the defaults.
     pub(crate) fn encode_actor_slot_tail(&self, w: &mut BitWriter) {
+        if let Self::SustainedSkill(c) = self {
+            let mut s = c.server.unwrap_or_default();
+            s.shift = None;
+            s.encode(w);
+            c.sustained.unwrap_or_default().encode(w);
+            return;
+        }
         let (server, shifted) = match self {
             Self::Skill(c) => (c.server, false),
             Self::TargetSkill(c) => (c.server, false),
@@ -981,5 +1041,28 @@ impl Body for TrapTripped {
     }
     fn encode(&self, w: &mut BitWriter) {
         w.u32(self.trap_id)
+    }
+}
+
+#[cfg(test)]
+mod sustained_tests {
+    use crate::commands::{decode_message, ServerCommand};
+
+    /// The server's own bytes (DSOR_Server encode_monster_attack_batch, a
+    /// SustainedSkillServerCommand for minionskill_machinegunturret, wire 1947,
+    /// release261_192 layout with the skill marker bit): 850 bits.
+    #[test]
+    fn a_server_sustained_skill_decodes_whole() {
+        let hex = "854c0000009b070000003fe80300004d0000004d838000001ff40180000088018078018000078000003c0000003c000000000000000000102080000020000020600000401fbc00c00003c00000020000001e0000001e0000000000081040000010000010300000200fffc0";
+        let bytes: Vec<u8> = (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap()).collect();
+        let commands = decode_message(&bytes, 850).expect("decodes");
+        let [(ServerCommand::SustainedSkill(c), actor)] = commands.as_slice() else { panic!("{commands:?}") };
+        assert_eq!(*actor, Some(0x31001));
+        assert_eq!((c.base.skill_id, c.base.start_tick, c.base.unknown_u32_0), (1947, 1000, 77));
+        assert_eq!((c.loop_skill_id, c.loop_tick), (1947, 1000));
+        let server = c.server.unwrap();
+        assert_eq!((server.impact_tick, server.phase_frame, server.position), (1008, 15, [10.0, 2.0, -3.0, 1.0]));
+        let tail = c.sustained.unwrap();
+        assert_eq!((tail.hit_range, tail.hit_frame, tail.unblock_frame), (15, 8, 120));
     }
 }
