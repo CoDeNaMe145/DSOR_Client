@@ -90,7 +90,7 @@ the same root: `-rooturl httpnz://alicdn-prod-774.drakensang.com/cdndata
   `quests/`) stay packed: the extractor also unpacks them into loose `.bxml`
   files, but our tools read the packs.
 
-## The account server's static database
+## The account server's databases
 
 A server can play with another `static.db4` than the CDN's. The live one has
 its own rows (the admin buffs of `tools/install_admin_effects.py`) on top of
@@ -112,13 +112,33 @@ publishes its database (dso_server `services/content.py`, its
    brings back the CDN's version and the next sign-in brings the server's
    again. A later sign-in with the copy already in place costs one request.
 
-The account card says *Checking the server's game database...* meanwhile. A
-failure is logged (`game data: the server's static database: ...`) and play
-goes on: the client reads no `static.db4` while it runs. The conversion is
-what reads the database (status effects, skills, items, equipment), so after a
-new one arrives, rerun the generators over `game-data/export_win32`
+The maps' databases come the same way. NewNPC, PropInfo and ExitInfo name a
+level's NPCs, props and exits by their row's `Guid`, and Bigpoint's builds give
+every row a new one: the October 22 build's 391 `maps/*.db4` have the October 20
+build's rows, values and order, but not one Guid in common (the `.map` and
+`.eve` files are the same bytes). So the client's NPC, prop and exit tables are
+made from the server's maps:
+
+1. `GET /api/content` also gives `"maps": {"sha256", "files", "size",
+   "packed_size"}`: the sha256 of the sorted `name \t sha256` lines of the
+   server's `data/maps/*.db4`.
+2. If `.dsor/server-maps.txt` (`sha256 \t files \t source`, written last) does
+   not name it, or a map it installed is gone, `POST /api/content/maps` (the
+   session; three per address and quarter hour) brings every map database in
+   one bundle: `DSORMAP1`, the count, then per file its name, sha256, size and
+   the database packed as the CDN packs files (77 MB for 656 MB).
+3. Each name must be a map database's, each file match its size, sha256 and
+   SQLite header; each replaces the folder's copy in one step and gets its
+   `overrides.txt` line, then `server-maps.txt` is written.
+
+The account card says *Checking the server's game data...* meanwhile. A
+failure is logged (`game data: the server's static database: ...`, `... maps:
+...`), each part on its own, and play goes on: the client reads no database
+while it runs. The conversion is what reads them (status effects, skills,
+items, equipment; NPCs, props, exits, ambience, sound), so after new ones
+arrive, rerun the generators over `game-data/export_win32`
 (`tools/convert_assets.py ... --database-only` reruns just those; a release
-does it at sign-in, see [the release](release.md#the-servers-database-at-sign-in)).
+does it at sign-in, see [the release](release.md#the-servers-databases-at-sign-in)).
 Only the dsor client asks these endpoints: the official client, its launcher
 and everything they call are unchanged.
 
@@ -127,6 +147,12 @@ Measured on 2026-10-24 against the live tree's account service: the first
 that followed replaced the CDN's copy (`4e4b9038...`) with the server's
 (`81a09c5c...`) in 0.17 s, and the next sign-in found it matching without a
 download. A wrong session got 401 and nothing was written.
+
+Measured on 2026-10-25 with the live tree's account service (another registry):
+it hashed and packed the 391 maps in 5.4 s at its start; a sign-in installed
+them in 1.8 s (the same machine), the next found them matching, and the
+refreshed tables named Kingshill's NPCs (119), exits (21) and props (13) by the
+server's Guids.
 
 ## How a run works
 

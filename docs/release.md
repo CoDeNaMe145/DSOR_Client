@@ -77,18 +77,30 @@ after the download:
    and Bevy's asset server does not reload them. So once converted it starts a
    new client with the same arguments and exits.
 
-## The server's database at sign-in
+## The server's databases at sign-in
 
-Signing in may install the account server's `static.db4` ([the game
-data](game-data.md#the-account-servers-static-database)). The tables made from
-it must follow: status effect ids are its rows. With a converter, the sign-in
-then runs `--database-only` (the card shows *Updating the game tables*: the
-steps `steps(..., database_only=True)` of convert_assets.py list), and starts a
-new client with the session it just got (`--server <login> --account <id> --sid
-<session> --account-api <service>`), which goes straight to the characters. If
-that client cannot start, this one plays on with the tables it has. A sign-in
-cancelled while the tables were being made lets them finish; the next sign-in
-of that client starts a new one too (`game_data::tables_changed`).
+Signing in may install the account server's `static.db4` and map databases
+([the game data](game-data.md#the-account-servers-databases)). The tables made
+from them must follow: status effect ids are the database's rows, and the
+server names every NPC, prop and exit by its map row's Guid, which each
+Bigpoint build gives anew (the October 22 build's maps share none with the
+October 20 build's the server plays with). A release converted from the CDN's
+current build therefore showed all 68 of Kingshill's NPCs of events not
+running: their Guids matched no `npcs.json` entry, so nothing hid them. With a
+converter, the sign-in then runs `--database-only` (the card shows *Updating
+the game tables*: the steps `steps(..., database_only=True)` of
+convert_assets.py list, those that read `static.db4` or `maps/*.db4`), and
+starts a new client with the session it just got (`--server <login> --account
+<id> --sid <session> --account-api <service>`), which goes straight to the
+characters. If that client cannot start, this one plays on with the tables it
+has. A sign-in cancelled while the tables were being made lets them finish; the
+next sign-in of that client starts a new one too (`game_data::tables_changed`).
+
+The first sign-in to a server of a fresh install downloads its maps (77 MB packed
+for 391 maps, 656 MB on disk) and refreshes the tables in about 5 minutes on a
+hard disk; later sign-ins only compare the bundle's sha256. A server without the
+endpoints (older than 2026-10-25) leaves the CDN's maps in place, and with them
+the mismatch.
 
 The database steps leave out `character_tables.py`: the selection screen and
 interface steps write its two database tables again, and rerunning it would drop

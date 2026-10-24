@@ -184,14 +184,23 @@ impl Form {
                 if register { request(&address, "POST", "/api/register", payload.clone())?; }
                 let reply = request(&address, "POST", "/api/login", payload)?;
                 let config = session_config(&reply, &preferences, login_override, character_id)?;
-                // The server's static database, when it plays with another than the
-                // game data's (dsor_game_data::adopt_static_db). The client reads none
-                // at run time, so a failure here is logged and play goes on.
+                // The server's static and map databases, when it plays with others
+                // than the game data's (dsor_game_data::adopt_server_data): its status
+                // effects are rows of its database, its NPCs, props and exits Guids of
+                // its maps. The client reads none at run time, so a failure here is
+                // logged and play goes on.
                 if let Some(folder) = &game_data {
-                    let _ = progress.send(Ok(Reply::Progress("Checking the server's game database...".into())));
-                    match dsor_game_data::adopt_static_db(folder, &address, &config.session) {
-                        Ok(adopted) => info!("game data: the server's static database: {adopted:?}"),
-                        Err(error) => warn!("game data: the server's static database: {error}"),
+                    let _ = progress.send(Ok(Reply::Progress("Checking the server's game data...".into())));
+                    match dsor_game_data::adopt_server_data(folder, &address, &config.session) {
+                        Ok(data) => {
+                            for (part, adopted) in [("static database", &data.static_db), ("maps", &data.maps)] {
+                                match adopted {
+                                    Ok(adopted) => info!("game data: the server's {part}: {adopted:?}"),
+                                    Err(error) => warn!("game data: the server's {part}: {error}"),
+                                }
+                            }
+                        }
+                        Err(error) => warn!("game data: the server's game data: {error}"),
                     }
                 }
                 // DNS may block, so resolve here rather than in the rendering thread.

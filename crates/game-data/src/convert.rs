@@ -4,16 +4,17 @@
 //!
 //! The assets' `conversion.json` says what they were converted from: the
 //! converter's version, the build (`__root.txt`) and the static database's
-//! sha256. [`needed`] compares it with the game data: another converter or
-//! build converts everything again (into `<assets>.partial`, put in place once
-//! complete); only another database (the account server's, crate::server)
-//! reruns the steps that read it.
+//! sha256, and the account server's map bundle when one is installed
+//! (crate::server). [`needed`] compares it with the game data: another
+//! converter or build converts everything again (into `<assets>.partial`, put
+//! in place once complete); only another database or map bundle (the account
+//! server's) reruns the steps that read them.
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::state::{lock, BUILD};
-use crate::{static_db_sha256, Error, Progress};
+use crate::{server_maps, static_db_sha256, Error, Progress};
 
 /// What the assets were converted from, in the assets folder.
 pub const STAMP: &str = "conversion.json";
@@ -41,7 +42,7 @@ impl Converter {
 pub enum Conversion {
     /// Everything, into a new folder.
     Full,
-    /// The steps that read the static database, over the assets as they are.
+    /// The steps that read the static or map databases, over the assets as they are.
     Database,
 }
 
@@ -54,7 +55,8 @@ pub fn needed(converter: &Converter, game_data: &Path, assets: &Path) -> Option<
         return Some(Conversion::Full);
     }
     let database = static_db_sha256(game_data).ok();
-    (stamp["static_db"].as_str() != database.as_deref()).then_some(Conversion::Database)
+    let maps = server_maps(game_data);
+    (stamp["static_db"].as_str() != database.as_deref() || stamp["maps"].as_str() != maps.as_deref()).then_some(Conversion::Database)
 }
 
 /// Converts `game_data` into `assets`, reporting each step to `progress`
@@ -207,6 +209,20 @@ mod tests {
         stamp("v1", "6a8b704d041044688ebee52da5b48b55", &database);
         std::fs::write(game_data.join("export_win32/db/static.db4"), b"SQLite format 3\0two").unwrap();
         assert_eq!(needed(&converter, &game_data, &assets), Some(Conversion::Database), "the server's database");
+        // The server's maps installed (crate::server): their bundle joins the stamp.
+        let database = static_db_sha256(&game_data).unwrap();
+        stamp("v1", "6a8b704d041044688ebee52da5b48b55", &database);
+        assert_eq!(needed(&converter, &game_data, &assets), None);
+        std::fs::create_dir_all(game_data.join("export_win32/maps")).unwrap();
+        std::fs::write(game_data.join("export_win32/maps/a0000_char.db4"), b"SQLite format 3\0map").unwrap();
+        std::fs::create_dir_all(game_data.join(".dsor")).unwrap();
+        std::fs::write(game_data.join(".dsor/overrides.txt"), format!("{}\t20\t127.0.0.1:8080\texport_win32/maps/a0000_char.db4\n", "c".repeat(64))).unwrap();
+        std::fs::write(game_data.join(".dsor/server-maps.txt"), format!("{}\t1\t127.0.0.1:8080\n", "b".repeat(64))).unwrap();
+        assert_eq!(server_maps(&game_data), Some("b".repeat(64)));
+        assert_eq!(needed(&converter, &game_data, &assets), Some(Conversion::Database), "the server's maps");
+        std::fs::write(assets.join(STAMP), serde_json::json!({"converter": "v1", "build": "6a8b704d041044688ebee52da5b48b55",
+            "static_db": database, "maps": "b".repeat(64)}).to_string()).unwrap();
+        assert_eq!(needed(&converter, &game_data, &assets), None);
         let _ = (std::fs::remove_dir_all(game_data), std::fs::remove_dir_all(assets));
     }
 }

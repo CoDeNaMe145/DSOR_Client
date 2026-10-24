@@ -36,7 +36,7 @@ mod sync;
 pub use cdn::{Cdn, Source, DEFAULT_CDN, USER_AGENT};
 pub use format::{logical_path, parse_bundle, parse_toc, unpack, Kind, Md5, Member, TocEntry};
 pub use convert::{convert, needed, Conversion, Converter, STAMP};
-pub use server::{adopt_static_db, static_db_sha256, Adoption, STATIC_DB};
+pub use server::{adopt_server_data, adopt_static_db, map_bundle_sha256, read_map_bundle, server_maps, static_db_sha256, Adoption, BundledMap, ServerData, STATIC_DB};
 pub use sync::{run, Options, Summary};
 
 #[derive(Clone, Debug, PartialEq, Eq)]

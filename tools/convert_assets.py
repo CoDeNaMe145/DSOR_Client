@@ -16,8 +16,8 @@ using DSO_Godot and the tools beside this script.
                   <out_dir>/.DSO_Godot when omitted).
   --replace       convert into <out_dir>.partial and put it in place of
                   <out_dir> only once complete (the client's own conversion).
-  --database-only rerun only the steps that read static.db4, over an existing
-                  conversion (after the account server's database arrived).
+  --database-only rerun only the steps that read static.db4 or maps/*.db4, over
+                  an existing conversion (after the account server's arrived).
   --progress      also print "@progress <done> <total> <what>" lines for the
                   client's progress bar.
   --watch-stdin   stop, with the running step, once stdin closes (the client
@@ -88,13 +88,17 @@ def sha256(path):
 
 
 def stamp(root):
-    """What the conversion of <root> stands for (docs/release.md)."""
+    """What the conversion of <root> stands for (docs/release.md): the build,
+    the static database and the account server's map bundle when the client
+    installed one (crates/game-data server.rs: .dsor/server-maps.txt)."""
     build = Path(root).parent / "__root.txt"
     database = Path(root) / "db" / "static.db4"
+    maps = Path(root).parent / ".dsor" / "server-maps.txt"
     return {
         "converter": version(),
         "build": build.read_text(encoding="utf-8").strip() if build.is_file() else None,
         "static_db": sha256(database) if database.is_file() else None,
+        "maps": maps.read_text(encoding="utf-8").split("\t")[0].strip() if maps.is_file() else None,
     }
 
 
@@ -262,12 +266,13 @@ def font(out):
 
 
 def steps(r, database_only=False):
-    """Every step in order: (what, weight, reads the database, run). The weights
-    are the steps' rough share of the time, for the progress bar. With
-    database_only, the steps that read static.db4 or what they make
-    (docs/release.md): character_tables is left out, its tables being made
-    again by the selection screen and interface steps, as rerunning it would
-    drop export_deco's sets from characters/anims.json."""
+    """Every step in order: (what, weight, reads the databases, run). The
+    weights are the steps' rough share of the time, for the progress bar. With
+    database_only, the steps that read static.db4 or maps/*.db4 (the account
+    server's, docs/release.md) or what those make: character_tables is left
+    out, its tables being made again by the selection screen and interface
+    steps, as rerunning it would drop export_deco's sets from
+    characters/anims.json (export_deco reruns and puts its own back)."""
     root, out, godot = r.root, r.out, r.godot
     db = root / "db" / "static.db4"
     post = lambda script, *args: lambda: r.python(TOOLS / script, *args, log="post.log", append=True, cwd=godot)
@@ -326,7 +331,7 @@ def steps(r, database_only=False):
         ("pivots", 1, False, post("restore_pivots.py", root / "models", out, godot)),
         ("character tables", 2, False, post("character_tables.py", root, out)),
         ("monsters", 1, True, post("export_monsters.py", root, out)),
-        ("picking shapes", 1, False, post("export_picking.py", root, out)),
+        ("picking shapes", 1, True, post("export_picking.py", root, out)),
         ("combat texts", 1, True, post("export_combat_text.py", root, out, godot)),
         ("statistics", 1, True, post("export_stats.py", root, out)),
         ("the selection screen", 1, True, post("export_character_selection.py", db, out)),
@@ -334,10 +339,10 @@ def steps(r, database_only=False):
         ("skills", 2, True, post("export_skills.py", root, out)),
         ("pets", 1, True, post("export_pets.py", root, out)),
         ("NPCs", 1, True, post("export_npcs.py", root, out)),
-        ("exits", 1, False, post("export_exits.py", root, out)),
-        ("ambience", 1, False, post("export_ambience.py", root, out)),
-        ("decorations", 1, False, post("export_deco.py", root, out)),
-        ("map audio", 2, False, post("export_audio_runtime.py", root, out)),
+        ("exits", 1, True, post("export_exits.py", root, out)),
+        ("ambience", 1, True, post("export_ambience.py", root, out)),
+        ("decorations", 1, True, post("export_deco.py", root, out)),
+        ("map audio", 2, True, post("export_audio_runtime.py", root, out)),
         # After anything that rewrites an effect model or skills/sequences.json.
         ("VFX edits", 1, True, post("vfx_apply.py", out)),
         ("interface windows", 3, True, post("export_ui.py", root, out, godot)),

@@ -42,10 +42,12 @@ class ConvertAssets(unittest.TestCase):
         database = [what for what, _, _ in convert_assets.steps(self.run_(), database_only=True)]
         self.assertEqual(len(every), len(set(every)), "step names are unique")
         self.assertEqual(database, [what for what in every if what in database], "same order")
-        for step in ("monsters", "combat texts", "skills", "NPCs", "VFX edits", "interface windows", "quests", "level edits", "level props"):
+        # What reads static.db4, and what reads maps/*.db4 (the server's Guids).
+        for step in ("monsters", "combat texts", "skills", "NPCs", "VFX edits", "interface windows", "quests", "level edits", "level props",
+                     "exits", "ambience", "picking shapes", "decorations", "map audio"):
             self.assertIn(step, database)
         # character_tables would drop export_deco's sets from anims.json.
-        for step in ("models", "character tables", "decorations", "KTX2 textures"):
+        for step in ("models", "character tables", "KTX2 textures"):
             self.assertNotIn(step, database)
         self.assertEqual(every[-1], "the font")
 
