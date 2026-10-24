@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 """The quests' tasks for the client's quest log (interface/quests.catalog.json).
 
-Usage: quest_catalog.py <quests.xml> <assets> [--database static.db4]
+Usage: quest_catalog.py <export_win32 | quests.pbxml | quests.xml> <assets>
+                        [--database static.db4] [--godot <DSO_Godot>]
 
-``quests.xml`` is the server's decoded ``quests.pbxml`` (DSOR_Server
-data/quests.xml, the same file its gameplay/quest_content.py reads). The client
+The quests come from the client's ``quests/quests.pbxml``: a KCAP pack of one
+BXML document per quest (a ``<Quests>`` around one ``<Quest>``), decoded in
+memory with DSO_Godot's dsoexp.bxml (hence --godot). Or from the server's
+data/quests.xml (DSOR_Server, read by its gameplay/quest_content.py): the same
+pack decoded by its pbxml_to_xml.py, every ``<Quest>`` under one ``<Quests>``,
+a ``packEntry`` attribute where an entry's name is not the quest's id. The client
 only needs what the server's QuestLogInfo (140) and QuestUpdate (139) leave out:
 each quest's level, type, deletability and rewards (experience, gold in copper,
 Andermant, the dynamicXP percent, the loot items with their class and rarity), whether
@@ -17,8 +22,40 @@ guard on the token its own events produce, as the server counts it
 import json
 import os
 import sqlite3
+import struct
 import sys
 import xml.etree.ElementTree as ET
+
+
+def read_quests(path, godot=None):
+    """Every <Quest>, from quests.xml or the pack (export_win32 or the file itself)."""
+    if os.path.isdir(path):
+        path = os.path.join(path, "quests", "quests.pbxml")
+    with open(path, "rb") as f:
+        data = f.read()
+    if data[:4] != b"KCAP":
+        return ET.fromstring(data).findall("Quest")
+    if godot:
+        sys.path.insert(0, godot)
+    try:
+        from dsoexp import bxml
+    except ImportError:
+        sys.exit("quest_catalog.py: a .pbxml needs --godot <DSO_Godot> (dsoexp.bxml)")
+
+    def element(node):
+        e = ET.Element(node.tag, node.attrs)
+        e.extend(map(element, node.children))
+        return e
+
+    # KCAP: version u32, then (u16 name length, name, u32 size, BXML document) each.
+    quests, at = [], 8
+    while at < len(data):
+        n = struct.unpack_from("<H", data, at)[0]
+        size = struct.unpack_from("<I", data, at + 2 + n)[0]
+        at += 6 + n
+        quests += [element(q) for q in bxml.parse(data[at:at + size]).children if q.tag == "Quest"]
+        at += size
+    return quests
 
 
 def task_target(task):
@@ -78,9 +115,9 @@ def parts(quests):
     return result
 
 
-def export_quests(xml_path, assets, database=None):
+def export_quests(source, assets, database=None, godot=None):
     quests = {}
-    every = ET.parse(xml_path).getroot().findall("Quest")
+    every = read_quests(source, godot)
     numbered = parts(every)
     for quest in every:
         tasks = quest.findall("Task")
@@ -122,5 +159,5 @@ def export_quests(xml_path, assets, database=None):
 
 if __name__ == "__main__":
     args = sys.argv[1:]
-    database = args[args.index("--database") + 1] if "--database" in args else None
-    print("quests:", export_quests(args[0], args[1], database))
+    option = lambda name: args[args.index(name) + 1] if name in args else None
+    print("quests:", export_quests(args[0], args[1], option("--database"), option("--godot")))

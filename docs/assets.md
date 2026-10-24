@@ -11,19 +11,22 @@ folder outside the repository.
 ```sh
 # <export_win32> is the unpacked client tree (models/, meshes/, maps/, textures/, ...):
 # game-data/export_win32 once the account screen has downloaded it (docs/game-data.md)
-tools/convert_assets.sh game-data/export_win32 ~/Documents/Drakensang/dsor_assets
+python3 tools/convert_assets.py game-data/export_win32 ~/Documents/Drakensang/dsor_assets
 ln -sfn ~/Documents/Drakensang/dsor_assets assets
 ```
 
-The script clones DSO_Godot if it is not given one, builds its `.crn`
-transcoder, then runs `batch_export.py` (models), `split_character.py` (the two
-player skeletons) and `export_maps.py` (maps). Logs and a per-model report land
-in `<out>/logs/`. On a 24-core machine the whole run takes a few minutes; the
-2018 graphics data comes to about 2.8 GB; decoded audio adds to this.
+The script (`tools/convert_assets.sh` runs the same) clones DSO_Godot if it is
+not given one, builds its `.crn` transcoder, then runs `batch_export.py`
+(models), `split_character.py` (the two player skeletons) and `export_maps.py`
+(maps), then the tools below. Logs and a per-model report land in
+`<out>/logs/`. On a 24-core machine with the data on a hard disk the October
+2026 build took 64 minutes (models 10, maps 9, the tools after them 35, audio 4).
 
-Natively the client reads `<workspace>/assets` (override with the `DSOR_ASSETS`
-environment variable). In the browser it fetches `assets/...` relative to the
-page, so the web server must serve the same tree next to `index.html`.
+Natively the client reads `assets/` in its install root: the workspace for a
+build inside it, else the executable's folder ([the release](release.md));
+override with the `DSOR_ASSETS` environment variable. In the browser it fetches
+`assets/...` relative to the page, so the web server must serve the same tree
+next to `index.html`.
 
 ### Audio preparation
 
@@ -182,15 +185,18 @@ conversion runs it before the other postprocessors; run it once for existing
 assets too (39 models, 90 skin nodes). It is idempotent and accepts optional
 model names.
 
-For a production `dso_server` checkout that contains
-`gameplay/pathengine_navigation.py`, export navigation with its reader:
+The navigation meshes come from the game data's PathEngine ground meshes
+(`navigation/<map>/<map>.tok`), read by `tools/navmesh_tok.py`:
 
 ```sh
-python tools/export_navmesh.py <export_win32> <assets> --server <dso_server>
+python tools/export_navmesh.py <export_win32> <assets>
 ```
 
-This writes `maps/<map>.nav.bin` in world X/Y/Z coordinates. The original
-`EXPERIMENTAL` reader remains supported when `--server` is omitted.
+This writes `maps/<map>.nav.bin` in world X/Y/Z coordinates. `--server
+<dso_server>` reads with the server's `gameplay/pathengine_navigation.py`
+instead, for comparison: both give the same bytes for all 506 maps. Like the
+server, the reader ignores the per-corner heights some triangles carry
+(`edgeNStartZ`, 1-42 cm off their vertex's height on 6% of corners).
 
 Equipment mappings must use the same static database as the server. For
 release261, regenerate them after converting the older graphics pack:

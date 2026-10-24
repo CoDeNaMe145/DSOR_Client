@@ -3,9 +3,16 @@
 //! docs/game-data.md); the strip shows how far that is, and signing in to play
 //! waits until every file is on disk.
 //!
+//! A release also converts them: with a `converter/` beside the client
+//! (docs/release.md) the strip goes on to convert the game data into `assets/`
+//! when they do not match (another build, converter or database), and the
+//! client then starts again on the new assets.
+//!
 //! `DSOR_GAME_DATA=<folder>` keeps the files elsewhere (on an SSD the unpacking
 //! is many times faster than on a hard disk), `DSOR_GAME_DATA_CDN=<url>` asks
-//! another CDN, and `DSOR_FLAGS=nogamedata` skips the check and the strip.
+//! another CDN, `DSOR_CONVERTER=<folder>` names another converter,
+//! `DSOR_FLAGS=noconvert` leaves the assets as they are and
+//! `DSOR_FLAGS=nogamedata` skips the check and the strip.
 //!
 //! Per-frame cost: the strip is repainted only when the run's progress moved,
 //! four times a second at most while bytes stream in (`UiWork::game_data_bars`);
@@ -13,13 +20,14 @@
 //! 60 frames a second, leaving the processor to the unpacking.
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use bevy::prelude::*;
 use bevy::sprite::{BorderRect, TextureSlicer};
 use bevy::winit::{UpdateMode, WinitSettings};
-use dsor_game_data::{Cdn, Options, Progress, Stage, Status, DEFAULT_CDN};
+use dsor_game_data::{Cdn, Conversion, Converter, Options, Progress, Stage, Status, DEFAULT_CDN};
 
 use super::view::{ERROR, GOLD, IVORY, MUTED};
 use super::Page;
@@ -42,6 +50,9 @@ impl Plugin for GameDataPlugin {
 #[derive(Resource)]
 pub(super) struct GameData {
     root: PathBuf,
+    /// A release's converter: the game data is converted into the assets
+    /// before play. None in a workspace, which converts by hand (docs/assets.md).
+    converter: Option<Converter>,
     /// Off with `DSOR_FLAGS=nogamedata`: no check, no strip, play never waits.
     enabled: bool,
     progress: Arc<Progress>,
@@ -50,14 +61,22 @@ pub(super) struct GameData {
     ready: bool,
     /// The window's update modes from before a download held the screen back.
     paced: Option<WinitSettings>,
+    /// Converted: this client hands over to a new one.
+    restarting: bool,
 }
 
 impl GameData {
     fn new() -> Self {
         let root = std::env::var_os("DSOR_GAME_DATA").map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../game-data")));
+            .unwrap_or_else(|| crate::install_root().join("game-data"));
         let enabled = !crate::flag("nogamedata");
-        Self { root, enabled, progress: Arc::default(), task: None, ready: !enabled, paced: None }
+        let converter = std::env::var_os("DSOR_CONVERTER").map(PathBuf::from)
+            .unwrap_or_else(|| crate::install_root().join("converter"));
+        let converter = (!crate::flag("noconvert")).then(|| Converter::find(&converter)).flatten();
+        if let Some(converter) = &converter {
+            info!("game data: converts with {} ({})", converter.folder.display(), converter.version);
+        }
+        Self { root, converter, enabled, progress: Arc::default(), task: None, ready: !enabled, paced: None, restarting: false }
     }
 
     fn start(&mut self) {
@@ -69,15 +88,29 @@ impl GameData {
         let options = Options::new(&self.root);
         let cdn = std::env::var("DSOR_GAME_DATA_CDN").unwrap_or_else(|_| DEFAULT_CDN.to_string());
         info!("game data: {} from {cdn}", self.root.display());
+        let (root, converter, assets) = (self.root.clone(), self.converter.clone(), PathBuf::from(crate::asset_root()));
         self.task = std::thread::Builder::new().name("game data".into()).spawn(move || {
             let cdn = Cdn::new(&cdn);
             // Another client checking the same folder (both just started): wait for it.
-            for _ in 0..120 {
-                match std::panic::catch_unwind(AssertUnwindSafe(|| dsor_game_data::run(&options, &cdn, &progress))) {
-                    Ok(Err(dsor_game_data::Error::Busy)) => std::thread::sleep(Duration::from_secs(1)),
-                    Ok(_) => return,
-                    Err(_) => return progress.abandon("The download stopped unexpectedly. Retry."),
+            let complete = (|| {
+                for _ in 0..120 {
+                    match std::panic::catch_unwind(AssertUnwindSafe(|| dsor_game_data::run(&options, &cdn, &progress))) {
+                        Ok(Err(dsor_game_data::Error::Busy)) => std::thread::sleep(Duration::from_secs(1)),
+                        Ok(result) => return result.is_ok(),
+                        Err(_) => {
+                            progress.abandon("The download stopped unexpectedly. Retry.");
+                            return false;
+                        }
+                    }
                 }
+                false
+            })();
+            let Some(converter) = converter.filter(|_| complete) else { return };
+            let Some(conversion) = dsor_game_data::needed(&converter, &root, &assets) else { return };
+            info!("game data: the assets need a {conversion:?} conversion");
+            let run = || dsor_game_data::convert(&converter, conversion, &root, &assets, &progress);
+            if std::panic::catch_unwind(AssertUnwindSafe(run)).is_err() {
+                progress.abandon("The conversion stopped unexpectedly. Retry.");
             }
         }).map_err(|e| warn!("game data: no thread for the download: {e}")).ok();
     }
@@ -94,13 +127,74 @@ impl GameData {
     pub(super) fn folder(&self) -> Option<PathBuf> {
         self.enabled.then(|| self.root.clone())
     }
+
+    /// A release's converter, when the check is on.
+    pub(super) fn converter(&self) -> Option<Converter> {
+        self.converter.clone().filter(|_| self.enabled)
+    }
+}
+
+/// The game tables on disk are newer than the ones this client loaded at start
+/// (a sign-in converted, even one cancelled meanwhile): play needs a new client.
+static TABLES_CHANGED: AtomicBool = AtomicBool::new(false);
+
+pub(super) fn tables_changed() -> bool {
+    TABLES_CHANGED.load(Ordering::Acquire)
+}
+
+/// Converts in the sign-in's thread (after the account server's database
+/// arrived), `report`ing each step for the account card.
+pub(super) fn convert_now(converter: &Converter, conversion: Conversion, folder: &Path, assets: &Path,
+    mut report: impl FnMut(String)) -> Result<(), String> {
+    let progress = Arc::new(Progress::default());
+    let task = {
+        let (converter, folder, assets, progress) = (converter.clone(), folder.to_path_buf(), assets.to_path_buf(), progress.clone());
+        std::thread::spawn(move || dsor_game_data::convert(&converter, conversion, &folder, &assets, &progress))
+    };
+    let mut shown = None;
+    while !task.is_finished() {
+        std::thread::sleep(Duration::from_millis(250));
+        let revision = progress.revision();
+        if shown != Some(revision) {
+            shown = Some(revision);
+            let status = progress.status();
+            report(format!("{}: {}", status.headline(), status.detail()));
+        }
+    }
+    match task.join() {
+        Ok(Ok(())) => {
+            TABLES_CHANGED.store(true, Ordering::Release);
+            Ok(())
+        }
+        Ok(Err(error)) => Err(error.summary()),
+        Err(_) => Err("The conversion stopped unexpectedly. Try again.".into()),
+    }
+}
+
+/// Starts a new client that goes on with this sign-in's session (the
+/// launcher's `--server --account --sid`), straight to the characters.
+pub(super) fn restart_signed_in(config: &crate::network::net::NetConfig) -> bool {
+    restart(signed_in(config).into_iter().map(Into::into).collect())
+}
+
+/// The arguments that start a client on `config`'s session (crate::options).
+fn signed_in(config: &crate::network::net::NetConfig) -> Vec<String> {
+    let mut args = vec!["--server".to_string(), config.login.clone(), "--account".into(), config.account.clone(),
+        "--sid".into(), config.session.clone()];
+    if let Some(api) = &config.account_api {
+        args.extend(["--account-api".into(), api.clone()]);
+    }
+    if let Some(character) = config.character {
+        args.extend(["--char".into(), character.to_string()]);
+    }
+    args
 }
 
 /// Why signing in cannot play yet: the game data is not all on disk. Saving
 /// the settings is never held up.
 pub(super) fn refusal(page: Page, data: Option<&GameData>) -> Option<&'static str> {
     (page != Page::Settings && data.is_some_and(|d| !d.ready))
-        .then_some("The game data is not complete yet. You can play once the bar at the top is full.")
+        .then_some("The game data is not ready yet. You can play once the bar at the top is full.")
 }
 
 #[derive(Component)]
@@ -179,6 +273,7 @@ struct Shown {
 
 #[allow(clippy::type_complexity)]
 fn paint(mut data: ResMut<GameData>, time: Res<Time<Real>>, mut shown: Local<Shown>, mut work: ResMut<crate::ui::UiWork>,
+    mut exit: MessageWriter<AppExit>,
     mut fills: Query<&mut Node, (With<Fill>, Without<RetryButton>)>,
     mut headlines: Query<&mut Text, (With<Headline>, Without<Detail>)>,
     mut details: Query<(&mut Text, &mut TextColor), (With<Detail>, Without<Headline>)>,
@@ -198,6 +293,14 @@ fn paint(mut data: ResMut<GameData>, time: Res<Time<Real>>, mut shown: Local<Sho
     if data.ready != ready {
         data.ready = ready;
         info!("game data: {}", if ready { "complete, play unlocked" } else { "incomplete, play locked" });
+    }
+    // Everything loaded so far (this screen's art, the tables read at start)
+    // came from the old assets: a new client starts on the new ones.
+    if status.stage == Stage::Converted && !data.restarting {
+        data.restarting = true;
+        if restart(std::env::args_os().skip(1).collect()) {
+            exit.write(AppExit::Success);
+        }
     }
     for mut node in &mut fills {
         node.width = percent(status.fraction() * 100.0);
@@ -230,9 +333,19 @@ fn set(text: &mut Text, value: &str) {
 fn tone(status: &Status) -> Color {
     match status.stage {
         Stage::Failed => ERROR,
-        Stage::Complete => IVORY,
+        Stage::Complete | Stage::Converted => IVORY,
         _ => MUTED,
     }
+}
+
+/// Starts this client again, in the same folder, with `args`.
+fn restart(args: Vec<std::ffi::OsString>) -> bool {
+    let started = std::env::current_exe().and_then(|exe| std::process::Command::new(exe).args(args).spawn());
+    match &started {
+        Ok(_) => info!("game data: converted, starting the client again"),
+        Err(e) => warn!("game data: converted, but the client cannot start again ({e}); start it yourself"),
+    }
+    started.is_ok()
 }
 
 fn retry(interactions: Query<&Interaction, (With<RetryButton>, Changed<Interaction>)>, mut data: ResMut<GameData>) {
@@ -293,7 +406,7 @@ mod tests {
         let progress = Arc::new(Progress::default());
         let mut app = App::new();
         app.add_plugins(MinimalPlugins).init_resource::<crate::ui::UiWork>()
-            .insert_resource(GameData { root: folder.clone(), enabled: true, progress: progress.clone(), task: None, ready: false, paced: None })
+            .insert_resource(GameData { root: folder.clone(), converter: None, enabled: true, progress: progress.clone(), task: None, ready: false, paced: None, restarting: false })
             .add_systems(Update, paint);
         strip(&mut app.world_mut().commands(), None, None);
         (app, progress, folder)
@@ -326,9 +439,21 @@ mod tests {
         let _ = std::fs::remove_dir_all(folder);
     }
 
+    /// docs/release.md: after the game tables are made again at sign-in, the new
+    /// client goes on with the session, straight to the characters.
+    #[test]
+    fn a_client_started_again_after_signing_in_keeps_the_session() {
+        let config = crate::network::net::NetConfig { login: "127.0.0.1:2190".into(), account: "777777".into(),
+            session: "01234567-89ab-cdef-0123-456789abcdef".into(), user: None, password: None,
+            account_api: Some("127.0.0.1:8080".into()), relay: None, character: Some(42), chat: Some("127.0.0.1:2191".into()) };
+        let args = signed_in(&config);
+        assert_eq!(args, ["--server", "127.0.0.1:2190", "--account", "777777", "--sid", "01234567-89ab-cdef-0123-456789abcdef",
+            "--account-api", "127.0.0.1:8080", "--char", "42"]);
+    }
+
     #[test]
     fn signing_in_waits_for_the_game_data_but_saving_settings_does_not() {
-        let mut data = GameData { root: PathBuf::new(), enabled: true, progress: Arc::default(), task: None, ready: false, paced: None };
+        let mut data = GameData { root: PathBuf::new(), converter: None, enabled: true, progress: Arc::default(), task: None, ready: false, paced: None, restarting: false };
         assert!(refusal(Page::Login, Some(&data)).is_some());
         assert!(refusal(Page::Register, Some(&data)).is_some());
         assert_eq!(refusal(Page::Settings, Some(&data)), None);

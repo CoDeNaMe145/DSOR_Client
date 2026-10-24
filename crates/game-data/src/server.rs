@@ -67,13 +67,7 @@ pub fn adopt_static_db(root: &Path, address: &str, session: &str) -> Result<Adop
     let target = root.join(STATIC_DB);
     let _lock = lock(root)?;
     let dir = root.join(crate::state::DIR);
-    // Installed here before: its recorded sha256 stands for it while its size holds.
-    let kept = read_overrides(&dir).remove(STATIC_DB).filter(|kept| fs::metadata(&target).is_ok_and(|m| m.len() == kept.size));
-    let local = match kept {
-        Some(kept) => Some(kept.sha256),
-        None => file_sha256(&target).ok(),
-    };
-    if local.as_deref() == Some(sha256.as_str()) {
+    if static_db_sha256(root).ok().as_deref() == Some(sha256.as_str()) {
         return Ok(Adoption::Matching { sha256 });
     }
     log::info!("game data: the server's static database ({sha256}) differs from the folder's; downloading it");
@@ -104,6 +98,19 @@ pub fn adopt_static_db(root: &Path, address: &str, session: &str) -> Result<Adop
     write_overrides(&dir, &overrides)?;
     log::info!("game data: installed the static database of {address} ({size} bytes, {sha256})");
     Ok(Adoption::Installed { sha256, size })
+}
+
+/// The sha256 of the folder's `static.db4`. One the account server installed
+/// stands for its recorded sha256 while its size holds; another is read whole
+/// (68.8 MB: a fraction of a second).
+pub fn static_db_sha256(root: &Path) -> Result<String, Error> {
+    let target = root.join(STATIC_DB);
+    let kept = read_overrides(&root.join(crate::state::DIR)).remove(STATIC_DB)
+        .filter(|kept| fs::metadata(&target).is_ok_and(|m| m.len() == kept.size));
+    match kept {
+        Some(kept) => Ok(kept.sha256),
+        None => file_sha256(&target).map_err(|e| io(&target, e)),
+    }
 }
 
 fn agent() -> ureq::Agent {

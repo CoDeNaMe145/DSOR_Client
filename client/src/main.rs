@@ -256,13 +256,38 @@ fn percent_decode(v: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Where the asset folder is. Natively it is `<workspace>/assets` (overridable
-/// with `DSOR_ASSETS`); in the browser it is `assets/` next to the page.
+/// The folder the client keeps its data in (`assets/`, `game-data/`; the
+/// release's `converter/`). A release (a `converter/` beside the executable)
+/// uses its own folder wherever it is; a build run from inside the workspace
+/// it was compiled in (`target/...`) uses that workspace, as before; any other
+/// executable (a copy) uses its own folder (docs/release.md).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn install_root() -> std::path::PathBuf {
+    static ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    ROOT.get_or_init(|| install_root_for(concat!(env!("CARGO_MANIFEST_DIR"), "/.."), std::env::current_exe().ok())).clone()
+}
+
+/// [`install_root`] for a given workspace and executable. Paths are compared
+/// resolved but returned as given: a resolved Windows path (`\\?\D:\...`)
+/// takes no forward slashes, and the asset paths are joined with them.
+#[cfg(not(target_arch = "wasm32"))]
+fn install_root_for(workspace: &str, exe: Option<std::path::PathBuf>) -> std::path::PathBuf {
+    let resolved = |p: &std::path::Path| std::fs::canonicalize(p).ok();
+    let folder = exe.as_deref().and_then(std::path::Path::parent).map(std::path::Path::to_path_buf);
+    match (resolved(std::path::Path::new(workspace)), folder) {
+        (_, Some(folder)) if folder.join("converter").is_dir() => folder,
+        (Some(ws), Some(folder)) if resolved(&folder).is_some_and(|f| f.starts_with(&ws)) => workspace.into(),
+        (_, Some(folder)) => folder,
+        (_, None) => workspace.into(),
+    }
+}
+
+/// Where the asset folder is. Natively it is `assets/` in [`install_root`]
+/// (overridable with `DSOR_ASSETS`); in the browser it is `assets/` next to the page.
 pub(crate) fn asset_root() -> String {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        std::env::var("DSOR_ASSETS")
-            .unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/../assets").to_string())
+        std::env::var("DSOR_ASSETS").unwrap_or_else(|_| install_root().join("assets").to_string_lossy().into_owned())
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -631,4 +656,33 @@ fn demo_character(
         }
     }
     *done = true;
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use std::path::PathBuf;
+
+    /// docs/release.md: a build inside its workspace keeps using the workspace's
+    /// folders; a released or copied executable keeps its data beside itself.
+    #[test]
+    fn a_released_executable_keeps_its_data_beside_it() {
+        let base = std::env::temp_dir().join(format!("dsor-install-root-{}", std::process::id()));
+        let (workspace, release) = (base.join("ws"), base.join("DSOR"));
+        for folder in [workspace.join("client"), workspace.join("target/release"), release.clone()] {
+            std::fs::create_dir_all(folder).unwrap();
+        }
+        let from = workspace.join("client/..").to_string_lossy().into_owned();
+        let built = workspace.join("target/release/dsor-client.exe");
+        assert_eq!(super::install_root_for(&from, Some(built)), PathBuf::from(&from));
+        let shipped = release.join("dsor-client.exe");
+        assert_eq!(super::install_root_for(&from, Some(shipped.clone())), release);
+        let elsewhere = base.join("gone/client/..").to_string_lossy().into_owned();
+        assert_eq!(super::install_root_for(&elsewhere, Some(shipped)), release, "the build machine's workspace is not there");
+        // A release unpacked inside the workspace (to test it) is still a release.
+        let inside = workspace.join(".local/DSOR");
+        std::fs::create_dir_all(inside.join("converter")).unwrap();
+        assert_eq!(super::install_root_for(&from, Some(inside.join("dsor-client.exe"))), inside);
+        assert_eq!(super::install_root_for(&from, None), PathBuf::from(&from));
+        let _ = std::fs::remove_dir_all(base);
+    }
 }

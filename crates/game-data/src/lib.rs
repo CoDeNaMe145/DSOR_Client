@@ -19,13 +19,15 @@
 //! exactly as the tables list it, verifies it and keeps it complete
 //! (crate::sync); the account screen runs it, and so does the `dsor-game-data`
 //! command. [`adopt_static_db`] then replaces the folder's `static.db4` with
-//! the account server's when the two differ (crate::server).
+//! the account server's when the two differ (crate::server). A release converts
+//! the data into the client's assets with its bundled converter (crate::convert).
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::time::Instant;
 
 mod cdn;
+mod convert;
 mod format;
 mod server;
 mod state;
@@ -33,7 +35,8 @@ mod sync;
 
 pub use cdn::{Cdn, Source, DEFAULT_CDN, USER_AGENT};
 pub use format::{logical_path, parse_bundle, parse_toc, unpack, Kind, Md5, Member, TocEntry};
-pub use server::{adopt_static_db, Adoption, STATIC_DB};
+pub use convert::{convert, needed, Conversion, Converter, STAMP};
+pub use server::{adopt_static_db, static_db_sha256, Adoption, STATIC_DB};
 pub use sync::{run, Options, Summary};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -50,6 +53,8 @@ pub enum Error {
     Busy,
     /// Some files could not be downloaded; `first` says why the first did not.
     Incomplete { missing: usize, first: String },
+    /// The converter could not start or stopped: why.
+    Conversion(String),
 }
 
 impl Error {
@@ -61,6 +66,7 @@ impl Error {
             Error::Io(_) => format!("The game data cannot be written: {self}"),
             Error::Busy => "Another client is updating the game data; retry when it has finished.".into(),
             Error::Incomplete { missing, .. } => format!("{missing} files could not be downloaded. Retry to fetch them."),
+            Error::Conversion(why) => format!("The conversion failed: {why}"),
         }
     }
 }
@@ -69,7 +75,7 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Error::NotFound(url) => write!(f, "{url} is not on the CDN"),
-            Error::Network(what) | Error::Corrupt(what) | Error::Io(what) => f.write_str(what),
+            Error::Network(what) | Error::Corrupt(what) | Error::Io(what) | Error::Conversion(what) => f.write_str(what),
             Error::Busy => f.write_str("another process holds the game data folder"),
             Error::Incomplete { missing, first } => write!(f, "{missing} files are still missing; the first failed with: {first}"),
         }
@@ -94,6 +100,11 @@ pub enum Stage {
     Files,
     /// Every file of `build` is on disk.
     Complete,
+    /// Converting the files into the client's assets (crate::convert): `step`,
+    /// `done` of `total` (the steps' weights).
+    Converting,
+    /// Converted: the client starts again on the new assets.
+    Converted,
     /// Stopped: `message` says why.
     Failed,
 }
@@ -116,6 +127,11 @@ pub struct Status {
     pub offline: bool,
     /// Why it failed.
     pub message: Option<String>,
+    /// Converting: everything or the database's steps, and the step running.
+    pub conversion: Option<Conversion>,
+    pub step: Option<String>,
+    /// Seconds since the stage began.
+    pub elapsed: f64,
 }
 
 impl Status {
@@ -123,7 +139,7 @@ impl Status {
     pub fn fraction(&self) -> f32 {
         let part = |done: u64, total: u64| if total == 0 { 0.0 } else { (done as f64 / total as f64).min(1.0) as f32 };
         match self.stage {
-            Stage::Complete => 1.0,
+            Stage::Complete | Stage::Converted => 1.0,
             Stage::Bundles if self.bytes_total > 0 => part(self.bytes, self.bytes_total),
             _ => part(self.done, self.total),
         }
@@ -137,6 +153,9 @@ impl Status {
             Stage::Bundles => "Downloading the game data",
             Stage::Files => "Downloading missing files",
             Stage::Complete => "Game data ready",
+            Stage::Converting if self.conversion == Some(Conversion::Database) => "Updating the game tables",
+            Stage::Converting => "Converting the game data",
+            Stage::Converted => "Game data converted",
             Stage::Failed => "Game data incomplete",
         }
     }
@@ -169,6 +188,18 @@ impl Status {
                 let note = if self.offline { " (offline: not checked for updates)" } else { "" };
                 format!("{} files, build {build}{note}", count(self.files))
             }
+            Stage::Converting => {
+                let percent = (self.fraction() * 100.0).round();
+                let so_far = match (self.elapsed / 60.0) as u64 {
+                    0 => "under a minute so far".to_string(),
+                    minutes => format!("{minutes} min so far"),
+                };
+                match self.step.as_deref().filter(|s| !s.is_empty()) {
+                    Some(step) => format!("{step} ({percent}%), {so_far}"),
+                    None => "Starting the converter...".into(),
+                }
+            }
+            Stage::Converted => "Starting again with the new assets...".into(),
             Stage::Failed => self.message.clone().unwrap_or_default(),
         }
     }
@@ -232,6 +263,7 @@ impl Progress {
         status.bytes = self.bytes.load(Ordering::Relaxed);
         let seconds = inner.started.map_or(0.0, |t| t.elapsed().as_secs_f64());
         status.rate = if seconds > 2.0 { status.bytes as f64 / seconds } else { 0.0 };
+        status.elapsed = seconds;
         status
     }
 
@@ -267,6 +299,22 @@ impl Progress {
     pub(crate) fn unreceived(&self, n: u64) {
         self.bytes.fetch_sub(n, Ordering::Relaxed);
         self.bump();
+    }
+
+    /// A conversion begins.
+    pub(crate) fn converting(&self, conversion: Conversion) {
+        self.stage(Stage::Converting, 0);
+        self.update(|status| (status.conversion, status.step) = (Some(conversion), None));
+    }
+
+    /// The converter moved on to `step`; `done` of `total` are the steps' weights.
+    pub(crate) fn conversion_step(&self, done: u64, total: u64, step: &str) {
+        self.done.store(done, Ordering::Relaxed);
+        self.update(|status| (status.total, status.step) = (total, Some(step.to_string())));
+    }
+
+    pub(crate) fn converted(&self) {
+        self.update(|status| (status.stage, status.message) = (Stage::Converted, None));
     }
 
     /// Ends a run that could not report its own end (its thread panicked).
@@ -307,6 +355,10 @@ mod tests {
         status = Status { stage: Stage::Complete, files: 164_026, build: Md5::parse("6a8b704d041044688ebee52da5b48b55"), offline: true, ..Status::default() };
         assert_eq!(status.detail(), "164,026 files, build 6a8b704d (offline: not checked for updates)");
         assert_eq!(status.fraction(), 1.0);
+        status = Status { stage: Stage::Converting, done: 30, total: 120, step: Some("models".into()), elapsed: 750.0, conversion: Some(Conversion::Full), ..Status::default() };
+        assert_eq!((status.headline(), status.detail().as_str()), ("Converting the game data", "models (25%), 12 min so far"));
+        status = Status { stage: Stage::Converting, conversion: Some(Conversion::Database), ..Status::default() };
+        assert_eq!((status.headline(), status.detail().as_str()), ("Updating the game tables", "Starting the converter..."));
         assert_eq!(remaining(7_500.0), "about 2 h 05 min left");
         assert_eq!(count(999), "999");
         assert_eq!(count(1_000), "1,000");

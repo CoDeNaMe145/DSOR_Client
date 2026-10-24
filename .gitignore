@@ -1,8 +1,12 @@
 /target
 /dist
 # Game data belongs to the publisher: converted assets are generated locally by
-# tools/convert_assets.sh and never committed.
+# tools/convert_assets.py and never committed (with --replace it works in
+# assets.partial and keeps the old tree as assets.old until the swap).
 /assets
+/assets.partial
+/assets.old
+/.level-cache
 # The original client's data, which the account screen downloads (crates/game-data).
 /game-data
 *.glb

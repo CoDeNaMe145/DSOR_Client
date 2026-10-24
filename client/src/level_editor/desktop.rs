@@ -85,10 +85,7 @@ enum Action {
 }
 impl State {
     pub fn from_args() -> DataResult<Self> {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .to_owned();
+        let root = crate::install_root();
         let mut p = Project::load(&root)?;
         let mut map = None;
         let mut args = std::env::args().skip_while(|a| a != "--editor").skip(1);

@@ -1,0 +1,50 @@
+name: Release
+
+# The Windows release (docs/release.md): the client and the converter that
+# turns the game data the client downloads into its assets. A tag v* publishes
+# it as a GitHub release; a manual run only keeps the zip as an artifact.
+on:
+  push:
+    tags: [ "v*" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    # Fetches Pillow and numpy for the release's own (embeddable) Python.
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+    - uses: Swatinem/rust-cache@v2
+    # Without DLSS: its SDK is not in the repository (.cargo/config.toml points
+    # at a local copy). A local tools/release/package.ps1 run includes it.
+    - name: Package
+      shell: pwsh
+      run: |
+        $version = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { "dev-$($env:GITHUB_SHA.Substring(0, 7))" }
+        ./tools/release/package.ps1 -Version $version -NoDlss -HostPython python -Out dist
+    - uses: actions/upload-artifact@v4
+      with:
+        name: windows-release
+        path: dist/*.zip
+    # A release made by hand for the tag (tools/release/package.ps1 with DLSS,
+    # uploaded with gh) stays as it is: this build is then only the artifact.
+    - name: Publish
+      if: github.ref_type == 'tag'
+      shell: pwsh
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        gh release view $env:GITHUB_REF_NAME *> $null
+        if ($LASTEXITCODE -eq 0) { "release $env:GITHUB_REF_NAME exists: kept as it is"; exit 0 }
+        gh release create $env:GITHUB_REF_NAME (Get-ChildItem dist/*.zip).FullName --title $env:GITHUB_REF_NAME --notes "Windows client and asset converter. Unzip, start dsor-client.exe; it downloads and converts the game data itself (README.txt)."

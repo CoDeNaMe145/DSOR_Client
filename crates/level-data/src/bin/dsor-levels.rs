@@ -8,9 +8,22 @@ fn main() {
         std::process::exit(1);
     }
 }
+/// A release's `converter/bin` (`converter/VERSION` beside it) or any folder
+/// outside the workspace it was built in: the executable's folder, the
+/// conversion then passing every path (`--overrides`, `--cache`, ...). Run
+/// from inside its workspace (`target/...`): the workspace.
+fn root() -> PathBuf {
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let folder = std::env::current_exe().ok().and_then(|e| e.parent().map(PathBuf::from));
+    match (std::fs::canonicalize(&workspace).ok(), folder) {
+        (_, Some(folder)) if folder.parent().is_some_and(|c| c.join("VERSION").is_file()) => folder,
+        (Some(ws), Some(folder)) if std::fs::canonicalize(&folder).is_ok_and(|f| f.starts_with(&ws)) => workspace,
+        (_, Some(folder)) => folder,
+        (_, None) => workspace,
+    }
+}
 fn run() -> Result<()> {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let mut project = Project::load(root)?;
+    let mut project = Project::load(root())?;
     let mut args = std::env::args().skip(1).peekable();
     let command = if args
         .peek()

@@ -12,16 +12,19 @@ The result is the `export_win32/` tree the conversion reads, exactly as the
 CDN's tables list it, with the database at `export_win32/db/static.db4`:
 
 ```sh
-tools/convert_assets.sh game-data/export_win32 <out>   # then point assets/ at <out>
+python3 tools/convert_assets.py game-data/export_win32 <out>   # then point assets/ at <out>
 ```
+
+A [release](release.md) does that itself: once the folder is complete, the
+strip goes on to convert it into `assets/` and the client starts again.
 
 ## Running it
 
 - **The client**: start it without arguments (or `Play.cmd`). The strip shows
   the stage, the bar, the bytes, the speed and the time left. On a failure it
   says why and offers **Retry**. Play stays locked (the button is dimmed and
-  refuses) until the strip says *Game data ready*. Saving the settings is never
-  held up. A complete folder is checked again at every start, which takes
+  refuses) until the strip says *Game data ready* (in a release, until the
+  assets are converted too). Saving the settings is never held up. A complete folder is checked again at every start, which takes
   about a second.
 - **The command line**, same code, no window:
   `cargo run --release -p dsor-game-data -- [<folder>] [--downloads N] [--writers N] [--cdn URL]`
@@ -32,6 +35,7 @@ tools/convert_assets.sh game-data/export_win32 <out>   # then point assets/ at <
 | `DSOR_GAME_DATA=<folder>` | keep the game data elsewhere (a folder that holds `export_win32/`) |
 | `DSOR_GAME_DATA_CDN=<url>` | another CDN or mirror (default `https://heredur.drakensang.com/cdndata`) |
 | `DSOR_FLAGS=nogamedata` | no check, no strip, play never waits: for work that does not need the files |
+| `DSOR_CONVERTER=<folder>` | a release's converter elsewhere; `DSOR_FLAGS=noconvert` converts nothing ([the release](release.md)) |
 
 Only the account screen checks. The map viewer, `--play` and the direct
 `--server ... --sid` start do not.
@@ -112,9 +116,11 @@ The account card says *Checking the server's game database...* meanwhile. A
 failure is logged (`game data: the server's static database: ...`) and play
 goes on: the client reads no `static.db4` while it runs. The conversion is
 what reads the database (status effects, skills, items, equipment), so after a
-new one arrives, rerun the generators over `game-data/export_win32`, or the
-whole `tools/convert_assets.sh`. Only the dsor client asks these endpoints: the
-official client, its launcher and everything they call are unchanged.
+new one arrives, rerun the generators over `game-data/export_win32`
+(`tools/convert_assets.py ... --database-only` reruns just those; a release
+does it at sign-in, see [the release](release.md#the-servers-database-at-sign-in)).
+Only the dsor client asks these endpoints: the official client, its launcher
+and everything they call are unchanged.
 
 Measured on 2026-10-24 against the live tree's account service: the first
 `/api/content` hashed and packed the server's database in 0.6 s. The sign-in

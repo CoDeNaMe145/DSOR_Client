@@ -88,7 +88,7 @@ enum Page { Login, Register, Settings }
 #[derive(Component)] struct Root;
 #[derive(Component, Clone, Copy)]
 enum Action { Field(usize), Play, Register, Settings, Back, Cancel, Reveal, Retry }
-enum Reply { Status(Value), Authenticated(net::NetConfig), Progress(&'static str) }
+enum Reply { Status(Value), Authenticated(net::NetConfig), Progress(String), Restart(net::NetConfig) }
 struct Job { receiver: Mutex<mpsc::Receiver<Result<Reply, String>>>, authentication: bool }
 
 #[derive(Resource)]
@@ -171,6 +171,7 @@ impl Form {
         let login_override = self.login_override.clone();
         let character_id = self.character_id;
         let game_data = data.and_then(game_data::GameData::folder);
+        let converter = data.and_then(game_data::GameData::converter);
         self.save();
         self.message(if register { "Creating your account..." } else { "Signing in..." }, false);
         let (tx, rx) = mpsc::channel();
@@ -187,7 +188,7 @@ impl Form {
                 // game data's (dsor_game_data::adopt_static_db). The client reads none
                 // at run time, so a failure here is logged and play goes on.
                 if let Some(folder) = &game_data {
-                    let _ = progress.send(Ok(Reply::Progress("Checking the server's game database...")));
+                    let _ = progress.send(Ok(Reply::Progress("Checking the server's game database...".into())));
                     match dsor_game_data::adopt_static_db(folder, &address, &config.session) {
                         Ok(adopted) => info!("game data: the server's static database: {adopted:?}"),
                         Err(error) => warn!("game data: the server's static database: {error}"),
@@ -196,7 +197,19 @@ impl Form {
                 // DNS may block, so resolve here rather than in the rendering thread.
                 let target = dsor_proto::session::resolve(&config.login, 2190)
                     .ok_or("The game server address could not be resolved.")?;
-                Ok(Reply::Authenticated(net::NetConfig { login: target.to_string(), ..config }))
+                let config = net::NetConfig { login: target.to_string(), ..config };
+                // A release converts: the tables made from the database are made
+                // again from the server's, and a client started on them goes on
+                // with this session (this one loaded the old ones at start).
+                if let (Some(folder), Some(converter)) = (&game_data, &converter) {
+                    let assets = std::path::PathBuf::from(crate::asset_root());
+                    if let Some(conversion) = dsor_game_data::needed(converter, folder, &assets) {
+                        game_data::convert_now(converter, conversion, folder, &assets, |step| {
+                            let _ = progress.send(Ok(Reply::Progress(step)));
+                        })?;
+                    }
+                }
+                Ok(if game_data::tables_changed() { Reply::Restart(config) } else { Reply::Authenticated(config) })
             })();
             let _ = tx.send(result);
         });
@@ -359,7 +372,13 @@ fn poll(world: &mut World) {
                     form.message(format!("{} is online", doc["name"].as_str().unwrap_or("Account server")), false);
                 } else { form.message("This address is not a DSO account server. Check Settings.", true); }
             }
-            Ok(Reply::Authenticated(config)) => {
+            // The game tables were made again: a new client plays them. If it
+            // cannot start, this one plays on with the tables it loaded.
+            Ok(Reply::Restart(config)) if game_data::restart_signed_in(&config) => {
+                world.write_message(AppExit::Success);
+                world.resource_mut::<Form>().message("Game tables updated. Starting again...", false);
+            }
+            Ok(Reply::Restart(config) | Reply::Authenticated(config)) => {
                 world.resource_mut::<Options>().net = Some(config.clone());
                 world.insert_resource(config.clone());
                 net::start_session(world, config);

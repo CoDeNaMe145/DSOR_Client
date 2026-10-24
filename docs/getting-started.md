@@ -4,9 +4,11 @@
 
 Run the commands below from the repository root unless a step says otherwise.
 
-The client needs the 2018 game's own files, converted to glTF/PNG by
+The client needs the game's own files, converted to glTF/PNG by
 [DSO_Godot](https://github.com/DSO-Reconstruction/DSO_Godot). They are generated
-locally into `assets/` and are never committed (see `tools/convert_assets.sh`).
+locally into `assets/` and are never committed (see `tools/convert_assets.py`).
+To play without building anything, use the [Windows release](release.md): it
+downloads and converts the game data by itself.
 
 ## 1. Prerequisites (once)
 
@@ -30,27 +32,29 @@ the client's account screen opens, or with
 Convert its `export_win32` (or any other unpacked client tree):
 
 ```sh
-tools/convert_assets.sh game-data/export_win32 ~/Documents/Drakensang/dsor_assets
+python3 tools/convert_assets.py game-data/export_win32 ~/Documents/Drakensang/dsor_assets
 ln -sfn ~/Documents/Drakensang/dsor_assets assets
 ```
 
-This prepares audio banks as WAVs, event bindings and map audio, runs DSO_Godot, then
-the tools of `tools/` in order (render states, cube
-maps, ambience, skills, NPCs, exits, interface windows, level decorations). With
-`DSOR_SERVER=<DSOR_Server checkout>` it also exports the navigation meshes
-(`maps/<map>.nav.bin`, read with the server's PathEngine parser). Without them the
-player walks through walls and skills can be aimed anywhere; to add them to
-assets converted without: `python3 tools/export_navmesh.py <export_win32> <assets>
---server <DSOR_Server>`.
+(`tools/convert_assets.sh` runs the same; on Windows run the `.py` with a Python
+that has Pillow and numpy, no shell needed.) This prepares audio banks as WAVs,
+event bindings and map audio, runs DSO_Godot, then the tools of `tools/` in order
+(render states, cube maps, ambience, skills, NPCs, exits, interface windows,
+level decorations), the navigation meshes (`maps/<map>.nav.bin`, from the game
+data's PathEngine `.tok` files with `tools/navmesh_tok.py`), the quest catalogue
+(from the game data's `quests.pbxml`) and the KTX2 textures, and copies Tahoma
+from the system's fonts. No server checkout is needed. It prints each step's
+time; `<out>/conversion.json` records what was converted ([the release](release.md)).
 See the [asset reference](assets.md) for conversion details and file formats.
 Existing packs that already contain decoded audio only need
 `python3 tools/export_audio_runtime.py <export_win32> <assets>` for playback.
 Volume and mute controls are under Settings → Audio; browser playback starts
 after a click or key press.
 
-`convert_assets.sh` now runs these tools too (character masks, monsters,
+The conversion runs these tools too (character masks, monsters,
 picking, statistics, combat texts, the debug map, plus the selection screen
-and the trade window); only the font is copied by hand. To refresh an
+and the trade window) and copies the font. After only `static.db4` changed,
+`--database-only` reruns the steps that read it over an existing pack. To refresh an
 existing pack without a full conversion, run them directly (same two paths,
 `<export_win32>` then `<assets>`):
 
@@ -106,20 +110,18 @@ write that one under `global/export_win32/db/`: move it into
 `export_win32/db/`), `_toc/` the bundles' listings. The client's own download
 (`game-data/`, [the game data](game-data.md)) makes the same tree from the
 CDN's current build, the database already in place. Convert into a new folder,
-then put it in place of `assets` (keep `fonts/`, which the conversion does not
-make):
+then put it in place of `assets`:
 
-```sh
-# Git Bash. The script has Windows line endings (igncr); python3 must be one
-# with Pillow and numpy (Anaconda's); the level tool must be built beforehand
-# (cargo build --release -p dsor-level-data --bin dsor-levels) since bash has
-# no Visual Studio linker.
-env SHELLOPTS=igncr DSOR_VGMSTREAM=.local/vgmstream/vgmstream-cli.exe DSOR_SERVER=.local/dso_server bash tools/convert_assets.sh /d/dso-client-october-26/export_win32 .local/assets-oct26 .local/DSO_Godot
+```powershell
+# A Python with Pillow and numpy (Anaconda's); cargo on PATH with the Visual
+# Studio linker (tools/Build-Client.ps1's setup) for the level and texture tools.
+C:\ProgramData\anaconda3\python.exe tools/convert_assets.py D:\dso-client-october-26\export_win32 .local\assets-oct26 .local\DSO_Godot
 ```
 
 The script runs every generator the client loads (the extra tools listed
-above included). The quest catalogue keeps the server's `quests.xml` but takes
-its texts from the client's database.
+above included). The quest catalogue comes from the data's own
+`quests.pbxml` (the server's `quests.xml` is that pack decoded, from an older
+build) with its texts from the client's database.
 
 ### After pulling new code
 
