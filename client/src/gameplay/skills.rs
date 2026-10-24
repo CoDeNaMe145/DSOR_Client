@@ -766,7 +766,13 @@ fn perform(
         });
     }
     if skill.kind == "Teleport" {
-        commands.spawn(Pending { after: skill.hit_frame as f32 / FPS / rate, what: PendingKind::Teleport { who: actor, to: point } });
+        // On its hit tick after LoopStartFrame, as the ShiftedSkill it is sent as
+        // (start + LoopStartFrame + HitFrame, 0x946F17): the mage's teleport moves
+        // at frame 4, 0.16 s, after its short cast.
+        // FAILURE (2026-10-24): it moved at HitFrame (0.04 s), "instant" next to the
+        //   original's short cast (the user's release261_192 recording).
+        // UNVERIFIED: the Shifted rule for Teleport skills.
+        commands.spawn(Pending { after: skill.loop_start as f32 / FPS / rate + shifted_hit(skill, rate), what: PendingKind::Teleport { who: actor, to: point } });
     }
     if !skill.impact.is_empty() && skill.impact != "empty_sequence" {
         let impact_at = match skill.kind.as_str() {
@@ -776,7 +782,7 @@ fn perform(
         // Shifted and Jump: on its hit tick, start + LoopStartFrame + HitFrame
         // (0x946F17; lightning strike 44, meteor 65, enraging leap 15).
         let after = match skill.kind.as_str() {
-            "Shifted" | "Jump" => skill.loop_start as f32 / FPS / rate + shifted_hit(skill, rate),
+            "Shifted" | "Jump" | "Teleport" => skill.loop_start as f32 / FPS / rate + shifted_hit(skill, rate),
             _ => skill.hit_frame as f32 / FPS / rate,
         };
         // A bullet's impact is drawn where it ends (fly_bullets), a charge's where
@@ -1008,16 +1014,6 @@ fn cast_input(
     // caller 0x4C1553 casts after approaching, 0x4BDEC4); see beyond_reach.
     let targeted = matches!(skill.kind.as_str(), "MeleeTarget" | "RangedTarget");
     let target_actor = if targeted { aimed.map(|(_, _, a, ..)| a) } else { None };
-    // A target skill without a target does not go out: the server drops it before
-    // any effect (production services/player_combat.py: "Target loss is a no-op
-    // before mount, resource, cooldown, or hit side effects"), so it only drew a
-    // swing that hit nothing, and on a mount it neither dismounted nor struck.
-    // FAILURE (2026-10-24): "I can still attack while mounted"; "I seem to miss a
-    //   lot of my attacks" (swings with no damage).
-    // UNVERIFIED: whether the original swings into the air (Shift) without a target.
-    if targeted && target_actor.is_none() {
-        return;
-    }
     if let (true, Some((e, at, _, radius, _, footprint))) = (targeted, aimed) {
         if beyond_reach(skill, tf.translation, at, radius, footprint) {
             player.target = Some(at);
@@ -1073,11 +1069,18 @@ fn cast_input(
     let step = [dir.x * speed, 0.0, dir.z * speed, 0.0];
     let points = vec![point.to_array()];
     let command = match skill.kind.as_str() {
-        // No target is 0 for the release261 server (it drops such a cast,
-        // production services/player_combat.py:585-590), not 0xFFFFFFFF.
-        "MeleeTarget" | "RangedTarget" => {
+        "MeleeTarget" | "RangedTarget" if target_actor.is_some() => {
             ClientCommand::TargetSkill(combat::TargetSkill { base, target: target_actor.unwrap_or(0), server: None })
         }
+        // Without a target (Shift, or the cursor off every monster) it goes out as a
+        // plain skill: the original swings into the air and dismounts (the user, on
+        // release261_192). TargetSkill with target 0 is dropped by the server before
+        // any effect ("target loss is a no-op before mount, resource, cooldown, or
+        // hit side effects").
+        // FAILURE (2026-10-24): it went out as TargetSkill 0: a swing that struck
+        //   nothing and, mounted, did not dismount ("I can still attack while
+        //   mounted"; "I seem to miss a lot of my attacks").
+        "MeleeTarget" | "RangedTarget" => ClientCommand::Skill(combat::Skill { base, server: None }),
         "Ranged" => ClientCommand::BulletSkill(combat::BulletSkill { base, step, orbit: 0, server: None }),
         "RangedTargetPoint" => {
             ClientCommand::TargetPointBulletSkill(combat::TargetPointBulletSkill { base, step, orbit: 0, points, server: None })
