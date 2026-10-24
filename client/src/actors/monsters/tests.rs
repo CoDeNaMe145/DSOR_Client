@@ -433,14 +433,19 @@ fn a_kill_with_the_despawn_bit_plays_the_despawn_instead_of_the_death() {
 
 #[test]
 fn the_monster_pressed_on_stays_the_target_while_the_button_is_held() {
-    let (a, b) = (Entity::from_raw_u32(1).unwrap(), Entity::from_raw_u32(2).unwrap());
+    let (a, b, c) = (Entity::from_raw_u32(1).unwrap(), Entity::from_raw_u32(2).unwrap(), Entity::from_raw_u32(3).unwrap());
     let alive = |e: Entity| e != b;
     // Pressed on a: held; the cursor slips off, or onto another: still a.
-    assert_eq!(held_target(true, true, None, Some(a), alive), Some(a));
-    assert_eq!(held_target(true, false, Some(a), None, alive), Some(a));
-    assert_eq!(held_target(true, false, Some(a), Some(b), alive), Some(a));
-    // Released, or pressed on the ground: nothing held; a dead one is dropped.
-    assert_eq!(held_target(false, false, Some(a), Some(a), alive), None);
-    assert_eq!(held_target(true, true, Some(a), None, alive), None);
-    assert_eq!(held_target(true, false, Some(b), None, alive), None);
+    assert_eq!(held_target(true, true, (None, false), Some(a), alive), (Some(a), true));
+    assert_eq!(held_target(true, false, (Some(a), true), None, alive), (Some(a), true));
+    assert_eq!(held_target(true, false, (Some(a), true), Some(c), alive), (Some(a), true));
+    // Released, or pressed on the ground: nothing held, nor taken on later.
+    assert_eq!(held_target(false, false, (Some(a), true), Some(a), alive), (None, false));
+    assert_eq!(held_target(true, true, (Some(a), true), None, alive), (None, false));
+    assert_eq!(held_target(true, false, (None, false), Some(a), alive), (None, false));
+    // Dead while held (b): dropped, and the next monster under the cursor is held.
+    assert_eq!(held_target(true, false, (Some(b), true), None, alive), (None, true));
+    assert_eq!(held_target(true, false, (Some(b), true), Some(c), alive), (Some(c), true));
+    assert_eq!(held_target(true, false, (None, true), Some(c), alive), (Some(c), true));
+    assert_eq!(held_target(true, false, (Some(c), true), Some(a), alive), (Some(c), true));
 }

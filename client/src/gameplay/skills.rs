@@ -1004,7 +1004,7 @@ fn cast_input(
     mut cooldowns: ResMut<SkillCooldowns>,
     (hovered, monsters, mut debug_monsters, ui, mut ui_skills, settings, stats, resource_max): (
         Res<crate::actors::monsters::Hovered>,
-        Query<(&GlobalTransform, &crate::actors::monsters::Monster, &CharacterAnim)>,
+        Query<(Entity, &GlobalTransform, &crate::actors::monsters::Monster, &CharacterAnim)>,
         ResMut<crate::actors::monsters::DebugMonsters>,
         Res<crate::ui::input::UiInput>,
         ResMut<crate::ui::SkillClicks>,
@@ -1039,30 +1039,38 @@ fn cast_input(
     // as in the game, paced by the cast, the cooldown and the resource: Shift or a
     // monster under the cursor with the left button, the right button anywhere
     // ("je peux pas rester appuye sur clique droit pour lancer un sort").
-    let slot = if !ui.blocks(MouseButton::Left) && (shift || (settings.current.attack_hovered && hovered.0.is_some())) && buttons.pressed(MouseButton::Left) {
+    let left = !ui.blocks(MouseButton::Left) && (shift || (settings.current.attack_hovered && hovered.0.is_some())) && buttons.pressed(MouseButton::Left);
+    let right = !ui.blocks(MouseButton::Right) && buttons.pressed(MouseButton::Right);
+    let slot = if left {
         Some(0)
-    } else if !ui.blocks(MouseButton::Right) && buttons.pressed(MouseButton::Right) {
+    } else if right {
         Some(1)
     } else {
         settings.current.slot_pressed(&keys)
     };
+    // A mouse button held without Shift: a melee swing finds a monster in reach
+    // when none is under the cursor (below).
+    let by_mouse = (left || right) && !shift;
     // DSOR_TEST_SLOT=<slot>: that quick slot pressed all the time (testing online
     // without a keyboard; the cooldowns pace it).
     let slot = slot.or(clicked_slot).or_else(|| std::env::var("DSOR_TEST_SLOT").ok().and_then(|v| v.parse().ok()));
-    let (slot, aimed) = match slot {
+    let (slot, aimed, from_queue) = match slot {
         Some(s) => {
             *queued = None;
-            (s, hovered.0.map(|(e, _)| e))
+            (s, hovered.0.map(|(e, _)| e), false)
         }
         None => match *queued {
-            Some((s, e)) => (s, Some(e)),
+            Some((s, e)) => (s, Some(e), true),
             None => return,
         },
     };
     // A dead or vanished monster is no target.
-    let aimed = aimed.and_then(|e| monsters.get(e).ok().filter(|(_, m, a)| m.is_alive(a)).map(|(at, m, _)| (e, at.translation(), m.actor, m.radius, m.height, m.footprint)));
+    let aimed = aimed.and_then(|e| monsters.get(e).ok().filter(|(_, _, m, a)| m.is_alive(a)).map(|(_, at, m, _)| (e, at.translation(), m.actor, m.radius, m.height, m.footprint)));
     if aimed.is_none() {
         *queued = None;
+        // The monster being walked to died or vanished, no button down: nothing
+        // to strike (it swung into the air at the cursor).
+        if from_queue { return; }
     }
     let Ok((entity, mut tf, mut player, character)) = players.single_mut() else { return };
     if player.casting > 0.0 || time.elapsed_secs_f64() < *next_cast {
@@ -1108,6 +1116,26 @@ fn cast_input(
     // caller 0x4C1553 casts after approaching, 0x4BDEC4); see beyond_reach. So
     // does a melee skill with no target of its own (approaches).
     let targeted = matches!(skill.kind.as_str(), "MeleeTarget" | "RangedTarget");
+    // A melee swing held on a mouse button with no monster under the cursor (the
+    // one just struck died and the cursor rests on its body, or slipped off beside
+    // a pack): the live monster already within its reach nearest the cursor, so
+    // the swing strikes it instead of the air. Never a walk to one.
+    // FAILURE (2026-10-24): 36 of 144 Rage Attacks in 25 s went out with no target,
+    //   all in runs of 1-4 right after a kill, the next monster beside the warrior
+    //   ("if the monster is highlighted, where could my cursor be?").
+    // UNVERIFIED: the original's rule for a held attack whose target died.
+    let aimed = match aimed {
+        None if skill.kind == "MeleeTarget" && by_mouse => {
+            let near = monsters.iter()
+                .filter(|(_, _, m, a)| m.targetable && m.is_alive(a))
+                .map(|(e, at, m, _)| (e, at.translation(), m.actor, m.radius, m.height, m.footprint))
+                .filter(|&(_, at, _, radius, _, footprint)| !beyond_reach(skill, tf.translation, at, radius, footprint))
+                .min_by(|a, b| a.1.distance_squared(point).total_cmp(&b.1.distance_squared(point)));
+            if let Some((_, at, ..)) = near { point = at; }
+            near
+        }
+        aimed => aimed,
+    };
     let target_actor = if targeted { aimed.map(|(_, _, a, ..)| a) } else { None };
     if let (true, Some((e, at, _, radius, _, footprint))) = (approaches(skill), aimed) {
         if beyond_reach(skill, tf.translation, at, radius, footprint) {
@@ -1210,7 +1238,7 @@ fn cast_input(
     if let Some(r) = net.resource.as_mut() {
         *r -= cost;
     }
-    info!("cast {} (wire {wire}, {}) at {point:?}", skill.id, skill.kind);
+    info!("cast {} (wire {wire}, {}) at {point:?}, target {target_actor:?}", skill.id, skill.kind);
     if net.offline {
         offline_landing(&mut net, &mut debug_monsters, skill, tf.translation, facing, point, aimed.map(|(_, _, a, ..)| a));
     }
