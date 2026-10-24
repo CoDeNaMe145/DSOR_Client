@@ -940,6 +940,15 @@ pub fn skill_cost_by_id(data: &SkillData, tables: &Assets<SkillTable>, id: &str,
     tables.get(&data.skills)?.0.get(wire).map(|s| skill_cost(s, resource_max))
 }
 
+/// Where to walk next to come at `goal` on the navigation mesh: `goal` itself
+/// (or the walkable ground nearest it) when the way is straight, else the
+/// route's first turn. None without a route.
+fn approach(mesh: &NavMesh, from: Vec3, goal: Vec3) -> Option<Vec3> {
+    let goal = mesh.nearest(goal, 3.0).unwrap_or(goal);
+    if mesh.walkable_segment(from, goal) { return Some(goal); }
+    mesh.path(from, goal).and_then(|p| p.first().copied())
+}
+
 /// Whether a targeted cast must walk closer first. Targeted melee as the release261
 /// client measures it (Skills::ClientSkillValidator::Validate 0x14032bed0, range
 /// check 0x140a1b750, DSOR_Server docs/MELEE_TARGETING.md): the 3D centre distance
@@ -1007,7 +1016,7 @@ fn cast_input(
     // cast once the walk brings it in reach. next_cast: when the last cast lets
     // the next one go (its SkillUnblockFrame), apart from the movement hold
     // (LocalPlayer::casting, its MotionUnblockFrame).
-    (mut queued, mut next_cast): (Local<Option<(usize, Entity)>>, Local<f64>),
+    (mut queued, mut next_cast, mut told, mut route): (Local<Option<(usize, Entity)>>, Local<f64>, Local<f64>, Local<Option<(Entity, Vec3, f64)>>),
 ) {
     let _profile = crate::diagnostics::hud::FrameSpan::new("skills::cast_input");
     let clicked_slot = ui_skills.0.take();
@@ -1069,7 +1078,11 @@ fn cast_input(
     // "refused: mage_fireball_default costs 40.0 and only 28.0 is left").
     let now = time.elapsed_secs_f64();
     let key = cooldown_key(skill).to_owned();
-    if cooldowns.0.get(&key).is_some_and(|&(_, ready)| now < ready) {
+    // Why a held attack does not go out, at most once a second (the client log:
+    // "skill X held: ..."), for the user's "I attack and nothing hits".
+    let mut tell = |why: String| if now >= *told { *told = now + 1.0; info!("skill {} held: {why}", skill.id); };
+    if let Some(&(_, ready)) = cooldowns.0.get(&key).filter(|&&(_, ready)| now < ready) {
+        tell(format!("cooling down, {:.2} s left", ready - now));
         return;
     }
     // ResourceCost is a fraction of the maximum (rage, mana, focus, steam alike):
@@ -1080,7 +1093,8 @@ fn cast_input(
     // free cast inside Banner of War drained the shown rage (the server took
     // nothing and, paying nothing, sent no correction).
     let cost = skill_cost(skill, resource_max.0) * stats.skill_cost_factor();
-    if net.resource.is_some_and(|r| r + 1e-3 < cost) {
+    if let Some(r) = net.resource.filter(|r| r + 1e-3 < cost) {
+        tell(format!("costs {cost:.1}, only {r:.1} left"));
         return;
     }
     let (Ok(window), Ok((camera, cam_tf))) = (windows.single(), cameras.single()) else { return };
@@ -1097,7 +1111,27 @@ fn cast_input(
     let target_actor = if targeted { aimed.map(|(_, _, a, ..)| a) } else { None };
     if let (true, Some((e, at, _, radius, _, footprint))) = (approaches(skill), aimed) {
         if beyond_reach(skill, tf.translation, at, radius, footprint) {
-            player.target = Some(at);
+            tell(format!("walking into reach: {:.2} m (flat {:.2}, height {:.2}) from the monster, footprint {:?}, capsule {:.2}, range {:.2}",
+                tf.translation.distance(at), Vec2::new(at.x - tf.translation.x, at.z - tf.translation.z).length(), at.y - tf.translation.y,
+                footprint, radius, skill.range));
+            // Around what stands between (a bench, the exit stone): the route's next
+            // turn, to the walkable ground nearest the monster when it stands off
+            // the mesh. A straight walk stopped at the obstacle and stood there,
+            // never in reach and never striking.
+            // FAILURE (2026-10-24): "I still walk and I still don't hit": 4 s against
+            //   a Bog Beast by the exit stone, not one cast sent; offline the warrior
+            //   stopped 3.64 m from a beast behind a bench (reach 2.80).
+            let here = tf.translation;
+            let fresh = route.filter(|(of, turn, until)| *of == e && now < *until && Vec2::new(turn.x - here.x, turn.z - here.z).length() > 0.3);
+            let turn = match fresh {
+                Some((_, turn, _)) => turn,
+                None => {
+                    let turn = mesh.and_then(|m| approach(m, here, at)).unwrap_or(at);
+                    *route = Some((e, turn, now + 0.25));
+                    turn
+                }
+            };
+            player.target = Some(turn);
             *queued = Some((slot, e));
             return;
         }
