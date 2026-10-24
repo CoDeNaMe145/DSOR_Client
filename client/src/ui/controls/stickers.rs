@@ -87,7 +87,10 @@ pub(super) fn drag(pointer: &mut Pointer, windows: &Windows, views: &systems::Vi
                 },
             }
             pointer.down = None;
-            return d.from.is_none() || pointer.slot_move.is_some();
+            // A drag under way is never also a click, even let go on its own slot.
+            // FAILURE (2026-10-24): "the map is used every time I put it back in the
+            //   same slot".
+            return true;
         }
     }
     if !mouse.pressed(MouseButton::Left) { pointer.sticker_drag = None; }
