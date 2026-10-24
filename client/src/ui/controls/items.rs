@@ -151,6 +151,17 @@ fn item_cell(window: &str, action: &Action) -> Option<Cell> {
     }
 }
 
+/// An item a consumable quick slot takes: what a right click uses, and the
+/// Universal Map.
+pub(super) fn shortcut(catalog: &Catalog, template: &str) -> bool {
+    catalog.items.get(template).is_some_and(|m| matches!(m.item_category.as_str(), "Consumable" | "InstantConsumable" | "TravelMapItem"))
+}
+
+/// The Universal Map (TravelMapItem): it opens the travel map.
+pub(super) fn travel_map(catalog: &Catalog, template: &str) -> bool {
+    catalog.items.get(template).is_some_and(|m| m.item_category == "TravelMapItem")
+}
+
 fn use_consumable(state: &InventoryState, catalog: &Catalog, id: u32) -> Option<dsor_proto::commands::ClientCommand> {
     let item = state.items.get(&id)?;
     let meta = catalog.items.get(&item.template)?;
@@ -485,6 +496,10 @@ pub fn input(mut ui:ResMut<Interaction>,mut pointer:ResMut<Pointer>,mut windows:
                         net.send(&dsor_proto::commands::ClientCommand::Transaction(dsor_proto::commands::inventory::Transaction::sell(&shop,id)));
                         ui.pending=Some((net.inventory.revision,time.elapsed_secs_f64()));
                     }
+                } else if travel_map(catalog,net.inventory.items.get(&id).map_or("",|i|i.template.as_str())) {
+                    // The Universal Map: "(right click to open the travel map)" (gui.window
+                    // howToUseTravelMapItem); the server has no use for it.
+                    pointer.open_window=Some("travelmap");
                 } else if let Some(cmd)=use_consumable(&net.inventory,catalog,id) {
                     if trading { trade.add.push(id); }
                     else { net.send(&cmd);ui.pending=Some((net.inventory.revision,time.elapsed_secs_f64())); }
@@ -520,6 +535,17 @@ pub fn input(mut ui:ResMut<Interaction>,mut pointer:ResMut<Pointer>,mut windows:
         let on_trade=windows.iter().filter(|(_,n,_,v,_)|n.0==super::trade::WINDOW && **v!=Visibility::Hidden)
             .any(|(_,_,c,_,_)|c.hovered.is_some_and(|b|matches!(c.buttons[b].action,Action::Social(super::social::Social::TradeMine(_)))));
         if on_trade {if let Some(d)=ui.drag.take().filter(|d|d.active) {trade.add.push(d.id);}}
+        // Dropped on one of the bar's consumable slots: a shortcut to it there
+        // (super::stickers::apply_drop), the item staying in the bag.
+        // FAILURE (2026-10-24): items could not be put on the bar at all ("the map
+        //   I can't put in the slots").
+        let on_bar=windows.iter().filter(|(_,n,_,v,_)|n.0=="bottombar" && **v!=Visibility::Hidden)
+            .find_map(|(_,_,c,_,_)|c.hovered.and_then(|b|match c.buttons[b].action {Action::Skill(s) if super::stickers::CONSUMABLE_SLOTS.contains(&s)=>Some(s),_=>None}));
+        if let Some(slot)=on_bar {
+            if let Some(d)=ui.drag.take().filter(|d|d.active) {
+                if let Some(item)=net.inventory.items.get(&d.id).filter(|i|shortcut(catalog,&i.template)) {pointer.sticker_drop=Some((1,item.template.clone(),slot));}
+            }
+        }
         if let Some(d)=ui.drag.take().filter(|d|d.active && !busy) {
             if let Some((root,cell))=hovered {
                 let (_,_,c,_,_)=windows.get(root).unwrap();
