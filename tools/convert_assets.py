@@ -256,8 +256,9 @@ def font(out):
     if target.is_file():
         return
     windows = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts" / "tahoma.ttf"
+    # Last, a Linux release's: Wine's Tahoma (tools/release/package.py, LGPL-2.1).
     for candidate in (windows, Path("/System/Library/Fonts/Supplemental/Tahoma.ttf"),
-                      Path("/usr/share/fonts/truetype/msttcorefonts/tahoma.ttf")):
+                      Path("/usr/share/fonts/truetype/msttcorefonts/tahoma.ttf"), HOME / "fonts" / "tahoma.ttf"):
         if candidate.is_file():
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(candidate, target)

@@ -1,21 +1,38 @@
 name: Release
 
-# The Windows release (docs/release.md): the client and the converter that
-# turns the game data the client downloads into its assets. A tag v* publishes
-# it as a GitHub release; a manual run only keeps the zip as an artifact.
+# The releases (docs/release.md): the client and the converter that turns the
+# game data the client downloads into its assets, for Windows, Linux (x86_64)
+# and macOS (Apple Silicon).
+# - A tag v* builds all three and publishes them as the tag's GitHub release.
+#   Windows is built without DLSS (its SDK is not in the repository); a
+#   release made by hand beforehand with tools/release/package.ps1 (with DLSS)
+#   keeps its zip.
+# - A manual run builds a tag that exists already (`tag`) for Linux and macOS
+#   with this workflow's scripts, and adds them to its release when `attach`
+#   is set (else they stay artifacts, to try first).
 on:
   push:
     tags: [ "v*" ]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build for Linux and macOS (e.g. v0.1.0)"
+        required: true
+      attach:
+        description: "Add the builds to the tag's release"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
 env:
   CARGO_TERM_COLOR: always
+  TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
 jobs:
   windows:
+    if: github.event_name == 'push'
     runs-on: windows-latest
     steps:
     - uses: actions/checkout@v4
@@ -26,25 +43,62 @@ jobs:
       with:
         python-version: "3.12"
     - uses: Swatinem/rust-cache@v2
-    # Without DLSS: its SDK is not in the repository (.cargo/config.toml points
-    # at a local copy). A local tools/release/package.ps1 run includes it.
     - name: Package
       shell: pwsh
-      run: |
-        $version = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { "dev-$($env:GITHUB_SHA.Substring(0, 7))" }
-        ./tools/release/package.ps1 -Version $version -NoDlss -HostPython python -Out dist
+      run: ./tools/release/package.ps1 -Version $env:TAG -NoDlss -HostPython python -Out dist
     - uses: actions/upload-artifact@v4
       with:
         name: windows-release
         path: dist/*.zip
-    # A release made by hand for the tag (tools/release/package.ps1 with DLSS,
-    # uploaded with gh) stays as it is: this build is then only the artifact.
     - name: Publish
-      if: github.ref_type == 'tag'
       shell: pwsh
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
-        gh release view $env:GITHUB_REF_NAME *> $null
-        if ($LASTEXITCODE -eq 0) { "release $env:GITHUB_REF_NAME exists: kept as it is"; exit 0 }
-        gh release create $env:GITHUB_REF_NAME (Get-ChildItem dist/*.zip).FullName --title $env:GITHUB_REF_NAME --notes "Windows client and asset converter. Unzip, start dsor-client.exe; it downloads and converts the game data itself (README.txt)."
+        gh release view $env:TAG *> $null
+        if ($LASTEXITCODE -eq 0) { "release $env:TAG exists: kept as it is"; exit 0 }
+        gh release create $env:TAG (Get-ChildItem dist/*.zip).FullName --title $env:TAG --notes "Windows client and asset converter. Unzip, start dsor-client.exe; it downloads and converts the game data itself (README.txt)."
+
+  unix:
+    # After the Windows job, which makes the release on a tag; a manual run has none.
+    needs: windows
+    if: ${{ !failure() && !cancelled() }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-22.04, macos-14 ]
+    runs-on: ${{ matrix.os }}
+    steps:
+    # This workflow's scripts, and the tag's code beside them.
+    - uses: actions/checkout@v4
+      with:
+        path: ci
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ env.TAG }}
+        path: src
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+    - name: System libraries
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          pkg-config libudev-dev libwayland-dev libxkbcommon-dev libx11-dev libasound2-dev
+    - uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: src
+    - name: Package
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python ci/tools/release/package.py --source src --version "$TAG" --out dist
+    - uses: actions/upload-artifact@v4
+      with:
+        name: ${{ runner.os }}-release
+        path: dist/*.tar.gz
+    - name: Add to the release
+      if: github.event_name == 'push' || inputs.attach
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: gh release upload "$TAG" dist/*.tar.gz --clobber -R "$GITHUB_REPOSITORY"

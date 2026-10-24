@@ -8,11 +8,11 @@ The goal is a 1:1 reconstruction of the rel 261 client.
 
 ## Quick start
 
-To play on Windows without building anything, download a
+To play without building anything, download a
 [release](https://github.com/DSO-Reconstruction/DSOR_Client/releases)
-(`DSOR-<version>-windows-x64.zip`, about 100 MB), unzip it and start
-`dsor-client.exe`: it downloads the game data from Bigpoint's CDN and converts
-it itself ([the release](docs/release.md)).
+(`DSOR-<version>-windows-x64.zip`, about 100 MB; Linux and macOS builds are
+experimental), unpack it and start `dsor-client`: it downloads the game data
+from Bigpoint's CDN and converts it itself ([the release](docs/release.md)).
 
 To build it yourself, follow [Getting started](docs/getting-started.md) to install prerequisites and
 convert the game's data into `assets/` (generated locally and never committed).
@@ -56,7 +56,7 @@ account service (default: `http://127.0.0.1:8080`). The guide also covers
 - [Getting started](docs/getting-started.md): prerequisites, asset conversion, native and browser clients, controls.
 - [Testing and diagnostics](docs/testing-and-diagnostics.md): automated checks, environment variables, profiling.
 - [Game data](docs/game-data.md): the original client's data, downloaded from Bigpoint's CDN by the account screen.
-- [The Windows release](docs/release.md): the client and its converter without the workspace; how it converts and how to build it.
+- [The release](docs/release.md): the client and its converter without the workspace (Windows; Linux and macOS experimental); how it converts and how to build it.
 - [Asset reference](docs/assets.md): converted data formats and conversion details.
 - [Effects and rendering](docs/fx.md): shaders, lighting, particles, and rendering diagnostics.
 - [Interface](docs/ui.md): UI assets, implementation, and interactions.

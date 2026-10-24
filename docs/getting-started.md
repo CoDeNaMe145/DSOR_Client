@@ -7,7 +7,7 @@ Run the commands below from the repository root unless a step says otherwise.
 The client needs the game's own files, converted to glTF/PNG by
 [DSO_Godot](https://github.com/DSO-Reconstruction/DSO_Godot). They are generated
 locally into `assets/` and are never committed (see `tools/convert_assets.py`).
-To play without building anything, use the [Windows release](release.md): it
+To play without building anything, use the [release](release.md): it
 downloads and converts the game data by itself.
 
 ## 1. Prerequisites (once)

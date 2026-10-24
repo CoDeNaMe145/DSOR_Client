@@ -1,10 +1,14 @@
-# The Windows release
+# The release
 
 [Back to the README](../README.md) | [Game data](game-data.md) | [Asset reference](assets.md)
 
 A release is the client plus everything that turns the game data into its
 assets, without the workspace: no Rust toolchain, no Visual Studio, no server
-checkout, no `target/` (68 GB here). It holds no game data. On first start the
+checkout, no `target/` (68 GB here). Windows (`DSOR-<version>-windows-x64.zip`)
+is the one played and tested; Linux x86_64 and macOS Apple Silicon
+(`DSOR-<version>-linux-x64.tar.gz`, `-macos-arm64.tar.gz`) are built the same
+way by CI and experimental: not yet played by the developers, the macOS one
+unsigned (its README has players clear the quarantine flag). It holds no game data. On first start the
 client downloads the game's files from Bigpoint's CDN ([the game data](game-data.md)),
 converts them on the player's machine, and starts again on the result.
 
@@ -123,9 +127,24 @@ Python's version, not the host's), fetches DSO_Godot at the pinned commit
 or `DLSS_SDK`) the client has DLSS and the runtime and NVIDIA's license go in;
 `-NoDlss` builds without.
 
-`.github/workflows/release.yml` does the same on `windows-latest` without DLSS
-(the SDK is not in the repository): a tag `v*` publishes a GitHub release with
-the zip, a manual run keeps it as an artifact.
+Linux and macOS: `python3 tools/release/package.py --version v0.1.0` on the
+system itself (`--source <checkout>` packages another checkout with this
+script, `--skip-build` as above). It builds without DLSS, compiles `crn2dds`
+with `c++` (on macOS `malloc_size` stands for the missing
+`malloc_usable_size`), takes CPython from python-build-standalone with Pillow
+and numpy from its own pip (`converter/python/bin/python3`, which the client
+looks for), vgmstream's Linux or macOS build, and for Linux Wine's Tahoma
+(LGPL-2.1) into `converter/fonts/` (Linux has no Tahoma; the converter falls
+back to it), and archives `dist/DSOR-<version>-<linux-x64|macos-arm64>/` as
+`.tar.gz`, which keeps the programs executable. The README is
+`tools/release/README-linux.txt` or `README-macos.txt`.
+
+`.github/workflows/release.yml`: a tag `v*` builds Windows on `windows-latest`
+without DLSS (the SDK is not in the repository; a release made by hand first,
+with DLSS, keeps its zip), then Linux on `ubuntu-22.04` (glibc 2.35) and macOS
+on `macos-14`, and publishes all three. A manual run with `tag` builds that
+tag's code with the workflow's own scripts for Linux and macOS (how v0.1.0's
+were made after the fact) and adds them to its release with `attach`.
 
 The embeddable Python reads its whole module path from `python312._pth` and
 puts no script's folder on it, so the converter starts every script through
