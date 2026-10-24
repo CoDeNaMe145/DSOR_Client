@@ -5,15 +5,19 @@
 //! `dropitems/dwarf_drop_helmet_01`), playing that model's own looping clip (its
 //! slow turn), with its rarity's glow: the sequence `drop_<rarity>` (one looping
 //! `dropitems/glow_<rarity>` effect), or the template's DropSequenceOverride.
-//! Holding Ctrl names every item, its text in its rarity's colour (white for a
-//! common one), over a dark box (ui/cmdmodeitemlabel.bxml: a BGLabel frame round a
-//! TextDescription).
+//! Holding Ctrl names every item, hovering names the one under the cursor, its
+//! text in its rarity's colour (white for a common one) with no box behind it, as
+//! the original shows it (the user's release261_192 shot; ui/cmdmodeitemlabel.bxml
+//! has a BGLabel frame round a TextDescription, not drawn there).
 //! EVIDENCE: the drop models' `<name>-loop` clips; skills/sequences.json
 //!   drop_common .. drop_mythic; the rarity is ItemInfo field_08 (`kind`), indexing
 //!   Common, Uncommon, Magic, Rare, Epic, Unique, Set, Mythic (DSOR_Server
 //!   protocol/world_loot_protocol.py EQUIPMENT_RARITIES).
-//! UNVERIFIED: the label's frame is drawn as a plain dark box, not the BGLabel art
-//!   (which the game does not tint by rarity).
+//! FAILURE (2026-10-24): the name sat in a dark box, and only the small model
+//!   reacted to the cursor ("you have to press very specific"; the original takes
+//!   the whole item).
+//! UNVERIFIED: the original's pick area (a sphere round the item here); its glow
+//!   reads larger than ours.
 
 use std::collections::HashMap;
 
@@ -120,8 +124,8 @@ struct PendingPickup(Option<Entity>);
 /// SOURCE: DSOR_Server services/world.py _handle_pickup_item refuses beyond 4.0.
 const PICKUP_REACH: f32 = 2.5;
 /// The pickable sphere around an item: its centre this high over the ground.
-const PICK_HEIGHT: f32 = 0.3;
-const PICK_RADIUS: f32 = 0.6;
+const PICK_HEIGHT: f32 = 0.4;
+const PICK_RADIUS: f32 = 1.0;
 
 /// Its model, and the animation player its clip was started on.
 #[derive(Component)]
@@ -279,16 +283,14 @@ fn hover_items(
     monster: Option<Res<crate::monsters::Hovered>>,
     items: Query<(Entity, &GroundItem, &GlobalTransform, &InheritedVisibility)>,
     labels: Query<(&ItemLabel, &Node, &ComputedNode, &Visibility)>,
-    keys: Res<ButtonInput<KeyCode>>,
     mut hover: ResMut<ItemHover>,
 ) {
     let cursor = (!ui.over_ui && monster.is_none_or(|m| m.0.is_none()))
         .then(|| windows.single().ok().and_then(|w| w.cursor_position()))
         .flatten();
-    // With Ctrl held the names show; the name under the cursor is its item too
-    // (the user's view of the game: Ctrl and a click on the name picks it up).
-    let held = !ui.typing && (keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight));
-    let named = cursor.filter(|_| held).and_then(|c| {
+    // A name shown (Ctrl held, or the item hovered) is its item too: Ctrl and a
+    // click on the name picks it up, and the cursor moving onto it keeps it.
+    let named = cursor.and_then(|c| {
         labels.iter().find_map(|(of, node, size, vis)| {
             let (Val::Px(x), Val::Px(y)) = (node.left, node.top) else { return None };
             let s = size.size() * size.inverse_scale_factor();
@@ -387,8 +389,8 @@ fn labels(
                         padding: UiRect::axes(Val::Px(6.0), Val::Px(2.0)),
                         ..default()
                     },
-                    BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.65)),
                     Text::new(item.name.clone()),
+                    TextShadow { offset: Vec2::splat(1.0), color: Color::BLACK },
                     TextFont { font: assets.load("fonts/tahoma.ttf").into(), font_size: bevy::text::FontSize::Px(14.0), ..default() },
                     TextColor(RARITY_TEXT[item.rarity.min(RARITY_TEXT.len() - 1)]),
                     Pickable::IGNORE,
