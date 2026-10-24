@@ -67,7 +67,7 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
     primary: Query<&Window, With<PrimaryWindow>>, screen: Res<Screen>, settings: Res<settings::Settings>,
     (pointer,keys,figures,shown):(Res<Pointer>,Res<ButtonInput<KeyCode>>,Res<Figures>,Res<currency::Shown>),
     net: Option<NonSend<crate::network::net::Net>>, hotbar: Res<hotbar::Hotbar>,
-    (data, catalogs, dialogue): (Res<items::Data>, Res<Assets<items::Catalog>>, Res<dialogue::Presentation>), layouts: Res<Assets<Layout>>, loaded: Res<Loaded>,
+    (data, catalogs, dialogue, views): (Res<items::Data>, Res<Assets<items::Catalog>>, Res<dialogue::Presentation>, Res<super::systems::Views>), layouts: Res<Assets<Layout>>, loaded: Res<Loaded>,
     (skill_tables, status_bar, status_catalogs, status_slots): (Res<Assets<crate::gameplay::skills::SkillTable>>,
         Res<effects::StatusBar>, Res<Assets<effects::Catalog>>, Query<&effects::EffectSlot>), assets: Res<AssetServer>,
     (old, mut transforms): (Query<Entity, With<Tooltip>>, Query<&mut Transform, With<Tooltip>>),
@@ -160,6 +160,11 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
                 Action::QuestCompact(compact) => heading = if *compact { "Hide the objectives" } else { "Show the objectives" }.into(),
                 Action::PartyCompact(compact) => heading = if *compact { "Hide the group" } else { "Show the group" }.into(),
                 Action::QuestTrack(delta) => heading = if *delta < 0 { "Previous quest" } else { "Next quest" }.into(),
+                // A sticker: its item's card, as the original's.
+                Action::System(super::systems::Request::Pick(id, _)) if catalog.is_some() && views.album.sticker(id).is_some_and(|s| !s.template.is_empty()) => {
+                    let template = &views.album.sticker(id).unwrap().template;
+                    detail = Some(items::sticker_card(catalog.unwrap(), layouts.get(&data.tooltip), template));
+                }
                 Action::System(request) => match super::systems::tooltip(request) {
                     Some((title, text)) => { heading = title.into(); body = text; }
                     None => return,

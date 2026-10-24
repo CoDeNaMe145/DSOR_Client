@@ -709,6 +709,10 @@ pub(in crate::ui) mod pins;
 #[cfg(test)]
 mod interaction_tests;
 
+pub(super) fn sticker_card(catalog:&Catalog, layout:Option<&Layout>, template:&str)->tooltips::card::Card {
+    preview::sticker(catalog,layout,template)
+}
+
 pub(super) fn preview_card(catalog:&Catalog, layout:Option<&Layout>, template:&str, item:Option<&ItemInfo>, amount:u32, advanced:bool)->tooltips::card::Card {
     preview::card(&DisplayItem { item,template,amount,unlock:0,read_only:false,waiting:false },catalog,layout,advanced)
 }
