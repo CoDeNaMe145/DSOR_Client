@@ -25,8 +25,21 @@ pub(super) struct StickerDrag {
     origin: Vec2,
     active: bool,
     /// Picked up from this quick slot (a sticker or item shortcut already on the
-    /// bar) rather than from the Collector's Bag.
+    /// bar) rather than from the Collector's Bag, on this bar.
     from: Option<usize>,
+    bar: usize,
+}
+
+impl StickerDrag {
+    /// The bar and slot a shortcut is being carried from, once the drag is under
+    /// way: that slot shows empty until it is let go (crate::ui update_slots), as
+    /// a skill's does (spells::DragSpell::lifted).
+    /// FAILURE (2026-10-24): the slot kept its icon and the cursor carried none
+    ///   ("when I drag, there's no icons and it still remains there").
+    pub(super) fn lifted(&self) -> Option<(usize, usize)> {
+        if !self.active { return None; }
+        Some((self.bar, self.from?))
+    }
 }
 
 /// A press on an owned sticker that moves 4 px picks it up; released over a quick
@@ -48,11 +61,12 @@ pub(super) fn drag(pointer: &mut Pointer, windows: &Windows, views: &systems::Vi
         match (allowed, point, hit.and_then(action)) {
             (true, Some(origin), Some((_, Action::System(systems::Request::Pick(id, _))))) => {
                 if views.album.sticker(&id).is_some_and(|s| s.owned) {
-                    pointer.sticker_drag = Some(StickerDrag { id, origin, active: false, from: None });
+                    pointer.sticker_drag = Some(StickerDrag { id, origin, active: false, from: None, bar: 0 });
                 }
             }
             (true, Some(origin), Some((name, Action::Skill(slot)))) if name == "bottombar" && unlocked && slot < CONSUMABLE_SLOTS.end && !skill_at(slot) => {
-                pointer.sticker_drag = Some(StickerDrag { id: String::new(), origin, active: false, from: Some(slot) });
+                let bar = bar.map_or(0, |(_, _, c, _, _)| c.spells.active);
+                pointer.sticker_drag = Some(StickerDrag { id: String::new(), origin, active: false, from: Some(slot), bar });
             }
             _ => {}
         }
@@ -80,11 +94,14 @@ pub(super) fn drag(pointer: &mut Pointer, windows: &Windows, views: &systems::Vi
     false
 }
 
-/// The dragged sticker's icon, for the cursor overlay.
-pub(super) fn dragged<'a>(pointer: &Pointer, views: &'a systems::Views) -> Option<&'a str> {
-    // From the bar: the slot keeps drawing its own icon meanwhile.
-    if pointer.sticker_drag.as_ref().is_some_and(|d| d.from.is_some()) { return None; }
-    pointer.sticker_drag.as_ref().filter(|d| d.active).and_then(|d| views.album.sticker(&d.id)).map(|s| s.icon.image.as_str()).filter(|i| !i.is_empty())
+/// The dragged shortcut's icon, for the cursor overlay: the sticker's, or what
+/// the quick slot it was lifted from shows.
+pub(super) fn dragged(pointer: &Pointer, views: &systems::Views, net: Option<&crate::network::net::Net>, catalog: Option<&items::Catalog>) -> Option<String> {
+    let d = pointer.sticker_drag.as_ref().filter(|d| d.active)?;
+    match d.from {
+        None => views.album.sticker(&d.id).map(|s| s.icon.image.clone()).filter(|i| !i.is_empty()),
+        Some(slot) => hotbar::appearance(slot, d.bar, net, &Figures::default(), catalog, &crate::ui::SkillIcons(Default::default())).map(|(path, _)| path),
+    }
 }
 
 /// The active bar with `slot` holding the shortcut (`kind` 2 a sticker, on a

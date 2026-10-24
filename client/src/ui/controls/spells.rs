@@ -211,6 +211,7 @@ pub(in crate::ui) fn overlay(
     mut commands: Commands, pointer: Res<Pointer>,
     primary: Query<&Window, With<PrimaryWindow>>, screen: Res<Screen>, assets: Res<AssetServer>,
     old: Query<Entity, With<SpellOverlay>>, mut last: Local<Option<(String, bool, u32)>>, views: Res<super::systems::Views>,
+    net: Option<NonSend<crate::network::net::Net>>, (data, catalogs): (Res<super::items::Data>, Res<Assets<super::items::Catalog>>),
     mut transforms: Query<&mut Transform, With<SpellOverlay>>,
 ) {
     let window = primary.single().ok();
@@ -219,7 +220,8 @@ pub(in crate::ui) fn overlay(
     let dragged = pointer.spell_drag.as_ref().filter(|d| d.active).map(|d| &d.spell);
     let description = dragged.map(|s| (s, true));
     // A Collector's Bag sticker dragged to the bar (super::stickers): its icon.
-    let sticker = super::stickers::dragged(&pointer, &views).filter(|_| dragged.is_none());
+    let sticker = super::stickers::dragged(&pointer, &views, net.as_deref(), catalogs.get(&data.catalog)).filter(|_| dragged.is_none());
+    let sticker = sticker.as_deref();
     let key = description.map(|(s, available)| (format!("{}:{}", s.id, available), dragged.is_some(), screen.scale.to_bits()))
         .or_else(|| sticker.map(|icon| (format!("sticker:{icon}"), true, screen.scale.to_bits())));
     let position = point.map(|p| if dragged.is_some() || sticker.is_some() { p } else { Vec2::new((p.x + 20.0).min(screen.width - 265.0).max(0.0), (p.y + 20.0).min(BASE_H - 75.0)) });

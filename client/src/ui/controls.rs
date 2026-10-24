@@ -711,7 +711,7 @@ impl Pointer {
 
     /// The (bar, slot) a spell is being dragged from (spells::DragSpell::lifted).
     pub(super) fn lifted_slot(&self) -> Option<(usize, usize)> {
-        self.spell_drag.as_ref().and_then(|d| d.lifted())
+        self.spell_drag.as_ref().and_then(|d| d.lifted()).or_else(|| self.sticker_drag.as_ref().and_then(|d| d.lifted()))
     }
 }
 
