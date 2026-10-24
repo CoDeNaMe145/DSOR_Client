@@ -6,6 +6,7 @@ use bevy::window::{MonitorSelection, WindowMode};
 use bevy::input::keyboard::KeyboardInput;
 mod panels;
 pub(super) mod spells;
+pub(super) mod stickers;
 pub(super) mod items;
 pub(super) mod sheet;
 pub(super) mod social;
@@ -670,6 +671,10 @@ pub(super) struct Pointer {
     focus: Option<(Entity, String)>,
     spell_drag: Option<spells::DragSpell>,
     spell_drop: Option<spells::DropSpell>,
+    /// A Collector's Bag sticker being dragged, and the (sticker, quick slot) it
+    /// was dropped on, for stickers::apply_drop.
+    sticker_drag: Option<stickers::StickerDrag>,
+    sticker_drop: Option<(String, usize)>,
     item_command: Option<i32>,
     /// The destroy dialog's answer, for items::input.
     destroy: Option<bool>,
@@ -964,7 +969,7 @@ pub(super) fn interact(
     mut settings: ResMut<settings::Settings>,
     mut hotbar: ResMut<hotbar::Hotbar>,
     mut audio: Option<ResMut<crate::audio::AudioRequests>>,
-    (mut quest_ui, mut party): (ResMut<crate::gameplay::quests::QuestUi>, ResMut<party::Party>),
+    (mut quest_ui, mut party, views): (ResMut<crate::gameplay::quests::QuestUi>, ResMut<party::Party>, Res<systems::Views>),
 ) {
     let Ok(mut window) = primary.single_mut() else { return };
     let blocked = panels.iter().any(|(cursor, visible)| visible.get() && cursor.cursor_over());
@@ -1050,6 +1055,9 @@ pub(super) fn interact(
         }
     }
     if spells::drag(&mut pointer, &windows, &mouse, hit, top.map(|(e, _, _)| e), point, window.focused && !blocked && modal.is_none()) {
+        clicked = None;
+    }
+    if stickers::drag(&mut pointer, &windows, &views, &mouse, hit, point, window.focused && !blocked && modal.is_none()) {
         clicked = None;
     }
     if settings::drag_slider(&mut pointer, &windows, &mouse, point, width, window.focused && !blocked, &mut settings) {
@@ -1462,7 +1470,7 @@ mod tests {
     #[test]
     fn dragging_a_window_moves_its_gauge_clip_without_changing_the_fill() {
         let mut app = App::new();
-        app.init_resource::<Figures>().init_resource::<party::Party>().init_resource::<quests::Quests>().init_resource::<crate::gameplay::quests::QuestUi>()
+        app.init_resource::<Figures>().init_resource::<party::Party>().init_resource::<quests::Quests>().init_resource::<crate::gameplay::quests::QuestUi>().init_resource::<crate::ui::controls::systems::Views>()
             .init_resource::<crate::actors::monsters::HoverInfo>()
             .init_resource::<Screen>()
             .init_resource::<Assets<UiMaterial>>()
@@ -1498,7 +1506,7 @@ mod tests {
             .init_resource::<crate::gameplay::dialogue::Dialogue>()
             .init_resource::<crate::network::net::RespawnChoice>()
             .init_resource::<local_map::MapSettings>()
-            .init_resource::<crate::gameplay::quests::QuestUi>()
+            .init_resource::<crate::gameplay::quests::QuestUi>().init_resource::<crate::ui::controls::systems::Views>()
             .init_resource::<party::Party>()
             .add_systems(Update, (sync_chat, keyboard, interact, edit_text, order_windows, paint).chain());
         let primary = app.world_mut().spawn((Window { focused: true, resolution: (1024, 768).into(), ..default() }, PrimaryWindow)).id();
