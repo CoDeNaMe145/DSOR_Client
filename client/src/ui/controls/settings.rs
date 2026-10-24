@@ -122,6 +122,11 @@ impl Preferences {
     pub(crate) fn slot_pressed(&self, keys: &ButtonInput<KeyCode>) -> Option<usize> {
         (0..17).find(|slot| self.pressed(&format!("slot{slot}"), keys))
     }
+    /// The quick slot whose key is held down (a held skill key keeps attacking).
+    pub(crate) fn slot_held(&self, keys: &ButtonInput<KeyCode>) -> Option<usize> {
+        (0..17).find(|slot| self.bindings.get(&format!("slot{slot}")).filter(|v| !v.is_empty())
+            .is_some_and(|binding| keys.get_pressed().any(|key| chord(keys, *key) == *binding)))
+    }
     pub(crate) fn label(&self, action: &str) -> String {
         self.bindings.get(action).map_or_else(|| "Unbound".into(), |key| display_key(key))
     }

@@ -1025,18 +1025,23 @@ fn cast_input(
     if !ui.blocks(MouseButton::Left) && buttons.pressed(MouseButton::Left) && hovered.0.is_none() && !shift {
         *queued = None;
     }
-    // Keys: one press, one cast (holding a key re-fired the skill as soon as it
-    // unblocked: "certains sorts se lancent 2x"). Mouse buttons repeat while held,
-    // as in the game, paced by the cast, the cooldown and the resource: Shift or a
-    // monster under the cursor with the left button, the right button anywhere
-    // ("je peux pas rester appuye sur clique droit pour lancer un sort").
-    let left = !ui.blocks(MouseButton::Left) && (shift || (settings.current.attack_hovered && hovered.0.is_some())) && buttons.pressed(MouseButton::Left);
+    // Keys and mouse buttons repeat while held, as in the game, paced by the cast,
+    // the cooldown and the resource: Shift or a monster under the cursor with the
+    // left button, the right button anywhere ("je peux pas rester appuye sur clique
+    // droit pour lancer un sort"). A key pressed (then held) wins over a held mouse
+    // button: right button held, a press of 2 casts 2.
+    // FAILURE (2026-10-24): keys fired once per press ("I cannot hold 1 and continue
+    //   attacking"), and with the right button held a key did nothing ("I cannot
+    //   even press right click and press 2 to hit").
+    let key = settings.current.slot_pressed(&keys).or_else(|| settings.current.slot_held(&keys));
+    let left = key.is_none() && !ui.blocks(MouseButton::Left) && (shift || (settings.current.attack_hovered && hovered.0.is_some())) && buttons.pressed(MouseButton::Left);
+    let right = key.is_none() && !ui.blocks(MouseButton::Right) && buttons.pressed(MouseButton::Right);
     let slot = if left {
         Some(0)
-    } else if !ui.blocks(MouseButton::Right) && buttons.pressed(MouseButton::Right) {
+    } else if right {
         Some(1)
     } else {
-        settings.current.slot_pressed(&keys)
+        key
     };
     // DSOR_TEST_SLOT=<slot>: that quick slot pressed all the time (testing online
     // without a keyboard; the cooldowns pace it).
