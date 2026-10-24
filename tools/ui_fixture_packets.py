@@ -3,7 +3,7 @@
 Usage: python tools/ui_fixture_packets.py <server> <assets> <out.json> [<static.db4>]
 
 Writes [{frame, name, hex, bits}] for the client's DSOR_PACKET_REPLAY (offline
-play only): a wallet, a quest log, achievements, daily challenges, the Wanted
+play only): a wallet and the currency bag's currencies, a quest log, achievements, daily challenges, the Wanted
 board, running events, the premium offers, leaderboards, the album, the recipe
 books and an inventory with socketed equipment, gems and ingredients. Every
 packet comes from the local server's own encoders (as tools/*_vectors.py); the
@@ -41,6 +41,10 @@ def batch(name, command_id, value, frame=1):
 
 # The wallet: Andermant, gold (copper), honour, draken.
 batch("wallet", init.CURRENCY_CHANGED_COMMAND, init.CurrencyChanged(1250, 4_573_210, (870, 0, 35), 0, False))
+# The currency bag's keyed currencies, at the server's defaults.
+from dso_server.protocol.currency_protocol import DEFAULT_GAME_CURRENCY_BALANCES, GameCurrencyChanged
+for resource, amount in DEFAULT_GAME_CURRENCY_BALANCES.items():
+    batch(f"currency_{resource}", init.GAME_CURRENCY_CHANGED_COMMAND, GameCurrencyChanged(resource, amount))
 
 # Three quests with tasks, the second ready to turn in.
 chosen = [(k, v) for k, v in sorted(quests.items()) if len(v.get("tasks", [])) >= 2 and v.get("level", 0) >= 5][:3]

@@ -7,10 +7,11 @@ Usage: quest_catalog.py <quests.xml> <assets> [--database static.db4]
 data/quests.xml, the same file its gameplay/quest_content.py reads). The client
 only needs what the server's QuestLogInfo (140) and QuestUpdate (139) leave out:
 each quest's level, type, deletability and rewards (experience, gold in copper,
-Andermant, the loot items the log shows), and its tasks in index order (their title
-is the text key ``quest.<quest>.s_<title>`` of the dialogue catalog, their type
-and their target count). A task's target is the amount of the ``has`` guard on
-the token its own events produce, as the server counts it
+Andermant, the dynamicXP percent, the loot items with their class and rarity), whether
+its tasks are staged, and its tasks in index order (their title is the text key
+``quest.<quest>.s_<title>`` of the dialogue catalog, their type, their target count
+and the indices of their preTasks). A task's target is the amount of the ``has``
+guard on the token its own events produce, as the server counts it
 (TaskDefinition.counter_guard); without one the task is a single step.
 """
 import json
@@ -40,23 +41,76 @@ def travel_items(database):
         con.close()
 
 
+def flag(element, name):
+    return (element.get(name, "false") or "false").lower() == "true"
+
+
+# The quest types whose title shows its place in its series, " (n/m)": release261
+# ServerQuestManager::LoadQuestsFromXML numbers them 4 to 11, pvp 9 excepted, and
+# the title (0x1405AD574) adds the part for those alone.
+NUMBERED = {"rowrepeatable", "local", "world", "heroic", "event", "crafting", "craftingrepeatable"}
+
+
+def parts(quests):
+    """Each numbered quest's (questNumber, the series' last number). The series:
+    the quests its followups link it to within its questRowNumber.
+    INFERRED: the client's total (QuestInfo +0x30) is computed after loading, not
+    traced; this gives Full Moon Rising's "(1/5)" as a 2026 capture shows it."""
+    by_id = {q.get("id", ""): q for q in quests}
+    row = lambda q: (q.get("questRowNumber", ""), q.get("chapterId", ""), q.get("type", ""))
+    links = {k: set() for k in by_id}
+    for k, q in by_id.items():
+        for f in (q.get("followup", "") or "").split(";"):
+            if f in by_id and row(by_id[f]) == row(q):
+                links[k].add(f)
+                links[f].add(k)
+    number = lambda k: int(by_id[k].get("questNumber", 0) or 0)
+    result = {}
+    for k, q in by_id.items():
+        if q.get("type", "") not in NUMBERED or number(k) <= 0:
+            continue
+        seen, todo = {k}, [k]
+        while todo:
+            for other in links[todo.pop()] - seen:
+                seen.add(other)
+                todo.append(other)
+        result[k] = [number(k), max(number(s) for s in seen)]
+    return result
+
+
 def export_quests(xml_path, assets, database=None):
     quests = {}
-    for quest in ET.parse(xml_path).getroot().findall("Quest"):
+    every = ET.parse(xml_path).getroot().findall("Quest")
+    numbered = parts(every)
+    for quest in every:
+        tasks = quest.findall("Task")
+        index = {task.get("title", ""): n for n, task in enumerate(tasks)}
+        rewards = quest.findall("Reward")
         quests[quest.get("id", "")] = {
             "level": int(quest.get("level", 1) or 1),
             "map": quest.get("map", ""),
             "chapter": quest.get("chapterId", ""),
-            "deletable": (quest.get("deletable", "false") or "false").lower() == "true",
+            "deletable": flag(quest, "deletable"),
             "type": quest.get("type", ""),
-            "rewards": {kind: sum(int(r.get("value", 0) or 0) for r in quest.findall("Reward") if r.get("type") == kind)
-                        for kind in ("xp", "vc", "rc")},
-            # Loot rewards, per class when the quest names one.
-            "items": [{"item": r.get("value", ""), "amount": int(r.get("amount", 1) or 1), "class": r.get("class", "")}
-                      for r in quest.findall("Reward") if r.get("type") == "loot" and r.get("value")][:16],
+            # A task with prerequisites shows once they are done (the NPC's quest
+            # screen, UI::QuestWidget2 0x14021DEA8).
+            "staged": flag(quest, "stagedTasks"),
+            # Its place in its series, for its title; a quest not live (enabledLive
+            # false) is titled "[INTERNAL] " (0x1405AD574).
+            "part": numbered.get(quest.get("id", "")),
+            "internal": not flag(quest, "enabledLive"),
+            "rewards": {kind: sum(int(r.get("value", 0) or 0) for r in rewards if r.get("type") == kind)
+                        for kind in ("xp", "vc", "rc")}
+                       # The percent of the player's level the experience is (dynamicXP).
+                       | {"dynamic_xp": sum(int(float(r.get("value", 0) or 0)) for r in rewards if r.get("type") == "dynamicXP")},
+            # Loot rewards, per class when the quest names one, and their rarity.
+            "items": [{"item": r.get("value", ""), "amount": int(r.get("amount", 1) or 1), "class": r.get("class", ""),
+                       "rarity": r.get("rarity", "")}
+                      for r in rewards if r.get("type") == "loot" and r.get("value")][:16],
             "tasks": [
-                {"title": task.get("title", ""), "kind": task.get("tasktype", ""), "target": task_target(task)}
-                for task in quest.findall("Task")
+                {"title": task.get("title", ""), "kind": task.get("tasktype", ""), "target": task_target(task),
+                 "pre": [index[t] for t in (task.get("preTasks", "") or "").split(";") if t in index]}
+                for task in tasks
             ],
         }
     out = os.path.join(assets, "interface", "quests.catalog.json")

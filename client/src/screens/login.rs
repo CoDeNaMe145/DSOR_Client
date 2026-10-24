@@ -34,14 +34,10 @@ impl Plugin for LoginPlugin {
 struct Preferences {
     server: String,
     username: String,
-    character: String,
-    class: u8,
-    gender: u8,
 }
 impl Default for Preferences {
     fn default() -> Self {
-        Self { server: "127.0.0.1:8080".into(), username: String::new(),
-            character: String::new(), class: 1, gender: 0 }
+        Self { server: "127.0.0.1:8080".into(), username: String::new() }
     }
 }
 
@@ -91,17 +87,15 @@ impl Input {
 enum Page { Login, Register, Settings }
 #[derive(Component)] struct Root;
 #[derive(Component, Clone, Copy)]
-enum Action { Field(usize), Play, Register, Settings, Back, Class, Gender, Cancel, Reveal, Retry }
+enum Action { Field(usize), Play, Register, Settings, Back, Cancel, Reveal, Retry }
 enum Reply { Status(Value), Authenticated(net::NetConfig), Progress(&'static str) }
 struct Job { receiver: Mutex<mpsc::Receiver<Result<Reply, String>>>, authentication: bool }
 
 #[derive(Resource)]
 struct Form {
-    inputs: [Input; 5], // username, password, confirmation, account service, character name
+    inputs: [Input; 4], // username, password, confirmation, account service
     focus: usize,
     page: Page,
-    class: u8,
-    gender: u8,
     status: String,
     error: bool,
     redraw: bool,
@@ -114,7 +108,7 @@ struct Form {
 impl Form {
     fn busy(&self) -> bool { self.connecting.is_some() || self.job.as_ref().is_some_and(|j| j.authentication) }
     fn fields(&self) -> &[usize] {
-        match self.page { Page::Login => &[0, 1], Page::Register => &[0, 1, 2], Page::Settings => &[3, 4] }
+        match self.page { Page::Login => &[0, 1], Page::Register => &[0, 1, 2], Page::Settings => &[3] }
     }
     fn message(&mut self, text: impl Into<String>, error: bool) { self.status = text.into(); self.error = error; }
     fn cancel(&mut self) {
@@ -128,8 +122,7 @@ impl Form {
         self.inputs[2] = Input::default(); self.redraw = true; self.check_server();
     }
     fn preferences(&self) -> Preferences {
-        Preferences { server: self.inputs[3].value.trim().into(), username: self.inputs[0].value.trim().into(),
-            character: self.inputs[4].value.trim().into(), class: self.class, gender: self.gender }
+        Preferences { server: self.inputs[3].value.trim().into(), username: self.inputs[0].value.trim().into() }
     }
     fn save(&mut self) {
         let data = serde_json::to_vec_pretty(&self.preferences()).expect("preferences serialize");
@@ -252,8 +245,7 @@ fn session_config(reply: &Value, prefs: &Preferences, login: Option<String>, cha
     };
     let chat = net::chat_target(&reply["launch"], &login);
     Ok(net::NetConfig { login, account, session: session.into(), user: None, password: None,
-        account_api: Some(prefs.server.clone()), relay: None, character, chat: Some(chat),
-        new_character: Some((if prefs.character.is_empty() { prefs.username.clone() } else { prefs.character.clone() }, prefs.class, prefs.gender)) })
+        account_api: Some(prefs.server.clone()), relay: None, character, chat: Some(chat) })
 }
 
 fn setup(mut commands: Commands, mut options: ResMut<Options>) {
@@ -268,13 +260,9 @@ fn setup(mut commands: Commands, mut options: ResMut<Options>) {
             format!("{}:8080", config.login.rsplit_once(':').map_or(config.login.as_str(), |(h, _)| h)));
         if let Some(user) = config.user.take() { prefs.username = user; }
         password = config.password.take().unwrap_or_default();
-        if let Some((name, class, gender)) = &config.new_character {
-            prefs.character = name.clone(); prefs.class = *class; prefs.gender = *gender;
-        }
     }
     let mut form = Form { inputs: [Input::new(prefs.username), Input::new(password), Input::default(),
-            Input::new(prefs.server), Input::new(prefs.character)], focus: 0, page: Page::Login,
-        class: prefs.class.min(3), gender: prefs.gender.min(1), status: String::new(), error: false,
+            Input::new(prefs.server)], focus: 0, page: Page::Login, status: String::new(), error: false,
         redraw: true, job: None, connecting: None, login_override, character_id, reveal_password: false };
     if !form.inputs[0].value.is_empty() { form.focus = 1; }
     form.check_server();
@@ -295,10 +283,8 @@ fn buttons(mut form: ResMut<Form>, interactions: Query<(&Interaction, &Action), 
                 None => form.submit(data.as_deref()),
             },
             Action::Register => { form.job = None; form.page = Page::Register; form.focus = 0; form.reveal_password = false; form.redraw = true; form.message("Create an account on this server.", false); }
-            Action::Settings => { form.job = None; form.page = Page::Settings; form.focus = 3; form.reveal_password = false; form.redraw = true; form.message("Choose your server and new character defaults.", false); }
+            Action::Settings => { form.job = None; form.page = Page::Settings; form.focus = 3; form.reveal_password = false; form.redraw = true; form.message("Choose your server.", false); }
             Action::Back => form.back(),
-            Action::Class => { form.class = (form.class + 1) % 4; form.redraw = true; }
-            Action::Gender => { form.gender ^= 1; form.redraw = true; }
             Action::Cancel => {}
             Action::Reveal => form.reveal_password = !form.reveal_password,
             Action::Retry => form.check_server(),

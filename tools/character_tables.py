@@ -100,4 +100,4 @@ from equipment_visuals import export_equipment
 from export_character_selection import export_selection
 with sqlite3.connect(args.database or os.path.join(src, "db", "static.db4")) as db:
     export_equipment(db, assets)
-    export_selection(db, assets)
+    export_selection(db, assets, src)

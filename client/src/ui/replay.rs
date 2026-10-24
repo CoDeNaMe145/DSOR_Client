@@ -17,6 +17,9 @@ struct Step {
     player: Option<[f32; 3]>,
     npc_quest: Option<String>,
     npc_quest_state: Option<u8>,
+    /// With a state: the quest log's finished tasks (bit n: task n), for the
+    /// quest screen's check marks.
+    npc_quest_done: Option<u16>,
     npc_offers: Option<Vec<String>>,
     /// Replay a server Offer packet through the real decoder, offline only.
     npc_offer_packet: Option<String>,
@@ -107,6 +110,9 @@ pub(super) fn run(mut commands: Commands, mut replay: Local<Replay>,
                         });
                         net.map_markers.receive(&command, None);
                         net.npc_dialogue.quests.insert(quest.to_lowercase(), state);
+                        let entry = net.npc_dialogue.log.entry(quest.to_lowercase()).or_default();
+                        entry.state = state;
+                        entry.finished = step.npc_quest_done.unwrap_or(0);
                     }
                 }
                 if let (Some(items), Some(net)) = (&step.npc_offers, net.as_mut().filter(|n| n.offline)) {

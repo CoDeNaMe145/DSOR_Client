@@ -62,6 +62,14 @@ record("talent_points", init.encode_server_command_batch((
     init.ServerCommand(init.UNLOCK_SKILL_TALENT_PRESELECTION_INFO_COMMAND, init.UnlockSkillTalentPreselectionInfo(3), 1),
 ), include_terminator=True))
 
+# Items received (MessageCommand type 2): a reward's item, then a currency the
+# reward made no item of (its template added), as services send them.
+from dso_server.protocol import item_receipt_protocol as receipts
+record("item_received", init.encode_server_command_batch((
+    init.ServerCommand(init.MESSAGE_COMMAND, receipts.item_received_message(receipts.ItemReceipt(4012, "dailylogin_lootbox_day_01", 1)), 1),
+    init.ServerCommand(init.MESSAGE_COMMAND, receipts.item_received_message(receipts.ItemReceipt(4013, "money_hc_no_auto_use", 50, True)), 1),
+), include_terminator=True))
+
 packet = client(pvp.JOIN_MATCH_QUEUE_COMMAND, lambda w: (w.write_uint32_le(7), w.write_uint8(0), w.write_uint8(1)))
 request = pvp.decode_join_match_queue(packet[0], packet[1])
 assert (request.server_tick, request.match_mode, request.queue_kind) == (7, 0, 1), request

@@ -122,8 +122,10 @@ def grid(widgets, template, area):
 ROOTS = {
     "bottombar": ["Canvas/Label_new"],
     "inventory": ["Canvas/PositioningLabel"],
-    # The money display in its plain layout (not the payment / RC-only ones).
-    "currencybar": ["Canvas/LabelDefault", "Canvas/AnchorSidebarCurrencyDisplay"],
+    # The money display the game shows in game, with the currency bag
+    # (LabelIngamePayment; the client picks it whatever this export marks:
+    # crate::ui::controls::currency).
+    "currencybar": ["Canvas/LabelIngamePayment", "Canvas/AnchorSidebarCurrencyDisplay"],
     "skillwindow2": ["Canvas/Label"],
 }
 

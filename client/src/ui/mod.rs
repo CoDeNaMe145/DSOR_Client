@@ -135,6 +135,7 @@ const INSTANT_RESPAWN_COST: u32 = 120;
 fn is_menu(name: &str) -> bool {
     MENU_WINDOWS.iter().any(|(n, _, _)| *n == name) || NAV_WINDOWS.contains(&name) || dialogue::WINDOWS.contains(&name) || name == "unstackwindow" || name == controls::items::DESTROY_DIALOG || name == DEATH_WINDOW || name == CHAT_MENU || name == controls::settings::WINDOW
         || SOCIAL_WINDOWS.iter().any(|(n, _)| *n == name) || controls::systems::DESKS.iter().any(|(n, _)| *n == name)
+        || name == controls::currency::BAG
 }
 
 /// The notification dialogs and the player menu (controls::social): closed until
@@ -450,6 +451,16 @@ impl Gauge {
 #[derive(Component)]
 struct Value(ValueKind);
 
+/// A label whose text shrinks to stay within its place (the money): `width`
+/// and the authored font `size`, reference pixels. The game shortens these
+/// amounts (controls::currency::clamped) and lets their font shrink (the
+/// layouts' FontScalingFactor 0.6); here it shrinks as far as the place needs.
+#[derive(Component)]
+struct Fit {
+    width: f32,
+    size: f32,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ValueKind {
     Hotkey(usize),
@@ -463,10 +474,9 @@ enum ValueKind {
     Silver,
     Copper,
     Andermant,
-    /// The currency bar's honour, event (draken) and crafting (glyphs) counters.
-    Honor,
-    Draken,
-    Glyphs,
+    /// The currency the player picked in the currency bag, on the bar
+    /// (controls::currency::Shown).
+    Picked,
     Level,
     XpPercent,
     WisdomLevel,
@@ -483,19 +493,6 @@ enum ValueKind {
     /// A status effect's time left: its half of the bar and slot
     /// (controls::effects writes it).
     EffectTime(u8, u8),
-}
-
-/// The gold counter short enough for its slot of the currency bar: whole up to
-/// 999999, then thousands (1000k .. 99999k), then millions (100kk ..), so a
-/// big purse no longer runs under the silver icon. Only gold, as the original
-/// (the user's account, 2026-10-22: 1000000 shows 1000k, 100000k 100kk; the
-/// other currencies keep their whole numbers).
-fn short_count(n: u64) -> String {
-    match n {
-        0..1_000_000 => n.to_string(),
-        1_000_000..100_000_000 => format!("{}k", n / 1_000),
-        _ => format!("{}kk", n / 1_000_000),
-    }
 }
 
 /// The character sheet's widgets crate::gameplay::stats fills.
@@ -532,13 +529,8 @@ struct Figures {
     name: String,
     online: bool,
     level: Option<u32>,
-    /// Wallet slot 1, copper; slot 0, Andermant.
-    gold: Option<u64>,
-    andermant: Option<u32>,
-    /// Wallet slots 2 and 4, and CurrencyChanged's u64.
-    honor: Option<u32>,
-    draken: Option<u32>,
-    glyphs: Option<u64>,
+    /// The money and the other currencies (0 until the server sends them).
+    wallet: controls::currency::Wallet,
 }
 
 #[derive(Resource, Default)]
@@ -594,6 +586,8 @@ impl Plugin for UiPlugin {
             .init_asset_loader::<crate::gameplay::systems::SystemsCatalogLoader>()
             .init_resource::<controls::systems::State>()
             .init_resource::<controls::systems::Views>()
+            .init_resource::<controls::currency::Shown>()
+            .init_resource::<controls::message::ItemMessages>()
             .init_resource::<UiWork>()
             .init_resource::<crate::gameplay::dialogue::Dialogue>()
             .init_asset::<controls::items::Catalog>()
@@ -615,7 +609,7 @@ impl Plugin for UiPlugin {
             .init_resource::<Settings>()
             .init_resource::<controls::hotbar::Hotbar>()
             .insert_resource(local_map::MapSettings::load())
-            .add_systems(Startup, (setup, controls::items::setup, dialogue::setup))
+            .add_systems(Startup, (setup, controls::items::setup, dialogue::setup, controls::message::setup))
             .add_systems(Update, follow_screen)
             .add_systems(Update, follow_outlines.after(follow_screen))
             .add_systems(PostUpdate, match_scene_camera.after(crate::rendering::graphics::ApplyGraphics))
@@ -628,7 +622,7 @@ impl Plugin for UiPlugin {
                 .before(bevy::sprite_render::check_entities_needing_specialization::<UiMaterial>))
             .add_systems(
                 Update,
-                ((dialogue::sync, controls::party::sync, controls::quests::sync, controls::systems::sync, spawn_windows, controls::sync_chat).chain(), controls::spells::sync, controls::items::sync, (controls::items::pins::update, controls::keyboard).chain(), controls::interact, (controls::settings::sync, controls::settings::sliders, controls::hotbar::input, controls::spells::apply_drop).chain(), read_figures, controls::edit_text, controls::items::input, controls::order_windows, (update_fills, update_values, update_slots, (local_map::update, local_map::update_markers, local_map::appearance).chain(), (controls::effects::fixture, controls::effects::sync, controls::effects::draw).chain()), controls::chat_rows, controls::sheet::rows, controls::paint, (controls::items::render, controls::items::destroy_dialog), (controls::spells::overlay, controls::items::overlay, controls::tooltips), show_hover_window, death_dialog, (controls::trade::sync, controls::social::column, controls::social::context_menu, controls::social::answer, controls::systems::send, controls::social::dialogs, controls::trade::render).chain()).chain().after(crate::actors::monsters::MonsterHoverInfo).before(crate::network::net::NetSystems).run_if(crate::screens::loading::gameplay_ready),
+                ((dialogue::sync, controls::party::sync, controls::quests::sync, controls::systems::sync, controls::currency::sync_bar, controls::message::sync, spawn_windows, controls::sync_chat).chain(), controls::spells::sync, controls::items::sync, (controls::items::pins::update, controls::keyboard).chain(), controls::interact, (controls::settings::sync, controls::settings::sliders, controls::hotbar::input, controls::spells::apply_drop).chain(), read_figures, controls::edit_text, controls::items::input, controls::order_windows, (update_fills, (update_values, fit_texts).chain(), update_slots, (local_map::update, local_map::update_markers, local_map::appearance).chain(), (controls::effects::fixture, controls::effects::sync, controls::effects::draw).chain()), controls::chat_rows, controls::sheet::rows, controls::paint, (controls::items::render, controls::items::destroy_dialog), (controls::spells::overlay, controls::items::overlay, controls::tooltips), show_hover_window, death_dialog, (controls::trade::sync, controls::social::column, controls::social::context_menu, controls::social::answer, controls::systems::send, controls::social::dialogs, controls::trade::render).chain()).chain().after(crate::actors::monsters::MonsterHoverInfo).before(crate::network::net::NetSystems).run_if(crate::screens::loading::gameplay_ready),
             );
         // The 3D previews: once this frame's clicks moved the pages and the
         // views were rebuilt.
@@ -680,6 +674,8 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>, mut quest_ui: ResMut<
     for (name, z) in HUD_WINDOWS {
         loaded.layouts.push((assets.load(format!("interface/{name}.ui.json")), z, None));
     }
+    // The currency bar's bag, opened under it (controls::currency).
+    loaded.layouts.push((assets.load(format!("interface/{}.ui.json", controls::currency::BAG)), 48.0, None));
     for (name, key, z) in MENU_WINDOWS {
         loaded.layouts.push((assets.load(format!("interface/{name}.ui.json")), z, Some(key)));
     }
@@ -688,12 +684,23 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>, mut quest_ui: ResMut<
         loaded.layouts.push((assets.load(format!("interface/{name}.ui.json")), depth, None));
     }
     loaded.layouts.push((assets.load(format!("interface/{DEATH_WINDOW}.ui.json")), 700.0, None));
-    for name in dialogue::WINDOWS { loaded.layouts.push((assets.load(format!("interface/{name}.ui.json")), 380.0, None)); }
+    // The quest screen under the NPC screen: its backdrop shades the world, not
+    // the NPC's portrait (they open together; controls::order_windows stacks
+    // them by this depth).
+    // FAILURE (2026-10-24): at the same depth, the order of their entities
+    //   decided, and the backdrop darkened the portrait every other time.
+    for name in dialogue::WINDOWS {
+        let depth = if name == "questscreen2" { 370.0 } else { 380.0 };
+        loaded.layouts.push((assets.load(format!("interface/{name}.ui.json")), depth, None));
+    }
     for (name, z) in SOCIAL_WINDOWS { loaded.layouts.push((assets.load(format!("interface/{name}.ui.json")), z, None)); }
     // The party frames: a HUD window, drawn only while grouped (controls::party).
     loaded.layouts.push((assets.load(format!("interface/{}.ui.json", controls::party::WINDOW)), 45.0, None));
     // The quest tracker (top right) and the quest data its rows and the log read.
     loaded.layouts.push((assets.load(format!("interface/{}.ui.json", controls::quests::TRACKER)), 46.0, None));
+    // The items received, under the top navigation (controls::message): over
+    // the HUD (the hovered monster's panel shares the top middle), under the menus.
+    loaded.layouts.push((assets.load(format!("interface/{}.ui.json", controls::message::WINDOW)), 62.0, None));
     quest_ui.catalog = assets.load("interface/quests.catalog.json");
     // The NPC desks (controls::systems), opened from an NPC's menu, and the
     // systems' data their windows and the quest log's pages read.
@@ -788,9 +795,7 @@ fn value_of(id: &str) -> Option<ValueKind> {
         "silver_display" => ValueKind::Silver,
         "copper_display" => ValueKind::Copper,
         "andermant_display" => ValueKind::Andermant,
-        "honor_display" => ValueKind::Honor,
-        "event_display" => ValueKind::Draken,
-        "cr_display" => ValueKind::Glyphs,
+        "template_amount" if id == controls::currency::PICKED_AMOUNT => ValueKind::Picked,
         "Level" if id.contains("ProgressBar_xp") || id.contains("/bottombar_xp_bar/") => ValueKind::Level,
         "XP" if id.contains("/bottombar_xp_bar/") => ValueKind::XpPercent,
         "Level" if id.contains("/bottombar_wisdom_bar/") => ValueKind::WisdomLevel,
@@ -901,7 +906,7 @@ fn spawn_windows(
     dialogue_catalogs: Res<Assets<dialogue::Catalog>>,
     party: Res<controls::party::Party>,
     quests: Res<controls::quests::Quests>,
-    views: Res<controls::systems::Views>,
+    (views, shown, item_messages): (Res<controls::systems::Views>, Res<controls::currency::Shown>, Res<controls::message::ItemMessages>),
     mut windows: Query<(Entity, &Window2018, &Visibility, &mut WindowControls)>,
     mut work: ResMut<UiWork>,
     previews: Option<Res<preview::Previews>>,
@@ -975,6 +980,16 @@ fn spawn_windows(
             prepared = controls::items::prepare_destroy(layout); &prepared
         } else if layout.window == "inventory" {
             prepared = preview::prepare_inventory(layout); &prepared
+        } else if layout.window == controls::currency::BAR {
+            prepared = controls::currency::prepare_bar(layout, &shown); &prepared
+        } else if layout.window == controls::currency::BAG {
+            // Opened under the bar's reference label.
+            let bar = loaded.layouts.iter().filter_map(|(h, _, _)| layouts.get(h)).find(|l| l.window == controls::currency::BAR);
+            prepared = controls::currency::prepare_bag(layout, &views.currencies, bar); &prepared
+        } else if layout.window == controls::message::WINDOW {
+            prepared = controls::message::prepare(layout, &item_messages);
+            if prepared.widgets.is_empty() { loaded.spawned[i] = true; continue; }
+            &prepared
         } else { layout };
         // DSOR_UI_OPEN=inventory,...: menus open from the start (screenshots).
         let open = npc_window || std::env::var("DSOR_UI_OPEN").is_ok_and(|v| v.split(',').any(|w| w == layout.window));
@@ -1187,8 +1202,11 @@ fn spawn_windows(
                 if !(static_text(label) || stickerbook_text || value.is_some() || w.kind == "TextEntry") || label.color[3] <= 0.0 {
                     continue;
                 }
-                // The status effects' time labels stay click-through, as authored.
-                if !matches!(value, Some(ValueKind::EffectTime(..))) { controls.region(w.k, w.rect, gate.clone()); }
+                // The status effects' time labels stay click-through, as authored,
+                // and so does the item received notice.
+                if !matches!(value, Some(ValueKind::EffectTime(..))) && layout.window != controls::message::WINDOW {
+                    controls.region(w.k, w.rect, gate.clone());
+                }
                 let p = parent(&mut commands, w.k, false);
                 let [l, t, r, b] = w.rect;
                 let x = match label.align[0] { 0 => l, 2 => r, _ => (l + r) * 0.5 };
@@ -1218,6 +1236,10 @@ fn spawn_windows(
                 ));
                 if let Some(v) = value {
                     e.insert(Value(v));
+                }
+                // The money shrinks into its place (fit_texts).
+                if let Some(width) = controls::currency::fit_width(&layout.window, w) {
+                    e.insert(Fit { width, size: label.size * FONT_SCALE });
                 }
                 let wrap = label.word_break.then(|| (bevy::text::TextBounds::new_horizontal((r - l) * screen.scale),
                     TextLayout::justify(match label.align[0] { 0 => Justify::Left, 2 => Justify::Right, _ => Justify::Center })));
@@ -1271,10 +1293,12 @@ fn spawn_windows(
 /// FAILURE (2026-10-21): with the tracker's containers taking the pointer (the
 ///   tracker is drawn over the game bar), the Premium, autoplay, fullscreen and
 ///   game menu buttons above it could not be hovered or clicked.
+/// The item received notice (controls::message) takes no clicks at all.
 fn passes_pointer(window: &str, w: &Widget, art: &Art) -> bool {
     let invisible = art.tex.is_none() && art.color.chunks(4).all(|c| c.get(3).is_some_and(|a| *a <= 0.0));
     (dialogue::WINDOWS.contains(&window) && w.click_through)
         || (invisible && matches!(window, CHAT_WINDOW | CHAT_MENU | controls::quests::TRACKER))
+        || window == controls::message::WINDOW
 }
 
 /// The widgets' drawing order: as authored, except a button state's captions,
@@ -1412,7 +1436,8 @@ fn follow_screen(
 }
 
 /// The server's figures, or a resting HUD offline.
-fn read_figures(net: Option<NonSend<crate::network::net::Net>>, mut figures: ResMut<Figures>, resource_max: Res<crate::gameplay::stats::ResourceMax>) {
+fn read_figures(net: Option<NonSend<crate::network::net::Net>>, mut figures: ResMut<Figures>, resource_max: Res<crate::gameplay::stats::ResourceMax>,
+    mut wallet_seen: Local<Option<u64>>) {
     let Some(net) = net else {
         if !figures.online && figures.health.1 == 0.0 {
             // Offline (the map viewer): a full-looking HUD, so it can be seen.
@@ -1465,15 +1490,13 @@ fn read_figures(net: Option<NonSend<crate::network::net::Net>>, mut figures: Res
             figures.xp = f;
         }
     }
-    if let Some(w) = net.wallet {
-        // Andermant, gold (copper), badges of honour, (legacy progression), draken.
-        let next = (Some(w[0] as u32), Some(w[1]), Some(w[2] as u32), Some(w[4] as u32));
-        if (figures.andermant, figures.gold, figures.honor, figures.draken) != next {
-            (figures.andermant, figures.gold, figures.honor, figures.draken) = next;
+    // The currencies come with server commands: read again when one came.
+    if *wallet_seen != Some(net.ui_revision) {
+        *wallet_seen = Some(net.ui_revision);
+        let wallet = controls::currency::Wallet::of(&net);
+        if figures.wallet != wallet {
+            figures.wallet = wallet;
         }
-    }
-    if figures.glyphs != net.glyphs {
-        figures.glyphs = net.glyphs;
     }
     if figures.bar != net.bar {
         figures.bar = net.bar.clone();
@@ -1533,27 +1556,30 @@ fn update_values(
     sheet: Res<crate::gameplay::stats::Sheet>,
     hover: Res<crate::actors::monsters::HoverInfo>,
     current_map: Option<Res<crate::world::map::CurrentMap>>,
+    shown: Res<controls::currency::Shown>,
     mut texts: Query<(&Value, &mut Text2d)>,
 ) {
-    let changed = figures.is_changed() || settings.is_changed() || hotbar.is_changed() || sheet.is_changed() || hover.is_changed() || current_map.as_ref().is_some_and(|m| m.is_changed());
+    let changed = figures.is_changed() || settings.is_changed() || hotbar.is_changed() || sheet.is_changed() || hover.is_changed() || current_map.as_ref().is_some_and(|m| m.is_changed())
+        || shown.is_changed();
     for (v, mut t) in &mut texts {
         // Layouts load asynchronously, even when the current figures are stable.
         if !changed && !t.is_added() { continue; }
-        // Gold is counted in copper: 100 copper a silver, 100 silver a gold.
-        // UNVERIFIED: the split (the currency bar's own code is not traced).
-        let copper = figures.gold.unwrap_or(0);
+        // Gold is counted in copper: 100 copper a silver, 100 silver a gold;
+        // each shortened to its place on the currency bar.
+        // EVIDENCE: release261 UI::CurrencyBarWidget 0x1403DAA44 (copper / 10000
+        //   in 5 digits, the rest's silver and copper), 0x1403DA7F0 (Andermant,
+        //   9), 0x1403DAE14 (the picked currency, 10).
+        let wallet = &figures.wallet;
         let s = match v.0 {
             ValueKind::Hotkey(slot) => settings.current.slot_label(slot),
             ValueKind::EssenceKey => settings.current.label("essence"),
             ValueKind::BarNumber => (hotbar.active + 1).to_string(),
             ValueKind::Fixed(n) => n.to_string(),
-            ValueKind::Gold => short_count(copper as u64 / 10_000),
-            ValueKind::Silver => (copper / 100 % 100).to_string(),
-            ValueKind::Copper => (copper % 100).to_string(),
-            ValueKind::Andermant => figures.andermant.unwrap_or(0).to_string(),
-            ValueKind::Honor => figures.honor.unwrap_or(0).to_string(),
-            ValueKind::Draken => figures.draken.unwrap_or(0).to_string(),
-            ValueKind::Glyphs => figures.glyphs.unwrap_or(0).to_string(),
+            ValueKind::Gold => controls::currency::clamped(wallet.copper / 10_000, 5),
+            ValueKind::Silver => (wallet.copper % 10_000 / 100).to_string(),
+            ValueKind::Copper => (wallet.copper % 100).to_string(),
+            ValueKind::Andermant => controls::currency::clamped(wallet.andermant, 9),
+            ValueKind::Picked => controls::currency::clamped(wallet.balance(&shown.id), 10),
             ValueKind::Level => figures.level.map(|l| l.to_string()).unwrap_or_else(|| "-".to_owned()),
             ValueKind::XpPercent => format!("{:.0}%", figures.xp * 100.0),
             ValueKind::WisdomLevel => figures.wisdom.0.to_string(),
@@ -1574,6 +1600,17 @@ fn update_values(
         };
         if t.0 != s {
             t.0 = s;
+        }
+    }
+}
+
+/// The money labels' font, shrunk until their text fits their place; only when
+/// a text changes (a resize scales the font with the rest: follow_screen).
+fn fit_texts(screen: Res<Screen>, mut texts: Query<(&Fit, &Text2d, &mut TextFont), Changed<Text2d>>) {
+    for (fit, text, mut font) in &mut texts {
+        let px = controls::currency::fitted(&text.0, fit.size, fit.width) * screen.scale;
+        if !matches!(font.font_size, bevy::text::FontSize::Px(old) if (old - px).abs() < 1e-3) {
+            font.font_size = bevy::text::FontSize::Px(px);
         }
     }
 }
@@ -1728,17 +1765,6 @@ mod outline_tests {
 mod residency_tests {
     use super::*;
 
-    #[test]
-    fn currency_counters_shorten_to_k_and_kk() {
-        assert_eq!(short_count(999_999), "999999");
-        assert_eq!(short_count(1_000_000), "1000k");
-        assert_eq!(short_count(9_999_999), "9999k");
-        assert_eq!(short_count(99_999_999), "99999k");
-        assert_eq!(short_count(100_000_000), "100kk");
-        assert_eq!(short_count(1_000_000_000), "1000kk");
-        assert_eq!(short_count(0), "0");
-    }
-
     /// The area a fan covers, and whether every rim point is in the box.
     fn fan(art: &Art) -> (f32, Vec<[f32; 2]>) {
         let p = |i: u32| [art.pos[2 * i as usize], art.pos[2 * i as usize + 1]];
@@ -1824,7 +1850,7 @@ mod residency_tests {
         app.add_plugins((MinimalPlugins,bevy::asset::AssetPlugin::default()))
             .init_asset::<Layout>().init_asset::<Mesh>().init_asset::<UiMaterial>()
             .init_asset::<Image>().init_asset::<Font>().init_asset::<dialogue::Catalog>()
-            .init_resource::<Loaded>().init_resource::<Screen>().init_resource::<dialogue::Presentation>().init_resource::<controls::party::Party>().init_resource::<controls::quests::Quests>().init_resource::<crate::gameplay::quests::QuestUi>().init_resource::<controls::systems::Views>().init_resource::<UiWork>()
+            .init_resource::<Loaded>().init_resource::<Screen>().init_resource::<dialogue::Presentation>().init_resource::<controls::party::Party>().init_resource::<controls::quests::Quests>().init_resource::<crate::gameplay::quests::QuestUi>().init_resource::<controls::systems::Views>().init_resource::<controls::currency::Shown>().init_resource::<controls::message::ItemMessages>().init_resource::<UiWork>()
             .add_systems(Update,spawn_windows);
         let layout: Layout=serde_json::from_value(serde_json::json!({"window":"inventory","widgets":[{
             "id":"Canvas/background","k":0.0,"rect":[0,0,20,20],"hidden":false,
@@ -1858,7 +1884,7 @@ mod residency_tests {
         app.add_plugins((MinimalPlugins,bevy::asset::AssetPlugin::default()))
             .init_asset::<Layout>().init_asset::<Mesh>().init_asset::<UiMaterial>()
             .init_asset::<Image>().init_asset::<Font>().init_asset::<dialogue::Catalog>()
-            .init_resource::<Loaded>().init_resource::<Screen>().init_resource::<dialogue::Presentation>().init_resource::<controls::party::Party>().init_resource::<controls::quests::Quests>().init_resource::<crate::gameplay::quests::QuestUi>().init_resource::<controls::systems::Views>().init_resource::<UiWork>()
+            .init_resource::<Loaded>().init_resource::<Screen>().init_resource::<dialogue::Presentation>().init_resource::<controls::party::Party>().init_resource::<controls::quests::Quests>().init_resource::<crate::gameplay::quests::QuestUi>().init_resource::<controls::systems::Views>().init_resource::<controls::currency::Shown>().init_resource::<controls::message::ItemMessages>().init_resource::<UiWork>()
             .add_systems(Update,spawn_windows);
         let layout: Layout=serde_json::from_value(serde_json::json!({"window":controls::systems::ALBUM,"widgets":[{
             "id":"Canvas/background","k":0.0,"rect":[0,0,20,20],"hidden":false,

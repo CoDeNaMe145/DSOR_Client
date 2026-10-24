@@ -166,8 +166,8 @@
   },
   {
     "name": "ocp_request",
-    "hex": "8b0b01",
-    "bits": 24
+    "hex": "8b0b0100",
+    "bits": 25
   },
   {
     "name": "ocp_booking",

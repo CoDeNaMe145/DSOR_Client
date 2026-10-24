@@ -182,9 +182,27 @@ pub struct CharacterDesc {
     pub armament: i8,
     /// Hair/beard resolved from the roster's customization indices.
     pub cosmetics: Vec<String>,
+    /// The body style, its ethnicity (ETHNICITIES): which of the class and
+    /// gender's body sets it wears; the body stature, its proportions
+    /// (var_<class>_<gender>_<stature, 2 digits>).
+    pub body: u8,
+    pub stature: u8,
+    /// A player of the world's hair and beard styles (NewPlayer's wire indices),
+    /// made `cosmetics` when it is built (characters/selection.json's tables).
+    pub styles: Option<(u8, u8)>,
     /// An NPC: its outfit replaces class, gender and equipment (crate::actors::npc).
     pub look: Option<NpcLook>,
 }
+
+/// A body style's body set: <class>_<gender>[_<ethnicity>]_body_00, and its parts
+/// <class>_<gender>[_<ethnicity>]_<part> (characters/<skeleton>/outfits.json).
+/// The proportions are the class and gender's whatever the ethnicity: the
+/// outfits' var_*_asian_00 / var_*_black_00 are never chosen.
+/// SOURCE: the 2026 client's UpdateCharacterAppearance 0x140240270 / 0x14023b380
+///   and its NewPlayer handling 0x14020f828: "%s_%sbody_00" with "" / "asian_" /
+///   "black_" for body style 0 (or any other) / 1 / 2, "var_%s_%02d" with the
+///   stature (data/diagnostics/charselection-widget.annotated.txt).
+pub const ETHNICITIES: [&str; 3] = ["", "asian", "black"];
 
 /// An NPC's fixed outfit: `_Template_NPC` Graphics, CharacterSet resolved through
 /// the skeleton's outfits.json, and AnimSet.
@@ -231,6 +249,13 @@ impl CharacterDesc {
     fn gender_name(&self) -> &'static str {
         if self.gender == 1 { "female" } else { "male" }
     }
+    /// "<class>_<gender>" or "<class>_<gender>_<ethnicity>": the body set's stem.
+    fn body_stem(&self) -> String {
+        match ETHNICITIES.get(self.body as usize).copied().unwrap_or("") {
+            "" => format!("{}_{}", self.class_name(), self.gender_name()),
+            ethnicity => format!("{}_{}_{ethnicity}", self.class_name(), self.gender_name()),
+        }
+    }
     fn skeleton(&self) -> &str {
         match &self.look {
             Some(look) => &look.skeleton,
@@ -273,8 +298,9 @@ impl CharacterDesc {
         };
         let worn: Vec<_> = self.equipment.iter().flat_map(|e| e.skin_parts.iter()
             .filter_map(|skin| resolve(skin).map(|part| (part, e.colour)))).collect();
+        let stem = self.body_stem();
         for p in BODY_PARTS {
-            for candidate in [format!("{class}_{gender}_{p}"), format!("{gender}_{p}")] {
+            for candidate in [format!("{stem}_{p}"), format!("{class}_{gender}_{p}"), format!("{gender}_{p}")] {
                 if exists(&candidate) {
                     out.push((candidate, None));
                     break;
@@ -598,12 +624,14 @@ pub struct CharacterLibrary {
     skeletons: HashMap<&'static str, Handle<Gltf>>,
     /// The skeletons' body shapes, for the players' own (see body_variation).
     variations: HashMap<&'static str, Handle<crate::actors::npc::Variations>>,
+    /// The hair and beard tables (CharacterDesc::styles).
+    selection: Handle<crate::screens::selection::SelectionData>,
 }
 
 #[cfg(test)]
 impl CharacterLibrary {
     pub(crate) fn for_test(item_skins: Handle<ItemSkins>) -> Self {
-        Self { item_skins, anims: default(), parts: default(), skeletons: default(), variations: default() }
+        Self { item_skins, anims: default(), parts: default(), skeletons: default(), variations: default(), selection: default() }
     }
 }
 
@@ -651,6 +679,7 @@ fn load_library(mut commands: Commands, assets: Res<AssetServer>) {
         parts,
         skeletons,
         variations,
+        selection: assets.load("characters/selection.json"),
     });
 }
 
@@ -662,9 +691,11 @@ fn load_library(mut commands: Commands, assets: Res<AssetServer>) {
 ///   perso semble moins gros que l'officiel").
 fn body_variation(desc: &CharacterDesc, library: Option<&CharacterLibrary>, variations: &Assets<crate::actors::npc::Variations>) -> Vec<(String, Vec3, Vec3)> {
     let Some(all) = library.and_then(|l| l.variations.get(desc.skeleton())).and_then(|h| variations.get(h)) else { return Vec::new() };
-    let name = format!("var_{}_{}_00", desc.class_name(), desc.gender_name());
+    let name = format!("var_{}_{}_{:02}", desc.class_name(), desc.gender_name(), desc.stature);
+    let fallback = format!("var_{}_{}_00", desc.class_name(), desc.gender_name());
     all.variations
         .get(&name)
+        .or_else(|| all.variations.get(&fallback))
         .map(|shape| shape.iter().map(|j| (j.bone.clone(), Vec3::from(j.t), Vec3::from(j.s))).collect())
         .unwrap_or_default()
 }
@@ -700,11 +731,25 @@ fn build_characters(
     part_lists: Res<Assets<PartList>>,
     assets: Res<AssetServer>,
     variations: Res<Assets<crate::actors::npc::Variations>>,
+    selections: Res<Assets<crate::screens::selection::SelectionData>>,
 ) {
     let Some(library) = library else { return };
     for (entity, mut character) in &mut characters {
         if character.built {
             continue;
+        }
+        // A player's hair and beard, with no gender check: the world draws a
+        // woman's beard style too (NewPlayer handling 0x14020f828).
+        if let Some((hair, beard)) = character.desc.styles {
+            match selections.get(&library.selection) {
+                Some(data) => {
+                    let (class, gender) = (character.desc.class, character.desc.gender);
+                    character.desc.cosmetics = crate::screens::selection::cosmetics(data, class, gender, Some(hair), Some(beard));
+                    character.desc.styles = None;
+                }
+                None if !assets.load_state(&library.selection).is_failed() => continue,
+                None => character.desc.styles = None,
+            }
         }
         let skel = character.desc.skeleton().to_owned();
         let skel = skel.as_str();

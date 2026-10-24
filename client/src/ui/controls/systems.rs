@@ -1,8 +1,8 @@
 //! The systems' windows: the leaderboards and the PvP queue, the premium shop,
 //! the events, the collector's album and the transmog desk, the smith's salvage
 //! and workbench desks and the jeweller's gem desk, the quest log's achievement,
-//! daily and Wanted Thief pages, the character sheet's titles and the social
-//! window's lists.
+//! daily and Wanted Thief pages, the character sheet's titles, the social
+//! window's lists and the currency bag's currencies (crate::ui::controls::currency).
 //!
 //! Each is an authored template (crate::ui::controls::template) filled from what
 //! the server said (crate::network::net) and the systems' data
@@ -239,6 +239,7 @@ pub(in crate::ui) struct Views {
     pub log: log::Log,
     pub titles: log::Titles,
     pub rosters: rosters::Rosters,
+    pub currencies: super::currency::Bag,
 }
 
 /// What the views are built from.
@@ -285,8 +286,8 @@ pub(in crate::ui) fn unix_seconds() -> u64 {
 }
 
 /// The windows each view (`Views`, in `refresh`'s order) fills.
-const VIEW_WINDOWS: [&[&str]; 11] = [&[LEADERBOARDS, MATCHMAKING], &[SHOP], &[EVENTS], &[ALBUM], &[TRANSMOG],
-    &[SALVAGE], &[GEMDESK], &[WORKBENCH], &[QUESTLOG], &[SHEET], &[SOCIAL]];
+const VIEW_WINDOWS: [&[&str]; 12] = [&[LEADERBOARDS, MATCHMAKING], &[SHOP], &[EVENTS], &[ALBUM], &[TRANSMOG],
+    &[SALVAGE], &[GEMDESK], &[WORKBENCH], &[QUESTLOG], &[SHEET], &[SOCIAL], &[super::currency::BAG]];
 
 /// Builds view `index` of `VIEW_WINDOWS` into `views`; true when it changed.
 fn refresh(index: usize, sources: &Sources, views: &mut Views) -> bool {
@@ -306,7 +307,8 @@ fn refresh(index: usize, sources: &Sources, views: &mut Views) -> bool {
         7 => set(&mut views.workbench, desks::workbench(sources)),
         8 => set(&mut views.log, log::log(sources)),
         9 => set(&mut views.titles, log::titles(sources)),
-        _ => set(&mut views.rosters, rosters::rosters(sources)),
+        10 => set(&mut views.rosters, rosters::rosters(sources)),
+        _ => set(&mut views.currencies, super::currency::bag(sources)),
     }
 }
 

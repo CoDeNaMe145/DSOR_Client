@@ -150,6 +150,13 @@ pub(super) fn action(window: &str, widget: &Widget) -> Option<Action> {
                 _ => return None,
             }
         }
+        super::party::WINDOW => {
+            match event {
+                "SwitchToCompact" => return Some(Action::PartyCompact(true)),
+                "SwitchToFull" => return Some(Action::PartyCompact(false)),
+                _ => return None,
+            }
+        }
         "socialscreen" => {
             // The invitation campaign (friend invites with rewards) has no server.
             if leaf == "TabButtonInvite" { return Some(Action::Unavailable); }

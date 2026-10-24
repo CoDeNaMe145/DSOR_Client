@@ -59,6 +59,18 @@ impl Catalog {
             .or_else(|| self.items.get(template).map(|d| d.name.as_str()).filter(|n| !n.is_empty()))
             .unwrap_or(template)
     }
+    /// A reward's icon (no carried item): its background the rarity the reward
+    /// names when the icon configuration follows the rarity; an empty or unknown
+    /// rarity keeps the template's own.
+    /// EVIDENCE: release261 UI::QuestWidget2::CreateRewardElement (0x1404CF838)
+    ///   takes the reward's rarity unless it is -1 or past the last one.
+    pub fn reward_icon_parts(&self, template: &str, rarity: &str) -> (Option<&str>, Option<&str>, Option<&str>) {
+        let (icon, background, frame) = self.icon_parts(template, None);
+        let follows = self.items.get(template).and_then(|d| self.icon_configs.get(&d.icon_config)).is_some_and(|c| c.rarity);
+        let ranked = RARITIES.iter().position(|r| r.eq_ignore_ascii_case(rarity)).filter(|_| follows)
+            .and_then(|n| self.rarity_backgrounds.get(n)).map(String::as_str).filter(|b| !b.is_empty());
+        (icon, ranked.or(background), frame)
+    }
     pub fn icon_parts(&self, template: &str, item: Option<&ItemInfo>) -> (Option<&str>, Option<&str>, Option<&str>) {
         let def = self.items.get(template);
         let look = item.and_then(|i| self.appearances.get(if i.fourth_name.is_empty() { &i.appearance } else { &i.fourth_name }));
@@ -304,11 +316,60 @@ const DROP_HIGHLIGHT: &str = "Canvas/slot_highlight";
 /// The layout's slot_highlight as a mesh over the unit square (x to 1, y down
 /// to -1), to be scaled over a slot's frame, and its texture.
 fn drop_highlight(layout:&Layout)->Option<(Mesh,Option<String>)> {
-    let w=layout.widgets.iter().find(|w|w.id==DROP_HIGHLIGHT)?;
+    unit_art(layout.widgets.iter().find(|w|w.id==DROP_HIGHLIGHT)?)
+}
+/// A widget's artwork as a mesh over the unit square (x to 1, y down to -1),
+/// to be scaled over a rect, and its texture.
+fn unit_art(w:&Widget)->Option<(Mesh,Option<String>)> {
     let mut art=w.art.clone()?; let [l,t,r,b]=w.rect;
     for p in art.pos.chunks_exact_mut(2) { p[0]=(p[0]-l)/(r-l); p[1]=-(p[1]-t)/(b-t); }
     let mut run=Run::default(); run.push(&art,0.0);
     Some((run.mesh(),art.tex))
+}
+
+/// An equipped item's level, in the original's small dark box: the layout's
+/// UpgradeButtonTemplate_Green, its normal face, white text with a black glow.
+/// SOURCE: dro_client64 (2026) UI::InventoryWidget::UpdateItemUpgradeButton
+///   (0x1404636d4) -> 0x140451340: only slot types 0-10 and 12 (no belt,
+///   trinkets, mercenary or essences); centred 0.00625 of the screen (6.4 x
+///   4.8 reference pixels) in from the Slot's top right corner, its top left
+///   for 5 and 7-10 and 12 (mask 0x17a0: the left column); the text "%d".
+///   Its one caller always passes Green: the Red "outdated" face is unused.
+/// UNVERIFIED: the original shows the sum of two GameItem fields (+0x40,
+///   +0x48); the server sends one level, ItemInfo.durability (the tooltip's).
+/// NOT DONE: its tooltip and left click ("Left-click to upgrade the item.",
+///   the item upgrade window).
+const LEVEL_LABEL: &str = "/UpgradeButtonTemplate_Green/normal";
+const LEVEL_INSET: Vec2 = Vec2::new(6.4, 4.8);
+/// The label's TextEffectSize (TextEffect 2, black).
+const LEVEL_OUTLINE: f32 = 1.7;
+
+/// Where an equipped item's level is centred over its Slot `rect`; None for
+/// the slots that show none.
+fn level_centre(slot:i8, rect:[f32;4])->Option<Vec2> {
+    let left=match slot { 0..=4|6=>false, 5|7..=10|12=>true, _=>return None };
+    let [l,t,r,_]=rect;
+    Some(Vec2::new(if left {l+LEVEL_INSET.x} else {r-LEVEL_INSET.x}, t+LEVEL_INSET.y))
+}
+
+/// The level label's face over the unit square, its texture, its size and its
+/// font size (reference pixels).
+fn level_face(layout:&Layout)->Option<(Mesh,Option<String>,Vec2,f32)> {
+    let w=layout.widgets.iter().find(|w|w.id.ends_with(LEVEL_LABEL))?;
+    let (mesh,tex)=unit_art(w)?;
+    Some((mesh,tex,Vec2::new(w.rect[2]-w.rect[0],w.rect[3]-w.rect[1]),w.text.as_ref().map_or(9.0,|t|t.size)*FONT_SCALE))
+}
+
+/// White text centred at `at`, outlined in black (crate::ui::outline_copies).
+fn outlined(commands:&mut Commands,assets:&AssetServer,screen:&Screen,parent:Entity,value:String,at:Vec3,size:f32) {
+    let font=TextFont{font:assets.load("fonts/tahoma.ttf").into(),font_size:bevy::text::FontSize::Px(size*screen.scale),..default()};
+    let text=commands.spawn((Text2d::new(value.clone()),font.clone(),TextColor(Color::WHITE),Anchor::CENTER,
+        Transform::from_translation(at).with_scale(Vec3::splat(1.0/screen.scale)),RenderLayers::layer(LAYER),ChildOf(parent))).id();
+    for (offset,shadow) in outline_copies((0.5+0.35*LEVEL_OUTLINE).min(1.5)) {
+        let copy=OutlineCopy{offset,shadow,dz:-0.01,color:Color::BLACK};
+        commands.spawn((Text2d::new(value.clone()),font.clone(),TextColor(Color::BLACK),Anchor::CENTER,copy.transform(screen.scale),
+            bevy::sprite::Text2dShadow{offset:shadow*screen.scale,color:Color::BLACK},RenderLayers::layer(LAYER),ChildOf(text),Visibility::Inherited,copy));
+    }
 }
 
 /// DSOR_TEST_DROP_SLOTS=8,9, offline: those equipment slots glow as under a
@@ -544,7 +605,8 @@ fn color(catalog:&Catalog,item:Option<&ItemInfo>)->Color {
 pub fn render(mut commands:Commands,windows:Query<(Entity,&Window2018,&WindowControls,&Visibility)>,net:Option<NonSend<crate::network::net::Net>>,
     data:Res<Data>,catalogs:Res<Assets<Catalog>>,assets:Res<AssetServer>,screen:Res<Screen>,old:Query<Entity,With<Contents>>,ui:Res<Interaction>,
     mut last:Local<Option<(Entity,u64,usize,u8,usize,usize,u32,u32,u8,usize,u64,Option<u32>)>>,(layouts,loaded):(Res<Assets<Layout>>,Res<crate::ui::Loaded>),
-    (mut meshes,mut materials):(ResMut<Assets<Mesh>>,ResMut<Assets<UiMaterial>>),mut highlight:Local<Option<(Handle<Mesh>,Handle<UiMaterial>)>>) {
+    (mut meshes,mut materials):(ResMut<Assets<Mesh>>,ResMut<Assets<UiMaterial>>),mut highlight:Local<Option<(Handle<Mesh>,Handle<UiMaterial>)>>,
+    mut level:Local<Option<(Handle<Mesh>,Handle<UiMaterial>,Vec2,f32)>>) {
     let Some(catalog)=catalogs.get(&data.catalog) else{return}; let Some(net)=net else{return};
     let window=windows.iter().find(|(_,n,_,v)|n.0=="inventory" && **v!=Visibility::Hidden);
     let targets=window.map_or(0,|(_,_,c,_)|drop_targets(&ui,&net.inventory,catalog,net.level.unwrap_or(1),c.spells.class)|test_drop_slots(net.offline));
@@ -555,6 +617,10 @@ pub fn render(mut commands:Commands,windows:Query<(Entity,&Window2018,&WindowCon
     if targets!=0 && highlight.is_none() {
         *highlight=loaded.layouts.iter().filter_map(|(h,_,_)|layouts.get(h)).find(|l|l.window=="inventory").and_then(drop_highlight)
             .map(|(mesh,tex)|(meshes.add(mesh),materials.add(material(tex.map(|t|assets.load(t))))));
+    }
+    if level.is_none() {
+        *level=loaded.layouts.iter().filter_map(|(h,_,_)|layouts.get(h)).find(|l|l.window=="inventory").and_then(level_face)
+            .map(|(mesh,tex,size,font)|(meshes.add(mesh),materials.add(material(tex.map(|t|assets.load(t)))),size,font));
     }
     let group=commands.spawn((Contents,Transform::from_xyz(0.0,0.0,WINDOW_ITEMS_DEPTH),Visibility::Inherited,ChildOf(root))).id();
     for b in &c.buttons {
@@ -592,6 +658,11 @@ pub fn render(mut commands:Commands,windows:Query<(Entity,&Window2018,&WindowCon
             text(&mut commands,&assets,&screen,group,d.amount.to_string(),at+Vec3::new(1.0,-1.0,-0.01),13.0,Color::BLACK,size.x-4.0);
             text(&mut commands,&assets,&screen,group,d.amount.to_string(),at,13.0,Color::WHITE,size.x-4.0);
         }
+        if let (Cell::Equipment(slot),Some(item),Some((mesh,face,size,font)))=(cell,d.item,level.as_ref()) { if let Some(c)=level_centre(slot,b.rect) {
+            commands.spawn((Mesh2d(mesh.clone()),MeshMaterial2d(face.clone()),Transform::from_translation(screen.world(b.k,c.x-size.x/2.0,c.y-size.y/2.0).extend(0.35))
+                .with_scale(size.extend(1.0)),RenderLayers::layer(LAYER),ChildOf(group)));
+            outlined(&mut commands,&assets,&screen,group,item.durability.to_string(),screen.world(b.k,c.x,c.y).extend(0.4),*font);
+        }}
     }
 }
 
@@ -696,7 +767,7 @@ mod tests {
             .init_resource::<crate::gameplay::dialogue::Dialogue>()
             .init_resource::<crate::gameplay::stats::Sheet>().init_resource::<crate::actors::monsters::HoverInfo>()
             .insert_resource(crate::gameplay::stats::ResourceMax(100.0))
-            .init_resource::<super::party::Party>().init_resource::<super::quests::Quests>().init_resource::<super::systems::Views>().init_resource::<crate::ui::UiWork>()
+            .init_resource::<super::party::Party>().init_resource::<super::quests::Quests>().init_resource::<super::systems::Views>().init_resource::<super::currency::Shown>().init_resource::<super::message::ItemMessages>().init_resource::<crate::ui::UiWork>()
             .init_resource::<Pointer>().init_resource::<Interaction>().init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<bevy::sprite_render::EntitiesNeedingSpecialization<UiMaterial>>()
             .add_systems(PostUpdate, (refresh_mesh_order, bevy::sprite_render::check_entities_needing_specialization::<UiMaterial>)
@@ -973,5 +1044,25 @@ mod tests {
         assert_eq!(pos, &vec![[0.0, 0.0, 0.0], [1.0, -1.0, 0.0], [0.15, -0.15, 0.0]]);
         assert_eq!(tex.as_deref(), Some("textures/ui/deco_elemente.png"));
         assert!(drop_highlight(&crate::ui::controls::template::fixture::layout("inventory", &[])).is_none());
+    }
+
+    #[test]
+    fn equipped_levels_sit_in_the_outer_top_corner_of_the_slots_that_show_one() {
+        let rect = [100.0, 200.0, 150.0, 250.0];
+        let near = |slot: i8, at: Vec2| level_centre(slot, rect).is_some_and(|c| c.distance(at) < 1e-4);
+        // The right column (helmet to boots, the off hand): top right.
+        for slot in [0, 1, 2, 3, 4, 6] { assert!(near(slot, Vec2::new(143.6, 204.8)), "slot {slot}"); }
+        // The left column (weapon, cloak, rings, amulet, weapon mod): top left.
+        for slot in [5, 7, 8, 9, 10, 12] { assert!(near(slot, Vec2::new(106.4, 204.8)), "slot {slot}"); }
+        // No belt, trinkets, mercenary pieces or essences.
+        for slot in [11, 13, 20, 24, 25, 27, 34, 35] { assert_eq!(level_centre(slot, rect), None, "slot {slot}"); }
+        // The face: the Green template's normal state, at its size, with its font size.
+        let id = "Canvas/UpgradeButtonLabel/UpgradeButtonLabel/UpgradeButtonTemplate_Green/normal";
+        let mut layout = crate::ui::controls::template::fixture::layout("inventory",
+            &[("Canvas/UpgradeButtonLabel/UpgradeButtonLabel/UpgradeButtonTemplate_Red/normal", "TextLabel", true), (id, "TextLabel", true)]);
+        layout.widgets[0].rect = [0.0, 0.0, 1.0, 1.0];
+        let (_, _, size, font) = level_face(&layout).unwrap();
+        assert_eq!((size, font), (Vec2::new(90.0, 46.0), 10.0 * FONT_SCALE));
+        assert!(level_face(&crate::ui::controls::template::fixture::layout("inventory", &[])).is_none());
     }
 }

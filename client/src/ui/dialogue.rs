@@ -7,6 +7,7 @@ pub(super) const WINDOWS: [&str; 3] = ["npcscreen", "questscreen2", "tradingscre
 pub(super) const CLOSE: usize = usize::MAX;
 const PAGE_SIZE: usize = 4;
 mod merchant;
+mod quest;
 use merchant::MerchantView;
 
 #[derive(Asset, TypePath, Deserialize, Default)]
@@ -14,6 +15,10 @@ pub(super) struct Catalog {
     portraits: HashMap<String, String>,
     icons: HashMap<String, String>,
     texts: HashMap<String, String>,
+    /// Quest texts that colour words, with their inline tags (quest::runs);
+    /// `texts` holds them plain (tools/dialogue_catalog.py).
+    #[serde(default)]
+    marked: HashMap<String, String>,
     #[serde(default)]
     trading: merchant::Catalog,
 }
@@ -41,6 +46,15 @@ impl Catalog {
     fn dialog(&self, id: &str, short: bool) -> String {
         self.text(&format!("quest.{id}{}", if short { "Short" } else { "" }))
     }
+    /// What the NPC says: the text of `key` in the player's gender (its `.f`
+    /// variant for a woman, when there is one), with its inline tags.
+    /// EVIDENCE: release261 QuestWidget2::Refresh (0x1404D3844) passes the
+    ///   player's gender and name to the locale lookup.
+    fn spoken(&self, key: &str, female: bool) -> String {
+        let key = key.to_lowercase();
+        let pick = |key: &str| self.marked.get(key).or_else(|| self.texts.get(key)).filter(|t| !t.is_empty()).cloned();
+        female.then(|| pick(&format!("{key}.f"))).flatten().or_else(|| pick(&key)).unwrap_or_default()
+    }
 }
 
 pub(in crate::ui) fn readable(id: &str) -> String {
@@ -51,9 +65,12 @@ pub(in crate::ui) fn readable(id: &str) -> String {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Action {
+pub(super) enum Action {
     Quest(String), Talk(String, String), Shop(String),
     Accept(String, u8), ContinueTalk(String), Back, Previous, Next, Close,
+    /// The quest screen's Back: the conversation ends (QuestWidget2 0x1404CF76C
+    /// closes the quest screen and the NPC screen).
+    Leave,
     Category(u16), Buyback(bool), Usable(bool),
     /// Buy one of the offer (its resource id), or buy back a sold stack (its id).
     Buy(String), Restore(u32),
@@ -81,14 +98,15 @@ impl Choice {
     fn new(label: impl Into<String>, icon: &str, action: Action) -> Self { Self { label: label.into(), icon: icon.into(), action } }
 }
 #[derive(Clone, PartialEq, Eq)]
-struct Detail { action: Action, page: usize }
-#[derive(Clone, PartialEq, Eq)]
+pub(super) struct Detail { action: Action, page: usize }
+#[derive(Clone, PartialEq)]
 pub(super) struct View {
     name: String,
     portrait: String,
-    title: String,
     body: Option<String>,
     merchant: Option<MerchantView>,
+    /// A quest or a conversation open (questscreen2).
+    quest: Option<quest::Screen>,
     options: Vec<Choice>,
 }
 #[derive(Resource, Default)]
@@ -160,21 +178,10 @@ fn menu(info: Option<&actors::NpcInfo>, target: &crate::gameplay::dialogue::Targ
     choices
 }
 
-fn text_pages(text: &str) -> Vec<String> {
-    let mut pages = Vec::new();
-    let mut page = String::new();
-    for paragraph in text.split('\n') {
-        for word in paragraph.split_whitespace() {
-            if page.chars().count() + word.chars().count() > 780 { pages.push(std::mem::take(&mut page)); }
-            if !page.is_empty() && !page.ends_with('\n') { page.push(' '); }
-            page.push_str(word);
-        }
-        if !page.is_empty() { page.push('\n'); }
-    }
-    if !page.is_empty() { pages.push(page.trim_end().to_owned()); }
-    if pages.is_empty() { pages.push(String::new()); }
-    pages
-}
+/// What the conversation's view is built from (sync): the dialogue's generation,
+/// open, its NPC, Net::ui_revision, the detail open and the menu's page, the
+/// shop's filters, an order pending, the catalogs loaded, our class and gender.
+type ViewKey = (u64, bool, Option<u32>, Option<u64>, Option<Detail>, usize, (Option<u16>, bool, bool), bool, [bool; 3], Option<(u8, u8)>);
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn sync(
@@ -190,6 +197,9 @@ pub(super) fn sync(
     players: Query<&crate::actors::character::Character, With<crate::network::net::LocalPlayer>>,
     time: Res<Time>,
     mut desk_windows: Query<(&Window2018, &mut Visibility)>,
+    (quest_ui, quest_catalogs, mut audio): (Option<Res<crate::gameplay::quests::QuestUi>>, Option<Res<Assets<crate::gameplay::quests::QuestCatalog>>>,
+        Option<ResMut<crate::audio::AudioRequests>>),
+    mut seen: Local<Option<ViewKey>>,
 ) {
     if presentation.generation != dialogue.generation {
         presentation.generation = dialogue.generation;
@@ -205,6 +215,17 @@ pub(super) fn sync(
     if presentation.pending.is_some_and(|(revision, at)| net.as_ref().is_none_or(|n| n.inventory.revision != revision) || time.elapsed_secs_f64() - at > 2.0) {
         presentation.pending = None;
     }
+    // The view is built when what it shows may have changed: a choice, the
+    // conversation's page, the server's word (Net::ui_revision), a catalog
+    // loaded, our class or gender. Never every frame (docs/ui.md, "Per-frame cost").
+    let player = players.iter().next().map(|c| (c.desc.class, c.desc.gender));
+    let assets = [catalogs.contains(&presentation.catalog), item_catalogs.contains(&presentation.items),
+        quest_catalogs.as_ref().zip(quest_ui.as_ref()).is_some_and(|(assets, ui)| assets.contains(&ui.catalog))];
+    let key: ViewKey = (dialogue.generation, dialogue.open, dialogue.target.as_ref().map(|t| t.actor), net.as_ref().map(|n| n.ui_revision),
+        presentation.detail.clone(), presentation.page, (presentation.merchant.category, presentation.merchant.buyback, presentation.merchant.usable),
+        presentation.pending.is_some(), assets, player);
+    if dialogue.choice.is_none() && seen.as_ref() == Some(&key) { return; }
+    *seen = Some(key);
     let fallback = Catalog::default();
     let catalog = catalogs.get(&presentation.catalog).unwrap_or(&fallback);
     let active = dialogue.target.as_ref().filter(|_| dialogue.open).cloned();
@@ -216,7 +237,7 @@ pub(super) fn sync(
             let action = if index == CLOSE { Some(Action::Close) }
                 else { presentation.view.as_ref().and_then(|v| v.options.get(index)).map(|c| c.action.clone()) };
             match action {
-                Some(Action::Close) => dialogue.close(),
+                Some(Action::Close | Action::Leave) => dialogue.close(),
                 Some(Action::Desk(window)) => {
                     for (w, mut visibility) in &mut desk_windows {
                         if w.0 == window { *visibility = Visibility::Inherited; }
@@ -270,9 +291,17 @@ pub(super) fn sync(
                     if let Some(net) = net.as_mut().filter(|n| !n.offline) {
                         let state = net.npc_dialogue.quests.get(&id.to_lowercase()).copied();
                         if (operation == 0 && state.is_none_or(|s| s >= 2)) || (operation == 1 && state == Some(1)) {
+                            // The NPC's menu again while it offers something else, else the
+                            // conversation ends.
+                            // EVIDENCE: release261 QuestWidget2 (0x1404D1194): OpenQuest plays
+                            //   ui/quests/ui_quest_accept; then 0x1404D0F84 asks the NPC
+                            //   anew and reopens its screen if it has another entry
+                            //   (0x140490BFC), else closes it.
+                            let more = available.iter().any(|c| c.action != Action::Quest(id.clone()));
                             net.send(&ClientCommand::Quest(actors::Quest { quest_id: id, state: operation, parameter: 0 }));
                             net.send(&ClientCommand::NpcRequest(actors::NpcRequest { actor: target.actor }));
-                            dialogue.close();
+                            if operation == 0 { if let Some(audio) = audio.as_mut() { audio.ui("ui/quests/ui_quest_accept"); } }
+                            if more { presentation.detail = None; } else { dialogue.close(); }
                         }
                     }
                 }
@@ -299,25 +328,39 @@ pub(super) fn sync(
             let mut view = View {
                 name: if target.profile.title.is_empty() { readable(&target.template) } else { target.profile.title.clone() },
                 portrait: catalog.portraits.get(&target.profile.portrait).or_else(|| catalog.portraits.get("npc_portraits/wip")).cloned().unwrap_or_default(),
-                title: String::new(), body: None, merchant: None, options: Vec::new(),
+                body: None, merchant: None, quest: None, options: Vec::new(),
+            };
+            let player = players.iter().next();
+            let facts = quest::Facts {
+                catalog,
+                quests: quest_catalogs.as_ref().zip(quest_ui.as_ref()).and_then(|(assets, ui)| assets.get(&ui.catalog)),
+                items: item_catalogs.get(&presentation.items),
+                entry: None,
+                female: player.is_some_and(|c| c.desc.gender == 1),
+                name: net.as_ref().and_then(|n| n.local_name.as_deref()).unwrap_or(""),
+                class: crate::actors::character::CLASSES.get(player.map_or(0, |c| c.desc.class as usize)).copied().unwrap_or("warrior"),
+                level: net.as_ref().and_then(|n| n.level),
+                xp: net.as_ref().and_then(|n| n.xp),
             };
             if let Some(detail) = &presentation.detail {
-                let mut confirm = None;
                 let body = match &detail.action {
+                    // Accept (if any), then Back: the buttons send these options.
                     Action::Quest(id) => {
-                        view.title = catalog.title(id);
                         let state = net.as_ref().and_then(|n| n.npc_dialogue.quests.get(&id.to_lowercase())).copied();
-                        let field = match state { Some(0) => "progress", Some(1) => "complete", _ => "offer" };
-                        if net.as_ref().is_some_and(|n| !n.offline) {
-                            if field == "offer" { confirm = Some(Choice::new("Accept quest", "quest", Action::Accept(id.clone(), 0))); }
-                            if field == "complete" { confirm = Some(Choice::new("Complete quest", "quest", Action::Accept(id.clone(), 1))); }
+                        let (field, accept) = match state { Some(0) => ("progress", None), Some(1) => ("complete", Some(1)), _ => ("offer", Some(0)) };
+                        if let Some(operation) = accept {
+                            view.options.push(Choice::new(quest::accept_label(catalog, operation == 0), "quest", Action::Accept(id.clone(), operation)));
                         }
-                        catalog.quest(id, field)
+                        view.options.push(Choice::new(quest::back_label(catalog), "close", Action::Leave));
+                        let entry = net.as_ref().and_then(|n| n.npc_dialogue.log.get(&id.to_lowercase()));
+                        view.quest = Some(quest::quest(id, field, &quest::Facts { entry, ..facts }, accept.map(|_| 0), view.options.len() - 1));
+                        None
                     }
-                    Action::Talk(id, quest) => {
-                        view.title = catalog.title(quest);
-                        confirm = Some(Choice::new("Continue", "talk", Action::ContinueTalk(id.clone())));
-                        catalog.dialog(id, false)
+                    Action::Talk(id, _) => {
+                        view.options.push(Choice::new(quest::talk_label(catalog), "talk", Action::ContinueTalk(id.clone())));
+                        view.options.push(Choice::new(quest::back_label(catalog), "close", Action::Leave));
+                        view.quest = Some(quest::conversation(id, &facts, 0, 1));
+                        None
                     }
                     Action::Shop(shop) => {
                         let offers = net.as_ref().and_then(|n| n.npc_dialogue.offers.get(shop));
@@ -334,19 +377,12 @@ pub(super) fn sync(
                             else { "There are no offers matching this selection." }
                         } else { "" };
                         view.merchant = Some(merchant);
-                        body.to_owned()
+                        view.options.push(Choice::new("Back", "close", Action::Back));
+                        Some(body.to_owned())
                     }
-                    _ => String::new(),
+                    _ => None,
                 };
-                let pages = if view.merchant.is_some() { vec![body] } else { text_pages(&body) };
-                let page = if view.merchant.is_some() { 0 } else { detail.page % pages.len() };
-                view.body = Some(pages[page].clone());
-                if pages.len() > 1 {
-                    view.title = format!("{} ({}/{})", view.title, page + 1, pages.len());
-                    view.options.push(Choice::new("Next page", "talk", Action::Next));
-                }
-                if page + 1 == pages.len() { view.options.extend(confirm); }
-                view.options.push(Choice::new("Back", "close", Action::Back));
+                view.body = body;
             } else {
                 let pages = available.len().div_ceil(PAGE_SIZE).max(1);
                 let page = presentation.page % pages;
@@ -409,7 +445,8 @@ pub(super) fn prepare(source: &Layout, presentation: &Presentation, catalogs: &A
                 layout.widgets.push(w);
             }
         }
-        for (index, choice) in view.options.iter().enumerate().filter(|_| view.body.is_none()) {
+        // The options in the menu only; a quest or a conversation keeps the portrait.
+        for (index, choice) in view.options.iter().enumerate().filter(|_| view.body.is_none() && view.quest.is_none()) {
             let prefix = format!("Canvas/NPCLabel/QuestButton{index}");
             let center = source.widgets.iter().find(|w| w.id == format!("{prefix}/normal/BubbleFrameLabel"));
             let Some(center) = center else { continue };
@@ -432,71 +469,20 @@ pub(super) fn prepare(source: &Layout, presentation: &Presentation, catalogs: &A
                 layout.widgets.push(w);
             }
         }
-        for w in &mut layout.widgets {
-            map_widget(w, |x| x - 12.0, |y| y + 50.0);
-            w.k = 0.0;
-        }
+        // Where the layout puts it, against the screen's left edge.
+        // FAILURE (before 2026-10-24): moved 12 left and 50 down, the portrait
+        //   and its name sat under the 2026 client's (a capture of Thabo's offer:
+        //   the name plate centred at 128, 293, as authored).
+        for w in &mut layout.widgets { w.k = 0.0; }
     } else if source.window == "questscreen2" {
-        if view.body.is_none() || view.merchant.is_some() { return layout; }
-        conversation(source, view, &mut layout);
+        if let Some(screen) = &view.quest { quest::prepare(source, screen, &mut layout); }
+        for w in &mut layout.widgets { w.k = 0.0; }
     } else if source.window == "tradingscreen" {
         if let Some(merchant) = &view.merchant { merchant::prepare(source, view, merchant, &mut layout); }
     }
     layout
 }
 
-fn conversation(source: &Layout, view: &View, layout: &mut Layout) {
-    let body = view.body.as_deref().unwrap_or("");
-    // Stretch the speech bubble's center, preserving its authored corners and
-    // tail. The portrait remains in npcscreen alongside the bubble.
-    let lines = body.lines().map(|line| line.chars().count().div_ceil(66).max(1)).sum::<usize>();
-    let extra = (lines as f32 * 17.0 + 12.0 - 26.15).max(45.0);
-    let prefix = "Canvas/AlignmentLabel/QuestLabel";
-    for widget in source.widgets.iter().filter(|w| w.id == prefix || w.id.starts_with(&(prefix.to_owned() + "/"))) {
-        let mut w = widget.clone();
-        map_widget(&mut w, |x| x, |y| stretch(y, 92.84, 118.99, extra));
-        if w.id.ends_with("/HeadlineLabel") {
-            set_text(&mut w, &view.title);
-            w.rect[3] = 91.0;
-        }
-        if w.id.ends_with("/TextLabel") {
-            set_text(&mut w, body);
-            w.rect[3] = 118.99 + extra;
-            if let Some(label) = &mut w.text { label.align = [0, 0]; label.word_break = true; }
-        }
-        layout.widgets.push(w);
-    }
-    let mut choices: Vec<_> = view.options.iter().enumerate().collect();
-    choices.sort_by_key(|(_, c)| !matches!(c.action, Action::Back));
-    for (slot, (index, choice)) in choices.into_iter().enumerate() {
-        let name = if matches!(choice.action, Action::Back) { "Back" } else { "Accept" };
-        let prefix = format!("Canvas/AlignmentLabel/ButtonSetBackAccept/{name}");
-        let Some(button) = source.widgets.iter().find(|w| w.id == prefix) else { continue };
-        let left = button.rect[0];
-        for widget in source.widgets.iter().filter(|w| w.id == prefix || w.id.starts_with(&(prefix.clone() + "/"))) {
-            if widget.id.ends_with("/icon") { continue; }
-            let mut w = widget.clone();
-            let replacement = format!("Canvas/AlignmentLabel/Choice{index}");
-            w.id = w.id.replacen(&prefix, &replacement, 1);
-            w.button = w.button.map(|b| b.replacen(&prefix, &replacement, 1));
-            w.hidden = false;
-            if widget.id == prefix { w.event = format!("NpcChoice:{index}"); }
-            else if w.state.is_some() {
-                w.text = Some(Label { text: choice.label.clone(), key: "gui.runtime.dialogue".into(), size: 10.0,
-                    color: [1.0, 0.83, 0.52, 1.0], align: [1, 1], bold: true, word_break: false, outline: Vec::new() });
-            }
-            map_widget(&mut w, |x| stretch(x, left + 30.0, left + 70.0, 45.0) - left + 243.87 + slot as f32 * 155.0,
-                |y| y + extra + 32.0);
-            layout.widgets.push(w);
-        }
-    }
-    for w in &mut layout.widgets { map_widget(w, |x| x - 12.0, |y| y + 50.0); w.k = 0.0; }
-    // The current quest layout includes a soft, left-side backdrop so its
-    // translucent speech bubble remains readable over the world.
-    if let Some(background) = source.widgets.iter().find(|w| w.id == "Canvas/AlignmentLabel/BackgroundLabel") {
-        layout.widgets.insert(0, background.clone());
-    }
-}
 
 
 #[cfg(test)]
@@ -517,10 +503,22 @@ mod tests {
         assert_eq!(choices[1].label, "Bone Oracle (1/2)");
     }
     #[test]
-    fn long_dialogue_paginates_without_losing_unicode_words() {
+    fn long_dialogue_wraps_without_losing_unicode_words() {
         let text = "Agathon’s light shines. ".repeat(100);
-        let pages = text_pages(&text);
-        assert!(pages.len() > 1);
-        assert_eq!(pages.join(" ").split_whitespace().collect::<Vec<_>>(), text.split_whitespace().collect::<Vec<_>>());
+        let lines = quest::wrap(&quest::runs(&text), 513.0, 9.5 * FONT_SCALE);
+        assert!(lines.len() > 1);
+        let words: Vec<String> = lines.iter().map(|l| l.iter().map(|r| r.text.as_str()).collect::<String>()).collect::<Vec<_>>()
+            .join(" ").split_whitespace().map(str::to_owned).collect();
+        assert_eq!(words, text.split_whitespace().collect::<Vec<_>>());
+    }
+    #[test]
+    fn spoken_texts_take_the_gender_and_the_highlights() {
+        let catalog: Catalog = serde_json::from_value(serde_json::json!({ "portraits": {}, "icons": {},
+            "texts": { "quest.q.s_offer": "Hi man.", "quest.q.s_offer.f": "Hi woman.", "quest.q.s_progress": "Still here?" },
+            "marked": { "quest.q.s_offer": "Hi <QuestHighlightStart>man</>." } })).unwrap();
+        assert_eq!(catalog.spoken("quest.Q.s_offer", false), "Hi <QuestHighlightStart>man</>.");
+        assert_eq!(catalog.spoken("quest.q.s_offer", true), "Hi woman.");
+        assert_eq!(catalog.spoken("quest.q.s_progress", true), "Still here?");
+        assert_eq!(catalog.spoken("quest.q.s_complete", false), "");
     }
 }

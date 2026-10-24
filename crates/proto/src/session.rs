@@ -85,12 +85,17 @@ pub enum SessionEvent {
     /// Full roster and preview replies. Browsing (op 8/9) does not select a
     /// gameplay character; only select_character (op 3) starts that handoff.
     CharacterSelection(crate::commands::player::CharacterSelection),
-    /// The account has no character: the server opened the character editor
-    /// (CharacterGeneration op 2); answer with `create_character`.
-    CharacterEditor,
+    /// The server opened the character editor (CharacterGeneration op 2: asked for
+    /// by `open_character_editor`, or on its own for an account with no
+    /// character), with its initial look; answer with `create_character`.
+    CharacterEditor(crate::commands::player::CharacterGeneration),
     /// The server refused the new character (CharacterGeneration op 4): its deny
-    /// reason (1 name taken, 2 empty, 3 invalid character, 7 already made, 8 other).
+    /// reason (the client's texts: 1 name taken, 2 too short, 3 not alphanumeric,
+    /// 4 bad name ... 13 unknown).
     CreationRefused(u8),
+    /// The server made the character (CharacterGeneration op 5); the hand-off
+    /// to the world that follows plays it.
+    CharacterCreated(u32),
     MapAssigned { name: String, rule_set: u32 },
     /// Game commands on the map (0x84 / 0x85), for `commands::decode_message`.
     Commands { data: Vec<u8>, bits: usize },
@@ -206,18 +211,13 @@ impl Session {
         self.conn.flush(now);
     }
 
-    /// Create a character in the editor the server opened (CharacterGeneration op 3).
-    /// On success the server answers op 5 with its id and hands off to the world.
+    /// Create a character in the editor the server opened (CharacterGeneration op 3:
+    /// the caller fills its class, gender, name and look). On success the server
+    /// answers op 5 with its id and hands off to the world.
     /// SOURCE: dso-server-production services/character_selection.py:485-691,
     ///   protocol/character_generation.py:87-124 (our layout, client tail 16 bits).
-    pub fn create_character(&mut self, name: &str, class: u8, gender: u8, now: u64) {
-        let c = crate::commands::player::CharacterGeneration {
-            operation: 3,
-            player_class: class as i8,
-            gender: gender as i8,
-            name: name.to_string(),
-            ..Default::default()
-        };
+    pub fn create_character(&mut self, request: crate::commands::player::CharacterGeneration, now: u64) {
+        let c = crate::commands::player::CharacterGeneration { operation: 3, ..request };
         let (bytes, bits) = crate::commands::ClientCommand::CharacterGeneration(c).encode();
         self.conn.send(&bytes, bits, Reliability::ReliableOrdered, 0);
         self.conn.flush(now);
@@ -326,10 +326,13 @@ impl Session {
                 if self.stage == Stage::Characters {
                     if let Some(c) = messages::character_generation(&data, bits) {
                         match c.operation {
-                            2 => self.events.push_back(SessionEvent::CharacterEditor),
+                            2 => self.events.push_back(SessionEvent::CharacterEditor(c)),
                             4 => self.events.push_back(SessionEvent::CreationRefused(c.deny_reason)),
                             // Created: the hand-off that follows plays it.
-                            5 => self.character = Some(c.character),
+                            5 => {
+                                self.character = Some(c.character);
+                                self.events.push_back(SessionEvent::CharacterCreated(c.character));
+                            }
                             _ => {}
                         }
                         return;

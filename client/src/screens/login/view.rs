@@ -119,7 +119,7 @@ fn button(parent: &mut ChildSpawnerCommands, art: &Art, label: &str, action: Act
 }
 
 fn field(parent: &mut ChildSpawnerCommands, art: &Art, i: usize) {
-    let label = ["Username", "Password", "Confirm password", "Account server", "New character name (optional)"][i];
+    let label = ["Username", "Password", "Confirm password", "Account server"][i];
     parent.spawn(Node { width: percent(100), flex_shrink: 0.0, flex_direction: FlexDirection::Column, row_gap: px(7), ..default() })
         .with_children(|group| {
             group.spawn(Node { width: percent(100), justify_content: JustifyContent::SpaceBetween, align_items: AlignItems::Center, ..default() })
@@ -141,7 +141,7 @@ fn field(parent: &mut ChildSpawnerCommands, art: &Art, i: usize) {
 
 fn panel_height(form: &Form) -> f32 {
     if form.busy() { 443.0 } else {
-        match form.page { Page::Login => 563.0, Page::Register => 647.0, Page::Settings => 723.0 }
+        match form.page { Page::Login => 563.0, Page::Register => 647.0, Page::Settings => 538.0 }
     }
 }
 
@@ -176,7 +176,7 @@ pub(super) fn draw(mut commands: Commands, mut form: ResMut<Form>, art: Res<Art>
                     } else { match form.page {
                         Page::Login => ("Welcome back", "Sign in to continue your adventure."),
                         Page::Register => ("Begin your journey", "Create your account and enter Dracania."),
-                        Page::Settings => ("Connection settings", "Choose your server and character defaults."),
+                        Page::Settings => ("Connection settings", "Choose your server."),
                     } };
                     card.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(8), ..default() }).with_children(|header| {
                         header.spawn(text(&art, title, 26.0, IVORY));
@@ -186,14 +186,6 @@ pub(super) fn draw(mut commands: Commands, mut form: ResMut<Form>, art: Res<Art>
                         for &i in form.fields() { field(card, &art, i); }
                         if form.page == Page::Settings {
                             card.spawn(text(&art, "Server format: host:port, e.g. 127.0.0.1:8080", 12.0, MUTED));
-                            card.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(8), ..default() }).with_children(|defaults| {
-                                defaults.spawn(text(&art, "NEW CHARACTER", 12.0, GOLD));
-                                defaults.spawn(Node { width: percent(100), column_gap: px(10), ..default() }).with_children(|row| {
-                                    button(row, &art, ["Dragonknight", "Spellweaver", "Ranger", "Steam Mechanicus"][form.class as usize], Action::Class, false);
-                                    button(row, &art, ["Male", "Female"][form.gender as usize], Action::Gender, false);
-                                });
-                                defaults.spawn(text(&art, "Used only if your account has no character.", 12.0, MUTED));
-                            });
                         }
                     } else {
                         card.spawn((Node { width: percent(100), height: px(22), margin: UiRect::vertical(px(18)), overflow: Overflow::clip(), ..default() },

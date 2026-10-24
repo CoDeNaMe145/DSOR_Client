@@ -34,3 +34,4 @@ dsor-dump*.json
 
 # Local Lighting Menu presets; personal settings.
 /lighting-presets.json
+/_todo

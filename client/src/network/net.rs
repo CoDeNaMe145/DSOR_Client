@@ -123,7 +123,6 @@ pub struct NetConfig {
     /// The character to create when the account has none: name, class (0
     /// warrior, 1 mage, 2 ranger, 3 dwarf), gender. Default: the user name, a
     /// warrior.
-    pub new_character: Option<(String, u8, u8)>,
     /// The WebSocket relay, required in the browser ("ws://host:2290").
     pub relay: Option<String>,
     /// Which character to highlight initially in the selection screen.
@@ -158,7 +157,6 @@ pub struct Net {
     relay: Option<String>,
     wanted_character: Option<u32>,
     /// What to create if the server opens the character editor.
-    new_character: (String, u8, u8),
     pub local_actor: Option<u32>,
     /// The map frame's centre (wire = (game - centre) * 128).
     pub centre: Option<Vec3>,
@@ -197,6 +195,9 @@ pub struct Net {
     /// MessageCommands (loot received, sudden death...), by actor; drained by
     /// crate::combat_text.
     pub messages: Vec<(u32, dsor_proto::commands::social::Message)>,
+    /// The items received (MessageCommand type 2), resolved on arrival; drained
+    /// by crate::ui::controls::message.
+    pub receipts: Vec<crate::gameplay::inventory::Receipt>,
     /// The notifications waiting in the column at the left of the screen
     /// (NotificationCommand type 1), oldest first; answered ones leave
     /// (crate::ui::controls::social).
@@ -222,7 +223,7 @@ pub struct Net {
     pub trap_events: Vec<TrapEvent>,
     pub traps_tripped: Vec<u32>,
     pub traps_gone: Vec<u32>,
-    /// Glyphs of power (CurrencyChanged's u64).
+    /// Glyphs of power (NewPlayer +376, CurrencyChanged's u64).
     pub glyphs: Option<u64>,
     /// Our talents as the server last listed them (283) and the progression behind
     /// the points (282).
@@ -918,7 +919,6 @@ pub fn start_offline(world: &mut World, class: u8, gender: u8) {
         clock_offset: Some(0),
         relay: None,
         wanted_character: None,
-        new_character: (String::new(), 0, 0),
         local_actor: Some(OFFLINE_ACTOR),
         centre: None,
         pending_local: None,
@@ -949,6 +949,7 @@ pub fn start_offline(world: &mut World, class: u8, gender: u8) {
         monster_vitals: HashMap::new(),
         hits: Vec::new(),
         messages: Vec::new(),
+        receipts: Vec::new(),
         notifications: Vec::new(),
         login_rewards: Vec::new(),
         group_answers: Vec::new(),
@@ -1219,10 +1220,6 @@ pub(crate) fn start_session(world: &mut World, config: NetConfig) {
         clock_offset: None,
         relay: config.relay.clone(),
         wanted_character: config.character,
-        new_character: config
-            .new_character
-            .clone()
-            .unwrap_or_else(|| (config.user.clone().unwrap_or_else(|| "Hero".into()), 0, 0)),
         local_actor: None,
         centre: None,
         pending_local: None,
@@ -1253,6 +1250,7 @@ pub(crate) fn start_session(world: &mut World, config: NetConfig) {
         monster_vitals: HashMap::new(),
         hits: Vec::new(),
         messages: Vec::new(),
+        receipts: Vec::new(),
         notifications: Vec::new(),
         login_rewards: Vec::new(),
         group_answers: Vec::new(),
@@ -1459,7 +1457,7 @@ fn pump(
             Request::Play(id) => { net.session.select_character(id, now); loading.connecting(); }
             Request::OpenEditor => net.session.open_character_editor(now),
             Request::Back => net.session.character_operation(2, 0, now),
-            Request::Create(name, class, gender) => net.session.create_character(&name, class, gender, now),
+            Request::Create(request) => net.session.create_character(request, now),
             Request::Delete(id) => net.session.character_operation(6, id, now),
         }
     }
@@ -1511,11 +1509,15 @@ fn pump(
                 if reply.operation == 4 { loading.cancel(); }
                 selection.receive(reply, net.wanted_character);
             }
-            SessionEvent::CharacterEditor => {
-                selection.editor(&net.new_character);
+            SessionEvent::CharacterEditor(editor) => {
+                selection.editor(editor);
             }
             SessionEvent::CreationRefused(reason) => {
                 selection.creation_refused(reason);
+            }
+            SessionEvent::CharacterCreated(id) => {
+                info!("character {id} created");
+                selection.created();
             }
             SessionEvent::MapAssigned { name, rule_set } => {
                 net.props.reset_map();
@@ -1654,6 +1656,10 @@ pub(crate) fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u3
                 armament: p.rank.max(0),
                 look: None,
                 cosmetics: Vec::new(),
+                // parts: class, gender, hair, beard, body style, stature.
+                body: p.parts[4],
+                stature: p.parts[5],
+                styles: Some((p.parts[2], p.parts[3])),
             };
             info!("I am {} ({}), actor {:?}, at {:?}", p.name, desc.animation_set(), actor, p.position);
             net.local_actor = actor;
@@ -1662,6 +1668,9 @@ pub(crate) fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u3
             net.level = Some(p.words_240[1]);
             net.xp = Some((p.words_240[2], p.words_240[3], p.words_240[4]));
             net.wallet = Some(p.currencies);
+            // +376, after the draken: the Glyphs of Power (DSOR_Server
+            // gameplay_commands.py writes them there; CurrencyChanged repeats them).
+            net.glyphs = Some(p.long_376);
             net.game_currencies = p.entries_384.iter().cloned().collect();
             net.local_name = Some(p.name.clone());
             // The third leading bool is the admin byte (OverheadAdminColor name).
@@ -1704,6 +1713,10 @@ pub(crate) fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u3
                 armament,
                 look: None,
                 cosmetics: Vec::new(),
+                // parts: class, gender, hair, beard, body style, stature.
+                body: p.parts[4],
+                stature: p.parts[5],
+                styles: Some((p.parts[2], p.parts[3])),
             };
             // A spawn is a newer complete snapshot than any pending update.
             net.remote_redress.remove(&actor);
@@ -1921,6 +1934,11 @@ pub(crate) fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u3
         }),
         ServerCommand::GameCurrencyChanged(c) => {
             net.game_currencies.insert(c.currency.clone(), c.amount);
+        }
+        // An item received: named now, while the reward's items are those the
+        // message speaks of (gameplay::inventory::Receipt).
+        ServerCommand::Message(m) if m.message_type == 2 => {
+            if let Some(receipt) = crate::gameplay::inventory::Receipt::of(&m, &net.inventory) { net.receipts.push(receipt); }
         }
         ServerCommand::Message(m) => {
             net.messages.push((actor.unwrap_or(0), m));

@@ -1252,6 +1252,174 @@ inventory open one preview built while loading then 0 (p50 7.9 ms: the window
 and its turning character). Captures, routes and logs: `.local/logs/preview/`,
 `.local/logs/map-fps/kingscity-preview-*`. Not yet seen online.
 
+## The currency bar's 2026 display and its currency bag (2026-10-23)
+
+The money in the top left corner was the legacy display (`LabelDefault`: the
+Andermant, the coins, honour, draken and glyphs side by side, numbers running
+out of their places). It is now the one the 2026 client shows in game,
+`LabelIngamePayment`, with its currency bag (`currencybag`);
+`client/src/ui/controls/currency.rs`, traced from release261's
+`UI::CurrencyBarWidget` and `UI::CurrencyBagWidget` (addresses in the module).
+
+- **Bar.** The Andermant, the gold, silver and copper, and the currency picked
+  in the bag (the Badges of Honor by default) with its icon. The plate and the
+  dropdown's hover fill, listed after the money, are drawn under it.
+- **Bag.** The dropdown and the bag button open it under the bar: the Glyphs
+  of Power, then the shops' 18 currencies by `Priority` (Kitchen Coin, Dragon
+  Blood Essence, Season Coin, ... Crystals of Truth), each with its icon and
+  whole balance. A row picks its currency for the bar and closes the bag; the
+  pick is saved at once (`currency` in `game-settings.json`). A press
+  elsewhere or Escape closes it. Its view rebuilds with the other systems'
+  views (open, and only when the server said something).
+- **Fit.** `GetClampedIntString`: the Andermant in 9 digits, the gold in 5,
+  the picked currency in 10, then by thousands (`1234567k`, `100M`); a money
+  label's font then shrinks until its text fits its rect (`ui::Fit`).
+- **Hover texts.** The whole amounts: `1234567890 Andermant`,
+  `100000000 Gold 45 Silver 73 Copper`, `15931 Materi Fragment`.
+- **Balances.** NewPlayer's +376 (the glyphs) is now read at login.
+- **Data.** `tools/systems_catalog.py` adds `currencies` (re-export the
+  systems catalog for an older conversion); `tools/ui_fixture_packets.py`
+  sends the server's default keyed currencies; `tools/export_ui.py` exports
+  the in-game display.
+
+Not wired: the bag button's glow when a currency grows, the payment button.
+
+Validation: `cargo test -p dsor-client` 402 passed (new: clamping, fitting,
+the bar's display and order, the bag's rows and frame, idle frames of the
+bar's pick); `--ignored` 14 of 15, the Kingscity doorway lighting test failing
+as before. Offline captures (debug build, Kingscity, `--play 1 0`, the UI
+fixture with the server's large default wallet): the bar, the bag open with a
+hovered row, the pick, the hover texts, the glyphs shrunk into the bar.
+`profile_native_maps.py kingscity currency-bar`: `ui work` 0 after loading.
+Captures, routes and logs: `.local/logs/currency/`. Not yet seen online.
+
+## The creation screen and the roster as the 2026 client has them (2026-10-24)
+
+The compact Bevy dialogs that stood in for character creation and deletion
+are gone. The creation screen is now the original `chargenwindow`; deletion
+uses the original `confirmdialog`. The roster follows its widget's rules.
+The rules come from release261's `UI::CharacterGenerationWidget`,
+`UI::CharacterSelectionWidget`, `UI::PremadePackageWidget` and their
+managers, decompiled into the live server tree's
+`data/diagnostics/chargen-widget.annotated.txt` (140 functions) and
+`charselection-widget.annotated.txt`. docs/ui.md, "The character screens",
+describes the result.
+
+- **Creation.**
+  - Opening: the roster's add button asks for the editor (op 1); the server's
+    op 2 opens it, with its initial look.
+  - Classes and looks: four class buttons. Gender, ethnicity (the
+    `_asian_` / `_black_` body sets), hair and beard, in the tables' `Index`
+    order, going round. Each class and gender has hard-coded default hair and
+    beard; the Beard row is for men only.
+  - The figure plays the class's `CharSelectStart` / `CharSelectIdle` with its
+    `CharGenStartSequence` and looping `CharGenIdleSequence` (sounds, the
+    mage's ball and light).
+  - The name field: the language's letters, 16 at most.
+  - Create sends op 3, with no client-side checks. The 13 deny texts follow
+    the client's table. Op 5 hands over to the world.
+  - Back sends CharacterSelection op 2.
+  - Also drawn: the class description list with its slogan, the gendered
+    class names, the empty premium start panel, the editor's currency value,
+    and the UI sounds.
+- **Roster.**
+  - Gendered class names, "Level {0:i}", the mentor bonus icons.
+  - Add / Buy / disabled-Add by slots and `MaxCharactersPerAccount`.
+  - Delete confirms in `confirmdialog` and removes the character at once.
+  - The selection deny texts. The "Entering the world..." and "Offline
+    preview" notices are gone: the original writes none.
+- **Looks.** The world now draws a player's ethnicity, stature, hair and beard
+  from NewPlayer / NewRemotePlayer (players were bald before). The selection
+  previews take the ethnicity and stature too.
+- **Draw order.** Each window of these screens draws its still artwork, then
+  its buttons, then its texts. Authored order hid the Create caption under the
+  frame's crest and tinted the class description red. (INFERRED; the menu
+  windows are unchanged.)
+- **Protocol.** `SessionEvent::CharacterEditor` carries the editor's packet;
+  `CharacterCreated` reports op 5; `create_character` takes the whole request.
+  `tools/chargen_vectors.py` adds 5 vectors from the server's
+  `encode_character_generation` (`crates/proto/tests/chargen_release261.rs`).
+- **Data.** `tools/export_character_selection.py` adds `creation` to
+  `characters/selection.json`: name bounds, most characters, each class's
+  outfit and armament, the hair and beard lists, the sequences and 84 English
+  texts. Re-export it for an older conversion.
+- **Removed.** The login screen's "new character" defaults (name, class,
+  gender) and `--new`; the game's own screen replaces them.
+- **Fixtures.** `tools/character_selection_preview.py` takes `--editor`,
+  `--empty` and `--refuse N`. `DSOR_SELECTION_REPLAY` takes the creation
+  screen's steps and `delete` / `confirm`.
+
+Server mismatches, found against the client and left in the server:
+
+- The server's deny reasons 7 ("already generated") and 8 ("unknown") read in
+  the client as `badBodyStyle` and `badBodyStature`.
+- Its reason 3 shows as `notAlphaNumeric`.
+- It accepts names shorter than `CharacterNameMinLength` (3) and any
+  non-control characters. The client filters characters while typing but
+  sends short names as they are.
+
+Validation:
+
+- `cargo test -p dsor-client -p dsor-proto`: client 419 passed.
+  - New tests: the creation rules and request, the deny texts, the back
+    button, the slot buttons, the layouts' controls, the description lines.
+  - `--ignored`: 14 of 15, the Kingscity doorway lighting test failing as
+    before.
+- Proto suites all pass, including `chargen_release261` (2).
+- Offline captures (debug build, `a0000_char`, the server-encoded fixtures):
+  - the four classes, both genders, the ethnicities and a refusal;
+  - the roster, the delete confirmation and the roster after a delete;
+  - the mage's showcase over time.
+- `profile_native_maps.py kingscity chargen-ui`: `ui work` 0 after loading.
+- Captures, fixtures and logs: `.local/logs/chargen/`.
+- Not yet seen online: no character was created on the live server.
+
+## Bosses' missing body parts, tiny pigeons, the party frames' level rings (2026-10-24)
+
+Neither came from the October assets: the group window's textures, mesh and
+layout match the client's sources, and the boss models were identical in the
+August conversion.
+
+- **Skin fragments.** A Nebula skin node draws every primitive group its SFRG
+  list names, each with a palette of at most 72 joints; DSO_Godot exported only
+  group 0. Balor had no right wing, arm or leg (72 of 127 joints weighted);
+  Khalys, Sigrismarr, Mhorblik, Sharr Kharab, Nefertari, Mortis Unchained,
+  Medusa and others lost parts, and nodes listing only other groups (Mhorblik's
+  `skinned1` = [1, 3], Megasargon's `skinned1..3`, many `skinned1` props and
+  pets) drew group 0 unskinned, frozen in the bind pose.
+  `tools/restore_skin_fragments.py` rebuilds those nodes' meshes, one primitive
+  per fragment (39 models, 90 nodes); `convert_assets.sh` runs it first in
+  step 5, and it has been applied to the current pack. Group 0 rebuilt by it
+  matches DSO_Godot's primitive exactly.
+- **Party frames.** The group level's plate stays (GroupStatus has no level),
+  so the frame no longer breaks between the header and the first member; each
+  row draws its level ring before its texts, so the ring no longer covers the
+  level number (only the last row, whose template lists the ring first,
+  showed it). The window folds like the quest tracker: its toggle
+  (SwitchToCompact / SwitchToFull, `Action::PartyCompact`, kept in
+  `Party.compact` across member changes) leaves LabelCompact, the button in its
+  frame. The full mode's toggle frame, dropped before, is the right end of the
+  header's top edge (its own vertices there are transparent).
+- **Whole-model NPCs' bodies.** Server NPCs and level decorations drawn from
+  a whole model (not the uniskel humans) never got their character set's
+  variation, which monsters do get. Kingshill's 32 pigeons stood a quarter of
+  their size (`deco_pigeon_01` scales every joint by 4), and 90 of the 213
+  whole-model sets the maps use are off: chickens x1.2, cats x1.3, maggots x1.5,
+  gnobs x1.8, goats x0.85, the Atlantean merchants x1.3...
+  `monsters::vary_model` (the monsters' step) now also runs in
+  `npc::animate_models`, once the model's `sets.json` is in.
+
+Validation: `cargo test -p dsor-client` 426 passed (the party tests now check
+the plate and the ring's order). Offline captures: the UI fixture's 3-member
+group before/after (release build); Balor, Khalys, Mhorblik, Sigrismarr and
+Sharr Kharab (`DSOR_TEST_MONSTER`, map viewer) whole; Kingshill's pigeons by
+the stables before/after (map viewer, `--cam 22.5,6.0,-43.5,20.0,3.0,-50.0`).
+The varied joints add about 3 000 entities near the pigeons
+(`profile_native_maps.py kingscity variation-before / variation-after2
+--position 22 1 -46`, release): p50 5.6-6.3 / 5.5-6.1 ms, p95 6.8-7.8 /
+7.4-8.8 ms, within the noise of another build running; `ui work` 0.
+Not yet seen online.
+
 ## The game data from Bigpoint's CDN, and the account screen's strip (2026-10-24)
 
 The client now downloads the original client's data itself, so it no longer
@@ -1325,3 +1493,91 @@ account service on port 18080 and its real database: the first manifest took
 (`4e4b9038...`) with the server's (`81a09c5c...`) in 0.17 s, the next one found
 it matching, and a wrong session got 401 with nothing written. The running server
 needs a restart to serve the endpoints.
+
+## Items received (2026-10-24)
+
+The notice the original shows under the top navigation when an item is received
+was missing: the item's icon and "Daily Login Chest received", for quest
+rewards, the daily login chest, chests and packages opened, and event and
+spender rewards. It is release261's `UI::MessageWidget` item line
+(`messagewindow`'s `ItemMessageLine`), traced in Ghidra:
+`HandleMessageCommand` 0x1401C842C, the message manager 0x1405E71C8, type 2 at
+0x1405E6E68, item and template texts at 0x1405E53EC and 0x1405E4B74, the
+widget's Load and Refresh at 0x1404860A0 and 0x140486D00, and
+`InfoTextDuration` at 0x1413765A0. Before this, the client dropped these
+MessageCommands (`combat_text` handles types 0x19 and 0x1d only).
+
+- `gameplay::inventory::Receipt` resolves a type-2 message when it arrives
+  (`Net::receipts`): the carried item by its id, else the template the server
+  adds, or a currency's fixed template.
+- `ui/controls/message.rs` queues the notices and shows one at a time for 4 s:
+  `lootReceived` or `lootReceivedAmount`, with the item catalog's name and icon
+  layers. The window is rebuilt only when the notice changes, and it takes no
+  clicks. docs/ui.md, "Items received".
+- `tools/misc_vectors.py` adds `item_received`: two receipts from the live
+  server's `item_receipt_protocol` (`crates/proto/tests/misc_release261.rs`).
+
+Not done: the window's other lines (info, status, system messages), and the
+original's pause while a UI manager flag (+0x329, not identified) is set.
+
+Validation: `cargo test -p dsor-client` 425 passed (new: the receipt's
+resolution, the notice's text and icon, the window's widgets, the queue's
+timing with no work on idle frames); `--ignored ui::` 14 passed. `cargo test
+-p dsor-proto` passed. Offline capture (debug build, Kingscity, `--play 1 0`,
+`DSOR_PACKET_REPLAY` with the server's packets: a daily login chest, 3
+Splintered Ruby, and 50 Badges of Honor sent as a template): the three notices
+in turn under the navigation. `profile_native_maps.py kingscity item-received`:
+`ui work` 0 after loading. Captures, fixture and logs:
+`.local/logs/item-received/`. Not yet seen online.
+
+## The NPC's quest screen as the 2026 client draws it (2026-10-24)
+
+The quest dialogue used the 2026 layout (`questscreen2`; the 2026 client never
+loads the 2018 `questscreen`) but only its speech bubble. It was moved 12
+left and 50 down, paged at 780 characters, and had its own captioned buttons
+with the icons stripped. The task list and the reward panel were missing.
+Rebuilt from release261's `UI::QuestWidget2` (questwidget2.cc: Load
+0x1404D219C, Refresh 0x1404D3844, the rewards 0x1404CF838, the buttons
+0x1404D1194, the modes 0x1404D57DC) and matched to a 2026 capture of Thabo's
+"Full Moon Rising (1/5)" offer. Details: docs/ui.md, "The quest screen".
+
+- `client/src/ui/dialogue/quest.rs`:
+  - the bubble, its text wrapped into at least three lines, with highlighted
+    words in white and the player's gender and name;
+  - icon buttons with tooltips: Back alone while a quest is in progress, Back
+    and Accept otherwise;
+  - the task list with check marks (staged tasks wait for their prerequisites);
+  - the rewards: money template, experience or dynamic experience, item rows.
+- The NPC screen sits at its authored place too (it was moved with the
+  bubble). The quest screen is drawn under it, so the backdrop no longer
+  darkens the portrait.
+- Back ends the conversation. Accept and Continue return to the NPC's menu
+  when it offers more, else close. Accepting plays `ui_quest_accept`.
+- The conversation's view is built only when its inputs change, no longer
+  every frame.
+- Data: `tools/quest_catalog.py` exports `staged`, each task's `pre`, `part`
+  (questNumber of the series' last), `internal`, `dynamic_xp` and reward
+  `rarity`. `tools/dialogue_catalog.py` exports `marked` (3,666 texts with
+  inline tags) and the `gui.window.questscreen` texts. Both catalogs were
+  regenerated into `assets/`; nothing else in them changed.
+- The `DSOR_UI_REPLAY` `npc` step takes `npc_quest_done` (the log's finished
+  task bits).
+
+Not done: the fades, scrolling a long task list, the quest bonus on
+experience, the full-log message, deliveries on this screen. The series total
+is inferred (the client's computation was not traced).
+
+Validation: `cargo test -p dsor-client` 432 passed (new: tags and placeholders,
+wrapping, the offer's layout, progress and conversations, screens from the
+quest data, gendered texts, Unicode wrapping); `--ignored ui::` 14 passed.
+Offline captures (debug build, Kingscity, `--npcs --play 1 0`,
+`DSOR_FLAGS=allnpcplacements`, Thabo):
+- the offer as in the 2026 capture;
+- the Accept and Back tooltips;
+- Back closing the conversation;
+- a quest in progress (Back alone, a ticked task, staged tasks hidden,
+  Andermant, coins and XP);
+- a completion ("Complete quest").
+
+`profile_native_maps.py kingscity quest-screen`: `ui work` 0 after loading.
+Captures and replays: `.local/logs/quest-screen/`. Not yet seen online.

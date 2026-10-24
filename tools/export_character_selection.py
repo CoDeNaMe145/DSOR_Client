@@ -1,12 +1,21 @@
-"""Export character-selection camera, equipment slots and cosmetic choices.
+"""Export character-selection camera, equipment slots, cosmetic choices and the
+character creation screen's data.
 
-Usage: export_character_selection.py <static.db4> <assets>
-The scene itself is maps/a0000_char and the UI is charselectionwindow.bxml.
+Usage: export_character_selection.py <static.db4> <assets> [--language <export_win32>]
+The scene itself is maps/a0000_char and the UI is charselectionwindow.bxml and
+chargenwindow.bxml. The creation texts come from <export_win32>/language/en
+(by default the folder the database sits in: <export_win32>/db/static.db4).
 """
 import json
 import sqlite3
 import struct
+import xml.etree.ElementTree as ET
 from pathlib import Path
+
+# The wire's class ids (CharacterGenerationCommand, NewPlayer) and the class
+# names of the database's columns and rows.
+CLASSES = ['Warrior', 'Mage', 'Ranger', 'Dwarf']
+GENDERS = ['Male', 'Female']
 
 
 def selection_data(db):
@@ -27,19 +36,80 @@ def selection_data(db):
             f'{cls.lower()}_{gender.lower()}': {
                 str(r['Index']): r['Name'] for r in choices if r[cls + gender]
             }
-            for cls in ['Warrior', 'Mage', 'Ranger', 'Dwarf'] for gender in ['Male', 'Female']
+            for cls in CLASSES for gender in GENDERS
         }
     return dict(camera=dict(pitch=globals_['CharGenAngleX'], yaw=globals_['CharGenAngleY'],
                             offset=struct.unpack('<4f', globals_['CharGenOffsetVector'])[:3],
                             fov=globals_['CharGenFov']), slots=slots, **cosmetics)
 
 
-def export_selection(db, assets):
+def language(root):
+    """language/en/*.xml -> {'<category>_<item>': text}, the keys the client asks for."""
+    table = {}
+    for path in sorted((Path(root) / 'language' / 'en').glob('*.xml')):
+        try:
+            tree = ET.parse(path)
+        except ET.ParseError:
+            continue
+        for category in tree.getroot().iter('category'):
+            for item in category.iter('item'):
+                table[f"{category.get('name', '')}_{item.get('name', '')}"] = item.text or ''
+    return table
+
+
+def creation_data(db, texts):
+    """What the creation screen (UI::CharacterGenerationWidget) shows and sends:
+    per class its preview outfit (_Template_StartEquipment.CharGenItems) and
+    armament and, per gender, the showcase sequences (_Template_PlayerCharacter)
+    and the hair and beard choices; the name's length bounds and the most
+    characters an account has (_Globals); the screens' English texts (and the
+    premium start panel's headline, premadepackagewindow).
+    SOURCE (the 2026 client, data/diagnostics/chargen-widget.annotated.txt):
+      TemplateManager::LoadCharGenInfos 0x140854f68 keys each class and gender's
+      hair and beard by the tables' Index (the wire value) for the rows whose
+      <Class><Gender> flag is 1, sorted: Prev/Next step through them in Index
+      order. UpdateCharacterAppearance 0x14023b380 takes ArmamentState, one
+      higher with OffHandEquipped (OneHandSmall 1/2, OneHandLarge 3/4)."""
+    db.row_factory = sqlite3.Row
+    globals_ = db.execute('SELECT * FROM _Globals').fetchone()
+    start = {r['Id']: r for r in db.execute('SELECT * FROM _Template_StartEquipment')}
+    characters = {r['Id']: r for r in db.execute('SELECT * FROM _Template_PlayerCharacter')}
+    hair = list(db.execute('SELECT * FROM _Template_CharacterHair'))
+    beard = list(db.execute('SELECT * FROM _Template_CharacterBeard'))
+    split = lambda value: [v.strip() for v in (value or '').split(';') if v.strip()]
+    armaments = {'OneHandSmall': 1, 'OneHandLarge': 3, 'TwoHand': 5}
+    classes = []
+    for cls in CLASSES:
+        key = cls.lower()
+        outfit = start.get(f'{key}_default_equipment')
+        armament = armaments.get(outfit['ArmamentState'], 0) if outfit else 0
+        if armament in (1, 3) and outfit['OffHandEquipped']:
+            armament += 1
+        genders = []
+        for gender in GENDERS:
+            row = characters.get(f'character_human_{gender.lower()}_{key}')
+            genders.append(dict(
+                hair=sorted(int(r['Index']) for r in hair if r[cls + gender]),
+                beard=sorted(int(r['Index']) for r in beard if r[cls + gender]),
+                start=row['CharGenStartSequence'] if row else '',
+                idle=row['CharGenIdleSequence'] if row else '',
+            ))
+        classes.append(dict(items=split(outfit['CharGenItems']) if outfit else [], armament=armament, genders=genders))
+    wanted = ('gui.window.chargen_', 'gui.window.charselection_', 'gui.payment.packages_premadePackageHeadline')
+    return dict(name=[int(globals_['CharacterNameMinLength']), int(globals_['CharacterNameMaxLength'])],
+                most=int(globals_['MaxCharactersPerAccount']),
+                classes=classes, texts={k: v for k, v in sorted(texts.items()) if k.startswith(wanted)})
+
+
+def export_selection(db, assets, root=None):
     path = Path(assets) / 'characters' / 'selection.json'
     path.parent.mkdir(parents=True, exist_ok=True)
     data = selection_data(db)
+    texts = language(root) if root else {}
+    data['creation'] = creation_data(db, texts)
     path.write_text(json.dumps(data, separators=(',', ':')), encoding='utf-8')
-    print(f'selection.json: camera, cosmetics and {len(data["slots"])} equipment slot mappings')
+    print(f'selection.json: camera, cosmetics, {len(data["slots"])} equipment slot mappings, '
+          f'creation data and {len(data["creation"]["texts"])} texts')
 
 
 if __name__ == '__main__':
@@ -47,6 +117,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('database')
     parser.add_argument('assets')
+    parser.add_argument('--language', help='the export_win32 folder holding language/en')
     args = parser.parse_args()
+    root = args.language or Path(args.database).resolve().parent.parent
     with sqlite3.connect(Path(args.database).resolve().as_uri() + '?mode=ro', uri=True) as db:
-        export_selection(db, args.assets)
+        export_selection(db, args.assets, root)

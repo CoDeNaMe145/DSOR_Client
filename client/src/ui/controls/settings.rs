@@ -35,6 +35,9 @@ pub(crate) struct Preferences {
     /// and Return Check-in (RecalledSignInBtn), shown or hidden.
     pub return_link: bool,
     pub return_checkin: bool,
+    /// The currency the currency bar shows beside the money, picked in its bag
+    /// (crate::ui::controls::currency): a currency id; empty, the honour.
+    pub currency: String,
     pub bindings: HashMap<String, String>,
     /// The revision of the default bindings the file was saved with (0: saved
     /// before revisions); `migrate` moves older files to the later defaults.
@@ -57,7 +60,7 @@ impl Default for Preferences {
             camera_shake: true, monster_effects: true, attack_hovered: true, classic_cursor: false, lock_bar: false, fullscreen: false,
             vsync: true, graphics: GraphicsSettings::default(), map_transparency: 45,
             audio_muted: false, master_volume: 80, music_volume: 60, ambient_volume: 60, effects_volume: 80,
-            return_link: true, return_checkin: true,
+            return_link: true, return_checkin: true, currency: String::new(),
             bindings: shortcuts().into_iter().map(|(id, _, key)| (id, key.to_owned())).collect(), keymap: KEYMAP }
     }
 }
@@ -200,6 +203,14 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// The currency bag's pick: kept at once, as the game keeps its
+    /// "/Settings/CurrencyDisplay" (no Apply).
+    pub(super) fn pick_currency(&mut self, id: &str) {
+        if self.current.currency == id { return; }
+        self.current.currency = id.to_owned();
+        self.draft.currency = id.to_owned();
+        if let Err(e) = self.current.save() { warn!("Settings save failed: {e}"); }
+    }
     pub(super) fn begin(&mut self) {
         self.draft = self.current.clone(); self.open = true; self.listening = None;
         self.notice = "Changes take effect when you choose Apply.".into();
@@ -551,7 +562,7 @@ mod tests {
         app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default()))
             .init_asset::<Layout>().init_asset::<Mesh>().init_asset::<UiMaterial>()
             .init_asset::<Image>().init_asset::<Font>().init_asset::<dialogue::Catalog>()
-            .init_resource::<Loaded>().init_resource::<Screen>().init_resource::<dialogue::Presentation>().init_resource::<super::party::Party>().init_resource::<super::quests::Quests>().init_resource::<crate::gameplay::quests::QuestUi>().init_resource::<super::systems::Views>().init_resource::<crate::ui::UiWork>()
+            .init_resource::<Loaded>().init_resource::<Screen>().init_resource::<dialogue::Presentation>().init_resource::<super::party::Party>().init_resource::<super::quests::Quests>().init_resource::<crate::gameplay::quests::QuestUi>().init_resource::<super::systems::Views>().init_resource::<super::currency::Shown>().init_resource::<super::message::ItemMessages>().init_resource::<crate::ui::UiWork>()
             .init_resource::<Settings>().add_systems(Update, (spawn_windows, sliders).chain());
         let handle = app.world_mut().resource_mut::<Assets<Layout>>().add(Layout { window: WINDOW.into(), widgets: Vec::new() });
         app.world_mut().resource_mut::<Loaded>().layouts.push((handle, 100., None));
@@ -607,6 +618,7 @@ mod tests {
             .init_resource::<SkillClicks>().init_resource::<crate::network::net::RespawnChoice>()
             .init_resource::<crate::network::chat::ChatLog>().init_resource::<crate::gameplay::dialogue::Dialogue>()
             .init_resource::<social::SocialUi>().init_resource::<hotbar::Hotbar>().init_resource::<crate::gameplay::quests::QuestUi>()
+            .init_resource::<super::party::Party>()
             .add_message::<bevy::input::mouse::MouseWheel>().add_systems(Update, interact);
         let primary = app.world_mut().spawn((Window { focused: true, resolution: (1600,900).into(), ..default() }, PrimaryWindow)).id();
         let layout = prepare(&Layout { window: WINDOW.into(), widgets: Vec::new() });

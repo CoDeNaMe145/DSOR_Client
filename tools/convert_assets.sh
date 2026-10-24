@@ -85,6 +85,8 @@ sh "$tools/level-tool.sh" events "$root/maps" "$out/maps"
 # 5. What glTF cannot carry, and the client's own tables.
 echo "[convert] Nebula states and tables (log: $logs/post.log)"
 {
+    # The skin fragments DSO_Godot leaves out (big skeletons: most bosses).
+    python3 "$tools/restore_skin_fragments.py" "$root" "$out" "$godot"
     python3 "$tools/fix_materials.py" "$out"
     python3 "$tools/embed_emitters.py" "$out"
     python3 "$tools/embed_animators.py" "$root/models" "$out"

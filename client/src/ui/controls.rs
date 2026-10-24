@@ -17,6 +17,8 @@ pub(super) mod template;
 pub(crate) mod settings;
 pub(super) mod hotbar;
 pub(super) mod effects;
+pub(super) mod currency;
+pub(super) mod message;
 mod tooltips;
 pub(super) use tooltips::overlay as tooltips;
 
@@ -262,6 +264,8 @@ enum Action {
     QuestGroup(String),
     /// The tracker's toggle: compact or full.
     QuestCompact(bool),
+    /// The party frames' toggle: compact (the button alone) or full.
+    PartyCompact(bool),
     /// The game menu's switch character / logout (social::answer sends it).
     Logout,
     /// A talent card of skilltalentswindow: buy one rank (spells::apply_drop sends it).
@@ -272,6 +276,8 @@ enum Action {
     System(systems::Request),
     /// Held, it turns its window's 3D preview with the cursor (crate::ui::preview).
     DragRotate,
+    /// A currency bag row: show this currency on the bar (currency).
+    Currency(String),
 }
 
 fn action(window: &str, w: &Widget) -> Action {
@@ -288,6 +294,7 @@ fn action(window: &str, w: &Widget) -> Action {
     if w.kind == "TextEntry" { return Action::Edit(w.id.clone()); }
     if w.event == "Close" { return Action::Close; }
     if w.event == "DragRotate" { return Action::DragRotate; }
+    if let Some(action) = currency::action(window, w) { return action; }
     if let Some(action) = social::action(window, w) { return action; }
     if let Some(action) = trade::action(window, w) { return action; }
     if let Some(action) = systems::action(window, w) { return action; }
@@ -946,7 +953,7 @@ pub(super) fn interact(
     mut settings: ResMut<settings::Settings>,
     mut hotbar: ResMut<hotbar::Hotbar>,
     mut audio: Option<ResMut<crate::audio::AudioRequests>>,
-    mut quest_ui: ResMut<crate::gameplay::quests::QuestUi>,
+    (mut quest_ui, mut party): (ResMut<crate::gameplay::quests::QuestUi>, ResMut<party::Party>),
 ) {
     let Ok(mut window) = primary.single_mut() else { return };
     let blocked = panels.iter().any(|(cursor, visible)| visible.get() && cursor.cursor_over());
@@ -1011,6 +1018,7 @@ pub(super) fn interact(
         .max_by(|a, b| a.4.translation.z.total_cmp(&b.4.translation.z))
         .map(|(e, _, c, _, tf)| (e, c.hit(p - window_offset(tf), width), c.title_hit(p - window_offset(tf), width))));
     if mouse.just_pressed(MouseButton::Left) {
+        currency::dismiss(&mut windows, top.map(|(e, button, _)| (e, button)));
         if let Some((e, button, title)) = top {
             raise(e, &mut windows);
             if title && button.is_none() {
@@ -1122,6 +1130,7 @@ pub(super) fn interact(
         Action::QuestTrack(delta) => quest_ui.tracked = (quest_ui.tracked as i32 + delta).max(0) as usize,
         Action::QuestGroup(kind) => quests::fold(&mut quest_ui.folded, &kind),
         Action::QuestCompact(compact) => quest_ui.compact = compact,
+        Action::PartyCompact(compact) => party.compact = compact,
         Action::Logout => { pointer.logout = true; *visibility = Visibility::Hidden; }
         Action::Talent(id) => pointer.talent = Some(id),
         Action::Travel(map) => { pointer.travel = Some(map); *visibility = Visibility::Hidden; }
@@ -1130,6 +1139,10 @@ pub(super) fn interact(
         Action::System(request) => { let request = systems::clicked(request, &mut controls); pointer.system.push(request); }
         Action::Respawn(at_exit, on_spot) => {
             respawn.0 = Some((at_exit, on_spot));
+            *visibility = Visibility::Hidden;
+        }
+        Action::Currency(id) => {
+            settings.pick_currency(&id);
             *visibility = Visibility::Hidden;
         }
     }
@@ -1411,7 +1424,7 @@ mod tests {
             .init_asset::<Layout>().init_asset::<Mesh>().init_asset::<UiMaterial>()
             .init_asset::<Image>().init_asset::<Font>().init_asset::<crate::ui::dialogue::Catalog>()
             .init_resource::<Loaded>().init_resource::<Screen>().init_resource::<crate::ui::dialogue::Presentation>()
-            .init_resource::<party::Party>().init_resource::<crate::gameplay::quests::QuestUi>().init_resource::<systems::Views>().init_resource::<crate::ui::UiWork>()
+            .init_resource::<party::Party>().init_resource::<crate::gameplay::quests::QuestUi>().init_resource::<systems::Views>().init_resource::<currency::Shown>().init_resource::<message::ItemMessages>().init_resource::<crate::ui::UiWork>()
             .insert_resource(quests::Quests { list: vec![quests::QuestView::default()], ..default() })
             .add_systems(Update, spawn_windows);
         let art = |[l, t, r, b]: [f32; 4], alpha: f32| {
@@ -1474,6 +1487,7 @@ mod tests {
             .init_resource::<crate::network::net::RespawnChoice>()
             .init_resource::<local_map::MapSettings>()
             .init_resource::<crate::gameplay::quests::QuestUi>()
+            .init_resource::<party::Party>()
             .add_systems(Update, (sync_chat, keyboard, interact, edit_text, order_windows, paint).chain());
         let primary = app.world_mut().spawn((Window { focused: true, resolution: (1024, 768).into(), ..default() }, PrimaryWindow)).id();
         let mut roots = HashMap::new();

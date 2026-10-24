@@ -19,7 +19,7 @@ fn window_title(name: &str) -> &str {
     match name { "skilltalentswindow" => "Skills", "charactersheet" => "Character", "collectorsalbum" => "Collector's album",
         "questlog" => "Quests", "locationmap" => "Map overlay", "travelmap" => "World map", "socialscreen" => "Social",
         "shopwindow" => "Shop", "matchmakingwindow" => "Battlegrounds", "gamemenu" => "Game menu", "leaderboards" => "Rankings",
-        "eventwindow" => "Events", "inventory" => "Inventory", _ => name }
+        "eventwindow" => "Events", "inventory" => "Inventory", "currencybag" => "Currency Bag", _ => name }
 }
 
 /// The social window's tabs and icon buttons (gui.window.social_*TabHeading,
@@ -41,7 +41,10 @@ fn repeats_label(window: &str, button: &Button, layout: Option<&Layout>) -> bool
     if window == "gamemenu" { return true; }
     match &button.action {
         Action::Skill(_) | Action::Spell | Action::Item(_) => false,
-        Action::NpcChoice(_) | Action::Edit(_) | Action::ChatChannel(_) => true,
+        // The quest screen's Accept and Back are icons: their tooltips name them
+        // (crate::ui::dialogue::quest).
+        Action::NpcChoice(_) => window != "questscreen2",
+        Action::Edit(_) | Action::ChatChannel(_) => true,
         Action::Settings(event) => event.starts_with("row") || matches!(event.as_str(), "previous" | "next"),
         _ => layout.is_some_and(|layout| layout.widgets.iter().any(|w|
             !w.hidden && (w.id == button.id || w.id.starts_with(&format!("{}/", button.id)))
@@ -56,7 +59,8 @@ pub(super) fn clean_text(raw: &str) -> String {
 
 #[allow(clippy::too_many_arguments)]
 pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018, &WindowControls, &Visibility, &Transform), Without<Tooltip>>,
-    primary: Query<&Window, With<PrimaryWindow>>, screen: Res<Screen>, settings: Res<settings::Settings>, (pointer,keys,figures):(Res<Pointer>,Res<ButtonInput<KeyCode>>,Res<crate::ui::Figures>),
+    primary: Query<&Window, With<PrimaryWindow>>, screen: Res<Screen>, settings: Res<settings::Settings>,
+    (pointer,keys,figures,shown):(Res<Pointer>,Res<ButtonInput<KeyCode>>,Res<Figures>,Res<currency::Shown>),
     net: Option<NonSend<crate::network::net::Net>>, hotbar: Res<hotbar::Hotbar>,
     (data, catalogs, dialogue): (Res<items::Data>, Res<Assets<items::Catalog>>, Res<dialogue::Presentation>), layouts: Res<Assets<Layout>>, loaded: Res<Loaded>,
     (skill_tables, status_bar, status_catalogs, status_slots): (Res<Assets<crate::gameplay::skills::SkillTable>>,
@@ -125,7 +129,12 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
                 Action::Spell => {}
                 Action::NpcChoice(index) => { heading = dialogue.choice_label(*index).unwrap_or_default().into(); }
                 Action::Item(_) => return, // Inventory owns its detailed item tooltip.
+                // The bar's dropdown: the picked currency's whole amount.
+                Action::Window(currency::BAG) if b.id.ends_with("/ButtonDropdown") => {
+                    heading = currency::describe(&shown.id, figures.wallet.balance(&shown.id), catalog);
+                }
                 Action::Window(name) => { heading = window_title(name).into(); let key = if *name == "gamemenu" { "Esc".into() } else { settings.current.label(name) }; if key != "Unbound" { body = format!("(Press {key})"); } }
+                Action::Currency(id) => heading = currency::describe(id, figures.wallet.balance(id), catalog),
                 Action::Settings(event) => {
                     heading = match event.as_str() { "open" => "Game Settings", "controls" => "Hotkeys", "general" => "General", "graphics" => "Graphics", "audio" => "Audio", "cursor" => "Mouse", "combatSettings" => "Combat", "apply" => "Apply and save", "cancel" => "Discard changes", "revert" => "Restore defaults", _ => "Settings" }.into();
                     if let Some(row) = event.strip_prefix("row").and_then(|s| s.parse::<usize>().ok()) {
@@ -144,6 +153,7 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
                 Action::QuestSelect(_) | Action::QuestGroup(_) | Action::DragRotate => return,
                 Action::QuestCancel(_) => { heading = "Stop quest".into(); body = "The quest leaves your log; you can take it again.".into(); }
                 Action::QuestCompact(compact) => heading = if *compact { "Hide the objectives" } else { "Show the objectives" }.into(),
+                Action::PartyCompact(compact) => heading = if *compact { "Hide the group" } else { "Show the group" }.into(),
                 Action::QuestTrack(delta) => heading = if *delta < 0 { "Previous quest" } else { "Next quest" }.into(),
                 Action::System(request) => match super::systems::tooltip(request) {
                     Some((title, text)) => { heading = title.into(); body = text; }
@@ -206,26 +216,20 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
             } else if let Some((w,_,_,tf)) = windows.iter().filter(|(_,c,v,tf)| **v != Visibility::Hidden && c.covers(p-window_offset(tf),screen.width))
                 .max_by(|a,b|a.3.translation.z.total_cmp(&b.3.translation.z)) {
                 if let Some(layout) = loaded.layouts.iter().filter_map(|(h,_,_)| layouts.get(h)).find(|l|l.window==w.0) {
-                    // The smallest area under the cursor that explains itself: the
-                    // coins' box reaches down over the Badges of Honor row, which
-                    // showed the coins' line there.
-                    let tip_of = |id: &str| -> Option<String> {
-                        // The game's own lines: gui.window acString / ecString.
-                        if id.contains("HonorCurrency") { Some(format!("{} Badge of Honor", figures.honor.unwrap_or(0))) }
-                        else if id.contains("EventCurrency") { Some(format!("{} Draken", figures.draken.unwrap_or(0))) }
-                        else if id.contains("andermant") { Some("Andermant".into()) } else if id.contains("VirtualCurrency") { Some("Coins: 100 copper = 1 silver; 100 silver = 1 gold".into()) }
-                        else if id.contains("bottombar_xp_bar") { Some("Experience: earn experience to level up".into()) } else if id.contains("bottombar_wisdom_bar") { Some("Ancient Wisdom".into()) }
-                        else { match gauge_of(id) { Some(Gauge::Health | Gauge::HealthBar) => Some("Health".into()), Some(Gauge::Resource | Gauge::ResourceBar) => Some("Skill resource".into()), _ => None } }
-                    };
-                    let area = |r: [f32; 4]| (r[2] - r[0]).abs() * (r[3] - r[1]).abs();
-                    let hit = layout.widgets.iter().rev().filter(|x| !x.hidden && contains(x.k,x.rect,p-window_offset(tf),screen.width))
-                        .filter_map(|w| tip_of(&w.id).map(|t| (w, t)))
-                        .min_by(|(a, _), (b, _)| area(a.rect).total_cmp(&area(b.rect)));
-                    if let Some((widget, tip)) = hit {
-                        content=Some((tip,String::new(),None));
-                        let [l,t,r,b] = widget.rect;
-                        let offset = window_offset(tf) + Vec2::new(widget.k*(screen.width-BASE_W),0.0);
-                        anchor = Some([l+offset.x,t+offset.y,r+offset.x,b+offset.y]);
+                    // The currency bar as drawn in game (its layout keeps other money displays).
+                    let drawn = |x: &Widget| if w.0 == currency::BAR { currency::bar_part(&x.id).unwrap_or(!x.hidden) } else { !x.hidden };
+                    for widget in layout.widgets.iter().rev().filter(|x| drawn(x) && contains(x.k,x.rect,p-window_offset(tf),screen.width)) {
+                        let tip = if w.0 == currency::BAR { currency::tip(&widget.id, &figures.wallet) }
+                        else if widget.id.contains("andermant") { Some("Andermant".into()) } else if widget.id.contains("VirtualCurrency") { Some("Coins: 100 copper = 1 silver; 100 silver = 1 gold".into()) }
+                        else if widget.id.contains("bottombar_xp_bar") { Some("Experience: earn experience to level up".into()) } else if widget.id.contains("bottombar_wisdom_bar") { Some("Ancient Wisdom".into()) }
+                        else { match gauge_of(&widget.id) { Some(Gauge::Health | Gauge::HealthBar) => Some("Health".into()), Some(Gauge::Resource | Gauge::ResourceBar) => Some("Skill resource".into()), _ => None } };
+                        if let Some(tip) = tip {
+                            content=Some((tip,String::new(),None));
+                            let [l,t,r,b] = widget.rect;
+                            let offset = window_offset(tf) + Vec2::new(widget.k*(screen.width-BASE_W),0.0);
+                            anchor = Some([l+offset.x,t+offset.y,r+offset.x,b+offset.y]);
+                            break;
+                        }
                     }
                 }
             }
@@ -275,6 +279,7 @@ mod tests {
             .init_resource::<Pointer>().init_resource::<hotbar::Hotbar>().init_resource::<dialogue::Presentation>()
             .init_resource::<items::Interaction>().init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<effects::StatusBar>().init_asset::<effects::Catalog>()
+            .init_resource::<Figures>().init_resource::<currency::Shown>()
             .add_systems(Update,(overlay,items::overlay).chain());
         app.world_mut().resource_mut::<settings::Settings>().current.advanced_tooltips=false;
         let dir=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/interface");

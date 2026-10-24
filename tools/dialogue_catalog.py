@@ -10,6 +10,16 @@ def plain_text(value):
     return re.sub(r"<[^>]*>", "", value).strip()
 
 
+# Quest texts that colour words (<QuestHighlightStart>Varholm</>, <cFFFFFFFF>...</>):
+# kept with their tags for the NPC's quest screen, which draws those words white
+# (crate::ui::dialogue::quest). Every other reader takes the plain `texts`.
+HIGHLIGHT = re.compile(r"<(QuestHighlightStart|c[0-9A-Fa-f]{8})>")
+
+
+def marked_text(value):
+    return re.sub(r"<br\s*/?>", "\n", value, flags=re.I).strip()
+
+
 def export_dialogue(database, textures, localization, assets):
     from trading_catalog import export_trading
     portraits = set()
@@ -25,9 +35,11 @@ def export_dialogue(database, textures, localization, assets):
     }.items():
         if textures.get(brush):
             icons[name] = f"textures/{brush}.png"
-    texts = {k.lower(): plain_text(v) for k, v in localization.get("en", {}).items()
-             if k.startswith(("quest.", "db.npc", "gui.npc", "gui.quest", "gui.dialog"))}
+    english = localization.get("en", {})
+    texts = {k.lower(): plain_text(v) for k, v in english.items()
+             if k.startswith(("quest.", "db.npc", "gui.npc", "gui.quest", "gui.dialog", "gui.window.questscreen"))}
+    marked = {k.lower(): marked_text(v) for k, v in english.items() if k.startswith("quest.") and HIGHLIGHT.search(v)}
     with open(os.path.join(assets, "interface", "dialogue.catalog.json"), "w", encoding="utf-8") as f:
-        json.dump({"portraits": available, "icons": icons, "texts": texts,
+        json.dump({"portraits": available, "icons": icons, "texts": texts, "marked": marked,
                    "trading": export_trading(database, textures)}, f, ensure_ascii=False, separators=(",", ":"))
-    return {"portraits": len(available), "texts": len(texts)}
+    return {"portraits": len(available), "texts": len(texts), "marked": len(marked)}

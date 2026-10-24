@@ -9,9 +9,10 @@
 //!   (its rotation is the facing, which the command does not carry);
 //! - `characters/<skeleton>/outfits.json` (DSO_Godot): a CharacterSet's parts.
 //! Humans and dwarves (Graphics `characters/uniskel[_dwarf]`) are dressed on the
-//! shared skeleton like players; other Graphics are whole models with their own
-//! animations (barrel_dealer, gambler, troll...).
-//! UNVERIFIED: outfits' `variation` (per-bone body shape) is not applied yet.
+//! shared skeleton like players, with their outfit's body variation; other
+//! Graphics are whole models with their own animations (barrel_dealer, gambler,
+//! troll...) and their character set's variation (`characters/<model>.sets.json`,
+//! as the monsters'): without it the deco pigeons stood a quarter of their size.
 
 use std::collections::HashMap;
 
@@ -285,9 +286,24 @@ pub struct Npc {
 #[derive(Component)]
 struct ModelNpc {
     gltf: Handle<Gltf>,
+    /// The model's character sets and the one it wears: its body variation
+    /// (crate::actors::monsters::vary_model). None for a model without a set.
+    sets: Option<(Handle<crate::actors::monsters::ModelSets>, String)>,
     anim_set: String,
     state: String,
     speed: f32,
+}
+
+impl ModelNpc {
+    fn new(assets: &AssetServer, graphics: &str, set: &str, anim_set: &str, state: &str, speed: f32) -> Self {
+        Self {
+            gltf: assets.load(crate::rendering::model_variant::path(graphics, set)),
+            sets: (!set.is_empty()).then(|| (assets.load(format!("{graphics}.sets.json")), set.to_owned())),
+            anim_set: anim_set.to_owned(),
+            state: state.to_owned(),
+            speed,
+        }
+    }
 }
 
 /// Only server-owned NPCs keep their actor while visual descendants stream.
@@ -543,10 +559,7 @@ fn attach_npc_visual(
     match recipe {
         NpcVisualRecipe::Character(desc) => attach_character(commands, entity, desc.clone()),
         NpcVisualRecipe::Model(path) => {
-            commands.entity(entity).insert(ModelNpc {
-                gltf: assets.load(path.clone()), anim_set: profile.anim_set.clone(),
-                state: profile.state.clone(), speed: 1.0,
-            });
+            commands.entity(entity).insert(ModelNpc::new(assets, &profile.graphics, &profile.outfit, &profile.anim_set, &profile.state, 1.0));
             commands.spawn((
                 CharacterVisual, WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(path.clone()))),
                 ChildOf(entity), Transform::default(), Visibility::default(),
@@ -644,13 +657,31 @@ fn animate_models(
     library: Option<Res<CharacterLibrary>>,
     tables: Res<Assets<AnimTable>>,
     mut graphs: ResMut<Assets<AnimationGraph>>,
+    (assets, sets, joints, skinned): (
+        Res<AssetServer>,
+        Res<Assets<crate::actors::monsters::ModelSets>>,
+        Query<(&Transform, Option<&ChildOf>)>,
+        Query<&bevy::mesh::skinning::SkinnedMesh>,
+    ),
 ) {
     for (entity, npc) in &npcs {
         let Some(gltf) = gltfs.get(&npc.gltf) else { continue };
         if !children.get(entity).into_iter().flatten().any(|e|
             instances.get(*e).is_ok_and(|i| spawner.instance_is_ready(**i))) { continue; }
+        // Its body: the set's variation (a model without a sets file has none).
+        let set = match &npc.sets {
+            Some((handle, name)) => match sets.get(handle) {
+                Some(file) => file.0.get(name),
+                None if assets.load_state(handle).is_failed() => None,
+                None => continue,
+            },
+            None => None,
+        };
         let bones = children.iter_descendants(entity).filter_map(|e|
             names.get(e).ok().map(|n| (n.as_str().to_owned(), e))).collect();
+        if let Some(set) = set {
+            crate::actors::monsters::vary_model(&mut commands, &joints, &skinned, &children, entity, &bones, set);
+        }
         commands.entity(entity).insert((crate::actors::character::ModelBones(bones),
             crate::rendering::model_variant::ResidentModel(npc.gltf.clone()))).remove::<ModelNpc>();
         let Some(player) = children.iter_descendants(entity).find(|e| players.contains(*e)) else { continue };
@@ -810,12 +841,7 @@ fn spawn_deco(
                     Name::new(format!("deco {}", c.outfit)),
                     transform,
                     Visibility::default(),
-                    ModelNpc {
-                        gltf: assets.load(path.clone()),
-                        anim_set: c.set.clone(),
-                        state: "Idle".into(),
-                        speed: c.speed,
-                    },
+                    ModelNpc::new(&assets, &c.g, &c.outfit, &c.set, "Idle", c.speed),
                 ))
                 .id();
             commands.spawn((WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(path))), ChildOf(e), Transform::default(), Visibility::default()));

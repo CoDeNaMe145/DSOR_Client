@@ -148,7 +148,7 @@ fn requests_encode_as_the_server_decodes_them() {
             "overall_request" => ClientCommand::OverallRankingRequest(OverallRankingRequest { start: 0, count: 10, context: 5, flags: 1, class: 4 }),
             "local_request" => ClientCommand::LocalRankingRequest(LocalRankingRequest { context: 5, board: 4 }),
             "overall_local_request" => ClientCommand::OverallLocalRankingRequest(OverallLocalRankingRequest { context: 5 }),
-            "ocp_request" => ClientCommand::OcpOfferRequest(OcpOfferRequest),
+            "ocp_request" => ClientCommand::OcpOfferRequest(OcpOfferRequest::default()),
             "ocp_booking" => ClientCommand::OcpBooking(OcpBooking { offer: "1_realCurrency_100_0_NONE".into(), method: "external".into() }),
             "tier_spender" => ClientCommand::AcceptedTierSpender(AcceptedTierSpender { rewards: vec!["spender_a".into(), "spender_b".into()] }),
             "abort_queue" => ClientCommand::AbortMatchQueue(AbortMatchQueue { tick: 100, flag: true, modes: vec![0, 1], all: false }),

@@ -23,6 +23,9 @@ pub struct TaskDef {
     pub kind: String,
     #[serde(default = "one")]
     pub target: u32,
+    /// The tasks (indices) to finish first (quests.xml preTasks).
+    #[serde(default)]
+    pub pre: Vec<usize>,
 }
 fn one() -> u32 { 1 }
 
@@ -36,6 +39,9 @@ pub struct Rewards {
     /// Andermant.
     #[serde(default)]
     pub rc: u32,
+    /// Experience as a percent of the player's level (dynamicXP); 0 for none.
+    #[serde(default)]
+    pub dynamic_xp: u32,
 }
 
 #[derive(Deserialize, Debug, Clone, Default, PartialEq)]
@@ -46,6 +52,9 @@ pub struct RewardItem {
     /// The class it is for; empty for every class.
     #[serde(default)]
     pub class: String,
+    /// Its rarity (Common, Magic...); empty for the item's own.
+    #[serde(default)]
+    pub rarity: String,
 }
 
 #[derive(Deserialize, Debug, Clone, Default, PartialEq)]
@@ -62,6 +71,15 @@ pub struct QuestDef {
     /// heroic, crafting, pvp, the repeatable variants.
     #[serde(default, rename = "type")]
     pub kind: String,
+    /// stagedTasks: a task waits for its `pre` tasks before it is shown.
+    #[serde(default)]
+    pub staged: bool,
+    /// Its place in its series (questNumber, the series' last), for its title.
+    #[serde(default)]
+    pub part: Option<[u32; 2]>,
+    /// Not live (enabledLive false): its title says so.
+    #[serde(default)]
+    pub internal: bool,
     #[serde(default)]
     pub rewards: Rewards,
     #[serde(default)]

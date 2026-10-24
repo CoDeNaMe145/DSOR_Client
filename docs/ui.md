@@ -106,7 +106,7 @@ cooldown covers, glows, the "buy a slot"
 offers, the alternative stacks DSO_Godot already spots, the character preview
 area (`figur`, a runtime render target), placeholder icons (`icon_dummy`, "?"),
 templates outside a window's root (`ROOTS`: the inventory's drag ghosts, the
-payment variants of the money display). Template slots the game clones are laid
+money display's other variants). Template slots the game clones are laid
 out (`GRIDS`: the inventory bag, 7 x 4 empty slots, fitted to the area's width).
 Readable, lossless copies of the source BXML are also written to
 `interface/xml/<window>.xml`. BXML is a binary XML tree, not a compressed text
@@ -127,7 +127,8 @@ Drawn:
 
 - always: the current `bottombar/Canvas/Label_new` layout: horizontal health and
   resource bars, XP and wisdom bars with level labels, five quick slots plus
-  left/right mouse slots, mount and home teleport; the money (`currencybar`), the menu buttons
+  left/right mouse slots, mount and home teleport; the money (`currencybar`,
+  with its currency bag: see below), the menu buttons
   (`gamebar`), and the central navigation (`ingamemenu`);
 - the status effects on the player, above the action bar, and the hovered
   monster's negative ones under its panel (see below);
@@ -217,6 +218,71 @@ for an effect the bar does not show, such as a Shadow Soul's
 first hovered; with `DSOR_TEST_MONSTER` and `DSOR_TEST_TARGET=1` (the nearest
 live monster counts as hovered) no pointer is needed.
 
+## The currency bar and its bag
+
+`currencybar` holds four money displays; `client/src/ui/controls/currency.rs`
+draws the one the 2026 client shows in game, `LabelIngamePayment` (the
+character screen's is `LabelIngamePaymentRCOnly`, `ui/selection.rs`), whatever
+the export marks hidden. It shows the Andermant, the gold, silver and copper,
+and one more currency: the one picked in the bag, the Badges of Honor until
+then. Its dropdown (that currency) and its bag button open `currencybag` under
+the bar: the Glyphs of Power, then every currency of the shops
+(`_Template_ItemCurrency`'s items, highest `Priority` first, ties in table
+order), each with its icon and whole balance. A click on a row shows that
+currency on the bar and saves it at once (`currency` in `game-settings.json`,
+as the game keeps `/Settings/CurrencyDisplay`); a click elsewhere, Escape or
+the button again close the bag.
+
+Balances: the wallet (NewPlayer +356, CurrencyChanged), the glyphs (NewPlayer
++376, CurrencyChanged's u64) and the keyed currencies (NewPlayer +384,
+GameCurrencyChanged); one the server never sent reads 0.
+
+Amounts keep within their places as the game's `GetClampedIntString` does:
+the Andermant to 9 digits, the gold to 5, the picked currency to 10; past
+them, by thousands with `k`, `M`, `G` (100,000,000 gold reads `100M`). Then the
+font of a money label shrinks until its text fits its rect (`ui::Fit`, only
+when the text changes). The bag shows whole amounts, in the row's width.
+Hovering the Andermant, the coins, the dropdown or a row names the whole
+amount ("8883102 Badge of Honor").
+
+The bag's list is `currencies` in `interface/systems.catalog.json`: re-export
+the systems catalog (`tools/systems_catalog.py`) for an older conversion.
+
+DEVIATION: the original's fonts shrink no further than the layouts'
+FontScalingFactor (0.6); here as far as the place needs. The bag button's glow
+when a currency grows and the payment button (the Andermant shop) are not
+wired.
+
+## Items received
+
+When the server gives an item (a quest's reward, the daily login chest, a chest
+or package opened, event and spender rewards), the item's icon and "Daily Login
+Chest received" show under the top navigation: `messagewindow`'s
+`ItemMessageLine`, with the icon in its `ItemSlot`.
+`client/src/ui/controls/message.rs` draws it as release261's
+`UI::MessageWidget` does (addresses in the module):
+
+- The server sends MessageCommand type 2 between the reward's two
+  InventoryInfo packets: source 7, the amount, the item's id, and the template
+  for a currency that made no item. `gameplay::inventory::Receipt` resolves the
+  id on arrival against the carried items, and falls back to the template.
+  Sources 0, 1, 3, 4 and 5 name a currency by a fixed template.
+- The text is `gui.window` `lootReceived` "{0:s} received", or
+  `lootReceivedAmount` "{0:i} {0:s} received" when more than one. The item's
+  name and icon layers (background, image, frame) come from the item catalog,
+  with a carried item's own look and rarity. A template the catalog does not
+  know shows nothing, as in the original.
+- Notices queue without limit and show one at a time, each for `_Globals`
+  `InfoTextDuration` (4 s). The window is rebuilt only when the shown notice
+  changes, and an empty window builds nothing.
+- The notice takes no clicks; the world under it stays clickable.
+
+The window's other lines (info, status, system messages) are not wired. Neither
+is the original's pause, which puts the shown notice back in the queue while a
+UI manager flag (+0x329, not identified) is set. Offline,
+`DSOR_PACKET_REPLAY` with the server's receipt packets shows the notices
+(docs/client-progress.md, "Items received").
+
 ## 3D previews: the inventory's figure and the album's sticker
 
 `client/src/ui/preview.rs` draws the turning 3D views the layouts leave room
@@ -286,6 +352,163 @@ A closed window's stage costs nothing: its camera is off and its subject is
 parked (its animation stops). `preview::choose` compares a few revisions each
 frame (the windows' pages, the player's look, the views, the player's effects)
 and builds a subject only when one moved (`UiWork::previews`).
+
+## The character screens: roster and creation
+
+`client/src/ui/selection.rs` draws the roster (`charselectionwindow`, with
+`confirmdialog` to delete) and the creation screen (`chargenwindow` beside
+`premadepackagewindow`) from their original layouts, with the currency bar's
+RC-only display and the game bar's fullscreen and menu buttons. It has its
+own small renderer, not the menu windows'. `client/src/screens/selection.rs`
+keeps their state, takes the server's replies and stands the 3D figure.
+Their behaviour follows the 2026 client's `CharacterSelectionWidget`,
+`CharacterGenerationWidget` and their managers, decompiled in the live server
+tree's `data/diagnostics/charselection-widget.annotated.txt` and
+`chargen-widget.annotated.txt` (the code comments cite their addresses).
+
+Each window draws its still artwork, then its buttons, then its texts, each
+in authored order. In authored order the crest of the creation screen's frame
+covered its Create button and caption, and the class's tinted background
+covered the class name and description. This also explains the exceptions
+listed above (captions over relief art, translucent backdrops under texts).
+INFERRED: from these layouts; the game's renderer was not traced, and the menu
+windows still draw in authored order.
+
+### The roster
+
+- A row shows the name, the class (`gui.window.chargen_charClass_<class>`, a
+  woman's with `.f`: "Steam Mechanica"), "Level {0:i}"
+  (`charselection_characterLevel`) and the map's caption, plus the mentor bonus
+  icons from the character's two flags (honor: flag B, wisdom: flag A, both).
+- **Create new character** shows while a slot is free (the roster's slot
+  count, CharacterSelection +0x68). With every slot used, **Buy** takes its
+  place until `_Globals.MaxCharactersPerAccount` (5). From then on the add
+  button shows again, disabled. DEVIATION: buying a slot is not offered, so
+  Buy stays disabled, as when the account is short of Andermant.
+- **Delete** opens the confirmation: `confirmdialog`'s centred dialog with
+  "You really want to delete your character, "{name}"?" and its tick and cross.
+  The tick deletes the character (op 6). It leaves the list at once and the
+  first character is chosen. The cross or Escape cancel.
+- The DenyReason line shows only the server's refusal to enter the world
+  (CharacterSelection op 4): 1 `badCharacter`, 2 `badAccountData`,
+  3 `badCharacterData`, 4 `noCharacterData`, 5 `internalError`, otherwise
+  `unknownError`. Nothing else is written there.
+- The currency bar shows the last character's Andermant.
+- Sounds: choosing a character plays `ui_char_gen_choose_<class>` and
+  `ui_char_gen_vo_<class>_<gender>`; Play Now plays
+  `ui_char_gen_generate_<class>_<gender>`; Add plays `ui_switch_screen`;
+  Delete plays `ui_cancel` and `ui_open_screen`; the dialog plays
+  `ui_confirm` or `ui_cancel`.
+- ADDITION: the original's roster has no keys. Here the arrows choose a
+  character and Enter plays.
+
+### The creation screen
+
+- **Opening.** The roster's add button asks the server for its editor
+  (CharacterGeneration op 1). The roster goes at once; the creation screen
+  shows on the server's answer (op 2), which carries the first class, gender,
+  hair and beard. The server also opens it by itself for an account without
+  characters.
+- **Classes.** The four class buttons are a check group, captioned with the
+  class name for the gender shown. Clicking one, even the class already shown,
+  or switching the gender does four things:
+  - sets that class and gender's default hair and beard (warrior 18/8,
+    mage 2/1, ranger 7/10, dwarf 35/35; women 45, 3, 16 and 33, with no beard);
+  - keeps the ethnicity;
+  - turns the figure to the front;
+  - plays the showcase from its start.
+- **Rows.** Gender (both arrows switch it), Ethnicity (body style 0 to 2), Hair
+  and Beard. The Beard row shows for men only; a woman's beard is 16.
+  - The choices are the `_Template_CharacterHair` and `_Template_CharacterBeard`
+    rows flagged for that class and gender, in `Index` order.
+  - The arrows wrap round, and are never disabled.
+  - A value that is none of the choices stays.
+- **The name.**
+  - The field waits for a click. It then takes the keyboard, with its caret;
+    Enter, Escape or a click elsewhere let go. "Enter name" shows while it is
+    empty and not being typed into.
+  - It takes up to `CharacterNameMaxLength` (16) letters of the language: A-Z,
+    a-z, 0-9, accented Latin, Greek and Cyrillic. It never takes spaces,
+    punctuation, `<` or `>`.
+  - Taking the keyboard hides the last refusal, unless it was a figure's
+    (deny reason 8).
+- **Create** sends op 3 at once, with no other check: class, gender, hair,
+  beard, body style, stature 0, the name, an identity matrix. It sends one
+  request at a time.
+  - Op 4 refuses the character. The deny reason's text shows in red:
+    1 `existingName`, 2 `emptyName` (with the minimum, 3), 3 `notAlphaNumeric`,
+    4 `badName`, 5 `badHairStyle`, 6 `badBeardStyle`, 7 `badBodyStyle`,
+    8 `badBodyStature`, 9 `alreadyGenerated`, 10 `insufficientSlots`,
+    11 `internalError`, 12 `classLocked`, otherwise `unknownError`. Reasons 10
+    to 12 have no English text; the key shows.
+  - Op 5 makes the character: the screen goes, `ui_char_gen_generate_*`
+    plays and the hand-off to the world follows.
+- **Back** asks for the roster (CharacterSelection op 2). The roster shows on
+  the server's answer, and an account without characters gets the editor
+  back. The button is off when the editor's first bool says so.
+- **The class description** is `chardesc_<class>` then `charslogan_<class>`,
+  wrapped into the list's nine lines. The wheel scrolls it, and the handle
+  follows. The class's emblem and tinted background show above it.
+- **The premium start panel** is shown as the original shows it without
+  offers: its "Premium Packages" headline, an empty list and its clear button,
+  which does nothing. Its own Create button stays hidden, and so does the
+  editor's price tag.
+- **The currency bar** shows the editor's value (op 2, +0x90).
+- **The figure** wears the class's `CharGenItems` with its `ArmamentState`. It
+  plays `CharSelectStart`, then `CharSelectIdle`, with the class and gender's
+  `CharGenStartSequence` (again and again if it repeats: the mage's ball and
+  light) and `CharGenIdleSequence` looping. Another hair, beard or ethnicity
+  keeps the idle.
+- **Sounds:** a class plays `ui_char_gen_choose_<class>` and
+  `ui_char_gen_vo_<class>_<gender>`; the gender plays `ui_char_gen_switch_gender`
+  and the voice; the other arrows play `ui_char_gen_switch`; the name field
+  plays `ui_click`; Back plays `ui_switch_screen`.
+
+### Looks in the world and in the previews
+
+A player's body style picks its body set: `<class>_<gender>_body_00`, `_asian_`
+or `_black_` (1, 2). Its proportions stay `var_<class>_<gender>_<stature>`
+whatever the ethnicity. NewPlayer and NewRemotePlayer carry class, gender,
+hair, beard, body style and stature (`parts`). The world draws the hair and
+beard of those styles, with no gender check, and the selection screens give
+women no beard. The inventory's figure keeps all of them.
+
+### Data and checks
+
+`tools/export_character_selection.py <static.db4> <assets> [--language
+<export_win32>]` (also run by `character_tables.py`) adds `creation` to
+`characters/selection.json`:
+
+- the name bounds and the most characters an account has;
+- each class's `CharGenItems` and armament;
+- each class and gender's hair and beard Index lists and showcase sequences;
+- the English `gui.window.chargen_*` and `charselection_*` texts and the
+  package panel's headline.
+
+Without it (an older export), the creation screen shows keys.
+
+Offline checks:
+
+- `python tools/character_selection_preview.py <server> <out.json> [--editor]
+  [--empty] [--refuse N]` writes server packets that open the editor (and
+  refuse a name).
+- `DSOR_SELECTION_PREVIEW=<out.json>` and `DSOR_SELECTION_REPLAY=<steps.json>`
+  replay them. Steps: `class`, `step: ["hair", 1]`, `name`, `create`,
+  `refuse`, `back`, `delete`, `confirm`, and the roster's `select`, `rotate`,
+  `play`, `capture`.
+- `tools/chargen_vectors.py` checks CharacterGeneration both ways against the
+  server's codec (`crates/proto/tests/chargen_release261.rs`).
+
+DEVIATION, not done:
+
+- Changing an existing character: the roster's EditButton, CharacterGeneration
+  ops 8, 9 and 10, the SaveButton. The server offers no edits.
+- Buying a slot and premium start packages.
+- Instance selection.
+- These screens' tooltips.
+- The preview items' own weapon effects.
+- A hair, beard or ethnicity click during `CharSelectStart` cuts it short. The
+  figure is remade; the original updates it in place.
 
 ## Per-frame cost
 
@@ -480,7 +703,14 @@ paging). These items can be inspected but cannot be dragged,
 split, used, swapped or receive drops. The server automatically moves them into
 free inventory slots and sends the new allocation. Bank overflow remains in the
 bank's separate recovery queue. Unavailable ordinary cells are dimmed.
-Equipment and bag cells show icons and stack counts. Ingredient category and
+Equipment and bag cells show icons and stack counts. Worn pieces also show their
+item level in the original's small dark box (`UpgradeButtonTemplate_Green`),
+centred 6.4 x 4.8 reference pixels in from the slot's top corner on its column's
+outer side: top right for helmet to boots and the off hand, top left for the
+weapon, weapon mod, cloak, rings and amulet. The belt, trinkets, mercenary
+pieces and essences show none, as in the original
+(`UI::InventoryWidget::UpdateItemUpgradeButton`). Its tooltip and click (the
+item upgrade window) are not wired. Ingredient category and
 rarity tabs populate the collection grid from `_Template_IngredientBag`, including
 dimmed uncollected items and owned quantities from the ingredient allocation.
 The five tier selectors retain their original normal/hover/selected artwork;
@@ -623,15 +853,71 @@ Left-clicking a talkable NPC follows a route on the navigation mesh and stops ab
 `Encounter` and `NpcRequest` once upon arrival. Routes go around stalls and walls,
 and choose another stopping point if the NPC's near side is blocked. The original `npcscreen` layout
 provides the portrait, expandable nameplate and curved buttons with their hover
-and pressed states. It is anchored to the upper-left, independent of screen
-width and NPC position. Its atlas repeats: the later buttons' left-side tails
+and pressed states. It sits where the layout puts it, against the screen's
+left edge, whatever the screen's width and the NPC's position. Its atlas repeats: the later buttons' left-side tails
 use UV coordinates above 1. `NPCInfo` supplies the current quest and talk options;
 task-target map markers do not produce duplicate conversation buttons. Additional
-options are paged. The current `questscreen2` speech bubble and shaded backdrop
-display localized quest and conversation text alongside the NPC portrait,
-including further pages for long passages. The backdrop remains click-through.
-Acceptance, turn-in and Continue send
-the corresponding `Quest` or `Talk` command and refresh the NPC's options.
+options are paged.
+
+### The quest screen (`questscreen2`)
+
+A quest or a conversation opens `questscreen2` beside the portrait, as
+release261's `UI::QuestWidget2` fills it (`client/src/ui/dialogue/quest.rs`,
+addresses there). Every part stays where the layout puts it; a 2026 capture
+of Thabo's "Full Moon Rising (1/5)" offer matches. The 2018 `questscreen`
+layout is never loaded by the 2026 client.
+
+- **Bubble.** The headline is the quest's title, with "[INTERNAL] " for a quest
+  that isn't live and " (n/m)" for its place in its series. A conversation has
+  no headline. The text (`quest.<id>` offer, progress or complete, or
+  `quest.<dialog>`) comes in the player's gender (`.f` keys), with the
+  player's name for `{0:s}`. It is wrapped to the label's width, as Tahoma
+  measures it, into at least three lines. The frame grows round them. Words
+  tagged `<QuestHighlightStart>` or `<cAARRGGBB>` are white (the dialogue
+  catalog's `marked` texts).
+- **Buttons.** They show icons, no captions, under the last line. Back is alone
+  while a quest is in progress. An offer, a completion and a conversation have
+  Back and Accept. Their tooltips name them: "Accept quest", "Complete quest",
+  "End conversation", "Back".
+- **Tasks.** Quests only: "Quests", then each task's text (its `{0:i}` the
+  task's amount), a row a line from the List's top. The check mark is on each
+  task's first line: empty in an offer, ticked from the quest log's task bits
+  in progress and completion. With `stagedTasks` a task shows once its
+  `preTasks` are done.
+- **Rewards.** Quests only, stacked from the panel's top:
+  1. "Reward";
+  2. the Andermant and coins on the template for the largest coin;
+  3. the experience ("XP: n", or "XP (level dependent): n", the dynamicXP
+     percent of the level's span);
+  4. the items four to a row, unused slots hidden, with the reward's rarity
+     background. Items for another class are left out.
+- **Back** ends the conversation, as the original's does. **Accept** sends
+  `Quest` (offer: also `ui/quests/ui_quest_accept`), **Continue** sends `Talk`.
+  Each also sends `NpcRequest`, then returns to the NPC's menu while it offers
+  something else, else closes.
+- The quest screen is drawn under the NPC screen, so its backdrop shades the
+  world, not the portrait. The backdrop is click-through, and so are the
+  parts no one sees (the reward frame, the task separators).
+- The view is rebuilt only when its inputs change: the conversation,
+  `Net::ui_revision`, the catalogs, the player's class or gender.
+
+Data: `tools/quest_catalog.py` exports `staged`, each task's `pre`, `part`,
+`internal`, `dynamic_xp` and the items' `rarity`. `tools/dialogue_catalog.py`
+adds `marked` and the `gui.window.questscreen` texts. Re-export both for an
+older conversion.
+
+Offline captures: `--npcs` places the map's NPCs; `DSOR_FLAGS=allnpcplacements`
+adds event NPCs (Thabo). The `DSOR_UI_REPLAY` step `npc` with `npc_quest`,
+`npc_quest_state` and `npc_quest_done` (the finished tasks' bits) offers a
+quest in that state.
+
+DEVIATION: no fades (the original fades in the bubble over 0.2 s, the buttons
+0.1 s later, the tasks and rewards 0.3 s later). A task list longer than its
+List is cut, not scrolled. The experience is not multiplied by the player's
+quest bonus. A full quest log's "maxQuestCountReached" message is not shown;
+the server decides. A delivery still runs straight from the menu (the
+original shows it on this screen, "Complete transaction"). INFERRED: the
+series total, which the client computes after loading (not traced).
 
 The merchant's **View selection** requests its current offers and opens
 `tradingscreen` with the original Trader header, buy/buyback controls, category

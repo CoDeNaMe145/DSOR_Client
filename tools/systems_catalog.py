@@ -8,7 +8,8 @@ Achievements (with their categories, icons and the titles they unlock), events
 teleport leads to), the daily challenges, the Wanted Thief's missions, the
 collector's album (its books and stickers), the workbench (its tabs, category
 tree, recipe books and crafting recipes), the shops' category trees and
-banners, the equipment skins and the socket prices -- each with its English
+banners, the equipment skins, the socket prices and the currency bag's
+currencies -- each with its English
 text resolved from the client's language files, so the client needs no key
 logic. Item icons are the item catalogue's (interface/inventory.items.json).
 
@@ -279,6 +280,24 @@ def export_systems(database, root, godot, assets):
     sockets = {r["Id"]: {k: int(r[k] or 0) for k in ("Common", "Uncommon", "Magic", "Rare", "Epic", "Unique", "Mythic", "Set", "Amount")}
                for r in q("SELECT * FROM _Template_SocketExtensionCosts")}
 
+    # The currency bag's rows after the Glyphs of Power (UI::CurrencyBagWidget):
+    # each currency item of the shops once, with its icon, by Priority, highest
+    # first, ties in table order.
+    # EVIDENCE: release261 Managers::TemplateManager::LoadItemCurrency
+    #   (0x140866A94) keeps one entry a CurrencyItem (the highest Priority) in
+    #   table order; std::sort with 0x140A2ECC0 (a before b when a.Priority >
+    #   b.Priority) orders them -- an insertion sort under 33 entries, so ties
+    #   keep their order.
+    priorities, currency_icons = {}, {}
+    for r in q("SELECT CurrencyItem, CurrencyIcon, Priority FROM _Template_ItemCurrency ORDER BY rowid"):
+        item = r["CurrencyItem"] or ""
+        if not item:
+            continue
+        if item not in priorities:
+            currency_icons[item] = texture(r["CurrencyIcon"])
+        priorities[item] = max(priorities.get(item, -2**31), int(r["Priority"] or 0))
+    currencies = [dict(id=item, icon=currency_icons[item]) for item in sorted(priorities, key=lambda i: -priorities[i])]
+
     # PvP ranks (the titles of the honour levels).
     pvp_ranks = [text(f"db.honorlevels.title_pvptitle{n:02d}") for n in range(0, 40) if en.get(f"db.honorlevels.title_pvptitle{n:02d}")]
 
@@ -322,7 +341,8 @@ def export_systems(database, root, godot, assets):
                        stickerbooks=books, stickers=stickers, recipes=recipes, recipe_books=recipe_books, workbench_tabs=tabs,
                        workbench_categories=workbench_categories, shop_categories=shop_categories, shop_banners=shop_banners,
                        skins=skins, socket_costs=sockets, pvp_ranks=pvp_ranks, pvp_modes=pvp_modes, pvp_rewards=pvp_rewards,
-                       offer_categories=offer_categories, figures=figures, album_banners=album_banners, dyes=dyes, level_costs=level_costs),
+                       offer_categories=offer_categories, figures=figures, album_banners=album_banners, dyes=dyes, level_costs=level_costs,
+                       currencies=currencies),
                   f, ensure_ascii=False, separators=(",", ":"))
 
     # The runtime artwork, converted once (tools/export_ui.py's converter).
@@ -341,7 +361,8 @@ def export_systems(database, root, godot, assets):
             missing += 1
     return dict(achievements=len(achievements), events=len(events), challenges=len(challenges), wanted=len(wanted),
                 books=len(books), stickers=len(stickers), recipes=len(recipes), recipe_books=len(recipe_books),
-                shop_categories=len(shop_categories), skins=len(skins), textures_converted=converted, textures_missing=missing)
+                shop_categories=len(shop_categories), skins=len(skins), currencies=len(currencies),
+                textures_converted=converted, textures_missing=missing)
 
 
 if __name__ == "__main__":

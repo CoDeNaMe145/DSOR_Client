@@ -121,7 +121,9 @@ for name, command_id, write in [
     record(name, packet)
 
 # ── the premium shop ────────────────────────────────────────────────────────
-record("ocp_request", client(gp.OCP_OFFER_REQUEST_COMMAND, lambda w: None))
+packet = client(gp.OCP_OFFER_REQUEST_COMMAND, lambda w: w.write_bool(False))
+assert gp.decode_simple_gameplay_command(packet[0]).value is False
+record("ocp_request", packet)
 packet = client(rw.OCP_BOOKING_COMMAND, lambda w: (w.write_string("1_realCurrency_100_0_NONE"), w.write_string("external")))
 request = rw.decode_ocp_booking_request(packet[0])
 assert (request.offer_id, request.payment_method) == ("1_realCurrency_100_0_NONE", "external"), request

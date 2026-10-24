@@ -172,6 +172,16 @@ authored animation and exact interpolation. This applies to native, browser
 and editor rendering without a client rebuild. The tool is idempotent and
 accepts optional model paths (without extensions) for a targeted repair.
 
+`tools/restore_skin_fragments.py <export_win32> <assets> <DSO_Godot>` puts back
+the skin fragments DSO_Godot leaves out. Nebula splits a skin whose skeleton
+exceeds a 72-joint palette into several primitive groups, and a skin node draws
+every group it lists; DSO_Godot exported only group 0. Balor lost his right
+wing, arm and leg; Khalys, Sigrismarr, Mhorblik, Sharr Kharab and 34 other
+models lost parts or showed an unskinned copy frozen in the bind pose. The full
+conversion runs it before the other postprocessors; run it once for existing
+assets too (39 models, 90 skin nodes). It is idempotent and accepts optional
+model names.
+
 For a production `dso_server` checkout that contains
 `gameplay/pathengine_navigation.py`, export navigation with its reader:
 
@@ -303,13 +313,20 @@ later correction lands there. Rotations and scales are used as-is.
 ## Running the map viewer
 
 The character-selection screen uses `maps/a0000_char.map.json` and its ambience,
-plus `interface/charselectionwindow.ui.json`. `character_tables.py` now exports
-`characters/selection.json` with `_Globals.CharGen*` camera settings, item
-`SlotType` mappings, and character hair/beard tables. To update an existing pack:
+plus `interface/charselectionwindow.ui.json`; the creation screen
+`interface/chargenwindow.ui.json` and `premadepackagewindow.ui.json`.
+`character_tables.py` exports `characters/selection.json` with `_Globals.CharGen*`
+camera settings, item `SlotType` mappings, character hair/beard tables and the
+creation screen's data and English texts (docs/ui.md, "The character screens").
+To update an existing pack:
 
 ```sh
 python tools/export_character_selection.py <export_win32>/db/static.db4 <assets>
 ```
+
+The texts come from `<export_win32>/language/en`, found beside the database's
+`db` folder; give `--language <export_win32>` for a database elsewhere (the
+server's).
 
 The source UI's `TemplateCharacter` subtree is cloned into four visible roster
 rows at runtime. The original meshes supply the frame, nameplate, rotation

@@ -438,6 +438,19 @@ pub struct SystemsCatalog {
     /// The gold prices' factor by level (index level - 1).
     #[serde(default)]
     pub level_costs: Vec<f32>,
+    /// The currency bag's rows after the Glyphs of Power, in its order
+    /// (crate::ui::controls::currency).
+    #[serde(default)]
+    pub currencies: Vec<CurrencyDef>,
+}
+
+/// A currency of the currency bag: its item (the keyed wallet's resource id)
+/// and its icon (a texture reference).
+#[derive(Deserialize, Debug, Clone, Default, PartialEq)]
+pub struct CurrencyDef {
+    pub id: String,
+    #[serde(default)]
+    pub icon: String,
 }
 
 #[derive(Deserialize, Debug, Clone, Default, PartialEq)]

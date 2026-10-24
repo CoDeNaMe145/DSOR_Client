@@ -55,3 +55,9 @@ account service (default: `http://127.0.0.1:8080`). The guide also covers
 - [Interface](docs/ui.md): UI assets, implementation, and interactions.
 - [Native map performance](docs/native-map-performance.md): investigations and comparison commands.
 - [Client progress](docs/client-progress.md): feature gaps and implementation results.
+
+## Copyright, trademarks, and third-party material
+
+This is an independent, unofficial research project. It is not affiliated with, endorsed by, or sponsored by Bigpoint GmbH or the owners of Drakensang Online. “Drakensang Online,” related names, logos, characters, artwork, music, client software, and game content remain the property of their respective rights holders. This repository does not claim ownership of or grant rights to that material.
+
+Any client files mentioned or listed above are not distributed here, this is a purely technical project. Do not commit or redistribute game client files, database dumps, maps, language files, account data, captures, or other third-party material unless you have the necessary rights and permission. Keep local-only assets out of Git. Repository privacy does not grant rights to third-party material.

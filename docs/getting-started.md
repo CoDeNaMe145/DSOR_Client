@@ -137,6 +137,7 @@ the commits touched, for instance:
 | DB4 props/travel points | `dsor-levels props --assets assets --db-root <server>/data/maps --static-db <server>/data/db/static.db4` |
 | `tools/embed_animators.py` (effect fades, decals) | `embed_animators.py <export_win32>/models <assets>` |
 | `tools/restore_pivots.py` (effect positioning) | `restore_pivots.py <export_win32>/models <assets> <DSO_Godot>` after the other model postprocessors |
+| `tools/restore_skin_fragments.py` (bosses' missing body parts) | `restore_skin_fragments.py <export_win32> <assets> <DSO_Godot>` |
 | `tools/export_stats.py` | `export_stats.py` |
 | `vfx-overrides/` (someone's VFX edits) | `python3 tools/vfx_apply.py <assets>` |
 

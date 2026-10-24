@@ -60,13 +60,28 @@ empty_body! {
     /// answers EventUpdate, then EventProgressInfo and EventParticipationInfo).
     /// SOURCE: services/events.py:401-433 (the header only is checked).
     ActiveEvents;
-    /// OCPOfferRequestCommand (267), client -> server: ask for the premium shop's
-    /// offers and payment methods (OcpOfferResponse 270 and OcpMethods 268).
-    OcpOfferRequest;
     /// GetWantedThiefInfoCommand (359), client -> server: the board (360 answers).
     WantedThiefInfoRequest;
     /// PVP::PVPMatchCountdownCommand (195), NOT actor-scoped: the round's countdown.
     MatchCountdown;
+}
+
+/// OCPOfferRequestCommand (267), client -> server: ask for the premium shop's
+/// offers and payment methods (OcpOfferResponse 270 and OcpMethods 268). One bool,
+/// false from the original ("8b0b0100"); the server fails the request without it.
+/// SOURCE: protocol/gameplay_protocol.py decode_simple_gameplay_command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct OcpOfferRequest {
+    pub unknown_bool_0: bool,
+}
+
+impl Body for OcpOfferRequest {
+    fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self { unknown_bool_0: r.bit()? })
+    }
+    fn encode(&self, w: &mut BitWriter) {
+        w.bit(self.unknown_bool_0);
+    }
 }
 
 // ── items: gems, salvage, crafting, transmog ────────────────────────────────

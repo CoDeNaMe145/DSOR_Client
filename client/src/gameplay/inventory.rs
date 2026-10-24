@@ -1,7 +1,7 @@
 //! Authoritative inventory state. InventoryInfo contains complete allocations,
 //! but its item records are incremental (the final mutation packet has none).
 use std::collections::HashMap;
-use dsor_proto::commands::{inventory::{Inventory, InventoryInfo, ItemInfo}, ClientCommand};
+use dsor_proto::commands::{inventory::{Inventory, InventoryInfo, ItemInfo}, social::Message, ClientCommand};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Place { Bag(u32), Extra(u32), Bank(u32), ExtraBank(u32), Equipment(i8), Overflow(u32) }
@@ -162,6 +162,56 @@ pub fn stack_compatible(a: &ItemInfo, b: &ItemInfo) -> bool {
         && a.flag_1 == b.flag_1 && a.flag_2 == b.flag_2
 }
 
+/// An item the server says we received, for the notice under the top
+/// navigation (crate::ui::controls::message): MessageCommand type 2, sent
+/// between a reward's two InventoryInfo packets (quest rewards, the daily login
+/// chest, a chest or package opened, event and spender rewards).
+/// EVIDENCE: release261 dro_client64 -- HandleMessageCommand (0x1401C842C) hands
+///   the type to the message manager (0x1405E71C8); type 2 (0x1405E6E68) reads
+///   params[0], the source: 0, 1, 3, 4 and 5 are currencies by a fixed template
+///   (money_vc, _rc, _gc_no_auto_use, event_merchant_currency,
+///   money_uc_no_auto_use), params[1] their amount (0x1405E4B74); 7 is an item
+///   (0x1405E53EC): params[1] the amount (an int), params[2] the item's id (an
+///   item param), looked up among the local player's items, else params[3] its
+///   template (a string; without one the client only logs "Mistikack").
+/// SOURCE: DSOR_Server protocol/item_receipt_protocol.py item_received_message:
+///   source 7 always, the template added for currencies and keys (their id is
+///   transient when the reward made no item).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Receipt {
+    pub amount: u32,
+    pub template: String,
+    /// The item received when we carry it: its own look and rarity.
+    pub item: Option<ItemInfo>,
+}
+
+impl Receipt {
+    /// Resolved on arrival, as the original: the reward's first InventoryInfo
+    /// has added the item.
+    pub fn of(message: &Message, inventory: &InventoryState) -> Option<Self> {
+        use dsor_proto::commands::social::MessageParam::{Int, Item, Str};
+        let p = &message.params;
+        let template = match p.first()? {
+            Int(0) => "money_vc_no_auto_use",
+            Int(1) => "money_rc_no_auto_use",
+            Int(3) => "money_gc_no_auto_use",
+            Int(4) => "event_merchant_currency",
+            Int(5) => "money_uc_no_auto_use",
+            Int(7) => {
+                let (Some(Int(amount)), Some(Item(id))) = (p.get(1), p.get(2)) else { return None };
+                if let Some(item) = inventory.items.get(id) {
+                    return Some(Self { amount: *amount, template: item.template.clone(), item: Some(item.clone()) });
+                }
+                let Some(Str(template)) = p.get(3) else { return None };
+                return Some(Self { amount: *amount, template: template.clone(), item: None });
+            }
+            _ => return None,
+        };
+        let Some(Int(amount)) = p.get(1) else { return None };
+        Some(Self { amount: *amount, template: template.to_owned(), item: None })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,6 +269,26 @@ mod tests {
             assert!(s.at(Place::Bag(0)).is_none());
             assert_eq!(s.drop_on(1,Place::Bag(0),999),Some(command(1,7,vec![0])));
         }
+    }
+
+    /// A carried item is named by its own record; a currency without an item by
+    /// the template the server adds; the other sources by their fixed template.
+    #[test]
+    fn receipts_resolve_the_carried_item_else_the_template() {
+        use dsor_proto::commands::social::MessageParam::{Int, Item, Str};
+        let s = state();
+        let message = |params| Message { message_type: 2, params };
+        let carried = Receipt::of(&message(vec![Int(7), Int(3), Item(2)]), &s).unwrap();
+        assert_eq!((carried.amount, carried.template.as_str(), carried.item.map(|i| i.id)), (3, "potion", Some(2)));
+        let transient = Receipt::of(&message(vec![Int(7), Int(50), Item(900), Str("money_hc_no_auto_use".into())]), &s).unwrap();
+        assert_eq!((transient.amount, transient.template.as_str(), transient.item), (50, "money_hc_no_auto_use", None));
+        assert_eq!(Receipt::of(&message(vec![Int(1), Int(25)]), &s).unwrap().template, "money_rc_no_auto_use");
+        assert_eq!(Receipt::of(&message(vec![Int(4), Int(2)]), &s).unwrap().template, "event_merchant_currency");
+        // Not carried and no template ("Mistikack"), the item id as an int, an unknown source.
+        assert_eq!(Receipt::of(&message(vec![Int(7), Int(1), Item(900)]), &s), None);
+        assert_eq!(Receipt::of(&message(vec![Int(7), Int(1), Int(2)]), &s), None);
+        assert_eq!(Receipt::of(&message(vec![Int(2), Int(1)]), &s), None);
+        assert_eq!(Receipt::of(&message(vec![]), &s), None);
     }
 
     #[test]

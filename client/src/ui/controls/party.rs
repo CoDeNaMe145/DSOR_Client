@@ -6,6 +6,9 @@
 //! bottom row carrying the panel's lower edge. `prepare` clones the row per member
 //! and stretches the backdrop; `sync` rebuilds the window when the members change
 //! and keeps their health fresh for the gauges (crate::ui::Gauge::Group).
+//! Its toggle folds it to LabelCompact, the toggle's frame alone, as the quest
+//! tracker folds (SwitchToCompact / SwitchToFull, Action::PartyCompact); the full
+//! mode's toggle frame is the right end of the header's top edge.
 //! SOURCE: dso-server-production services/social.py (GroupStatus goes to every
 //!   member on a join, a leave of our own and map changes; never on a hit), so a
 //!   member's health is what we saw of its actor (HitCommand victims); a member on
@@ -13,7 +16,7 @@
 use bevy::prelude::*;
 
 use super::template::{grey, map_y, set_text};
-use crate::ui::{Figures, Layout, Loaded, Window2018};
+use crate::ui::{Figures, Layout, Loaded, Widget, Window2018};
 
 pub(in crate::ui) const WINDOW: &str = "groupwindow";
 /// DSOR_Server persistence/social_state.py GROUP_MEMBER_LIMIT.
@@ -48,7 +51,12 @@ pub(crate) struct Member {
 pub(crate) struct Party {
     pub name: String,
     pub members: Vec<Member>,
+    /// Folded to its toggle (Action::PartyCompact); kept while the members change.
+    pub compact: bool,
 }
+
+/// What the window's geometry depends on: the mode, then the header and each row.
+type Shape = (bool, Vec<(String, u16, bool, bool, bool)>);
 
 impl Party {
     /// A member's health fraction for its gauge: 0 when unknown or elsewhere.
@@ -56,10 +64,10 @@ impl Party {
         self.members.get(index).map_or(0.0, |m| if m.health.1 > 0.0 { (m.health.0 / m.health.1).clamp(0.0, 1.0) } else { 0.0 })
     }
     /// What the window's geometry depends on (health only moves the gauges).
-    fn shape(&self) -> Vec<(String, u16, bool, bool, bool)> {
-        let mut shape = vec![(self.name.clone(), 0, false, false, false)];
-        shape.extend(self.members.iter().map(|m| (m.name.clone(), m.level, m.leader, m.online, m.actor != 0)));
-        shape
+    fn shape(&self) -> Shape {
+        let mut rows = vec![(self.name.clone(), 0, false, false, false)];
+        rows.extend(self.members.iter().map(|m| (m.name.clone(), m.level, m.leader, m.online, m.actor != 0)));
+        (self.compact, rows)
     }
 }
 
@@ -72,9 +80,9 @@ pub(in crate::ui) fn sync(
     mut loaded: ResMut<Loaded>,
     layouts: Res<Assets<Layout>>,
     windows: Query<(Entity, &Window2018)>,
-    mut shape: Local<Option<Vec<(String, u16, bool, bool, bool)>>>,
+    mut shape: Local<Option<Shape>>,
 ) {
-    let mut next = Party::default();
+    let mut next = Party { compact: party.compact, ..default() };
     if let Some(net) = net.as_ref() {
         if let Some(group) = net.group.as_ref().filter(|g| g.grouped()) {
             next.name = group.name.clone();
@@ -108,11 +116,15 @@ pub(in crate::ui) fn prepare(source: &Layout, party: &Party) -> Layout {
     let mut layout = Layout { window: source.window.clone(), widgets: Vec::new() };
     if party.members.is_empty() { return layout; }
     let rows = party.members.len();
-    let extra = (rows as f32 - 1.0) * ROW_HEIGHT;
+    let extra = if party.compact { 0.0 } else { (rows as f32 - 1.0) * ROW_HEIGHT };
+    // One mode: the compact one is its toggle's frame alone; the full one keeps its
+    // own toggle, whose frame closes the header's top edge on the right.
+    let other_mode = if party.compact { "/LabelFull" } else { "/LabelCompact" };
     for widget in &source.widgets {
         let id = &widget.id;
-        // The compact mode and its toggles, the group level, and the row templates.
-        if id.contains("/LabelCompact") || id.contains("/ButtonToggleMode") || id.contains("/GroupLevel")
+        // The group level (GroupStatus has none: its plate stays, the frame between
+        // the header and the rows), and the row templates.
+        if id.contains(other_mode) || id.contains("/GroupLevel/")
             || id == ROW || id.starts_with(&format!("{ROW}/")) || id == LAST_ROW || id.starts_with(&format!("{LAST_ROW}/")) { continue; }
         let mut w = widget.clone();
         if id.ends_with("/BackroundTop/Groupname") { set_text(&mut w, &party.name); }
@@ -120,11 +132,18 @@ pub(in crate::ui) fn prepare(source: &Layout, party: &Party) -> Layout {
         if id == BACKDROP { map_y(&mut w, |y| stretch(y, 400.0, 420.0, extra)); }
         layout.widgets.push(w);
     }
+    if party.compact { return layout; }
     for (index, member) in party.members.iter().enumerate() {
         let template = if index + 1 == rows { LAST_ROW } else { ROW };
         let replacement = format!("Canvas/Label_bg/LabelFull/GroupMember{index}");
         let dy = index as f32 * ROW_HEIGHT;
-        for widget in source.widgets.iter().filter(|w| w.id == template || w.id.starts_with(&format!("{template}/"))) {
+        // The plate, then the level ring, then the texts and bars: TemplatePlayer lists
+        // its level number before the ring, which covered it (TemplatePlayerBottom
+        // lists the ring first).
+        let ring = format!("{template}/Levelring");
+        let mut row: Vec<&Widget> = source.widgets.iter().filter(|w| w.id == template || w.id.starts_with(&format!("{template}/"))).collect();
+        row.sort_by_key(|w| if w.id == template { 0 } else if w.id == ring || w.id.starts_with(&format!("{ring}/")) { 1 } else { 2 });
+        for widget in row {
             let parts: Vec<&str> = widget.id.split('/').collect();
             let leaf = parts.last().copied().unwrap_or("");
             if parts.iter().any(|p| UNUSED.contains(p)) { continue; }
@@ -164,13 +183,18 @@ mod tests {
         });
         let ids = [
             ("Canvas", false), ("Canvas/Label_bg", false), ("Canvas/Label_bg/LabelFull/BackroundTop/Groupname", true),
+            ("Canvas/Label_bg/LabelFull/GroupLevel", false),
             ("Canvas/Label_bg/LabelFull/GroupLevel/Grouplevel", true), ("Canvas/Label_bg/LabelCompact/Frame", false),
+            ("Canvas/Label_bg/LabelCompact/Frame/ButtonToggleMode", false),
+            ("Canvas/Label_bg/LabelFull/ButtonToggleMode/FrameButton", false),
+            ("Canvas/Label_bg/LabelFull/ButtonToggleMode/FrameButton/ButtonToggleMode", false),
             (ROW, false), ("Canvas/Label_bg/LabelFull/TemplatePlayer/TemplatePlayer/PlayerInfo/TitleLong", true),
             ("Canvas/Label_bg/LabelFull/TemplatePlayer/TemplatePlayer/PlayerInfo/TitleShort", true),
             ("Canvas/Label_bg/LabelFull/TemplatePlayer/TemplatePlayer/PlayerInfo/Level", true),
             ("Canvas/Label_bg/LabelFull/TemplatePlayer/TemplatePlayer/PlayerInfo/TemplateLeader/LeaderSymbol", false),
             ("Canvas/Label_bg/LabelFull/TemplatePlayer/TemplatePlayer/HealthBar/middle", false),
             ("Canvas/Label_bg/LabelFull/TemplatePlayer/TemplatePlayer/ManaBar/middle", false),
+            ("Canvas/Label_bg/LabelFull/TemplatePlayer/Levelring", false),
             ("Canvas/Label_bg/LabelFull/TemplatePlayer/Levelring/SpiritStoneButtonLayer/ButtonSpiritstoneQuickuse", false),
             (LAST_ROW, false), ("Canvas/Label_bg/LabelFull/TemplatePlayerBottom/TemplatePlayer/PlayerInfo/TitleLong", true),
             ("Canvas/Label_bg/LabelFull/TemplatePlayerBottom/TemplatePlayer/HealthBar/middle", false),
@@ -182,7 +206,7 @@ mod tests {
         Party { name: "Leader's group".into(), members: vec![
             Member { name: "Leader".into(), level: 45, leader: true, me: true, actor: 1, online: true, map: "a".into(), health: (50.0, 100.0) },
             Member { name: "Member".into(), level: 30, leader: false, me: false, actor: 0, online: false, map: "b".into(), health: (0.0, 0.0) },
-        ] }
+        ], compact: false }
     }
 
     #[test]
@@ -193,8 +217,16 @@ mod tests {
         assert!(ids.contains(&"Canvas/Label_bg/LabelFull/GroupMember0/TemplatePlayer/PlayerInfo/TemplateLeader/LeaderSymbol"));
         assert!(ids.contains(&"Canvas/Label_bg/LabelFull/GroupMember1/TemplatePlayer/PlayerInfo/TitleLong"));
         assert!(!ids.iter().any(|id| id.contains("GroupMember1/TemplatePlayer/PlayerInfo/TemplateLeader")));
-        assert!(!ids.iter().any(|id| id.contains("ManaBar") || id.contains("Spiritstone") || id.contains("TitleShort") || id.contains("GroupLevel") || id.contains("LabelCompact")));
+        assert!(!ids.iter().any(|id| id.contains("ManaBar") || id.contains("Spiritstone") || id.contains("TitleShort") || id.contains("GroupLevel/") || id.contains("LabelCompact")));
         assert!(!ids.iter().any(|id| id.starts_with(ROW) || id.starts_with(LAST_ROW)));
+        // The group level's plate stays: the frame between the header and the rows.
+        assert!(ids.contains(&"Canvas/Label_bg/LabelFull/GroupLevel"));
+        // The full mode's toggle and its frame (the header's top edge on the right).
+        assert!(ids.contains(&"Canvas/Label_bg/LabelFull/ButtonToggleMode/FrameButton/ButtonToggleMode"));
+        // A row's level number is drawn over its level ring.
+        let at = |id: &str| ids.iter().position(|i| *i == id).unwrap();
+        assert!(at("Canvas/Label_bg/LabelFull/GroupMember0/Levelring") < at("Canvas/Label_bg/LabelFull/GroupMember0/TemplatePlayer/PlayerInfo/Level"));
+        assert!(at("Canvas/Label_bg/LabelFull/GroupMember0") < at("Canvas/Label_bg/LabelFull/GroupMember0/Levelring"));
         let title = |n: usize| prepared.widgets.iter().find(|w| w.id == format!("Canvas/Label_bg/LabelFull/GroupMember{n}/TemplatePlayer/PlayerInfo/TitleLong")).unwrap();
         assert_eq!((title(0).text.as_ref().unwrap().text.as_str(), title(0).rect[1]), ("Leader", 418.0));
         assert_eq!((title(1).text.as_ref().unwrap().text.as_str(), title(1).rect[1], title(1).text.as_ref().unwrap().color), ("Member", 466.0, GREY));
@@ -204,6 +236,18 @@ mod tests {
         let backdrop = prepared.widgets.iter().find(|w| w.id == BACKDROP).unwrap();
         assert_eq!(backdrop.rect[3], 466.0 + ROW_HEIGHT);
         assert!(prepare(&layout(), &Party::default()).widgets.is_empty());
+    }
+
+    #[test]
+    fn the_compact_mode_is_its_toggle_alone() {
+        let prepared = prepare(&layout(), &Party { compact: true, ..party() });
+        let ids: Vec<_> = prepared.widgets.iter().map(|w| w.id.as_str()).collect();
+        assert!(ids.contains(&"Canvas/Label_bg/LabelCompact/Frame/ButtonToggleMode"));
+        assert!(!ids.iter().any(|id| id.contains("/LabelFull")));
+        // The backdrop keeps its authored size.
+        assert_eq!(prepared.widgets.iter().find(|w| w.id == BACKDROP).unwrap().rect[3], 466.0);
+        // Folding changes the window's shape: sync rebuilds it.
+        assert_ne!(party().shape(), Party { compact: true, ..party() }.shape());
     }
 
     #[test]

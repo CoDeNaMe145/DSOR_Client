@@ -61,3 +61,18 @@ fn the_logout_countdown_and_the_talent_points_decode() {
     let (ServerCommand::UnlockSkillTalentPreselectionInfo(u), _) = &commands[1] else { panic!() };
     assert_eq!(u.unlocked, 3);
 }
+
+/// Items received (MessageCommand type 2) as DSOR_Server's item_receipt_protocol
+/// writes them: source 7, the amount, the item's id as an item param, and the
+/// template for a currency the reward made no item of.
+#[test]
+fn items_received_decode() {
+    use dsor_proto::commands::social::MessageParam::{Int, Item, Str};
+    let v = vectors().into_iter().find(|v| v["name"] == "item_received").unwrap();
+    let (data, bits) = bytes(&v);
+    let commands = decode_message(&data, bits).unwrap();
+    let (ServerCommand::Message(chest), actor) = &commands[0] else { panic!("{commands:?}") };
+    assert_eq!((chest.message_type, chest.params.as_slice(), *actor), (2, &[Int(7), Int(1), Item(4012)][..], Some(1)));
+    let (ServerCommand::Message(honor), _) = &commands[1] else { panic!("{commands:?}") };
+    assert_eq!(honor.params, [Int(7), Int(50), Item(4013), Str("money_hc_no_auto_use".into())]);
+}

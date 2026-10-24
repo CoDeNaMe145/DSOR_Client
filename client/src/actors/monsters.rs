@@ -628,6 +628,34 @@ fn standing_state(start: &str) -> &str {
     start.rsplit(';').map(str::trim).find(|s| !s.is_empty()).unwrap_or("Idle")
 }
 
+/// A whole model's body: its character set's variation on the joints under `root`
+/// (vary_joints), each skinned mesh rebound to the varied joints' scaled children.
+/// Monsters and whole-model NPCs (crate::actors::npc): the deco pigeon's set scales
+/// every joint by 4, its model being authored a quarter of its size.
+pub(crate) fn vary_model(
+    commands: &mut Commands,
+    joints: &Query<(&Transform, Option<&ChildOf>)>,
+    skinned: &Query<&SkinnedMesh>,
+    children: &Query<&Children>,
+    root: Entity,
+    bones: &HashMap<String, Entity>,
+    set: &ModelSet,
+) {
+    if set.variation.is_empty() {
+        return;
+    }
+    let shape: Vec<(String, Vec3, Vec3)> = set.variation.iter().map(|j| (j.bone.clone(), Vec3::from(j.t), Vec3::from(j.s))).collect();
+    let scaled = vary_joints(commands, joints, bones, &shape);
+    // Each varied joint's vertices follow its scaled child.
+    let by_joint: HashMap<Entity, Entity> = scaled.iter().filter_map(|(n, s)| bones.get(n).map(|j| (*j, *s))).collect();
+    for d in children.iter_descendants(root) {
+        if let Ok(skin) = skinned.get(d) {
+            let joints = skin.joints.iter().map(|j| by_joint.get(j).copied().unwrap_or(*j)).collect();
+            commands.entity(d).try_insert(SkinnedMesh { inverse_bindposes: skin.inverse_bindposes.clone(), joints });
+        }
+    }
+}
+
 /// A whole model whose scene is in: show the set's skins only, give it the set's
 /// body, and drive its own animation player through the AnimSet's rows.
 #[allow(clippy::too_many_arguments)]
@@ -681,17 +709,8 @@ fn setup_models(
                 monster.height *= root.s[1];
             }
         }
-        if let Some(set) = set.filter(|s| !s.variation.is_empty()) {
-            let shape: Vec<(String, Vec3, Vec3)> = set.variation.iter().map(|j| (j.bone.clone(), Vec3::from(j.t), Vec3::from(j.s))).collect();
-            let scaled = vary_joints(&mut commands, &joints, &bones, &shape);
-            // Each varied joint's vertices follow its scaled child.
-            let by_joint: HashMap<Entity, Entity> = scaled.iter().filter_map(|(n, s)| bones.get(n).map(|j| (*j, *s))).collect();
-            for d in children.iter_descendants(e) {
-                if let Ok(skin) = skinned.get(d) {
-                    let joints = skin.joints.iter().map(|j| by_joint.get(j).copied().unwrap_or(*j)).collect();
-                    commands.entity(d).try_insert(SkinnedMesh { inverse_bindposes: skin.inverse_bindposes.clone(), joints });
-                }
-            }
+        if let Some(set) = set {
+            vary_model(&mut commands, &joints, &skinned, &children, e, &bones, set);
         }
         // Its own copies of its character materials: its template's dyes, and a
         // HitColor of its own.

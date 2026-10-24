@@ -125,7 +125,6 @@ fn options() -> Options {
                     user: None,
                     password: None,
                     account_api: None,
-                    new_character: None,
                     relay: None,
                     character: None,
                     chat: None,
@@ -146,15 +145,6 @@ fn options() -> Options {
             "--password" => {
                 if let Some(n) = o.net.as_mut() {
                     n.password = args.next();
-                }
-            }
-            // The character to create if the account has none: --new NAME CLASS GENDER.
-            "--new" => {
-                if let Some(n) = o.net.as_mut() {
-                    let name = args.next().unwrap_or_else(|| "Hero".into());
-                    let class = args.next().and_then(|c| c.parse().ok()).unwrap_or(0);
-                    let gender = args.next().and_then(|g| g.parse().ok()).unwrap_or(0);
-                    n.new_character = Some((name, class, gender));
                 }
             }
             "--account-api" => {
@@ -216,7 +206,6 @@ fn options() -> Options {
                     user: None,
                     password: None,
                     account_api: None,
-                    new_character: None,
                     relay: None,
                     character: None,
                     chat: None,

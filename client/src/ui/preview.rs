@@ -118,15 +118,21 @@ pub(crate) struct Look {
     pub equipment: Vec<Equipment>,
     pub armament: i8,
     pub cosmetics: Vec<String>,
+    /// The body style (ethnicity), stature and unresolved hair and beard styles
+    /// (CharacterDesc).
+    pub body: u8,
+    pub stature: u8,
+    pub styles: Option<(u8, u8)>,
 }
 
 impl Look {
     pub(crate) fn of(desc: &CharacterDesc) -> Self {
-        Self { class: desc.class, gender: desc.gender, equipment: desc.equipment.clone(), armament: desc.armament, cosmetics: desc.cosmetics.clone() }
+        Self { class: desc.class, gender: desc.gender, equipment: desc.equipment.clone(), armament: desc.armament, cosmetics: desc.cosmetics.clone(),
+            body: desc.body, stature: desc.stature, styles: desc.styles }
     }
     fn desc(&self) -> CharacterDesc {
         CharacterDesc { class: self.class, gender: self.gender, equipment: self.equipment.clone(), armament: self.armament,
-            cosmetics: self.cosmetics.clone(), look: None }
+            cosmetics: self.cosmetics.clone(), look: None, body: self.body, stature: self.stature, styles: self.styles }
     }
 }
 
