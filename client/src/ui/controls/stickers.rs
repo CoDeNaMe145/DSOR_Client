@@ -24,20 +24,37 @@ pub(super) struct StickerDrag {
     id: String,
     origin: Vec2,
     active: bool,
+    /// Picked up from this quick slot (a sticker or item shortcut already on the
+    /// bar) rather than from the Collector's Bag.
+    from: Option<usize>,
 }
 
 /// A press on an owned sticker that moves 4 px picks it up; released over a quick
-/// slot it lands there. Returns true when the release belongs to a drag, so it
-/// does not also preview the sticker.
+/// slot it lands there. A press on a quick slot does the same with what the slot
+/// holds: released on another slot it moves there, off the bar it leaves the bar
+/// (apply_drop acts only on sticker and item shortcuts; skills have
+/// spells::drag). Returns true when the release belongs to a drag, so it does
+/// not also preview the sticker or use the slot.
+/// FAILURE (2026-10-24): a pet put on the bar could not be taken off again.
 pub(super) fn drag(pointer: &mut Pointer, windows: &Windows, views: &systems::Views, mouse: &ButtonInput<MouseButton>,
-    hit: Option<(Entity, usize)>, point: Option<Vec2>, allowed: bool) -> bool {
+    hit: Option<(Entity, usize)>, over: Option<Entity>, point: Option<Vec2>, allowed: bool) -> bool {
     let action = |(root, button): (Entity, usize)| windows.get(root).ok().map(|(_, name, c, _, _)| (name.0.clone(), c.buttons[button].action.clone()));
+    let bar = windows.iter().find(|(_, n, _, v, _)| n.0 == "bottombar" && **v != Visibility::Hidden);
+    let unlocked = bar.is_some_and(|(_, _, c, _, _)| !c.locked);
+    // A skill's slot belongs to spells::drag (its swap would be undone here).
+    let skill_at = |slot: usize| bar.is_some_and(|(_, _, c, _, _)| c.spells.bar.get(slot).is_some_and(|s| s.is_some()));
     if mouse.just_pressed(MouseButton::Left) {
         pointer.sticker_drag = None;
-        if let (true, Some(origin), Some((_, Action::System(systems::Request::Pick(id, _))))) = (allowed, point, hit.and_then(action)) {
-            if views.album.sticker(&id).is_some_and(|s| s.owned) {
-                pointer.sticker_drag = Some(StickerDrag { id, origin, active: false });
+        match (allowed, point, hit.and_then(action)) {
+            (true, Some(origin), Some((_, Action::System(systems::Request::Pick(id, _))))) => {
+                if views.album.sticker(&id).is_some_and(|s| s.owned) {
+                    pointer.sticker_drag = Some(StickerDrag { id, origin, active: false, from: None });
+                }
             }
+            (true, Some(origin), Some((name, Action::Skill(slot)))) if name == "bottombar" && unlocked && slot < CONSUMABLE_SLOTS.end && !skill_at(slot) => {
+                pointer.sticker_drag = Some(StickerDrag { id: String::new(), origin, active: false, from: Some(slot) });
+            }
+            _ => {}
         }
     }
     if let (Some(d), Some(p)) = (&mut pointer.sticker_drag, point) {
@@ -45,11 +62,18 @@ pub(super) fn drag(pointer: &mut Pointer, windows: &Windows, views: &systems::Vi
     }
     if mouse.just_released(MouseButton::Left) {
         if let Some(d) = pointer.sticker_drag.take().filter(|d| d.active) {
-            if let Some(("bottombar", Action::Skill(slot))) = hit.and_then(action).as_ref().map(|(n, a)| (n.as_str(), a.clone())) {
-                if slot < STICKER_SLOTS { pointer.sticker_drop = Some((2, d.id, slot)); }
+            let target = hit.and_then(action).and_then(|(n, a)| match a { Action::Skill(slot) if n == "bottombar" => Some(slot), _ => None });
+            match d.from {
+                None => if let Some(slot) = target.filter(|s| *s < STICKER_SLOTS) { pointer.sticker_drop = Some((2, d.id, slot)); },
+                // Onto another slot: moved; off the bar window: removed.
+                Some(from) => match target {
+                    Some(to) if to != from => pointer.slot_move = Some((from, Some(to))),
+                    None if point.is_some() && bar.is_some_and(|(root, _, _, _, _)| Some(root) != over) => pointer.slot_move = Some((from, None)),
+                    _ => {}
+                },
             }
             pointer.down = None;
-            return true;
+            return d.from.is_none() || pointer.slot_move.is_some();
         }
     }
     if !mouse.pressed(MouseButton::Left) { pointer.sticker_drag = None; }
@@ -58,6 +82,8 @@ pub(super) fn drag(pointer: &mut Pointer, windows: &Windows, views: &systems::Vi
 
 /// The dragged sticker's icon, for the cursor overlay.
 pub(super) fn dragged<'a>(pointer: &Pointer, views: &'a systems::Views) -> Option<&'a str> {
+    // From the bar: the slot keeps drawing its own icon meanwhile.
+    if pointer.sticker_drag.as_ref().is_some_and(|d| d.from.is_some()) { return None; }
     pointer.sticker_drag.as_ref().filter(|d| d.active).and_then(|d| views.album.sticker(&d.id)).map(|s| s.icon.image.as_str()).filter(|i| !i.is_empty())
 }
 
@@ -76,10 +102,42 @@ fn edited_bar(slots: &[Slot], kind: i32, slot: usize, key: &str) -> Option<Vec<S
     (edited != slots).then_some(edited)
 }
 
+/// A sticker or item shortcut moved from `from` to `to` (swapping with what is
+/// there; an item stays in its group, skill slots or consumable slots) or, with
+/// `to` None, taken off the bar. None for a skill, an empty slot or no change.
+fn moved_bar(slots: &[Slot], from: usize, to: Option<usize>) -> Option<Vec<Slot>> {
+    if slots.len() != BAR_SIZE || !matches!(slots.get(from).map(|s| s.kind), Some(1 | 2)) { return None; }
+    let mut edited = slots.to_vec();
+    match to {
+        None => edited[from] = Slot { kind: Slot::EMPTY, id: None },
+        Some(to) => {
+            let fits = match slots[from].kind {
+                2 => to < STICKER_SLOTS,
+                _ => if from < SKILL_SLOTS { to < SKILL_SLOTS } else { CONSUMABLE_SLOTS.contains(&to) },
+            };
+            if !fits || to >= BAR_SIZE { return None; }
+            edited.swap(from, to);
+        }
+    }
+    (edited != slots).then_some(edited)
+}
+
 pub(in crate::ui) fn apply_drop(mut pointer: ResMut<Pointer>, views: Res<systems::Views>, hotbar: Res<hotbar::Hotbar>,
     net: Option<NonSendMut<crate::network::net::Net>>) {
-    let Some((kind, id, slot)) = pointer.sticker_drop.take() else { return };
     let Some(mut net) = net else { return };
+    if let Some((from, to)) = pointer.slot_move.take() {
+        let bar = hotbar.active;
+        if let Some(slots) = net.quickbars.bars.get(bar).and_then(|b| moved_bar(b, from, to)) {
+            for slot in [Some(from), to].into_iter().flatten().filter(|s| *s >= 8) {
+                for b in net.quickbars.bars.iter_mut().filter(|b| b.len() == BAR_SIZE) { b[slot] = slots[slot].clone(); }
+            }
+            net.bar = slots.iter().map(|s| if s.kind == 0 { s.id.clone() } else { None }).collect();
+            net.quickbars.bars[bar] = slots.clone();
+            info!("quick slot {from} -> {to:?}");
+            net.send(&ClientCommand::QuickSlots(QuickSlots { slots, bar: bar as u32 }));
+        }
+    }
+    let Some((kind, id, slot)) = pointer.sticker_drop.take() else { return };
     let key = if kind == 2 {
         let Some(sticker) = views.album.sticker(&id).filter(|s| s.owned) else { return };
         sticker.server_key().to_owned()
@@ -116,5 +174,13 @@ mod tests {
         assert_eq!(edited_bar(&bar, 1, 14, "misc_travelmap").unwrap()[14], Slot { kind: 1, id: Some("misc_travelmap".into()) });
         assert_eq!(edited_bar(&bar, 1, 2, "misc_travelmap").unwrap()[2], Slot { kind: 1, id: Some("misc_travelmap".into()) }, "the map on 2");
         assert!(edited_bar(&bar, 1, 9, "misc_travelmap").is_none(), "companion slot");
+        // Taken off, or moved within its group.
+        assert_eq!(moved_bar(&bar, 3, None).unwrap()[3], empty);
+        assert_eq!(moved_bar(&bar, 3, Some(8)).unwrap()[8], bar[3]);
+        assert!(moved_bar(&bar, 0, None).is_none(), "a skill: spells::drag's");
+        let mut map = bar.clone();
+        map[2] = Slot { kind: 1, id: Some("misc_travelmap".into()) };
+        assert!(moved_bar(&map, 2, Some(14)).is_none(), "the map stays on the skill slots");
+        assert_eq!(moved_bar(&map, 2, Some(4)).unwrap()[4], map[2]);
     }
 }

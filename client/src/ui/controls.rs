@@ -676,6 +676,9 @@ pub(super) struct Pointer {
     /// stickers::apply_drop.
     sticker_drag: Option<stickers::StickerDrag>,
     sticker_drop: Option<(i32, String, usize)>,
+    /// A sticker or item shortcut dragged from a quick slot: onto another slot, or
+    /// off the bar (None), for stickers::apply_drop.
+    slot_move: Option<(usize, Option<usize>)>,
     /// A window to toggle (the Universal Map's travel map), for keyboard.
     open_window: Option<&'static str>,
     item_command: Option<i32>,
@@ -1061,7 +1064,7 @@ pub(super) fn interact(
     if spells::drag(&mut pointer, &windows, &mouse, hit, top.map(|(e, _, _)| e), point, window.focused && !blocked && modal.is_none()) {
         clicked = None;
     }
-    if stickers::drag(&mut pointer, &windows, &views, &mouse, hit, point, window.focused && !blocked && modal.is_none()) {
+    if stickers::drag(&mut pointer, &windows, &views, &mouse, hit, top.map(|(e, _, _)| e), point, window.focused && !blocked && modal.is_none()) {
         clicked = None;
     }
     if settings::drag_slider(&mut pointer, &windows, &mouse, point, width, window.focused && !blocked, &mut settings) {
