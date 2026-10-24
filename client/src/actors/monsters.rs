@@ -1311,9 +1311,13 @@ fn hover(
         }
     }
     let alive = |e: Entity| monsters.get(e).is_ok_and(|(_, _, m, a, shown, _)| m.targetable && m.is_alive(a) && shown.get());
-    // Either button: the left attacks with the bar's first skill, the right with its second.
-    let just = buttons.just_pressed(MouseButton::Left) || buttons.just_pressed(MouseButton::Right);
-    *held = held_target(held_button, just, *held, best.map(|(_, e, _)| e), alive);
+    // Only the left button holds its monster (a click: walk there and strike). The
+    // right button's target follows the cursor while held.
+    // FAILURE (2026-10-24): right-pressed over a monster, the highlight stayed on
+    //   it until release ("if I hover over a monster then right click, I can't
+    //   hover over anything else").
+    let just = buttons.just_pressed(MouseButton::Left);
+    *held = held_target(buttons.pressed(MouseButton::Left), just, *held, best.map(|(_, e, _)| e), alive);
     let now = held.0.and_then(|e| monsters.get(e).ok().map(|(_, _, m, ..)| (e, m.actor))).or(best.map(|(_, e, a)| (e, a)));
     if hovered.0 != now {
         hovered.0 = now;
