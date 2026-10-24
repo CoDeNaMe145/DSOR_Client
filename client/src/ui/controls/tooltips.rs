@@ -55,6 +55,11 @@ pub(super) fn clean_text(raw: &str) -> String {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// One-line tooltips (a bar's "58832 / 58832 Health Points", a button's name)
+/// at 0.62 of the card's text size: measured on the user's release261_192 shot
+/// beside ours (against the bar's width), 2026-10-24 ("its so big").
+const COMPACT_TEXT: f32 = 0.62;
+
 pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018, &WindowControls, &Visibility, &Transform), Without<Tooltip>>,
     primary: Query<&Window, With<PrimaryWindow>>, screen: Res<Screen>, settings: Res<settings::Settings>, (pointer,keys,figures):(Res<Pointer>,Res<ButtonInput<KeyCode>>,Res<crate::ui::Figures>),
     net: Option<NonSend<crate::network::net::Net>>, hotbar: Res<hotbar::Hotbar>,
@@ -241,12 +246,16 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
     let compact = detail.is_none() && content.as_ref().is_some_and(|(_,_,icon)| icon.is_none());
     let card = detail.or_else(|| content.map(|(heading,body,icon)| {
         let mut card = if compact {
-            let width = heading.lines().chain(body.lines()).map(|s| crate::network::chat::text_width(s,12.0))
-                .fold(0.0,f32::max).ceil()+32.0;
-            Card::new(width.clamp(70.0,260.0),template)
+            // Sized to its text at the size it is drawn.
+            let mut card = Card::new(260.0,template);
+            card.shrink(COMPACT_TEXT);
+            let width = heading.lines().chain(body.lines()).map(|s| crate::network::chat::text_width(s,card.text_size()))
+                .fold(0.0,f32::max).ceil()+28.0;
+            card.width = width.clamp(48.0,260.0);
+            card
         } else { Card::new(320.0,template) };
         if compact {
-            card.y = 12.0;
+            card.y = 9.0;
             card.centered(&heading,WHITE,false);
             if !body.is_empty() { card.centered(&body,if body.starts_with("(Press ") || body.starts_with("Press ") { Color::srgb(1.0,0.9,0.0) } else { WHITE },false); }
             card.y -= 4.0;
