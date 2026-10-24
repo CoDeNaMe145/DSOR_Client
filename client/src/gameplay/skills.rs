@@ -904,6 +904,24 @@ impl SkillCooldowns {
             _ => 0.0,
         }
     }
+
+    /// The seconds a skill's cooldown still has to run (0 ready).
+    pub fn seconds_left(&self, data: &SkillData, tables: &Assets<SkillTable>, id: &str, now: f64) -> f64 {
+        let Some(skill) = data.by_id.get(id).and_then(|wire| tables.get(&data.skills).and_then(|t| t.0.get(wire))) else { return 0.0 };
+        self.0.get(cooldown_key(skill)).map_or(0.0, |&(_, ready)| (ready - now).max(0.0))
+    }
+}
+
+/// A cooldown's seconds as the original writes them on the slot: whole seconds
+/// ("21 s"), tenths under one ("0.4 s"), in tenths of a second (0: none).
+/// EVIDENCE: the user's release261_192 shots (a quick slot reading "21 s", a
+///   Collector's Bag sticker counting "0.4 s", "0.2 s", "0.1 s").
+pub fn cooldown_tenths(seconds: f64) -> u32 {
+    if seconds <= 0.0 { 0 } else if seconds >= 1.0 { seconds.ceil() as u32 * 10 } else { (seconds * 10.0).ceil() as u32 }
+}
+
+pub fn cooldown_text(tenths: u32) -> String {
+    if tenths >= 10 { format!("{} s", tenths / 10) } else { format!("0.{tenths} s") }
 }
 
 /// Skills of one cooldown category share their cooldown.
@@ -3014,6 +3032,12 @@ mod cooldown_tests {
         assert_eq!(cooldowns.remaining(&data, tables, "unknown", 12.5), 0.0);
         cooldowns.0.insert("bolt".into(), (12.0, 17.0));
         assert_eq!(cooldowns.remaining(&data, tables, "bolt", 13.0), 0.8);
+        // The seconds written on the slot: whole seconds, tenths under one.
+        assert_eq!(cooldowns.seconds_left(&data, tables, "teleport", 12.5), 2.5);
+        assert_eq!(cooldowns.seconds_left(&data, tables, "teleport", 16.0), 0.0);
+        let shown = |s: f64| cooldown_tenths(s);
+        assert_eq!((shown(20.3), shown(1.0), shown(0.95), shown(0.31), shown(0.0)), (210, 10, 10, 4, 0));
+        assert_eq!((cooldown_text(210), cooldown_text(10), cooldown_text(4)), ("21 s".to_owned(), "1 s".to_owned(), "0.4 s".to_owned()));
     }
 }
 

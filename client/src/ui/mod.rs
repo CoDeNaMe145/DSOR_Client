@@ -516,8 +516,9 @@ struct QuickSlot {
     k: f32,
     rect: [f32; 4],
     /// The icon and count drawn, whether greyed (its skill costs more than
-    /// the resource there is), and the cooldown sweep's step (0: ready).
-    shown: Option<(String, u32, bool, u8)>,
+    /// the resource there is), the cooldown sweep's step (0: ready) and its
+    /// seconds left in tenths (skills::cooldown_tenths).
+    shown: Option<(String, u32, bool, u8, u32)>,
 }
 
 /// The figures the interface shows (from the server when online).
@@ -1668,14 +1669,18 @@ fn update_slots(
         // sweep over its icon, redrawn in COOLDOWN_STEPS steps as it turns.
         let cool = skill.as_deref().map_or(0.0, |id| cooldowns.remaining(&skill_data, &skill_tables, id, now));
         let step = (cool * COOLDOWN_STEPS as f32).ceil().min(COOLDOWN_STEPS as f32) as u8;
+        // And the seconds left on it, as the original's "21 s".
+        // FAILURE (2026-10-24): "the skills still don't have a cooldown": only the
+        //   sweep showed, hard to see on dark icons.
+        let tenths = skill.as_deref().map_or(0, |id| crate::gameplay::skills::cooldown_tenths(cooldowns.seconds_left(&skill_data, &skill_tables, id, now)));
         // A spell being dragged off this slot leaves it empty meanwhile, as in the game.
         let lifted = pointer.lifted_slot() == Some((hotbar.active, s.slot));
         let want = controls::hotbar::appearance(s.slot, hotbar.active, net.as_deref(), &figures, catalog, table)
             .filter(|_| !lifted)
-            .map(|(path, count)| (path, count, dim, step));
+            .map(|(path, count)| (path, count, dim, step, tenths));
         if want == s.shown && !screen.is_changed() { continue; }
         commands.entity(e).despawn_related::<Children>();
-        if let Some((path, count, dim, step)) = &want {
+        if let Some((path, count, dim, step, tenths)) = &want {
             let [l, t, r, b] = s.rect;
             let shade = if *dim { [0.35, 0.35, 0.35, 1.0] } else { [1.0; 4] };
             let art = Art { tex: None, pos: vec![l,t,r,t,r,b,l,b],
@@ -1690,6 +1695,16 @@ fn update_slots(
                     Transform::from_xyz(0.0, 0.0, 0.5), RenderLayers::layer(LAYER), ChildOf(e)));
             }
             // This parent is y-flipped for the artwork; text flips back.
+            if *tenths > 0 {
+                let text = crate::gameplay::skills::cooldown_text(*tenths);
+                let font = TextFont { font: assets.load("fonts/tahoma.ttf").into(), font_size: bevy::text::FontSize::Px(11.0 * screen.scale), ..default() };
+                let at = Vec3::new((l + r) * 0.5, (t + b) * 0.5, 1.2);
+                for (offset, color) in [(Vec3::new(0.8, 0.8, -0.1), Color::BLACK), (Vec3::ZERO, Color::WHITE)] {
+                    commands.spawn((Text2d::new(text.clone()), font.clone(), TextColor(color), Anchor::CENTER,
+                        Transform::from_translation(at + offset).with_scale(Vec3::new(1.0, -1.0, 1.0) / screen.scale),
+                        RenderLayers::layer(LAYER), ChildOf(e)));
+                }
+            }
             if *count > 0 {
                 commands.spawn((Text2d::new(count.to_string()), TextFont { font: assets.load("fonts/tahoma.ttf").into(),
                     font_size: bevy::text::FontSize::Px(10.0 * screen.scale), ..default() }, TextColor(Color::WHITE),
