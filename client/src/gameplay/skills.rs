@@ -985,8 +985,12 @@ fn cast_input(
     // Dead: no casting until revived (the server refuses it anyway).
     if net.death.dead { return; }
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
-    // A click on the ground (a walk) drops the pending attack.
-    if !ui.blocks(MouseButton::Left) && buttons.just_pressed(MouseButton::Left) && hovered.0.is_none() {
+    // A click on the ground (a walk) drops the pending attack, and so does the
+    // left button held over the ground: net::click_to_move walks there then.
+    // CONTRACT: held on a monster and dragged off it, only one of the pending
+    //   approach and the walk may set LocalPlayer::target; the two systems are
+    //   unordered, so with both the later one won frame by frame.
+    if !ui.blocks(MouseButton::Left) && buttons.pressed(MouseButton::Left) && hovered.0.is_none() && !shift {
         *queued = None;
     }
     // Keys: one press, one cast (holding a key re-fired the skill as soon as it
