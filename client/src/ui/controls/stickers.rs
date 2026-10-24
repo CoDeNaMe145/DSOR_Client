@@ -14,8 +14,11 @@ const BAR_SIZE: usize = 17;
 /// Skill slots (0..8) and the collection slots (8..13: mount, companion...);
 /// never the four consumable slots.
 const STICKER_SLOTS: usize = 13;
-/// The four consumable slots (U, G, R, T): potions, elixirs, the Universal Map.
+/// The four consumable slots (U, G, R, T): potions, elixirs.
 pub(super) const CONSUMABLE_SLOTS: std::ops::Range<usize> = 13..17;
+/// The skill slots (mouse buttons, 1-5, the last two): skills, stickers and the
+/// Universal Map.
+pub(super) const SKILL_SLOTS: usize = 8;
 
 pub(super) struct StickerDrag {
     id: String,
@@ -59,10 +62,11 @@ pub(super) fn dragged<'a>(pointer: &Pointer, views: &'a systems::Views) -> Optio
 }
 
 /// The active bar with `slot` holding the shortcut (`kind` 2 a sticker, on a
-/// skill or collection slot; 1 an item, on a consumable slot); the same one
-/// leaves any other slot of the bar. None when nothing changes.
+/// skill or collection slot; 1 an item, on a skill or consumable slot, which
+/// one its caller decides); the same one leaves any other slot of the bar. None
+/// when nothing changes.
 fn edited_bar(slots: &[Slot], kind: i32, slot: usize, key: &str) -> Option<Vec<Slot>> {
-    let fits = if kind == 2 { slot < STICKER_SLOTS } else { (CONSUMABLE_SLOTS).contains(&slot) };
+    let fits = if kind == 2 { slot < STICKER_SLOTS } else { slot < SKILL_SLOTS || CONSUMABLE_SLOTS.contains(&slot) };
     if slots.len() != BAR_SIZE || !fits { return None; }
     let mut edited = slots.to_vec();
     for s in &mut edited {
@@ -110,6 +114,7 @@ mod tests {
         assert!(edited_bar(&bar, 2, 13, "mount_x").is_none(), "consumable slot");
         // An item only on the consumable slots.
         assert_eq!(edited_bar(&bar, 1, 14, "misc_travelmap").unwrap()[14], Slot { kind: 1, id: Some("misc_travelmap".into()) });
-        assert!(edited_bar(&bar, 1, 2, "misc_travelmap").is_none(), "skill slot");
+        assert_eq!(edited_bar(&bar, 1, 2, "misc_travelmap").unwrap()[2], Slot { kind: 1, id: Some("misc_travelmap".into()) }, "the map on 2");
+        assert!(edited_bar(&bar, 1, 9, "misc_travelmap").is_none(), "companion slot");
     }
 }

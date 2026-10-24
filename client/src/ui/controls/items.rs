@@ -151,10 +151,9 @@ fn item_cell(window: &str, action: &Action) -> Option<Cell> {
     }
 }
 
-/// An item a consumable quick slot takes: what a right click uses, and the
-/// Universal Map.
+/// An item a consumable quick slot takes: a potion, an elixir.
 pub(super) fn shortcut(catalog: &Catalog, template: &str) -> bool {
-    catalog.items.get(template).is_some_and(|m| matches!(m.item_category.as_str(), "Consumable" | "InstantConsumable" | "TravelMapItem"))
+    catalog.items.get(template).is_some_and(|m| matches!(m.item_category.as_str(), "Consumable" | "InstantConsumable"))
 }
 
 /// The Universal Map (TravelMapItem): it opens the travel map.
@@ -535,17 +534,19 @@ pub fn input(mut ui:ResMut<Interaction>,mut pointer:ResMut<Pointer>,mut windows:
         let on_trade=windows.iter().filter(|(_,n,_,v,_)|n.0==super::trade::WINDOW && **v!=Visibility::Hidden)
             .any(|(_,_,c,_,_)|c.hovered.is_some_and(|b|matches!(c.buttons[b].action,Action::Social(super::social::Social::TradeMine(_)))));
         if on_trade {if let Some(d)=ui.drag.take().filter(|d|d.active) {trade.add.push(d.id);}}
-        // Dropped on one of the bar's consumable slots: a shortcut to it there
-        // (super::stickers::apply_drop), the item staying in the bag.
+        // Dropped on the bar: a shortcut to it there (super::stickers::apply_drop),
+        // the item staying in the bag. The Universal Map on a skill slot (the user
+        // kept it on 2 to travel fast), potions and elixirs on the consumable slots.
         // FAILURE (2026-10-24): items could not be put on the bar at all ("the map
-        //   I can't put in the slots").
+        //   I can't put in the slots"; "I meant the skill slots").
         let on_bar=windows.iter().filter(|(_,n,_,v,_)|n.0=="bottombar" && **v!=Visibility::Hidden)
-            .find_map(|(_,_,c,_,_)|c.hovered.and_then(|b|match c.buttons[b].action {Action::Skill(s) if super::stickers::CONSUMABLE_SLOTS.contains(&s)=>Some(s),_=>None}));
-        if let Some(slot)=on_bar {
-            if let Some(d)=ui.drag.take().filter(|d|d.active) {
-                if let Some(item)=net.inventory.items.get(&d.id).filter(|i|shortcut(catalog,&i.template)) {pointer.sticker_drop=Some((1,item.template.clone(),slot));}
-            }
-        }
+            .find_map(|(_,_,c,_,_)|c.hovered.and_then(|b|match c.buttons[b].action {Action::Skill(s)=>Some(s),_=>None}));
+        // Only an item that fits takes the drop (an essence on its socket goes on
+        // to the normal equipment move below).
+        let fits=|i:&ItemInfo,slot:usize| if travel_map(catalog,&i.template) {slot<super::stickers::SKILL_SLOTS} else {shortcut(catalog,&i.template) && super::stickers::CONSUMABLE_SLOTS.contains(&slot)};
+        let shortcut_drop=on_bar.zip(ui.drag.as_ref().filter(|d|d.active).and_then(|d|net.inventory.items.get(&d.id)))
+            .filter(|(slot,item)|fits(item,*slot)).map(|(slot,item)|(item.template.clone(),slot));
+        if let Some((template,slot))=shortcut_drop {ui.drag=None;pointer.sticker_drop=Some((1,template,slot));}
         if let Some(d)=ui.drag.take().filter(|d|d.active && !busy) {
             if let Some((root,cell))=hovered {
                 let (_,_,c,_,_)=windows.get(root).unwrap();
