@@ -779,6 +779,13 @@ fn resource_bar(class: u8) -> &'static str {
     }
 }
 
+/// A value's text against its label's authored size: the bottom bar's "Level n"
+/// labels read smaller than the label's number did (0.75, measured on the
+/// user's release261_192 shot beside ours: "way too big", 2026-10-24).
+fn value_scale(value: Option<ValueKind>) -> f32 {
+    if matches!(value, Some(ValueKind::BarLevel | ValueKind::BarWisdomLevel)) { 0.75 } else { 1.0 }
+}
+
 fn value_of(id: &str) -> Option<ValueKind> {
     let leaf = id.rsplit('/').next().unwrap_or("");
     if let Some(slot) = controls::hotbar::label_slot(id) { return Some(ValueKind::Hotkey(slot)); }
@@ -1238,7 +1245,7 @@ fn spawn_windows(
                     // (assets/fonts/tahoma.ttf, copied by hand).
                     TextFont {
                         font: assets.load("fonts/tahoma.ttf").into(),
-                        font_size: bevy::text::FontSize::Px(label.size * FONT_SCALE * screen.scale),
+                        font_size: bevy::text::FontSize::Px(label.size * value_scale(value) * FONT_SCALE * screen.scale),
                         ..default()
                     },
                     TextColor(Color::srgba(label.color[0], label.color[1], label.color[2], label.color[3])),

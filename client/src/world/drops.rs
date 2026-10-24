@@ -53,6 +53,13 @@ const RARITY_TEXT: [Color; 8] = [
     Color::srgb(1.0, 0.859, 0.067),
 ];
 
+/// The glow's size against its effect's own, and the name's text size: both
+/// read larger in the original (the user's release261_192 shot beside ours,
+/// "it does still need higher glow and bigger writing", 2026-10-24).
+/// UNVERIFIED: matched by eye, not from the game's data.
+const GLOW_SCALE: f32 = 1.6;
+const LABEL_SIZE: f32 = 18.0;
+
 /// What a label floats over the item's origin, world units.
 const LABEL_HEIGHT: f32 = 0.9;
 
@@ -227,7 +234,9 @@ fn spawn_drops(
         let glow = template.drop_sequence.rsplit('/').next().filter(|s| !s.is_empty()).map(str::to_owned)
             .unwrap_or_else(|| format!("drop_{}", rarity_name(rarity)));
         if let Some(seq) = sequences.0.get(&glow) {
-            crate::skills::play(&mut commands, seq.clone(), None, e, true);
+            // On a scaled anchor: the effects follow it as its children.
+            let anchor = commands.spawn((Transform::from_scale(Vec3::splat(GLOW_SCALE)), Visibility::default(), ChildOf(e))).id();
+            crate::skills::play(&mut commands, seq.clone(), None, anchor, true);
         }
     }
 }
@@ -378,7 +387,7 @@ fn labels(
                     },
                     Text::new(item.name.clone()),
                     TextShadow { offset: Vec2::splat(1.0), color: Color::BLACK },
-                    TextFont { font: assets.load("fonts/tahoma.ttf").into(), font_size: bevy::text::FontSize::Px(14.0), ..default() },
+                    TextFont { font: assets.load("fonts/tahoma.ttf").into(), font_size: bevy::text::FontSize::Px(LABEL_SIZE), ..default() },
                     TextColor(RARITY_TEXT[item.rarity.min(RARITY_TEXT.len() - 1)]),
                     Pickable::IGNORE,
                     Visibility::Hidden,
