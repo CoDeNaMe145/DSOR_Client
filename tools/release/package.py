@@ -62,10 +62,11 @@ def executable(path):
 
 
 def python_archive(triple, temp):
-    """The install-only CPython of PYTHON_BUILD for this triple."""
+    """The install-only CPython of PYTHON_BUILD for this triple, without debug
+    symbols (Linux: 34.5 MB, not 68)."""
     listing = temp / "python-build.json"
     fetch(f"https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/{PYTHON_BUILD}", listing)
-    pattern = re.compile(rf"cpython-{re.escape(PYTHON_MINOR)}\.\d+\+{PYTHON_BUILD}-{triple}-install_only\.tar\.gz")
+    pattern = re.compile(rf"cpython-{re.escape(PYTHON_MINOR)}\.\d+\+{PYTHON_BUILD}-{triple}-install_only_stripped\.tar\.gz")
     names = [a["name"] for a in json.loads(listing.read_text())["assets"] if pattern.fullmatch(a["name"])]
     if not names:
         sys.exit(f"python-build-standalone {PYTHON_BUILD} has no CPython {PYTHON_MINOR} for {triple}")
@@ -126,13 +127,19 @@ def main():
     run("patch DSO_Godot", [sys.executable, source / "tools" / "release" / "patch_dso_godot.py", godot])
     shutil.copy2(godot / "LICENSE", licenses / "DSO_Godot-LICENSE.txt")
 
-    # The Crunch transcoder (crn_decomp.h: public domain). macOS has no
-    # malloc_usable_size: its malloc_size answers the same.
+    # The Crunch transcoder (crn_decomp.h: public domain). macOS has neither
+    # <malloc.h> nor malloc_usable_size: a <malloc.h> of ours gives its
+    # malloc_size, which answers the same.
     for header in ("crn_decomp.h", "crnlib.h"):
         fetch(f"{CRUNCH}/{header}", temp / header)
-    # g++ wants -fpermissive for the 2012 header (DSO_Godot tools/build_crn2dds.sh).
-    flags = ["-include", "malloc/malloc.h", "-Dmalloc_usable_size=malloc_size"] if sys.platform == "darwin" \
-        else ["-fpermissive", "-static-libstdc++", "-static-libgcc"]
+    if sys.platform == "darwin":
+        (temp / "shim").mkdir()
+        (temp / "shim" / "malloc.h").write_text(
+            "#include <stdlib.h>\n#include <malloc/malloc.h>\n#define malloc_usable_size malloc_size\n")
+        flags = ["-I", temp / "shim"]
+    else:
+        # g++ wants -fpermissive for the 2012 header (DSO_Godot tools/build_crn2dds.sh).
+        flags = ["-fpermissive", "-static-libstdc++", "-static-libgcc"]
     run("build crn2dds", ["c++", "-O2", "-w", "-fno-strict-aliasing", "-DNDEBUG", *flags, "-I", temp,
                           godot / "tools" / "crn2dds.cpp", "-o", bin_dir / "crn2dds"])
 
@@ -148,6 +155,18 @@ def main():
     python = converter / "python" / "bin" / "python3"
     run("install Pillow and numpy", [python, "-m", "pip", "install", "--disable-pip-version-check",
                                     "--no-warn-script-location", "--no-cache-dir", "Pillow", "numpy"])
+    # What the conversion never uses: Tcl/Tk and IDLE, headers, terminal
+    # databases, and pip once the wheels are in.
+    home = converter / "python"
+    lib = home / "lib" / f"python{PYTHON_MINOR}"
+    for path in [home / "include", home / "share", lib / "idlelib", lib / "tkinter", lib / "turtledemo",
+                 lib / "ensurepip", lib / "lib2to3", *home.glob("lib/tcl*"), *home.glob("lib/tk*"),
+                 *home.glob("lib/itcl*"), *home.glob("lib/thread*"), *home.glob("lib/libtcl*"),
+                 *home.glob("lib/libtk*"), *lib.glob("site-packages/pip"), *lib.glob("site-packages/pip-*")]:
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        elif path.exists() or path.is_symlink():
+            path.unlink()
     run("check the bundled Python", [python, "-c",
         "import PIL, numpy, sqlite3, multiprocessing, concurrent.futures; print('python ok', PIL.__version__, numpy.__version__)"])
 
