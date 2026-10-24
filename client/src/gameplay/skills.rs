@@ -37,6 +37,8 @@ use crate::network::net::{cursor_ground, now_ms, LocalPlayer, Net, RemotePlayer}
 
 /// The sequencer's frame rate.
 const FPS: f32 = 25.0;
+/// One game tick, the MoveCommand cadence (crate::network::net send_moves).
+const MOVE_TICK_SECONDS: f32 = 0.04;
 /// A Nebula entity looks down its -Z; our character models look down +Z (players
 /// turn with from_rotation_y(atan2(dx, dz))). Everything a sequence places "on the
 /// entity" (effects, lights, bullet start offsets) is in the entity's frame.
@@ -103,6 +105,10 @@ pub struct SkillDef {
     pub unblock: u32,
     pub motion_unblock: u32,
     pub range: f32,
+    /// _Template_Skill.HitRange: how far an area melee strikes around its caster
+    /// (tools/export_skills.py; absent from older assets, see hit_reach).
+    #[serde(default)]
+    pub hit_range: f32,
     pub cooldown: f32,
     #[serde(default)]
     pub cooldown_category: String,
@@ -143,6 +149,14 @@ pub struct SkillDef {
 fn scale_timing_default() -> bool { true }
 
 impl SkillDef {
+    /// The radius an untargeted melee skill strikes within, as the server
+    /// measures it: max(0.25, HitRange) (DSOR_Server combat_entities.py
+    /// plan_entity_skill). Assets exported before hit_range fall back to
+    /// AttackRange.
+    fn hit_reach(&self) -> f32 {
+        if self.hit_range > 0.0 { self.hit_range.max(0.25) } else { self.range.max(0.25) }
+    }
+
     /// The execute sequence for a weapon kind (an attacksequence.xml column).
     fn execute_for(&self, column: &str) -> Option<&String> {
         self.execute
@@ -917,14 +931,29 @@ pub fn skill_cost_by_id(data: &SkillData, tables: &Assets<SkillTable>, id: &str,
 /// Ranged targets keep the flat distance plus the capsule (the server measures
 /// those against the capsule; UNVERIFIED against the original).
 /// An untargeted melee skill (type Melee: mightyswing, mighty360, stab...)
-/// aimed at a monster is measured the same way: 2018 Validate 0x5E3C61 checks
-/// every skill type against the clicked actor with one test (0x00A3522D,
-/// centre distance minus the target's radius).
-fn beyond_reach(skill: &SkillDef, caster: Vec3, target: Vec3, capsule: f32, footprint: Option<f32>) -> bool {
-    if matches!(skill.kind.as_str(), "MeleeTarget" | "Melee") {
-        caster.distance(target) - footprint.unwrap_or(capsule) > skill.range
-    } else {
-        Vec2::new(target.x - caster.x, target.z - caster.z).length() > skill.range + capsule
+/// aimed at a monster passes the same validator test (2018 Validate 0x5E3C61
+/// checks every skill type against the clicked actor with one test, 0x00A3522D,
+/// centre distance minus the target's radius) and must also be where its area
+/// lands on the monster: the server picks an area melee's victims by the flat
+/// distance from the caster against max(0.25, HitRange) plus the monster's
+/// capsule (DSOR_Server gameplay/combat_entities.py plan_entity_skill, the
+/// non-projectile Angle/Cone/Radius branches), not by the footprint.
+/// `margin`: how far the server's idea of the caster may trail behind a walking
+/// player (it measures from the last MoveCommand, one per 0.04 s tick:
+/// services/player_combat.py `last_move.relative_position`); 0 standing still.
+/// FAILURE: measured by the footprint alone, mightyswing (AttackRange 3.5,
+///   HitRange 3.5) stopped 4.0 m from a small monster and 5.1 m from a large one
+///   while the server only hit within 3.8 m: "quand je clique gauche sur un
+///   ennemi, mon personnage s'arrete trop loin pour le toucher" (2026-10-24).
+fn beyond_reach(skill: &SkillDef, caster: Vec3, target: Vec3, capsule: f32, footprint: Option<f32>, margin: f32) -> bool {
+    let flat = Vec2::new(target.x - caster.x, target.z - caster.z).length();
+    match skill.kind.as_str() {
+        "MeleeTarget" => caster.distance(target) - footprint.unwrap_or(capsule) > skill.range - margin,
+        "Melee" => {
+            caster.distance(target) - footprint.unwrap_or(capsule) > skill.range - margin
+                || flat > skill.hit_reach() + capsule - margin
+        }
+        _ => flat > skill.range + capsule - margin,
     }
 }
 
@@ -1064,7 +1093,14 @@ fn cast_input(
     let targeted = matches!(skill.kind.as_str(), "MeleeTarget" | "RangedTarget");
     let target_actor = if targeted { aimed.map(|(_, _, a, ..)| a) } else { None };
     if let (true, Some((e, at, _, radius, _, footprint))) = (approaches(skill), aimed) {
-        if beyond_reach(skill, tf.translation, at, radius, footprint) {
+        // Walking (towards the monster or anywhere), the server still measures
+        // from the last MoveCommand: stop one tick's walk inside the reach.
+        let margin = if player.target.is_some() {
+            stats.movement_speed().unwrap_or(crate::network::net::RUN_SPEED) * MOVE_TICK_SECONDS
+        } else {
+            0.0
+        };
+        if beyond_reach(skill, tf.translation, at, radius, footprint, margin) {
             player.target = Some(at);
             *queued = Some((slot, e));
             return;
@@ -2914,18 +2950,18 @@ mod reach_tests {
         // medium one (1.053) from 2.803; the 0.3 capsule stopped it at 2.05.
         let angry = skill("MeleeTarget", 1.75);
         let at = |d: f32| Vec3::new(d, 0.0, 0.0);
-        assert!(!beyond_reach(&angry, Vec3::ZERO, at(2.27), 0.3, Some(0.525)));
-        assert!(beyond_reach(&angry, Vec3::ZERO, at(2.28), 0.3, Some(0.525)));
-        assert!(!beyond_reach(&angry, Vec3::ZERO, at(2.8), 0.3, Some(1.053)));
+        assert!(!beyond_reach(&angry, Vec3::ZERO, at(2.27), 0.3, Some(0.525), 0.0));
+        assert!(beyond_reach(&angry, Vec3::ZERO, at(2.28), 0.3, Some(0.525), 0.0));
+        assert!(!beyond_reach(&angry, Vec3::ZERO, at(2.8), 0.3, Some(1.053), 0.0));
         // Height counts (the native distance helper is 3D).
-        assert!(beyond_reach(&angry, Vec3::ZERO, Vec3::new(2.2, 1.0, 0.0), 0.3, Some(0.525)));
+        assert!(beyond_reach(&angry, Vec3::ZERO, Vec3::new(2.2, 1.0, 0.0), 0.3, Some(0.525), 0.0));
         // No footprint (older assets, a shape the table lacks): the capsule.
-        assert!(beyond_reach(&angry, Vec3::ZERO, at(2.1), 0.3, None));
-        assert!(!beyond_reach(&angry, Vec3::ZERO, at(2.0), 0.3, None));
+        assert!(beyond_reach(&angry, Vec3::ZERO, at(2.1), 0.3, None, 0.0));
+        assert!(!beyond_reach(&angry, Vec3::ZERO, at(2.0), 0.3, None, 0.0));
         // Ranged targets as before: flat distance plus the capsule.
         let ranged = skill("RangedTarget", 10.0);
-        assert!(!beyond_reach(&ranged, Vec3::ZERO, Vec3::new(10.2, 5.0, 0.0), 0.3, Some(4.0)));
-        assert!(beyond_reach(&ranged, Vec3::ZERO, at(10.4), 0.3, Some(4.0)));
+        assert!(!beyond_reach(&ranged, Vec3::ZERO, Vec3::new(10.2, 5.0, 0.0), 0.3, Some(4.0), 0.0));
+        assert!(beyond_reach(&ranged, Vec3::ZERO, at(10.4), 0.3, Some(4.0), 0.0));
     }
 
     #[test]
@@ -2936,11 +2972,12 @@ mod reach_tests {
             s
         };
         // mighty360 (Melee, Radius, 6): measured as targeted melee is.
-        let spin = with("Melee", "Radius", 6.0);
+        let mut spin = with("Melee", "Radius", 6.0);
+        spin.hit_range = 6.3;
         assert!(approaches(&spin));
         let at = |d: f32| Vec3::new(d, 0.0, 0.0);
-        assert!(!beyond_reach(&spin, Vec3::ZERO, at(6.5), 0.3, Some(0.525)));
-        assert!(beyond_reach(&spin, Vec3::ZERO, at(6.6), 0.3, Some(0.525)));
+        assert!(!beyond_reach(&spin, Vec3::ZERO, at(6.5), 0.3, Some(0.525), 0.0));
+        assert!(beyond_reach(&spin, Vec3::ZERO, at(6.6), 0.3, Some(0.525), 0.0));
         assert!(approaches(&with("Melee", "Angle", 3.5)));
         assert!(approaches(&with("Melee", "Cone", 10.0)));
         // A shout or an aura goes off where the player stands.
@@ -2948,6 +2985,35 @@ mod reach_tests {
         assert!(approaches(&with("MeleeTarget", "Actor", 1.75)));
         assert!(!approaches(&with("Ranged", "Radius", 25.0)));
         assert!(!approaches(&with("Shifted", "Radius", 15.0)));
+    }
+
+    #[test]
+    fn untargeted_melee_stops_where_its_area_reaches_the_monster_capsule() {
+        // mightyswing: AttackRange 3.5, HitRange 3.5. The server hits within
+        // 3.5 + the 0.3 capsule (flat); the footprint alone let it stop at
+        // 4.025 (small) or 5.08 (large).
+        let mut swing = skill("Melee", 3.5);
+        swing.targeting = "Angle".into();
+        swing.hit_range = 3.5;
+        let at = |d: f32| Vec3::new(d, 0.0, 0.0);
+        assert!(beyond_reach(&swing, Vec3::ZERO, at(3.9), 0.3, Some(0.525), 0.0));
+        assert!(beyond_reach(&swing, Vec3::ZERO, at(5.0), 0.3, Some(1.581), 0.0));
+        assert!(!beyond_reach(&swing, Vec3::ZERO, at(3.79), 0.3, Some(1.581), 0.0));
+        // The validator still bounds it: a large capsule, a small footprint.
+        assert!(beyond_reach(&swing, Vec3::ZERO, at(4.2), 1.0, Some(0.525), 0.0));
+        // Walking, one tick inside: the server measures from the last move.
+        assert!(beyond_reach(&swing, Vec3::ZERO, at(3.7), 0.3, Some(0.525), 0.2));
+        assert!(!beyond_reach(&swing, Vec3::ZERO, at(3.59), 0.3, Some(0.525), 0.2));
+        // zero_firecracker: HitRange 3.0 under AttackRange 3.5.
+        let mut cracker = skill("Melee", 3.5);
+        cracker.hit_range = 3.0;
+        assert!(beyond_reach(&cracker, Vec3::ZERO, at(3.4), 0.3, Some(0.525), 0.0));
+        // Older assets without hit_range: AttackRange.
+        let old = skill("Melee", 3.5);
+        assert!(!beyond_reach(&old, Vec3::ZERO, at(3.79), 0.3, Some(0.525), 0.0));
+        // Targeted melee and ranged targets keep their tests, less the margin.
+        assert!(beyond_reach(&skill("MeleeTarget", 1.75), Vec3::ZERO, at(2.2), 0.3, Some(0.525), 0.2));
+        assert!(beyond_reach(&skill("RangedTarget", 10.0), Vec3::ZERO, at(10.2), 0.3, None, 0.2));
     }
 }
 
