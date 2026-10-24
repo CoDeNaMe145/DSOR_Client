@@ -2973,6 +2973,15 @@ fn vfx_preview(
 /// map_respawn 2 s). Played without it, the player walked away mid-revival.
 const HOLDING_STATUSES: [&str; 2] = ["resurrect_self", "map_respawn"];
 
+/// Casts that moving breaks off: the mount casts (cast_mount_*, 260 of them) and
+/// the town portal (hometeleport) play this animation, and the server cancels a
+/// mount cast on the first move (DSOR_Server services/world.py "movement
+/// interrupted cast"). They play without holding the player still; walking ends
+/// the animation and sends the move that cancels the cast.
+/// FAILURE (2026-10-24): the mount cast held the player for its 6 s ("you can't
+///   cancel it, at least you can't cancel it by moving").
+const INTERRUPTIBLE_ANIMATIONS: [&str; 1] = ["hometown_teleport"];
+
 /// Statuses just started on an actor with an animation or a hold: (holder,
 /// animation state or "", seconds), for hold_for_status.
 #[derive(Resource, Default)]
@@ -2985,10 +2994,13 @@ fn hold_for_status(
     mut actors: Query<(&mut CharacterAnim, Option<&mut LocalPlayer>, Option<&crate::monsters::Monster>)>,
 ) {
     // Its animation played once: back to Idle when the effect ends (nothing else
-    // ends a state set this way, and the actor stood frozen in its last pose).
+    // ends a state set this way, and the actor stood frozen in its last pose), or
+    // an interruptible cast's as soon as its player walks.
     let now = time.elapsed_secs();
     playing.retain(|(holder, animation, until)| {
-        if now < *until {
+        let walked = INTERRUPTIBLE_ANIMATIONS.contains(&animation.as_str())
+            && actors.get(*holder).is_ok_and(|(_, local, _)| local.is_some_and(|p| p.target.is_some()));
+        if now < *until && !walked {
             return true;
         }
         if let Ok((mut anim, _, _)) = actors.get_mut(*holder) {
@@ -3001,13 +3013,14 @@ fn hold_for_status(
     for (holder, animation, seconds) in holds.0.drain(..) {
         let Ok((mut anim, local, monster)) = actors.get_mut(holder) else { continue };
         if monster.is_some_and(|m| !m.is_alive(&anim)) { continue; }
+        let interruptible = INTERRUPTIBLE_ANIMATIONS.contains(&animation.as_str());
         if !animation.is_empty() {
             anim.dead = false;
             anim.state = AnimState::Named(animation.clone());
             anim.replay();
             playing.push((holder, animation, now + seconds));
         }
-        if let Some(mut player) = local {
+        if let Some(mut player) = local.filter(|_| !interruptible) {
             player.target = None;
             player.casting = player.casting.max(seconds);
         }
@@ -3467,6 +3480,22 @@ mod bullet_tests {
             assert_eq!(b.from_monster, from_monster, "a soul that is {}", if targetable { "hostile" } else { "ours" });
             app.world_mut().despawn(e);
         }
+    }
+
+    #[test]
+    fn a_mount_cast_does_not_hold_the_player_and_walking_ends_it_but_a_stun_holds() {
+        let mut app = App::new();
+        app.init_resource::<Time>().init_resource::<StatusHolds>().add_systems(Update, hold_for_status);
+        let cast = app.world_mut().spawn((CharacterAnim::default(), LocalPlayer::default())).id();
+        let stun = app.world_mut().spawn((CharacterAnim::default(), LocalPlayer::default())).id();
+        app.world_mut().resource_mut::<StatusHolds>().0.extend([(cast, "hometown_teleport".into(), 6.0), (stun, "Stunned".into(), 2.0)]);
+        app.update();
+        assert_eq!(app.world().get::<LocalPlayer>(cast).unwrap().casting, 0.0, "free to walk");
+        assert_eq!(app.world().get::<LocalPlayer>(stun).unwrap().casting, 2.0, "a stun still holds");
+        assert_eq!(app.world().get::<CharacterAnim>(cast).unwrap().state, AnimState::Named("hometown_teleport".into()));
+        app.world_mut().get_mut::<LocalPlayer>(cast).unwrap().target = Some(Vec3::X);
+        app.update();
+        assert_eq!(app.world().get::<CharacterAnim>(cast).unwrap().state, AnimState::Idle, "walking breaks it off");
     }
 
     #[test]
