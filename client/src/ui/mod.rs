@@ -1809,11 +1809,26 @@ fn slot_art(slot: usize, rect: [f32; 4], shade: [f32; 4]) -> Art {
 /// cast (crate::gameplay::skills::CastBar; its bar is Gauge::Cast).
 const CAST_WINDOW: &str = "castbar01";
 
-/// The cast bar shows only while a cast runs (written only when that changes).
-fn cast_bar_window(cast: Res<crate::gameplay::skills::CastBar>, mut windows: Query<(&Window2018, &mut Visibility)>) {
+/// The cast bar shows only while a cast runs (written only when that changes),
+/// centred under the player: its layout centres it on the screen (k 0.5), but
+/// the camera looks a little ahead of the player, which the 45-degree view turns
+/// into a sideways shift (it sat 40 px right of the name; the original's is under
+/// it, the user's shots).
+#[allow(clippy::type_complexity)]
+fn cast_bar_window(cast: Res<crate::gameplay::skills::CastBar>, mut windows: Query<(&Window2018, &mut Visibility, &mut Transform)>,
+    primary: Query<&bevy::window::Window, With<bevy::window::PrimaryWindow>>,
+    cameras: Query<(&Camera, &GlobalTransform), (With<Camera3d>, Without<crate::rendering::highlight::HighlightCamera>)>,
+    players: Query<&GlobalTransform, With<crate::network::net::LocalPlayer>>, screen: Res<Screen>) {
     let want = if cast.0.is_some() { Visibility::Inherited } else { Visibility::Hidden };
-    for (w, mut v) in &mut windows {
-        if w.0 == CAST_WINDOW && *v != want { *v = want; }
+    let shift = (cast.0.is_some()).then(|| {
+        let (window, (camera, at), player) = (primary.single().ok()?, cameras.single().ok()?, players.single().ok()?);
+        let p = camera.world_to_viewport(at, player.translation()).ok()?;
+        Some(p.x * BASE_H / window.height().max(1.0) - screen.width * 0.5)
+    }).flatten();
+    for (w, mut v, mut tf) in &mut windows {
+        if w.0 != CAST_WINDOW { continue; }
+        if *v != want { *v = want; }
+        if let Some(x) = shift.filter(|x| (x - tf.translation.x).abs() > 0.5) { tf.translation.x = x; }
     }
 }
 
