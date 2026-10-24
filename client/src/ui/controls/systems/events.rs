@@ -169,14 +169,7 @@ fn now() -> u64 {
 
 /// Seconds since the epoch of a civil date (UTC).
 pub(in crate::ui) fn epoch(date: [u32; 6]) -> u64 {
-    let (y, m, d) = (date[0] as i64, date[1] as i64, date[2] as i64);
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
-    (days * 86_400 + date[3] as i64 * 3600 + date[4] as i64 * 60 + date[5] as i64).max(0) as u64
+    crate::world::props::epoch(date)
 }
 
 /// The buttons an event offers, by the element names of AdditionalEventElements.

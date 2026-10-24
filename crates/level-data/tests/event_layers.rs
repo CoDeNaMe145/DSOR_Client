@@ -87,3 +87,17 @@ fn missing_eve_preserves_cached_layer_and_truncation_errors() {
     std::fs::write(&eve, b"MOSD").unwrap();
     assert!(events::with_event_layers(&manifest, &path, &enriched).is_err());
 }
+
+/// A converted map's `event_rules` key its base placements by `placement_ids`
+/// (the client's scenery reads them so, crate::world::map in dsor-client).
+#[test]
+#[ignore = "needs the converted assets (assets/maps/a0200_kingscity.map.json)"]
+fn every_rule_of_a_converted_map_names_one_of_its_placements() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/maps/a0200_kingscity.map.json");
+    let manifest: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let base = manifest["instances"].as_array().unwrap().len();
+    let ids: std::collections::HashSet<_> = placement_ids(&manifest).into_iter().take(base).collect();
+    let rules = manifest["event_rules"].as_object().unwrap();
+    let named = rules.keys().filter(|k| ids.contains(*k)).count();
+    assert_eq!(named, rules.len(), "{named} of {} rules name a base placement", rules.len());
+}

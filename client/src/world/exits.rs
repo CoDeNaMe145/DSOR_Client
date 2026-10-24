@@ -11,10 +11,16 @@
 //!   0f 00 "exit_general_01" | 0 -- map id and exit URL are the row's ExitURL, the
 //!   exit id its template Id. It came again every few ticks, between movement
 //!   records, until the hand-off (frames 1084, 1090): the server ignores repeats.
-//! UNVERIFIED: an exit whose EventSetRow is not -1 belongs to a map event (Kingshill
-//!   stacks several on one spot); which events are running is not known here yet,
-//!   so only the always-present exits are drawn. The click area (PICK_RADIUS) is
-//!   not the client's own picking shape.
+//! Online the server says which exits are, and whether they lead anywhere:
+//! ExitInfo (68) names every `_Instance_InteractExit` of the map by its instance
+//! Guid with an active flag, those of map events not running too, inactive
+//! (dso_server local_map_state.load_local_map_exits; kept in
+//! crate::world::props::NetworkProps). Then an always-present exit is drawn
+//! active or inactive (the model's state group; no request is sent for an
+//! inactive one) and one of a map event (EventSetRow not -1, Kingshill stacks
+//! several on one spot) only while announced active. Offline, or before ExitInfo, the always-present exits are
+//! drawn active. UNVERIFIED: the click area (PICK_RADIUS) is not the client's
+//! own picking shape.
 
 use bevy::asset::{io::Reader, AssetLoader, LoadContext};
 use bevy::gltf::GltfAssetLabel;
@@ -31,6 +37,9 @@ use crate::network::net::{LocalPlayer, Net, NetSystems};
 #[derive(Deserialize, Debug, Clone)]
 pub struct ExitRow {
     pub id: String,
+    /// The instance Guid (hex), as ExitInfo names it; empty in older sidecars.
+    #[serde(default)]
+    pub guid: String,
     pub name: String,
     pub url: String,
     pub graphics: String,
@@ -65,11 +74,12 @@ impl AssetLoader for MapExitsLoader {
     }
 }
 
-/// One exit drawn on the map.
+/// One exit drawn on the map; an inactive one leads nowhere yet.
 #[derive(Component, Clone)]
 pub struct Exit {
     pub row: ExitRow,
     pub at: Vec3,
+    pub active: bool,
 }
 
 /// A click on the cursor's ground point this close to an exit's centre is a click
@@ -83,6 +93,10 @@ struct ExitState {
     /// The map these exits belong to, and its exit file.
     map: Option<(String, Handle<MapExits>)>,
     spawned: bool,
+    /// The server's map state revision last looked at, and the exits drawn
+    /// then (row, active): redrawn only when that list changes.
+    revision: Option<u64>,
+    shown: Vec<(usize, bool)>,
     /// The exit the player clicked, until the map changes.
     chosen: Option<Exit>,
     /// Seconds until the request may go again.
@@ -107,48 +121,78 @@ fn load_exits(mut state: ResMut<ExitState>, current: Res<CurrentMap>, assets: Re
     }
     state.map = Some((current.name.clone(), assets.load(format!("maps/{}.exits.json", current.name))));
     state.spawned = false;
+    state.revision = None;
+    state.shown.clear();
     state.chosen = None;
 }
 
+/// Which exits to draw, and active or not: the server's word when it gave one
+/// (a map event's exit only while active: off, its scene entity is not there),
+/// else the always-present exits, active.
+fn wanted(rows: &[ExitRow], props: Option<&crate::world::props::NetworkProps>) -> Vec<(usize, bool)> {
+    let announced = props.filter(|p| p.exits_announced());
+    rows.iter().enumerate().filter_map(|(i, row)| {
+        match announced.and_then(|p| p.exit_active(&row.name, &row.guid)) {
+            Some(active) => (row.event == -1 || active).then_some((i, active)),
+            None => (row.event == -1).then_some((i, true)),
+        }
+    }).collect()
+}
+
+#[allow(clippy::too_many_arguments)]
 fn spawn_exits(
     mut commands: Commands,
     mut state: ResMut<ExitState>,
     current: Res<CurrentMap>,
     exits: Res<Assets<MapExits>>,
     assets: Res<AssetServer>,
+    net: Option<NonSend<Net>>,
+    drawn: Query<Entity, With<Exit>>,
 ) {
-    if state.spawned {
-        return;
-    }
     // Children of the map root: they go with the map.
     let Some(root) = current.root else { return };
     let Some((_, handle)) = &state.map else { return };
+    let props = net.as_deref().filter(|n| !n.offline).map(|n| &n.props);
+    let revision = props.map(|p| p.revision());
+    if state.spawned && state.revision == revision {
+        return;
+    }
     let Some(list) = exits.get(handle) else {
         // A map without exits has no file.
         if assets.load_state(handle).is_failed() {
             state.spawned = true;
+            state.revision = revision;
         }
         return;
     };
-    let mut drawn = 0;
-    for row in list.0.iter().filter(|r| r.event == -1) {
+    state.revision = revision;
+    let shown = wanted(&list.0, props);
+    if state.spawned && shown == state.shown {
+        return;
+    }
+    for entity in &drawn {
+        commands.entity(entity).despawn();
+    }
+    for &(i, active) in &shown {
+        let row = &list.0[i];
         let tf = Transform::from_matrix(Mat4::from_cols_array(&row.m));
         let scene = assets.load(GltfAssetLabel::Scene(0).from_asset(
-            crate::rendering::model_variant::prop_path(&row.graphics, "active")));
-        let icon = if row.icon.is_empty() { "ui/icon_map_exit".to_owned() } else { row.icon.clone() };
-        commands.spawn((
+            crate::rendering::model_variant::prop_path(&row.graphics, if active { "active" } else { "inactive" })));
+        let mut exit = commands.spawn((
             Name::new(format!("exit {} -> {}", row.name, row.url)),
-            Exit { row: row.clone(), at: tf.translation },
+            Exit { row: row.clone(), at: tf.translation, active },
             WorldAssetRoot(scene),
             tf,
             ChildOf(root),
-            // On the location map: its door, named after where it leads.
-            crate::ui::MapIcon(icon),
-            crate::ui::MapLabel(row.url.clone()),
         ));
-        drawn += 1;
+        if active {
+            // On the location map: its door, named after where it leads.
+            let icon = if row.icon.is_empty() { "ui/icon_map_exit".to_owned() } else { row.icon.clone() };
+            exit.insert((crate::ui::MapIcon(icon), crate::ui::MapLabel(row.url.clone())));
+        }
     }
-    info!("{} exits on {} ({} drawn)", list.0.len(), current.name, drawn);
+    info!("{} exits on {} ({} drawn, {} active)", list.0.len(), current.name, shown.len(), shown.iter().filter(|(_, a)| *a).count());
+    state.shown = shown;
     state.spawned = true;
 }
 
@@ -178,7 +222,7 @@ fn click_exit(
     let flat = |a: Vec3, b: Vec3| Vec2::new(a.x - b.x, a.z - b.z).length();
     let hit = exits
         .iter()
-        .filter(|e| flat(e.at, point) <= PICK_RADIUS && (e.at.y - point.y).abs() < 3.0)
+        .filter(|e| e.active && flat(e.at, point) <= PICK_RADIUS && (e.at.y - point.y).abs() < 3.0)
         .min_by(|a, b| flat(a.at, point).total_cmp(&flat(b.at, point)));
     state.chosen = hit.cloned();
     if let Some(exit) = hit {
@@ -221,4 +265,31 @@ fn use_exit(
         exit_id: exit.row.id.clone(),
         unknown_flag_3: false,
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dsor_proto::commands::{player::{Exit as ServerExit, ExitInfo}, ServerCommand};
+
+    fn row(name: &str, guid: &str, event: i32) -> ExitRow {
+        ExitRow { id: "exit_general_01".into(), guid: guid.into(), name: name.into(), url: "a0302_wildforest".into(),
+            graphics: "gate".into(), range: 2.0, event, m: [0.0; 16], icon: String::new() }
+    }
+
+    /// Offline the always-present exits; online the server's list, inactive ones
+    /// too, and a map event's exits only when announced.
+    #[test]
+    fn the_server_says_which_exits_stand_and_lead_somewhere() {
+        let rows = [row("north", "AA", -1), row("pumpkin", "BB", 90), row("sewers", "CC", 61), row("east", "DD", -1)];
+        assert_eq!(wanted(&rows, None), vec![(0, true), (3, true)]);
+        let mut props = crate::world::props::NetworkProps::online();
+        assert_eq!(wanted(&rows, Some(&props)), vec![(0, true), (3, true)], "nothing announced yet");
+        props.receive(&ServerCommand::ExitInfo(ExitInfo { exits: vec![
+            ServerExit { name: "north".into(), destination: String::new(), value: 0, guid: vec![0xAA] },
+            ServerExit { name: "pumpkin".into(), destination: String::new(), value: 1, guid: vec![0xBB] },
+            ServerExit { name: "sewers".into(), destination: String::new(), value: 0, guid: vec![0xCC] },
+        ] }));
+        assert_eq!(wanted(&rows, Some(&props)), vec![(0, false), (1, true), (3, true)]);
+    }
 }

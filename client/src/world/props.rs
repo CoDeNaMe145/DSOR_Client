@@ -151,14 +151,60 @@ struct RemoteProp {
     visual: String,
 }
 
+/// Seconds since the epoch, now (the event window's clock too).
+pub(crate) fn unix_seconds() -> u64 {
+    #[cfg(target_arch = "wasm32")]
+    { (js_sys::Date::now() / 1000.0) as u64 }
+    #[cfg(not(target_arch = "wasm32"))]
+    { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) }
+}
+
+/// Seconds since the epoch of a civil date (UTC): EventUpdate's start and end.
+pub(crate) fn epoch(date: [u32; 6]) -> u64 {
+    let (y, m, d) = (date[0] as i64, date[1] as i64, date[2] as i64);
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    (days * 86_400 + date[3] as i64 * 3600 + date[4] as i64 * 60 + date[5] as i64).max(0) as u64
+}
+
+/// A global event the server says runs: its tags gate map content as its name
+/// does (dso_server event_system.active_event_flags: the template id and the
+/// schedule's tags), and it stops at its end, though the server never sends
+/// that (crate::ui::controls::systems::events::shown).
+#[derive(Debug, Clone, PartialEq)]
+struct RunningEvent {
+    tags: Vec<String>,
+    /// Seconds since the epoch; None without an end.
+    ends: Option<u64>,
+}
+
+/// An exit as ExitInfo (68) gives it: active or not, by its instance Guid
+/// (hex). The original merges these by name and keeps names left out
+/// (dso_server local_map_state ExitInfo: "omitted names are not removed").
+#[derive(Debug, Clone, PartialEq)]
+struct RemoteExit {
+    active: bool,
+    guid: String,
+}
+
 /// Retain announcements that arrive before the map's assets. Discard tombstones
 /// prevent the authored scene from immediately recreating a removed prop.
 #[derive(Default)]
 pub struct NetworkProps {
     online: bool,
     entries: HashMap<u32, RemoteProp>,
-    global_events: HashSet<String>,
+    global_events: HashMap<String, RunningEvent>,
     local_events: HashSet<String>,
+    /// The running global events' names and tags, for the rules.
+    active: HashSet<String>,
+    /// When the next running event ends: then `active` is made again.
+    next_end: Option<u64>,
+    /// ExitInfo's exits by lowercase name.
+    exits: HashMap<String, RemoteExit>,
     revision: u64,
 }
 fn visual_name(state: i8, variant: i32) -> &'static str {
@@ -189,7 +235,44 @@ impl NetworkProps {
     pub fn reset_map(&mut self) {
         self.entries.clear();
         self.local_events.clear();
+        self.exits.clear();
         self.revision += 1;
+    }
+
+    /// `active` and `next_end` from the running events, at `now`.
+    fn refresh_events(&mut self, now: u64) {
+        let running = self.global_events.iter().filter(|(_, e)| e.ends.is_none_or(|end| end > now));
+        self.active = running.clone().flat_map(|(name, e)| std::iter::once(name.clone()).chain(e.tags.iter().cloned())).collect();
+        self.next_end = running.filter_map(|(_, e)| e.ends).min();
+    }
+
+    /// Ends the events whose end passed: true when one did (the revision moves,
+    /// so what they gated goes). A clock compare on other frames.
+    pub(crate) fn expire(&mut self, now: u64) -> bool {
+        if self.next_end.is_none_or(|end| now < end) {
+            return false;
+        }
+        self.refresh_events(now);
+        self.revision += 1;
+        true
+    }
+
+    /// The server's word on an exit (ExitInfo), by its Guid or else its name:
+    /// None when it said nothing of it.
+    pub(crate) fn exit_active(&self, name: &str, guid: &str) -> Option<bool> {
+        let by_guid = (!guid.is_empty()).then(|| self.exits.values().find(|e| e.guid.eq_ignore_ascii_case(guid))).flatten();
+        by_guid.or_else(|| self.exits.get(&name.to_lowercase())).map(|e| e.active)
+    }
+
+    /// Whether ExitInfo came for this map: the server then says which exits are.
+    pub(crate) fn exits_announced(&self) -> bool {
+        !self.exits.is_empty()
+    }
+
+    /// A map event's flag runs (scenery event layers, crate::world::map).
+    pub(crate) fn flag_active(&self, flag: &str) -> bool {
+        let flag = flag.trim().to_lowercase();
+        self.active.contains(&flag) || self.local_events.contains(&flag)
     }
     fn insert(&mut self, entry: &PropEntry) {
         if let Some(new_guid) = guid(entry) {
@@ -238,17 +321,24 @@ impl NetworkProps {
             }
             ServerCommand::EventUpdate(update) => {
                 for e in &update.entries {
-                    let set = if e.map_local {
-                        &mut self.local_events
-                    } else {
-                        &mut self.global_events
-                    };
                     let flag = e.key.trim().to_lowercase();
-                    if e.flag {
-                        set.insert(flag);
-                    } else {
-                        set.remove(&flag);
+                    match (e.map_local, e.flag) {
+                        (true, true) => { self.local_events.insert(flag); }
+                        (true, false) => { self.local_events.remove(&flag); }
+                        (false, true) => {
+                            let tags = e.parameters.iter().map(|t| t.trim().to_lowercase()).filter(|t| !t.is_empty()).collect();
+                            let ends = (e.date[0] > 0).then(|| epoch(e.date));
+                            self.global_events.insert(flag, RunningEvent { tags, ends });
+                        }
+                        (false, false) => { self.global_events.remove(&flag); }
                     }
+                }
+                self.refresh_events(unix_seconds());
+            }
+            ServerCommand::ExitInfo(info) => {
+                for e in &info.exits {
+                    let guid = e.guid.iter().map(|b| format!("{b:02X}")).collect();
+                    self.exits.insert(e.name.trim().to_lowercase(), RemoteExit { active: e.value != 0, guid });
                 }
             }
             _ => return,
@@ -283,7 +373,7 @@ impl NetworkProps {
             if key.is_empty() {
                 continue;
             }
-            let active = self.global_events.contains(&key) || self.local_events.contains(&key);
+            let active = self.active.contains(&key) || self.local_events.contains(&key);
             if value.trim().eq_ignore_ascii_case("true") {
                 positive = true;
                 matched |= active;
@@ -409,6 +499,16 @@ struct PendingState {
     animate: bool,
 }
 
+/// Events reach their end while we stay: what they gated goes (a clock compare
+/// when none ends this frame).
+fn expire_events(net: Option<NonSendMut<crate::network::net::Net>>) {
+    let Some(mut net) = net else { return };
+    let now = unix_seconds();
+    if net.props.expire(now) {
+        info!("events: one ended at {now}");
+    }
+}
+
 pub struct PropsPlugin;
 impl Plugin for PropsPlugin {
     fn build(&self, app: &mut App) {
@@ -423,6 +523,7 @@ impl Plugin for PropsPlugin {
                     .after(crate::network::net::NetSystems)
                     .run_if(resource_exists::<CurrentMap>),
             )
+            .add_systems(Update, expire_events.after(crate::network::net::NetSystems).before(reconcile))
             .add_systems(Update, interact.after(crate::network::net::NetSystems).run_if(crate::screens::loading::gameplay_ready));
     }
 }

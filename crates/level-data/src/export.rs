@@ -58,7 +58,8 @@ pub fn client_documents(s: &Session) -> Result<Value> {
             if text(&row["ExitURL"]).is_empty() || text(&row["Graphics"]).is_empty() {
                 continue;
             }
-            exits.push(json!({"id":row["Id"],"name":text(&row["Name"]),"url":row["ExitURL"],"entry":text(&row["EntryName"]),"graphics":row["Graphics"],"range":number(&row["PickingRange"],0.),"event":number(&row["EventSetRow"],-1.) as i32,"m":m}));
+            // As tools/export_exits.py writes them: the Guid names the exit in ExitInfo.
+            exits.push(json!({"id":row["Id"],"guid":text(&row["Guid"]["$blob"]).to_uppercase(),"name":text(&row["Name"]),"url":row["ExitURL"],"entry":text(&row["EntryName"]),"graphics":row["Graphics"],"range":number(&row["PickingRange"],0.),"event":number(&row["EventSetRow"],-1.) as i32,"m":m,"icon":text(&row["LocationMapIcon"]).replace('\\', "/")}));
         }
         documents["exits.json"] = json!(exits);
     }

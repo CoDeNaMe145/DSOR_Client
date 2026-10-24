@@ -5,8 +5,9 @@ Usage: export_exits.py <export_win32> <assets>
 
 Writes maps/<map>.exits.json: a list of the level's _Instance_InteractExit rows
 (maps/<map>.db4), each
-  {id, name, url, entry, graphics, range, event, m}
+  {id, guid, name, url, entry, graphics, range, event, m}
   id        the exit's template Id (UnlockMapCommand's exit id)
+  guid      the instance Guid (hex), as ExitInfo (68) names the exit
   name      the instance Name
   url       ExitURL, the destination map (UnlockMapCommand's map id and exit URL)
   entry     EntryName, the arrival point in the destination
@@ -26,7 +27,7 @@ import json, os, sqlite3, struct, sys
 
 export, assets = sys.argv[1], sys.argv[2]
 
-COLUMNS = ["Id", "Name", "ExitURL", "EntryName", "Graphics", "PickingRange", "EventSetRow", "Transform", "LocationMapIcon"]
+COLUMNS = ["Id", "Name", "ExitURL", "EntryName", "Graphics", "PickingRange", "EventSetRow", "Transform", "LocationMapIcon", "Guid"]
 
 maps = 0
 exits = 0
@@ -39,11 +40,12 @@ for name in sorted(os.listdir(os.path.join(export, "maps"))):
     except sqlite3.Error:
         continue
     out = []
-    for rid, iname, url, entry, graphics, picking, event, transform, icon in rows:
+    for rid, iname, url, entry, graphics, picking, event, transform, icon, guid in rows:
         if not transform or len(transform) != 64 or not url or not graphics:
             continue
         out.append({
             "id": rid,
+            "guid": guid.hex().upper() if isinstance(guid, bytes) else str(guid or ""),
             "name": iname or "",
             "url": url,
             "entry": entry or "",

@@ -168,17 +168,28 @@ pub fn source_key(kind: &str) -> &str {
 }
 pub fn geometry_records(manifest: &Value) -> Value {
     let mut rows = json!({});
+    for (id, v) in placements(manifest) {
+        rows[id] = v;
+    }
+    rows
+}
+/// Each placement's id ("placement:<sha256>:<n>", the key of a map's
+/// `event_rules`), in manifest order: `instances`, then `event_instances`.
+pub fn placement_ids(manifest: &Value) -> Vec<String> {
+    placements(manifest).map(|(id, _)| id).collect()
+}
+fn placements(manifest: &Value) -> impl Iterator<Item = (String, Value)> + '_ {
     let mut counts = std::collections::HashMap::new();
-    for row in array(&manifest["instances"]).chain(array(&manifest["event_instances"])) {
+    array(&manifest["instances"]).chain(array(&manifest["event_instances"])).map(move |row| {
         let mut v = row.clone();
         let index = v.as_object_mut().unwrap().remove("m").unwrap();
         v["model"] = manifest["models"][index.as_u64().unwrap() as usize].clone();
         let hash = digest(&v);
         let count = counts.entry(hash.clone()).or_insert(0);
-        rows[format!("placement:{hash}:{count}")] = v;
+        let id = format!("placement:{hash}:{count}");
         *count += 1;
-    }
-    rows
+        (id, v)
+    })
 }
 pub fn manifest_from(base: &Value, rows: &Value, name: &str) -> Value {
     let mut result = if base.is_object() {

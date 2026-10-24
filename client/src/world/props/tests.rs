@@ -199,7 +199,8 @@ fn map_change_clears_props_and_local_flags_but_keeps_global_events() {
     net.reset_map();
     assert!(net.entries.is_empty());
     assert!(net.local_events.is_empty());
-    assert!(net.global_events.contains("christmas"));
+    assert!(net.global_events.contains_key("christmas"));
+    assert!(net.flag_active("christmas"));
     assert!(net.revision > revision);
 }
 
@@ -252,4 +253,68 @@ fn prop_clicks_wait_for_a_game_session() {
     app.update();
     app.update();
     assert!(app.world().resource::<PropTarget>().pending.is_none());
+}
+
+/// dso_server event_system.active_event_flags: a running event gates map content
+/// by its name and by its schedule's tags; it stops at its end, which the server
+/// never announces.
+#[test]
+fn running_events_gate_by_name_and_tags_until_their_end() {
+    let mut net = NetworkProps::online();
+    let now = unix_seconds();
+    let date = |at: u64| {
+        let (days, secs) = ((at / 86_400) as i64, at % 86_400);
+        // Civil date from days since the epoch (the inverse of `epoch`).
+        let z = days + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z - era * 146_097;
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = doy - (153 * mp + 2) / 5 + 1;
+        let m = if mp < 10 { mp + 3 } else { mp - 9 };
+        let y = yoe + era * 400 + i64::from(m <= 2);
+        [y as u32, m as u32, d as u32, (secs / 3600) as u32, (secs / 60 % 60) as u32, (secs % 60) as u32]
+    };
+    assert_eq!(epoch(date(now)), now);
+    net.receive(&ServerCommand::EventUpdate(EventUpdate { entries: vec![ScheduleEntry {
+        key: "Event_Winter_2026".into(), flag: true, parameters: vec!["christmas_2012".into()], date: date(now + 3600), ..default()
+    }] }));
+    assert!(net.flag_active("event_winter_2026"));
+    assert!(net.flag_active("christmas_2012"), "a tag runs as its event does");
+    assert!(net.rule_enabled("christmas_2012=True;"));
+    assert!(!net.rule_enabled("christmas_2012_silent=True;"));
+    let revision = net.revision;
+    assert!(!net.expire(now + 60), "still running");
+    assert_eq!(net.revision, revision);
+    assert!(net.expire(now + 3600), "its end passed");
+    assert!(net.revision > revision);
+    assert!(!net.flag_active("christmas_2012") && !net.flag_active("event_winter_2026"));
+    // An end already past, or none.
+    event(&mut net, "anniversary_event", true, false);
+    assert!(net.flag_active("anniversary_event"));
+    net.receive(&ServerCommand::EventUpdate(EventUpdate { entries: vec![ScheduleEntry {
+        key: "halloween_event_01".into(), flag: true, date: date(now - 60), ..default()
+    }] }));
+    assert!(!net.flag_active("halloween_event_01"));
+}
+
+/// ExitInfo (68): every exit of the map, active or not, by Guid; merged by name.
+#[test]
+fn exit_info_says_which_exits_lead_somewhere_until_the_map_changes() {
+    use dsor_proto::commands::player::{Exit, ExitInfo};
+    let mut net = NetworkProps::online();
+    assert!(!net.exits_announced());
+    assert_eq!(net.exit_active("exit_general_01", "AB01"), None);
+    net.receive(&ServerCommand::ExitInfo(ExitInfo { exits: vec![
+        Exit { name: "Exit_General_01".into(), destination: "a0302_wildforest".into(), value: 1, guid: vec![0xAB, 0x01] },
+        Exit { name: "a0200_to_e_hal_01".into(), destination: "e_hal_01_pumpkin_dun".into(), value: 0, guid: vec![0xCD, 0x02] },
+    ] }));
+    assert!(net.exits_announced());
+    assert_eq!(net.exit_active("someone_else", "ab01"), Some(true), "by Guid first");
+    assert_eq!(net.exit_active("exit_general_01", ""), Some(true), "else by name");
+    assert_eq!(net.exit_active("a0200_to_e_hal_01", "CD02"), Some(false));
+    assert_eq!(net.exit_active("never_sent", "EEEE"), None);
+    net.reset_map();
+    assert!(!net.exits_announced());
 }

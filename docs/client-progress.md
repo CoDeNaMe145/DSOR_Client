@@ -1581,3 +1581,56 @@ Offline captures (debug build, Kingscity, `--npcs --play 1 0`,
 
 `profile_native_maps.py kingscity quest-screen`: `ui work` 0 after loading.
 Captures and replays: `.local/logs/quest-screen/`. Not yet seen online.
+
+## Map state as the server sets it: its maps, scenery events, exits (2026-10-25)
+
+Testing the Windows release (docs/release.md) on the live server, Kingshill
+showed NPCs and props the server never meant to: the Halloween, Christmas and
+anniversary NPCs among them.
+
+- **The cause:** the CDN's October 22 build gave every row of its 391 map
+  databases a new `Guid`. The server and the October 20 client (the dev
+  `assets/`) still share the old ones; the release's conversion of the CDN build
+  shared none (0 of Kingshill's 119 NPCs).
+- **Why it showed:** the live server sends every NPC of a map, those of
+  events not running too, and leaves hiding them to the client
+  (`player_init_world.py`, `include_inactive_event_sets=True`). The client finds
+  an NPC's event rule in `npcs.json` by Guid; with no match nothing hid the 68
+  NPCs of events not running, and none faced its way. Server props did not
+  bind either.
+- **The fix:** the account service publishes its map databases as it does
+  `static.db4` (dso_server `services/content.py` `MapDatabasesPublisher`,
+  `POST /api/content/maps`, live tree backup `dso_server_backup_2026-10-25-maps`).
+  The client installs them at sign-in (`dsor_game_data::adopt_server_data`,
+  `.dsor/server-maps.txt`) and a release refreshes every table made from
+  `static.db4` or `maps/*.db4`, the stamp naming the bundle
+  (docs/game-data.md, "The account server's databases").
+
+The client's own map state, which also showed what the server never sent:
+
+- **Scenery events** (`world/map.rs`): the manifest's `event_rules` (base
+  placements gone while a flag runs: 458 in Kingshill) and `event_instances`
+  (the levels' `.eve` layers: 2,740 in Kingshill, among them the fairground the
+  server unlocks for good) were never read. Base placements now go and event
+  placements come with the server's flags; a change rebuilds only the cells
+  whose placements changed. The ids are level-data's (`placement_ids`; all 458
+  Kingshill rules match). The browser build keeps the base scenery.
+- **Exits** (`world/exits.rs`): ExitInfo (68), decoded but unused, now says
+  which exits stand: an always-present one active or inactive (not usable), a
+  map event's only while active. `exits.json` carries each exit's Guid (both
+  exporters); older sidecars match by name.
+- **Event state** (`world/props.rs` `NetworkProps`): a running event's tags gate
+  content as its name does (dso_server `active_event_flags`), and it ends at its
+  end time, which the server never sends; the revision moves then, so what it
+  gated goes.
+
+Validation: `cargo test -p dsor-client` 439 passed (new: scenery conditions,
+event tags and expiry, ExitInfo, which exits stand); `-p dsor-game-data` 26 (new:
+map bundles installed, kept, fetched again, refused); `-p dsor-level-data`
+`--include-ignored` (every Kingshill rule names a placement); dso_server
+`test_account_map_dbs.py` 5 + static db tests 12. Against the live tree's account
+service (another registry): the release's game data took the 391 maps in 1.8 s,
+then `--database-only` (5.0 min) left Kingshill's NPCs 119/119, exits 21/21 and
+props 13/13 on the server's Guids. `profile_native_maps.py kingscity`: 140-160
+FPS (the build before: 114-130 in the same warm run), `ui work` 0 after loading.
+Not yet seen online: the live server was down after a crash.

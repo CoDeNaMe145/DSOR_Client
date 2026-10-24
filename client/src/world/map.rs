@@ -11,6 +11,15 @@
 //! which is what lets Bevy batch them, and no placement triggers a load of its own.
 //! Frustum culling is Bevy's default (every mesh gets an `Aabb` and is tested
 //! against the camera frustum); nothing here disables it.
+//!
+//! Map events change the scenery (crates/level-data events.rs writes them into
+//! the manifest): a base placement with an `event_rules` entry ("christmas_2012=
+//! False;": the .map's event mask) goes while one of its flags runs, and an
+//! `event_instances` placement (the level's `<map>_<flag>.eve`: Christmas snow,
+//! Kingshill's fairground, a purified well) stands only while its flag runs. The
+//! running flags are the server's (EventUpdate, crate::world::props::NetworkProps;
+//! none offline). A change rebuilds only the cells whose placements changed, when
+//! the server's map state moves, never a frame without one.
 
 use bevy::asset::{io::Reader, AssetLoader, LoadContext, LoadState, RecursiveDependencyLoadState};
 use bevy::gltf::{Gltf, GltfMaterial, GltfMesh, GltfNode};
@@ -71,8 +80,36 @@ pub struct MapGroup {
     pub kind: u32,
 }
 
+/// When a placement stands.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Condition {
+    Always,
+    /// A base placement's event rule ("flag=False;..."): while it holds.
+    Rule(String),
+    /// An event layer's placement: while its flag runs.
+    Event(String),
+}
+
+impl Condition {
+    pub fn holds(&self, events: &crate::world::props::NetworkProps) -> bool {
+        match self {
+            Condition::Always => true,
+            Condition::Rule(rule) => events.rule_enabled(rule),
+            Condition::Event(flag) => events.flag_active(flag),
+        }
+    }
+}
+
+/// An event layer's placement in the manifest (`event_instances`).
+#[derive(Debug, Deserialize)]
+struct EventPlacement {
+    #[serde(flatten)]
+    placement: Placement,
+    event: String,
+}
+
 /// A whole `.map.json` manifest. Fields the renderer does not use yet (nav
-/// blockers, events) are skipped by serde.
+/// blockers) are skipped by serde.
 #[derive(Asset, TypePath, Debug, Deserialize)]
 pub struct MapManifest {
     pub map: String,
@@ -82,12 +119,58 @@ pub struct MapManifest {
     /// Model references, relative to the asset root without extension
     /// (`t001_hub/tile_wall_corner_02` -> `t001_hub/tile_wall_corner_02.glb`).
     pub models: Vec<String>,
+    /// The base placements, then (once loaded) the event layers' placements.
     pub instances: Vec<Placement>,
     #[serde(default)]
     pub groups: Vec<MapGroup>,
+    #[serde(default)]
+    event_instances: Vec<EventPlacement>,
+    /// Base placements' rules by level-data placement id ("placement:<sha256>:<n>").
+    #[serde(default)]
+    event_rules: HashMap<String, String>,
+    /// When each of `instances` stands.
+    #[serde(skip)]
+    pub conditions: Vec<Condition>,
 }
 
 impl MapManifest {
+    /// Parses a manifest and joins its event scenery to the placements. The ids
+    /// of the base placements are level-data's (digests of each row), so the
+    /// event rules need its code: the browser build keeps the base scenery as is
+    /// and draws no event layer.
+    pub fn parse(bytes: &[u8]) -> serde_json::Result<Self> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let value: serde_json::Value = serde_json::from_slice(bytes)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut manifest: MapManifest = serde_json::from_value(value.clone())?;
+        #[cfg(target_arch = "wasm32")]
+        let mut manifest: MapManifest = serde_json::from_slice(bytes)?;
+        manifest.conditions = vec![Condition::Always; manifest.instances.len()];
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if !manifest.event_rules.is_empty() {
+                let base = manifest.instances.len();
+                for (i, id) in dsor_level_data::placement_ids(&value).into_iter().take(base).enumerate() {
+                    if let Some(rule) = manifest.event_rules.get(&id) {
+                        manifest.conditions[i] = Condition::Rule(rule.clone());
+                    }
+                }
+            }
+            for event in std::mem::take(&mut manifest.event_instances) {
+                manifest.instances.push(event.placement);
+                manifest.conditions.push(Condition::Event(event.event));
+            }
+        }
+        manifest.event_rules = HashMap::new();
+        manifest.event_instances = Vec::new();
+        Ok(manifest)
+    }
+
+    /// When placement `i` stands (always for a manifest not read by [`Self::parse`]).
+    pub fn condition(&self, i: usize) -> &Condition {
+        self.conditions.get(i).unwrap_or(&Condition::Always)
+    }
+
     /// The visibility group (type 0) a placement belongs to.
     pub fn visibility_group(&self, placement: &Placement) -> Option<u32> {
         let index = usize::try_from(placement.g).ok()?;
@@ -111,7 +194,7 @@ impl AssetLoader for MapManifestLoader {
     ) -> Result<MapManifest, Self::Error> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
-        serde_json::from_slice(&bytes).map_err(std::io::Error::other)
+        MapManifest::parse(&bytes).map_err(std::io::Error::other)
     }
 
     fn extensions(&self) -> &[&str] {
@@ -165,6 +248,13 @@ pub struct CurrentMap {
     /// True once the requested nearby cells have been built.
     pub spawned: bool,
     pub instances: usize,
+    /// The placements standing only under some events, and whether each does now.
+    conditional: Vec<(usize, bool)>,
+    /// The server's map state revision the scenery follows (None offline).
+    events_revision: Option<Option<u64>>,
+    /// Cells taken down for an event change are being built again: streaming
+    /// goes on, `spawned` (the map is ready, for everyone else) stays.
+    rebuild: bool,
 }
 
 impl CurrentMap {
@@ -188,6 +278,9 @@ impl CurrentMap {
             canonical_refractions: Default::default(),
             spawned: false,
             instances: 0,
+            conditional: Vec::new(),
+            events_revision: None,
+            rebuild: false,
         }
     }
 
@@ -238,7 +331,7 @@ impl Plugin for MapPlugin {
     fn build(&self, app: &mut App) {
         app.init_asset::<MapManifest>()
             .init_asset_loader::<MapManifestLoader>()
-            .add_systems(Update, (start_map, stream_models, cull_cells).chain().run_if(resource_exists::<CurrentMap>));
+            .add_systems(Update, (start_map, follow_events, stream_models, cull_cells).chain().run_if(resource_exists::<CurrentMap>));
     }
 }
 
@@ -250,6 +343,7 @@ fn start_map(
     manifests: Res<Assets<MapManifest>>,
     mut current: ResMut<CurrentMap>,
     mut cameras: Query<&mut Transform, (With<Camera3d>, Without<crate::rendering::highlight::HighlightCamera>)>,
+    net: Option<NonSend<crate::network::net::Net>>,
 ) {
     if current.root.is_some() || current.spawned {
         return;
@@ -262,6 +356,8 @@ fn start_map(
         return;
     };
 
+    let none = crate::world::props::NetworkProps::default();
+    let events = net.as_deref().map_or(&none, |n| &n.props);
     let mut by_model = vec![Vec::new(); manifest.models.len()];
     for (i, inst) in manifest.instances.iter().enumerate() {
         // The level editor's aids (helpers/ruler_200x200...: a black and white
@@ -270,12 +366,21 @@ fn start_map(
         if manifest.models.get(inst.m).is_some_and(|m| m.starts_with("helpers/")) {
             continue;
         }
+        let condition = manifest.condition(i);
+        let stands = condition.holds(events);
+        if *condition != Condition::Always {
+            current.conditional.push((i, stands));
+        }
+        if !stands {
+            continue;
+        }
         if let Some(list) = by_model.get_mut(inst.m) {
             list.push(i);
             current.by_cell.entry(cell_of(game_to_bevy(inst.p))).or_default().push(i);
         }
     }
     current.by_model = by_model;
+    current.events_revision = Some(net.as_deref().map(|n| n.props.revision()));
     current.root = Some(
         commands
             .spawn((MapRoot, Name::new(manifest.map.clone()), Transform::default(), Visibility::default()))
@@ -293,11 +398,67 @@ fn start_map(
         }
     }
     info!(
-        "map {}: {} placements of {} distinct models",
+        "map {}: {} placements of {} distinct models, {} under map events",
         manifest.map,
         manifest.instances.len(),
-        manifest.models.len()
+        manifest.models.len(),
+        current.conditional.len()
     );
+}
+
+/// The server's map events moved (EventUpdate, a map change, an event's end):
+/// the placements whose condition changed come or go, and only their cells are
+/// built again. An integer compare on other frames.
+fn follow_events(
+    mut commands: Commands,
+    manifests: Res<Assets<MapManifest>>,
+    mut current: ResMut<CurrentMap>,
+    net: Option<NonSend<crate::network::net::Net>>,
+) {
+    let Some(revision) = current.events_revision else { return };
+    let now = net.as_deref().map(|n| n.props.revision());
+    if revision == now {
+        return;
+    }
+    current.events_revision = Some(now);
+    let Some(manifest) = manifests.get(&current.manifest) else { return };
+    let none = crate::world::props::NetworkProps::default();
+    let events = net.as_deref().map_or(&none, |n| &n.props);
+    let mut changed = HashSet::new();
+    let mut conditional = std::mem::take(&mut current.conditional);
+    for (i, stands) in &mut conditional {
+        let now = manifest.condition(*i).holds(events);
+        if now == *stands {
+            continue;
+        }
+        *stands = now;
+        let inst = &manifest.instances[*i];
+        let cell = cell_of(game_to_bevy(inst.p));
+        if now {
+            current.by_cell.entry(cell).or_default().push(*i);
+            if let Some(list) = current.by_model.get_mut(inst.m) { list.push(*i); }
+        } else {
+            if let Some(list) = current.by_cell.get_mut(&cell) { list.retain(|j| j != i); }
+            if let Some(list) = current.by_model.get_mut(inst.m) { list.retain(|j| j != i); }
+        }
+        changed.insert(cell);
+    }
+    current.conditional = conditional;
+    if changed.is_empty() {
+        return;
+    }
+    // Emptied cells stay listed (streaming indexes them): they build empty.
+    for cell in &changed {
+        if let Some(content) = current.contents.remove(cell) {
+            commands.entity(content).try_despawn();
+        }
+    }
+    // The models those cells now want are loaded with them.
+    let wanted_models: HashSet<usize> = current.wanted_cells.iter().filter_map(|k| current.by_cell.get(k))
+        .flat_map(|list| list.iter().map(|&i| manifest.instances[i].m)).collect();
+    current.wanted_models = wanted_models;
+    current.rebuild = true;
+    info!("map {}: map events changed {} cells", current.name, changed.len());
 }
 
 /// Load models needed by nearby cells, with bounded IO and cell creation.
@@ -332,13 +493,13 @@ fn stream_models(
     let Some(manifest) = manifests.get(&current.manifest) else { return };
     let Ok(cam) = cameras.single() else { return };
     let focus = camera_focus(cam, players.iter().next().map(|p| p.translation()), manifest.center[1]);
-    if current.spawned && current.stream_focus.is_some_and(|p| p.xz().distance_squared(focus.xz()) < 1.0) { return; }
+    if current.spawned && !current.rebuild && current.stream_focus.is_some_and(|p| p.xz().distance_squared(focus.xz()) < 1.0) { return; }
     current.stream_focus = Some(focus);
     let wanted: HashSet<_> = current.by_cell.keys().copied().filter(|key| {
         let radius = if current.wanted_cells.contains(key) { UNLOAD_DISTANCE } else { LOAD_DISTANCE };
         cell_distance(*key, focus) <= radius
     }).collect();
-    if current.spawned && wanted == current.wanted_cells { return; }
+    if current.spawned && !current.rebuild && wanted == current.wanted_cells { return; }
     if wanted != current.wanted_cells {
         let leaving: Vec<_> = current.contents.keys().copied().filter(|k| !wanted.contains(k)).collect();
         for key in leaving {
@@ -479,7 +640,11 @@ fn stream_models(
     if ready && !current.spawned {
         info!("map {}: {} of {} cells resident, {} of {} models loaded", current.name, current.contents.len(), current.by_cell.len(), current.models.len(), manifest.models.len());
     }
-    current.spawned = ready;
+    // An event change's cells: the map stays ready while they come back.
+    if ready {
+        current.rebuild = false;
+    }
+    current.spawned = ready || (current.spawned && current.rebuild);
     current.instances = current.contents.keys().map(|k| current.by_cell[k].len()).sum();
 }
 
@@ -691,6 +856,39 @@ pub(crate) fn flat_surfaces(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// crates/level-data events.rs: a base placement goes while a flag of its
+    /// rule runs, an event layer's placement stands only while its flag runs.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn map_events_take_base_scenery_away_and_bring_their_own() {
+        let mut value = serde_json::json!({
+            "map": "test", "center": [0, 0, 0], "extents": [10, 10, 10], "models": ["props/tree", "props/snowman"],
+            "instances": [
+                {"m": 0, "p": [1.0, 0.0, 1.0], "r": [0.0, 0.0, 0.0, 1.0], "s": [1.0, 1.0, 1.0], "n": "", "g": -1, "col": false},
+                {"m": 0, "p": [5.0, 0.0, 5.0], "r": [0.0, 0.0, 0.0, 1.0], "s": [1.0, 1.0, 1.0], "n": "", "g": -1, "col": false}
+            ],
+            "event_instances": [
+                {"m": 1, "p": [2.0, 0.0, 2.0], "r": [0.0, 0.0, 0.0, 1.0], "s": [1.0, 1.0, 1.0], "n": "", "g": -1, "col": false, "event": "christmas_2012"}
+            ],
+            "event_rules": {}
+        });
+        let second = dsor_level_data::placement_ids(&value)[1].clone();
+        value["event_rules"][second] = serde_json::json!("christmas_2012=False;");
+        let manifest = MapManifest::parse(&serde_json::to_vec(&value).unwrap()).unwrap();
+        assert_eq!(manifest.instances.len(), 3, "the event layer joins the placements");
+        assert_eq!(manifest.conditions, vec![Condition::Always, Condition::Rule("christmas_2012=False;".into()),
+            Condition::Event("christmas_2012".into())]);
+        let mut events = crate::world::props::NetworkProps::online();
+        let stand = |events: &crate::world::props::NetworkProps| (0..3).map(|i| manifest.condition(i).holds(events)).collect::<Vec<_>>();
+        assert_eq!(stand(&events), [true, true, false], "no event runs");
+        events.receive(&dsor_proto::commands::ServerCommand::EventUpdate(dsor_proto::commands::player::EventUpdate {
+            entries: vec![dsor_proto::commands::player::ScheduleEntry { key: "christmas_2012".into(), flag: true, ..default() }] }));
+        assert_eq!(stand(&events), [true, false, true], "winter: the tree gives way to the snowman");
+        // A manifest read without parse (tests elsewhere) stands as written.
+        let plain: MapManifest = serde_json::from_value(value).unwrap();
+        assert_eq!(*plain.condition(1), Condition::Always);
+    }
 
     #[test]
     fn visibility_groups_are_the_type_0_groups() {
