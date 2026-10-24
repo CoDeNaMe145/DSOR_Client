@@ -586,6 +586,7 @@ impl Plugin for SkillsPlugin {
             .init_resource::<CameraShake>()
             .init_resource::<TestCastClock>()
             .init_resource::<StatusHolds>()
+            .init_resource::<CastBar>()
             .init_resource::<preload::FxPreload>()
             .add_systems(Startup, preload::setup)
             .add_systems(Update, preload::update.after(crate::network::net::NetSystems))
@@ -2982,6 +2983,14 @@ const HOLDING_STATUSES: [&str; 2] = ["resurrect_self", "map_respawn"];
 ///   cancel it, at least you can't cancel it by moving").
 const INTERRUPTIBLE_ANIMATIONS: [&str; 1] = ["hometown_teleport"];
 
+/// The local player's cast under way (a mount, the town portal): its start and
+/// end on Time, for the original's cast bar (interface castbar01,
+/// crate::ui update_fills); None when none runs or walking broke it off.
+/// EVIDENCE: the user's release261_192 recordings: a blue bar under the player
+///   while a mount is summoned.
+#[derive(Resource, Default)]
+pub struct CastBar(pub Option<(f32, f32)>);
+
 /// Statuses just started on an actor with an animation or a hold: (holder,
 /// animation state or "", seconds), for hold_for_status.
 #[derive(Resource, Default)]
@@ -2992,6 +3001,7 @@ fn hold_for_status(
     mut holds: ResMut<StatusHolds>,
     mut playing: Local<Vec<(Entity, String, f32)>>,
     mut actors: Query<(&mut CharacterAnim, Option<&mut LocalPlayer>, Option<&crate::monsters::Monster>)>,
+    mut cast: ResMut<CastBar>,
 ) {
     // Its animation played once: back to Idle when the effect ends (nothing else
     // ends a state set this way, and the actor stood frozen in its last pose), or
@@ -3002,6 +3012,10 @@ fn hold_for_status(
             && actors.get(*holder).is_ok_and(|(_, local, _)| local.is_some_and(|p| p.target.is_some()));
         if now < *until && !walked {
             return true;
+        }
+        // The player's cast over: its bar goes.
+        if INTERRUPTIBLE_ANIMATIONS.contains(&animation.as_str()) && actors.get(*holder).is_ok_and(|(_, local, _)| local.is_some()) && cast.0.is_some() {
+            cast.0 = None;
         }
         if let Ok((mut anim, _, _)) = actors.get_mut(*holder) {
             if !anim.dead && anim.state == AnimState::Named(animation.clone()) {
@@ -3014,6 +3028,7 @@ fn hold_for_status(
         let Ok((mut anim, local, monster)) = actors.get_mut(holder) else { continue };
         if monster.is_some_and(|m| !m.is_alive(&anim)) { continue; }
         let interruptible = INTERRUPTIBLE_ANIMATIONS.contains(&animation.as_str());
+        if interruptible && local.is_some() { cast.0 = Some((now, now + seconds)); }
         if !animation.is_empty() {
             anim.dead = false;
             anim.state = AnimState::Named(animation.clone());
@@ -3281,7 +3296,7 @@ mod npc_residency_tests {
     #[test]
     fn status_animation_received_without_a_rig_expires_before_reentry() {
         let mut app = App::new();
-        app.insert_resource(Time::<()>::default()).init_resource::<StatusHolds>()
+        app.insert_resource(Time::<()>::default()).init_resource::<StatusHolds>().init_resource::<CastBar>()
             .add_systems(Update, hold_for_status);
         let root = app.world_mut().spawn((CharacterAnim::default(), crate::actors::npc::NpcVisualPending)).id();
         app.world_mut().resource_mut::<StatusHolds>().0.push((root, "Stunned".into(), 1.0));
@@ -3485,7 +3500,7 @@ mod bullet_tests {
     #[test]
     fn a_mount_cast_does_not_hold_the_player_and_walking_ends_it_but_a_stun_holds() {
         let mut app = App::new();
-        app.init_resource::<Time>().init_resource::<StatusHolds>().add_systems(Update, hold_for_status);
+        app.init_resource::<Time>().init_resource::<StatusHolds>().init_resource::<CastBar>().add_systems(Update, hold_for_status);
         let cast = app.world_mut().spawn((CharacterAnim::default(), LocalPlayer::default())).id();
         let stun = app.world_mut().spawn((CharacterAnim::default(), LocalPlayer::default())).id();
         app.world_mut().resource_mut::<StatusHolds>().0.extend([(cast, "hometown_teleport".into(), 6.0), (stun, "Stunned".into(), 2.0)]);
@@ -3493,15 +3508,17 @@ mod bullet_tests {
         assert_eq!(app.world().get::<LocalPlayer>(cast).unwrap().casting, 0.0, "free to walk");
         assert_eq!(app.world().get::<LocalPlayer>(stun).unwrap().casting, 2.0, "a stun still holds");
         assert_eq!(app.world().get::<CharacterAnim>(cast).unwrap().state, AnimState::Named("hometown_teleport".into()));
+        assert!(app.world().resource::<CastBar>().0.is_some(), "its bar shows");
         app.world_mut().get_mut::<LocalPlayer>(cast).unwrap().target = Some(Vec3::X);
         app.update();
         assert_eq!(app.world().get::<CharacterAnim>(cast).unwrap().state, AnimState::Idle, "walking breaks it off");
+        assert!(app.world().resource::<CastBar>().0.is_none(), "and its bar goes");
     }
 
     #[test]
     fn late_status_cannot_revive_a_dead_monster_or_replace_its_death_pose() {
         let mut app = App::new();
-        app.init_resource::<Time>().init_resource::<StatusHolds>();
+        app.init_resource::<Time>().init_resource::<StatusHolds>().init_resource::<CastBar>();
         let mut anim = CharacterAnim::default();
         anim.dead = true;
         anim.state = AnimState::Death;

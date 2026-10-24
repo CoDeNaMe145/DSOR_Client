@@ -442,6 +442,8 @@ enum Gauge {
     Wisdom,
     /// A party member's health (groupwindow row n; controls::party).
     Group(u8),
+    /// The player's cast under way (castbar01 TeleportProgressBar).
+    Cast,
 }
 
 impl Gauge {
@@ -455,6 +457,7 @@ impl Gauge {
             Self::HealthBar => 4,
             Self::ResourceBar => 5,
             Self::Wisdom => 6,
+            Self::Cast => 7,
             Self::Group(n) => 16 + n,
         }
     }
@@ -647,7 +650,7 @@ impl Plugin for UiPlugin {
                 .before(bevy::sprite_render::check_entities_needing_specialization::<UiMaterial>))
             .add_systems(
                 Update,
-                ((dialogue::sync, controls::party::sync, controls::quests::sync, controls::systems::sync, controls::currency::sync_bar, controls::message::sync, spawn_windows, controls::sync_chat).chain(), controls::spells::sync, controls::items::sync, (controls::items::pins::update, controls::keyboard).chain(), controls::interact, (controls::settings::sync, controls::settings::sliders, controls::hotbar::input, controls::spells::apply_drop, controls::stickers::apply_drop).chain(), read_figures, controls::edit_text, (controls::items::input, controls::items::sell_cursor, controls::consent::sync).chain(), controls::order_windows, (update_fills, (update_values, fit_texts).chain(), update_slots, (local_map::update, local_map::update_markers, local_map::appearance).chain(), (controls::effects::fixture, controls::effects::sync, controls::effects::draw).chain()), controls::chat_rows, controls::sheet::rows, controls::paint, (controls::items::render, controls::items::destroy_dialog), (controls::spells::overlay, controls::items::overlay, controls::tooltips), show_hover_window, death_dialog, (controls::trade::sync, controls::social::column, controls::social::context_menu, controls::social::answer, controls::logout::dialog, controls::travel::dialog, controls::access::dialog, controls::systems::send, controls::systems::talents::dialogs, controls::social::dialogs, controls::trade::render).chain()).chain().after(crate::actors::monsters::MonsterHoverInfo).before(crate::network::net::NetSystems).run_if(crate::screens::loading::gameplay_ready),
+                ((dialogue::sync, controls::party::sync, controls::quests::sync, controls::systems::sync, controls::currency::sync_bar, controls::message::sync, spawn_windows, controls::sync_chat).chain(), controls::spells::sync, controls::items::sync, (controls::items::pins::update, controls::keyboard).chain(), controls::interact, (controls::settings::sync, controls::settings::sliders, controls::hotbar::input, controls::spells::apply_drop, controls::stickers::apply_drop).chain(), read_figures, controls::edit_text, (controls::items::input, controls::items::sell_cursor, controls::consent::sync).chain(), controls::order_windows, (update_fills, (update_values, fit_texts).chain(), update_slots, (local_map::update, local_map::update_markers, local_map::appearance).chain(), (controls::effects::fixture, controls::effects::sync, controls::effects::draw).chain()), controls::chat_rows, controls::sheet::rows, controls::paint, (controls::items::render, controls::items::destroy_dialog), (controls::spells::overlay, controls::items::overlay, controls::tooltips, cast_bar_window), show_hover_window, death_dialog, (controls::trade::sync, controls::social::column, controls::social::context_menu, controls::social::answer, controls::logout::dialog, controls::travel::dialog, controls::access::dialog, controls::systems::send, controls::systems::talents::dialogs, controls::social::dialogs, controls::trade::render).chain()).chain().after(crate::actors::monsters::MonsterHoverInfo).before(crate::network::net::NetSystems).run_if(crate::screens::loading::gameplay_ready),
             );
         // The 3D previews: once this frame's clicks moved the pages and the
         // views were rebuilt.
@@ -698,6 +701,7 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>, mut quest_ui: ResMut<
     loaded.layouts.push((assets.load(format!("interface/{}.ui.json", controls::logout::WINDOW)), 612.0, None));
     loaded.layouts.push((assets.load(format!("interface/{}.ui.json", controls::travel::WINDOW)), 613.0, None));
     loaded.layouts.push((assets.load(format!("interface/{}.ui.json", controls::access::WINDOW)), 470.0, None));
+    loaded.layouts.push((assets.load(format!("interface/{CAST_WINDOW}.ui.json")), 590.0, None));
     loaded.layouts.push((assets.load("interface/settingswindow2.ui.json"), 550.0, None));
     loaded.layouts.push((assets.load(format!("interface/{CHAT_WINDOW}.ui.json")), CHAT_DEPTH, None));
     loaded.layouts.push((assets.load(format!("interface/{CHAT_MENU}.ui.json")), CHAT_DEPTH + 3.0, None));
@@ -750,6 +754,9 @@ fn gauge_of(id: &str) -> Option<Gauge> {
     let parent = id.rsplit('/').nth(1).unwrap_or("");
     if parent == "Healthbar" && id.ends_with("/progress") {
         return Some(Gauge::TargetHealth);
+    }
+    if parent == "TeleportProgressBar" && id.ends_with("/progress") {
+        return Some(Gauge::Cast);
     }
     match parent {
         "Health" if id.ends_with("/progress") => Some(Gauge::HealthBar),
@@ -1590,10 +1597,12 @@ fn update_fills(
     mut fills: Query<(&mut Fill, &MeshMaterial2d<UiMaterial>, &Element)>,
     roots: Query<Ref<Transform>, With<Window2018>>,
     mut materials: ResMut<Assets<UiMaterial>>,
+    (cast, time): (Res<crate::gameplay::skills::CastBar>, Res<Time>),
 ) {
     for (mut f, m, element) in &mut fills {
         let Ok(root) = roots.get(element.root) else { continue };
         let v = match f.which {
+            Gauge::Cast => cast.0.map_or(0.0, |(start, end)| ((time.elapsed_secs() - start) / (end - start).max(1e-3)).clamp(0.0, 1.0)),
             Gauge::Health | Gauge::HealthBar => fraction(figures.health),
             Gauge::Resource | Gauge::ResourceBar => fraction(figures.resource),
             Gauge::Xp => figures.xp.clamp(0.0, 1.0),
@@ -1794,6 +1803,18 @@ fn slot_art(slot: usize, rect: [f32; 4], shade: [f32; 4]) -> Art {
         idx.extend([0, 1 + i, 1 + (i + 1) % SIDES]);
     }
     Art { tex: None, pos, uv, color: shade.repeat(SIDES as usize + 1), idx, saturation: 1.0 }
+}
+
+/// The original's cast bar, under the player while a mount or the town portal is
+/// cast (crate::gameplay::skills::CastBar; its bar is Gauge::Cast).
+const CAST_WINDOW: &str = "castbar01";
+
+/// The cast bar shows only while a cast runs (written only when that changes).
+fn cast_bar_window(cast: Res<crate::gameplay::skills::CastBar>, mut windows: Query<(&Window2018, &mut Visibility)>) {
+    let want = if cast.0.is_some() { Visibility::Inherited } else { Visibility::Hidden };
+    for (w, mut v) in &mut windows {
+        if w.0 == CAST_WINDOW && *v != want { *v = want; }
+    }
 }
 
 /// Steps of the cooldown sweep: a redraw every 1/64 of the cooldown.

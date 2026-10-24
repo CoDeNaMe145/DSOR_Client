@@ -1528,7 +1528,7 @@ mod tests {
         app.init_resource::<Figures>().init_resource::<party::Party>().init_resource::<quests::Quests>().init_resource::<crate::gameplay::quests::QuestUi>().init_resource::<crate::ui::controls::systems::Views>()
             .init_resource::<crate::actors::monsters::HoverInfo>()
             .init_resource::<Screen>()
-            .init_resource::<Assets<UiMaterial>>()
+            .init_resource::<Assets<UiMaterial>>().init_resource::<crate::gameplay::skills::CastBar>().init_resource::<Time>()
             .add_systems(Update, update_fills);
         app.world_mut().resource_mut::<Figures>().xp = 0.25;
         let root = app.world_mut().spawn((Window2018("charactersheet".into()), Transform::default())).id();
