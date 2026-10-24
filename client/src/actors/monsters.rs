@@ -1228,7 +1228,8 @@ fn hover(
     buttons: Res<ButtonInput<MouseButton>>,
     mut held: Local<Option<Entity>>,
 ) {
-    if ui.over_ui && !buttons.pressed(MouseButton::Left) {
+    let held_button = buttons.pressed(MouseButton::Left) || buttons.pressed(MouseButton::Right);
+    if ui.over_ui && !held_button {
         *held = None;
         if hovered.0.is_some() { hovered.0 = None; }
         return;
@@ -1279,6 +1280,24 @@ fn hover(
             }
         }
     }
+    // No model under the cursor: the monster whose ground footprint it points at
+    // (its navigation footprint, else its capsule), the nearest of them.
+    // FAILURE (2026-10-24): 25 of the user's swings in 16 s went out with no
+    //   target (server: "no living monster is inside the authored hit area"):
+    //   the cursor beside a monster's model, on the ground at its feet.
+    // UNVERIFIED: how wide the original's pick is.
+    if let (None, Some(ray)) = (best, ray) {
+        best = monsters.iter()
+            .filter(|(_, _, m, anim, shown, _)| m.targetable && m.is_alive(anim) && shown.get())
+            .filter_map(|(e, at, m, ..)| {
+                let base = at.translation();
+                let t = ray.intersect_plane(base, InfinitePlane3d::new(Vec3::Y))?;
+                let p = ray.get_point(t);
+                let off = Vec2::new(p.x - base.x, p.z - base.z).length();
+                (off <= m.footprint.unwrap_or(m.radius).max(m.radius)).then_some((off, e, m.actor))
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+    }
     // DSOR_TEST_TARGET=1: the nearest live monster counts as under the cursor
     // (testing attacks without a mouse).
     if std::env::var("DSOR_TEST_TARGET").is_ok() {
@@ -1292,14 +1311,16 @@ fn hover(
         }
     }
     let alive = |e: Entity| monsters.get(e).is_ok_and(|(_, _, m, a, shown, _)| m.targetable && m.is_alive(a) && shown.get());
-    *held = held_target(buttons.pressed(MouseButton::Left), buttons.just_pressed(MouseButton::Left), *held, best.map(|(_, e, _)| e), alive);
+    // Either button: the left attacks with the bar's first skill, the right with its second.
+    let just = buttons.just_pressed(MouseButton::Left) || buttons.just_pressed(MouseButton::Right);
+    *held = held_target(held_button, just, *held, best.map(|(_, e, _)| e), alive);
     let now = held.and_then(|e| monsters.get(e).ok().map(|(_, _, m, ..)| (e, m.actor))).or(best.map(|(_, e, a)| (e, a)));
     if hovered.0 != now {
         hovered.0 = now;
     }
 }
 
-/// The monster the left button went down on stays the one under the cursor
+/// The monster a mouse button went down on stays the one under the cursor
 /// while the button is held and it lives: attacks (crate::gameplay::skills) and
 /// the walk (click_to_move) keep to it when the cursor slips off a monster that
 /// moves. Released, dead or gone, the cursor's own pick again.
