@@ -214,9 +214,12 @@ mod tests {
         stamp("v1", "6a8b704d041044688ebee52da5b48b55", &database);
         assert_eq!(needed(&converter, &game_data, &assets), None);
         std::fs::create_dir_all(game_data.join("export_win32/maps")).unwrap();
-        std::fs::write(game_data.join("export_win32/maps/a0000_char.db4"), b"SQLite format 3\0map").unwrap();
+        const MAP: &[u8] = b"SQLite format 3\0map";
+        std::fs::write(game_data.join("export_win32/maps/a0000_char.db4"), MAP).unwrap();
         std::fs::create_dir_all(game_data.join(".dsor")).unwrap();
-        std::fs::write(game_data.join(".dsor/overrides.txt"), format!("{}\t20\t127.0.0.1:8080\texport_win32/maps/a0000_char.db4\n", "c".repeat(64))).unwrap();
+        // Installed at its size, as server.rs records it.
+        std::fs::write(game_data.join(".dsor/overrides.txt"),
+            format!("{}\t{}\t127.0.0.1:8080\texport_win32/maps/a0000_char.db4\n", "c".repeat(64), MAP.len())).unwrap();
         std::fs::write(game_data.join(".dsor/server-maps.txt"), format!("{}\t1\t127.0.0.1:8080\n", "b".repeat(64))).unwrap();
         assert_eq!(server_maps(&game_data), Some("b".repeat(64)));
         assert_eq!(needed(&converter, &game_data, &assets), Some(Conversion::Database), "the server's maps");
