@@ -1179,11 +1179,11 @@ fn hover(
     joints: Query<&GlobalTransform>,
     mut hovered: ResMut<Hovered>,
     buttons: Res<ButtonInput<MouseButton>>,
-    mut held: Local<Option<Entity>>,
+    mut held: Local<(Option<Entity>, bool)>,
 ) {
     let held_button = buttons.pressed(MouseButton::Left) || buttons.pressed(MouseButton::Right);
     if ui.over_ui && !held_button {
-        *held = None;
+        *held = (None, false);
         if hovered.0.is_some() { hovered.0 = None; }
         return;
     }
@@ -1267,7 +1267,7 @@ fn hover(
     // Either button: the left attacks with the bar's first skill, the right with its second.
     let just = buttons.just_pressed(MouseButton::Left) || buttons.just_pressed(MouseButton::Right);
     *held = held_target(held_button, just, *held, best.map(|(_, e, _)| e), alive);
-    let now = held.and_then(|e| monsters.get(e).ok().map(|(_, _, m, ..)| (e, m.actor))).or(best.map(|(_, e, a)| (e, a)));
+    let now = held.0.and_then(|e| monsters.get(e).ok().map(|(_, _, m, ..)| (e, m.actor))).or(best.map(|(_, e, a)| (e, a)));
     if hovered.0 != now {
         hovered.0 = now;
     }
@@ -1276,14 +1276,20 @@ fn hover(
 /// The monster a mouse button went down on stays the one under the cursor
 /// while the button is held and it lives: attacks (crate::gameplay::skills) and
 /// the walk (click_to_move) keep to it when the cursor slips off a monster that
-/// moves. Released, dead or gone, the cursor's own pick again.
+/// moves. Dead or gone while the button stays down, the next monster under the
+/// cursor takes its place and is kept the same way. Released, or pressed on the
+/// ground, the cursor's own pick again. The bool: the press went down on a monster.
 /// FAILURE (2026-10-24): "I seem to miss a lot of my attacks": the cursor left
 ///   the moving monster and the next swing had no target.
+/// FAILURE (2026-10-24): one-hit kills dropped the hold for the rest of the press,
+///   so every kill was followed by swings at the cursor alone (36 of 144 Rage
+///   Attacks in 25 s, server: "no living monster is inside the authored hit area").
 /// UNVERIFIED: the original's hold (its attacks follow the monster clicked).
-fn held_target(pressed: bool, just_pressed: bool, held: Option<Entity>, under_cursor: Option<Entity>, alive: impl Fn(Entity) -> bool) -> Option<Entity> {
-    if !pressed { return None; }
-    let held = if just_pressed { under_cursor } else { held };
-    held.filter(|e| alive(*e))
+fn held_target(pressed: bool, just_pressed: bool, (held, attack): (Option<Entity>, bool), under_cursor: Option<Entity>, alive: impl Fn(Entity) -> bool) -> (Option<Entity>, bool) {
+    if !pressed { return (None, false); }
+    let under_cursor = under_cursor.filter(|e| alive(*e));
+    if just_pressed { return (under_cursor, under_cursor.is_some()); }
+    (held.filter(|e| alive(*e)).or(under_cursor.filter(|_| attack)), attack)
 }
 
 /// A blow's hit sequences on its victim `e`: one per damage type it carries (the
