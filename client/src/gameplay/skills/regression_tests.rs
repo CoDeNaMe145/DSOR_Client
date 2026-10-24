@@ -221,3 +221,25 @@ fn a_skill_without_a_motion_hold_keeps_the_walk_going() {
     assert_eq!(player.target, Some(Vec3::new(5.0, 0.0, 5.0)), "the walk goes on");
     assert_eq!(player.casting, 0.0, "no movement hold");
 }
+
+#[test]
+fn an_effect_animators_run_at_its_sequence_rate() {
+    // Rageful Swing at 6.25x: its slash's MatEmissiveIntensity animator ran at
+    // 1x and the track ended before it lit.
+    let mut app = App::new();
+    let fx = app.world_mut().spawn(FxModel { gltf: Handle::default(), started: true, looping: false, speed: 6.25 }).id();
+    let glow = app.world_mut().spawn((crate::rendering::materials::ShaderAnim::default(), ChildOf(fx))).id();
+    let scroll = app.world_mut().spawn((crate::rendering::materials::UvAnim::default(), ChildOf(glow))).id();
+    let plain = app.world_mut().spawn(ChildOf(fx)).id();
+    app.world_mut().run_system_once(fx_particle_speed).unwrap();
+    app.world_mut().flush();
+    for node in [glow, scroll] {
+        assert_eq!(app.world().get::<crate::rendering::materials::AnimTimeScale>(node).map(|r| r.0), Some(6.25));
+    }
+    assert!(app.world().get::<crate::rendering::materials::AnimTimeScale>(plain).is_none());
+    // At 1x nothing is set.
+    let slow = app.world_mut().spawn(FxModel { gltf: Handle::default(), started: true, looping: false, speed: 1.0 }).id();
+    let node = app.world_mut().spawn((crate::rendering::materials::ShaderAnim::default(), ChildOf(slow))).id();
+    app.world_mut().run_system_once(fx_particle_speed).unwrap();
+    assert!(app.world().get::<crate::rendering::materials::AnimTimeScale>(node).is_none());
+}

@@ -309,6 +309,7 @@ for r in db.execute("select rowid, * from _Template_Skill order by rowid"):
         "unblock": r["SkillUnblockFrame"] or 0,
         "motion_unblock": r["MotionUnblockFrame"] or 0,
         "range": r["AttackRange"] or 0.0,
+        "hit_range": r["HitRange"] or 0.0,
         "cooldown": r["CoolDown"] or 0.0,
         "cooldown_category": r["CoolDownCategory"] or "",
         "class": r["CharClass"] or "",

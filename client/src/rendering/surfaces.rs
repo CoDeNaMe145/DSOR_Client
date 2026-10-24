@@ -11,6 +11,15 @@
 //!   normal maps, the cube map reflected in them, the lit colour map faded by
 //!   Amplitude (`colorTransparency`), its edge softened where the ground behind is
 //!   near (BumpScale, `softBorderLineRange`).
+//! - `Ocean` (shd:ocean: Gorga's sea, Atlantis, the imperial isle...): unlit.
+//!   Four Gerstner waves (Velocity, Vector0..2: k, amplitude, phase) give the
+//!   frame the two scrolling normal maps bend; the colour is refractionColor
+//!   (MatDiffuse) where the view is steep, the cube reflection x Intensity1 x
+//!   vertex colour + DiffMap0 x Amplitude where it grazes (pow(1 - N.V,
+//!   MaxDist)); foam (DiffMap1) on the wave crests and within 10 x BumpScale of
+//!   the ground behind. UNVERIFIED: the vertex shader also moves the vertices
+//!   by the waves (up to the amplitudes' sum, 0.38 m on t007's sea); here the
+//!   waves are evaluated per pixel and the surface stays flat.
 //! - `VolumeFog` (shd:volumefog: light shafts in windows, mist patches): unlit,
 //!   scrolling, faded by the depth behind it (Intensity0, `depthDensity`) and at
 //!   its silhouette (Intensity2), x Intensity1 (`alphaModulate`).
@@ -55,6 +64,8 @@ pub enum Kind {
     /// (p2) through the spec map's green and blue, the HitColor flash (p3), and
     /// for character / characterfalloff (p0.y 1) the bubble's rim light.
     Character = 7,
+    /// shd:ocean; see the module comment.
+    Ocean = 8,
 }
 
 /// The kind of surface a glTF material's extras describe, if it is one of ours.
@@ -71,7 +82,9 @@ pub fn kind_of(extras: &str) -> Option<Kind> {
         Some(Kind::Environment)
     } else if shader("simplelayer") && extras.contains("\"dsor_layer\"") {
         Some(Kind::Layer)
-    } else if (shader("water") || shader("coast") || shader("ocean")) && cube {
+    } else if shader("ocean") && cube {
+        Some(Kind::Ocean)
+    } else if (shader("water") || shader("coast")) && cube {
         Some(Kind::Water)
     } else if shader("volumefog") {
         Some(Kind::VolumeFog)
@@ -105,15 +118,19 @@ pub fn extras_vec2(extras: &str, key: &str) -> Option<Vec2> {
 pub struct SurfaceParams {
     /// x kind, y reflectivity (environment, water), z layer tiling, w 1 when the
     /// surface has a spec map (else Nebula's system/white: a full reflection).
+    /// Ocean: z foam uv scale, w foam crest intensity.
     pub p0: Vec4,
-    /// Water: bump scaling 0 / 1, river speed, second bump speed factor.
+    /// Water, ocean: bump scaling 0 / 1, river speed, second bump speed factor.
     pub p1: Vec4,
-    /// Water: colour transparency, soft border range. Volume fog: depth density,
+    /// Water, ocean: colour transparency, soft border range; ocean: fresnel power. Volume fog: depth density,
     /// alpha modulate, silhouette sharpness, emissive intensity. Particle: depth
     /// density, 1 when additive.
     pub p2: Vec4,
-    /// Volume fog, scroll: texture scroll per second (xy).
+    /// Volume fog, scroll: texture scroll per second (xy). Ocean: refractionColor.
     pub p3: Vec4,
+    /// Ocean: wave0..3Settings (Velocity, Vector0, Vector1, Vector2): x wave
+    /// number k, y amplitude, z phase.
+    pub waves: [Vec4; 4],
 }
 
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
@@ -178,5 +195,23 @@ impl Plugin for SurfacesPlugin {
         bevy::asset::embedded_asset!(app, "shaders/surface.wgsl");
         app.register_asset_loader(CubeLoader)
             .add_plugins(MaterialPlugin::<NebulaMaterial>::default());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ocean_is_its_own_kind() {
+        // shd:ocean is not shd:water: its own effect (waves, fresnel to
+        // refractionColor, foam), unlit, scrolled at 0.05 x riverSpeed.
+        let ocean = r#"{"nebula_shader":"shd:ocean","dsor_cube":"textures/t007_atlantis/env_reflect_cube.cube.png","dsor_foam":2}"#;
+        assert_eq!(kind_of(ocean), Some(Kind::Ocean));
+        let water = r#"{"nebula_shader":"shd:water","dsor_cube":"x.cube.png"}"#;
+        assert_eq!(kind_of(water), Some(Kind::Water));
+        let coast = r#"{"nebula_shader":"shd:coast","dsor_cube":"x.cube.png"}"#;
+        assert_eq!(kind_of(coast), Some(Kind::Water));
+        assert_eq!(kind_of(r#"{"nebula_shader":"shd:ocean"}"#), None);
     }
 }

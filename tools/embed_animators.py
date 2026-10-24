@@ -426,7 +426,15 @@ for root, _dirs, files in os.walk(models):
         #   time, ps alpha x alphaBlendFactor x mayaAnimableAlpha (preshader c1).
         ALPHA_SHADERS = {"shd:standard", "shd:unlit", "shd:uvanimated", "shd:uvanimated2", "shd:decal", "shd:simplelayer"}
         SCROLL_SHADERS = {"shd:uvanimated", "shd:uvanimated2"}
-        ALPHA_PASSES = {"AlphaUnlit", "PostAlphaUnlit", "PreAlphaUnlit", "Alpha", "AlphaUnlitDepthtest", "ParticleLit"}
+        # Every node filter of a b_alpha batch in frame/default.xml, lit or unlit
+        # (lines 70, 96-101, 103, 105-107).
+        # FAILURE: AlphaBgLit and AlphaLit were left out: Balor's fire breath
+        #   (boss_07_balor_firebreath firewall, uvanimated, fire_big_02 whose alpha
+        #   is 255 throughout) drew as a solid violet fan 140 units wide instead
+        #   of a fire fading out by its vertex alpha ("une sorte de cone", 2026-10-24).
+        ALPHA_PASSES = {"AlphaUnlit", "PostAlphaUnlit", "PreAlphaUnlit", "Alpha", "AlphaUnlitDepthtest", "ParticleLit",
+                        "AlphaBgLit", "AlphaLit", "AlphaLitOnlyNormal", "AlphaLitOnlyNormalNoZWrite",
+                        "DecalReceiveAlphaLit", "SequenceAlpha"}
         for m in doc.get("materials", []):
             m.get("extras", {}).pop("dsor_decal_effect", None)
             if m.get("extras", {}).pop("dsor_alpha", None) is not None or m.get("extras", {}).pop("dsor_scroll", None) is not None:

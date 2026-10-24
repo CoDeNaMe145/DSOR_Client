@@ -7,6 +7,11 @@
 //                colour = lit(DiffMap0 x transparency) + cube(reflect) x reflectivity x vcol
 //                alpha  = max(max3(reflection), transparency) x DiffMap0.a x vcol.a
 //                         x sat(|depth behind| / softBorder)
+//   ocean        N = waves' frame bent by the two normal maps (as water, t x 0.05)
+//                colour = lerp(refractionColor, cube(reflect) x reflectivity x vcol
+//                         + DiffMap0 x transparency, pow(1 - N.V, fresnelPower)),
+//                         then foam on the crests and the shore; unlit
+//                alpha  = DiffMap0.a x transparency x sat(|depth behind| / softBorder)
 //   particle     colour = tex x vcol (emissive already in vcol), alpha x sat(behind / (density + 0.05));
 //                additive: rgb x that x the fog's transmittance
 //   glow         x = N.V, g = x P / ((2x - 1)(P - 1) + x) / 2 (P: FresnelPower),
@@ -38,6 +43,7 @@ struct Surface {
     p1: vec4<f32>,
     p2: vec4<f32>,
     p3: vec4<f32>,
+    waves: array<vec4<f32>, 4>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> surface: Surface;
@@ -56,6 +62,15 @@ const PARTICLE: i32 = 4;
 const GLOW: i32 = 5;
 const SCROLL: i32 = 6;
 const CHARACTER: i32 = 7;
+const OCEAN: i32 = 8;
+
+// shd:ocean's four wave directions (its vs constants c31, c34, c36, c39).
+const OCEAN_DIRS = array<vec2<f32>, 4>(
+    vec2<f32>(0.957826, -0.287348),
+    vec2<f32>(-0.813733, 0.581238),
+    vec2<f32>(0.496139, 0.868243),
+    vec2<f32>(-0.83205, -0.5547),
+);
 
 // Nebula shades in gamma space (D3D9, no sRGB reads); bevy in linear.
 fn to_gamma(c: vec3<f32>) -> vec3<f32> {
@@ -203,6 +218,92 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let facing = clamp(dot(normalize(in.world_normal), pbr_input.V), 0.0, 1.0);
         a = a * (1.0 + surface.p2.z * (facing * facing - 1.0)) * surface.p2.y;
         out.color = main_pass_post_lighting_processing(pbr_input, vec4<f32>(color, clamp(a, 0.0, 1.0)));
+        return out;
+    }
+
+    if kind == OCEAN {
+        // shaders_sm30 "ocean" AlphaUnlit, vs and ps (tools/shader_dis.py), in the
+        // stored (gamma) values Nebula shades with. The vs evaluates the waves per
+        // vertex; here per pixel, at the same world x / z, without moving the
+        // surface (surfaces.rs: UNVERIFIED).
+        let uv = uv0(in);
+        let vcol = vertex_color(in);
+        // riverSpeed x time, wrapped at 10 000 keeping its sign (vs preshader).
+        let ts = globals.time * surface.p1.z;
+        let tw = ts - trunc(ts / 10000.0) * 10000.0;
+        // Every wave's time term is 9.81 x t / 2pi: the preshader's
+        // sqrt(9.81 / k) x t x sqrt(9.81 k) leaves no k.
+        let c = 9.81 * tw * 0.159155;
+        let p = in.world_position.xz;
+        var height = 0.0;
+        var sx2 = 0.0; var sxs = 0.0; var sxz = 0.0; var sz2 = 0.0; var szs = 0.0;
+        var top = 0.0;
+        var dirs = OCEAN_DIRS;
+        for (var i = 0; i < 4; i += 1) {
+            let w = surface.waves[i];
+            let d = dirs[i];
+            if w.x == 0.0 {
+                continue;
+            }
+            let theta = c - w.x * dot(d, p) - w.z;
+            let a = w.y * vcol.a;
+            let ca = cos(theta) * a * w.x;
+            let sa = sin(theta) * a * w.x;
+            height += cos(theta) * a;
+            sx2 += ca * d.x * d.x;
+            sxs += sa * d.x;
+            sxz += ca * d.x * d.y;
+            sz2 += ca * d.y * d.y;
+            szs += sa * d.y;
+            // The crest's scale: the largest of the first three amplitudes (ps preshader).
+            if i < 3 {
+                top = max(top, w.y);
+            }
+        }
+        // The frame as the vs builds it (signs as there).
+        let tangent = normalize(vec3<f32>(1.0 - sx2, sxs, sxz));
+        let binormal = normalize(vec3<f32>(sxz, -szs, 1.0 - sz2));
+        let normal = normalize(cross(binormal, tangent));
+        // Two normal maps, the first at (u, v) x bumpScaling0 + (0.7, t), the second
+        // at (u, v) x bumpScaling1 + (0, t x bump2SpeedFactor), t = 0.05 x tw.
+        let t = tw * 0.05;
+        let n0 = textureSample(pbr_bindings::normal_map_texture, pbr_bindings::normal_map_sampler,
+                               vec2<f32>(uv.x * surface.p1.x + 0.7, uv.y * surface.p1.x + t)).rgb * 2.0 - 1.0;
+        let n1 = textureSample(pbr_bindings::normal_map_texture, pbr_bindings::normal_map_sampler,
+                               vec2<f32>(uv.x * surface.p1.y, uv.y * surface.p1.y + t * surface.p1.w)).rgb * 2.0 - 1.0;
+        let nt = normalize(n0 + n1);
+        let n = normalize(nt.x * tangent + nt.y * binormal + nt.z * normal);
+        let eye = -pbr_input.V;
+        let e = dot(eye, n);
+        let reflection = raw(textureSample(cube_texture, cube_sampler, reflect(eye, n)).rgb) * surface.p0.y;
+        let fresnel = pow(abs(e + 1.0), surface.p2.z);
+        let diff = textureSample(pbr_bindings::base_color_texture, pbr_bindings::base_color_sampler, uv);
+        let diffuse = raw(diff.rgb) * surface.p2.x;
+        let alpha = diff.a * surface.p2.x;
+        var color = mix(surface.p3.rgb, reflection * vcol.rgb + diffuse, fresnel);
+        let behind = abs(depth_behind(in.position, in.world_position.xyz));
+        if surface.p2.w > 0.5 {
+            let foam = textureSample(layer_texture, layer_sampler, uv * surface.p0.z);
+            let foam_rgb = raw(foam.rgb);
+            // Crests: sat(height / (2 x top)) x N.y x foam alpha x foamCrestIntensity.
+            var crest = 0.0;
+            if top > 0.0 {
+                crest = clamp(height / (2.0 * top), 0.0, 1.0) * n.y * foam.a * surface.p0.w;
+            }
+            color = mix(color, foam_rgb, crest);
+            // The shore: foam within 10 x softBorderLineRange of the ground behind.
+            let shore = 10.0 * surface.p2.y;
+            if behind < shore {
+                let m = max(1.0 - foam.a, clamp(behind / shore, 0.0, 1.0));
+                color = mix(foam_rgb, color, m);
+            }
+        }
+        var a = alpha;
+        if behind < surface.p2.y {
+            a = a * clamp(behind / surface.p2.y, 0.0, 1.0);
+        }
+        pbr_input.material.base_color = vec4<f32>(decoded(color), a);
+        out.color = main_pass_post_lighting_processing(pbr_input, vec4<f32>(decoded(color), clamp(a, 0.0, 1.0)));
         return out;
     }
 

@@ -135,6 +135,17 @@ fn standard_material(m: &GltfMaterial) -> StandardMaterial {
     }
 }
 
+/// The clock rate of a node's animators (ShaderAnim, UvAnim): inside a skill
+/// effect, its sequence's rate (attack speed; crate::gameplay::skills FxModel
+/// speed, set by fx_particle_speed). 1 without it.
+/// FAILURE: at 1x while the sequence ran at 6.25x, Rageful Swing's slash
+///   (warrior_mightyswing_fast static_0_0: MatEmissiveIntensity 0 until 0.203 s,
+///   3.0 at 0.245 s) was removed with its track at 33 / 25 / 6.25 = 0.21 s,
+///   before it lit: "avec beaucoup de vitesse d'attaque, je n'ai plus le FX du
+///   slash" (2026-10-24).
+#[derive(Component, Clone, Copy)]
+pub struct AnimTimeScale(pub f32);
+
 /// A node's animated shader variables (n3 animator nodes, tools/embed_animators.py).
 #[derive(Component, Reflect, Default, Clone)]
 #[reflect(Component, Default)]
@@ -291,14 +302,14 @@ impl UvAnim {
 fn animate_uvs(
     mut commands: Commands,
     time: Res<Time>,
-    mut nodes: Query<(&mut UvAnim, &Children, &InheritedVisibility, Option<&ShaderAnim>)>,
+    mut nodes: Query<(&mut UvAnim, &Children, &InheritedVisibility, Option<&ShaderAnim>, Option<&AnimTimeScale>)>,
     mut prims: Query<(Entity, &mut MeshMaterial3d<StandardMaterial>, Option<&AnimatedMaterial>)>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    for (mut uv, children, shown, shader_anim) in &mut nodes {
+    for (mut uv, children, shown, shader_anim, rate) in &mut nodes {
         let scaled = shader_anim.is_some_and(|a| a.tracks.iter().any(|k| k.var == "MatEmissiveIntensity" || k.var.starts_with("Intensity")));
         if shown.get() {
-            uv.t += time.delta_secs();
+            uv.t += time.delta_secs() * rate.map_or(1.0, |r| r.0);
         } else if uv.primed {
             continue;
         }
@@ -435,15 +446,15 @@ struct AnimatedMaterial {
 fn animate_shader_vars(
     mut commands: Commands,
     time: Res<Time>,
-    mut nodes: Query<(&mut ShaderAnim, &Children, &InheritedVisibility)>,
+    mut nodes: Query<(&mut ShaderAnim, &Children, &InheritedVisibility, Option<&AnimTimeScale>)>,
     mut prims: Query<(Entity, &mut MeshMaterial3d<StandardMaterial>, Option<&AnimatedMaterial>)>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    for (mut anim, children, shown) in &mut nodes {
+    for (mut anim, children, shown, rate) in &mut nodes {
         // Not seen: its materials are left alone (every material change makes bevy
         // re-check every mesh entity), once they hold their first values.
         if shown.get() {
-            anim.t += time.delta_secs();
+            anim.t += time.delta_secs() * rate.map_or(1.0, |r| r.0);
         } else if anim.primed {
             continue;
         }
@@ -549,6 +560,12 @@ fn cube_path(extras: &str) -> Option<String> {
 fn dye_mask(textures: &[Option<Handle<Image>>], extras: &str) -> Option<Handle<Image>> {
     let v: serde_json::Value = serde_json::from_str(extras).ok()?;
     textures.get(v.get("dsor_dye")?.get("mask")?.as_u64()? as usize)?.clone()
+}
+
+/// An ocean's foam map (extras.dsor_foam, tools/embed_textures.py).
+fn foam_of(textures: &[Option<Handle<Image>>], extras: &str) -> Option<Handle<Image>> {
+    let v: serde_json::Value = serde_json::from_str(extras).ok()?;
+    textures.get(v.get("dsor_foam")?.as_u64()? as usize)?.clone()
 }
 
 /// The second layer's textures and tiling (extras.dsor_layer).
@@ -711,6 +728,30 @@ impl GltfExtensionHandler for NebulaStates {
                     params.p2 = Vec4::new(f("Amplitude", 0.0), f("BumpScale", 0.0), 0.0, 0.0);
                     base.perceptual_roughness = 1.0;
                     base.metallic = 0.0;
+                }
+                // EVIDENCE: shaders_sm30 "ocean" AlphaUnlit (tools/shader_dis.py): the
+                //   parameters' semantics (reflectivityFactor Intensity1, colorTransparency
+                //   Amplitude, softBorderLineRange BumpScale, bumpScaling0/1 Intensity0 /
+                //   Scale, riverSpeed Intensity3, bump2SpeedFactor Intensity2,
+                //   fresnelPower MaxDist, foamUvScale MinSpriteSize, foamCrestIntensity
+                //   MaxSpriteSize, refractionColor MatDiffuse, wave0..3Settings Velocity,
+                //   Vector0..2). Drawn as Water, the sea scrolled 20 times too fast, lit,
+                //   with no fresnel to the dark refractionColor and no foam: Gorga's sea a
+                //   bright speckled blue.
+                Kind::Ocean => {
+                    let v = |k: &str| node.vectors.get(k).copied().unwrap_or(Vec4::ZERO);
+                    params.p0 = Vec4::new(kind as u32 as f32, f("Intensity1", 0.0), f("MinSpriteSize", 1.0), f("MaxSpriteSize", 1.0));
+                    params.p1 = Vec4::new(f("Intensity0", 0.0), f("Scale", 0.0), f("Intensity3", 0.0), f("Intensity2", 0.0));
+                    params.p2 = Vec4::new(f("Amplitude", 0.0), f("BumpScale", 0.0), f("MaxDist", 1.0), 0.0);
+                    params.p3 = node.vectors.get("MatDiffuse").copied().unwrap_or(Vec4::new(0.32, 0.39, 0.56, 1.0));
+                    params.waves = [v("Velocity"), v("Vector0"), v("Vector1"), v("Vector2")];
+                    layer = foam_of(&self.textures, &extras);
+                    // Without its foam map (a model converted before
+                    // tools/embed_textures.py added it), no foam: the fallback
+                    // image's alpha 1 would cover the sea.
+                    params.p2.w = layer.is_some() as u32 as f32;
+                    base.unlit = true;
+                    base.alpha_mode = AlphaMode::Blend;
                 }
                 Kind::VolumeFog => {
                     params.p2 = Vec4::new(f("Intensity0", 1.0), f("Intensity1", 0.0), f("Intensity2", 0.0), intensity.unwrap_or(0.0));
