@@ -2192,18 +2192,23 @@ fn start_fx_animations(
     }
 }
 
-/// Emitters inside an effect run at its sequence's rate (FxModel::speed): set
-/// on them as its scene comes in, emitters included.
+/// Emitters and animators (shader variables, texture scrolls) inside an effect
+/// run at its sequence's rate (FxModel::speed), as its clip does: set on them as
+/// its scene comes in.
+/// CONTRACT: every clock inside an effect runs at the rate its track's end was
+///   scaled by; one left at 1x is cut off at high attack speed.
 fn fx_particle_speed(
     mut commands: Commands,
     fx: Query<(Entity, &FxModel)>,
     children: Query<&Children>,
     emitters: Query<(), (With<crate::rendering::particles::Emitter>, Without<crate::rendering::particles::ParticleSpeed>)>,
+    animators: Query<(), (Or<(With<crate::rendering::materials::ShaderAnim>, With<crate::rendering::materials::UvAnim>)>, Without<crate::rendering::materials::AnimTimeScale>)>,
 ) {
     for (e, m) in &fx {
         if (m.speed - 1.0).abs() < 1e-3 { continue; }
         for c in children.iter_descendants(e) {
             if emitters.contains(c) { commands.entity(c).try_insert(crate::rendering::particles::ParticleSpeed(m.speed)); }
+            if animators.contains(c) { commands.entity(c).try_insert(crate::rendering::materials::AnimTimeScale(m.speed)); }
         }
     }
 }

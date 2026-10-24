@@ -135,6 +135,17 @@ fn standard_material(m: &GltfMaterial) -> StandardMaterial {
     }
 }
 
+/// The clock rate of a node's animators (ShaderAnim, UvAnim): inside a skill
+/// effect, its sequence's rate (attack speed; crate::gameplay::skills FxModel
+/// speed, set by fx_particle_speed). 1 without it.
+/// FAILURE: at 1x while the sequence ran at 6.25x, Rageful Swing's slash
+///   (warrior_mightyswing_fast static_0_0: MatEmissiveIntensity 0 until 0.203 s,
+///   3.0 at 0.245 s) was removed with its track at 33 / 25 / 6.25 = 0.21 s,
+///   before it lit: "avec beaucoup de vitesse d'attaque, je n'ai plus le FX du
+///   slash" (2026-10-24).
+#[derive(Component, Clone, Copy)]
+pub struct AnimTimeScale(pub f32);
+
 /// A node's animated shader variables (n3 animator nodes, tools/embed_animators.py).
 #[derive(Component, Reflect, Default, Clone)]
 #[reflect(Component, Default)]
@@ -291,14 +302,14 @@ impl UvAnim {
 fn animate_uvs(
     mut commands: Commands,
     time: Res<Time>,
-    mut nodes: Query<(&mut UvAnim, &Children, &InheritedVisibility, Option<&ShaderAnim>)>,
+    mut nodes: Query<(&mut UvAnim, &Children, &InheritedVisibility, Option<&ShaderAnim>, Option<&AnimTimeScale>)>,
     mut prims: Query<(Entity, &mut MeshMaterial3d<StandardMaterial>, Option<&AnimatedMaterial>)>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    for (mut uv, children, shown, shader_anim) in &mut nodes {
+    for (mut uv, children, shown, shader_anim, rate) in &mut nodes {
         let scaled = shader_anim.is_some_and(|a| a.tracks.iter().any(|k| k.var == "MatEmissiveIntensity" || k.var.starts_with("Intensity")));
         if shown.get() {
-            uv.t += time.delta_secs();
+            uv.t += time.delta_secs() * rate.map_or(1.0, |r| r.0);
         } else if uv.primed {
             continue;
         }
@@ -435,15 +446,15 @@ struct AnimatedMaterial {
 fn animate_shader_vars(
     mut commands: Commands,
     time: Res<Time>,
-    mut nodes: Query<(&mut ShaderAnim, &Children, &InheritedVisibility)>,
+    mut nodes: Query<(&mut ShaderAnim, &Children, &InheritedVisibility, Option<&AnimTimeScale>)>,
     mut prims: Query<(Entity, &mut MeshMaterial3d<StandardMaterial>, Option<&AnimatedMaterial>)>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    for (mut anim, children, shown) in &mut nodes {
+    for (mut anim, children, shown, rate) in &mut nodes {
         // Not seen: its materials are left alone (every material change makes bevy
         // re-check every mesh entity), once they hold their first values.
         if shown.get() {
-            anim.t += time.delta_secs();
+            anim.t += time.delta_secs() * rate.map_or(1.0, |r| r.0);
         } else if anim.primed {
             continue;
         }
