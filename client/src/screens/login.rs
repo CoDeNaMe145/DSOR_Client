@@ -398,7 +398,7 @@ fn poll(world: &mut World) {
         world.resource_mut::<Form>().connecting = None;
         world.resource_mut::<Form>().redraw = false;
         world.resource_mut::<Options>().login_screen = false;
-        for mut window in world.query::<&mut Window>().iter_mut(world) { window.title = "DSOR Kitty".into(); }
+        for mut window in world.query::<&mut Window>().iter_mut(world) { window.title = "DSOR".into(); }
         info!("in-client login: opened character selection");
         return;
     }
@@ -427,7 +427,7 @@ fn poll(world: &mut World) {
         world.resource_mut::<Form>().connecting = None;
         world.resource_mut::<Form>().redraw = false;
         world.resource_mut::<Options>().login_screen = false;
-        for mut window in world.query::<&mut Window>().iter_mut(world) { window.title = "DSOR Kitty".into(); }
+        for mut window in world.query::<&mut Window>().iter_mut(world) { window.title = "DSOR".into(); }
         info!("in-client login: entered the world");
     }
 }

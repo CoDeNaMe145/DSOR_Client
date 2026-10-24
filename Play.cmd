@@ -10,4 +10,4 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-start "DSOR Kitty" "%~dp0target\release\dsor-client.exe" %*
+start "DSOR" "%~dp0target\release\dsor-client.exe" %*

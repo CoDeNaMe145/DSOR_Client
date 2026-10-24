@@ -408,7 +408,7 @@ fn main() {
                 .set(bevy::log::LogPlugin { custom_layer: dump::log_layer, ..default() })
                 .set(WindowPlugin {
                     primary_window: Some(Window {
-                        title: if opts.login_screen { "DSOR Kitty - Login".into() } else { format!("DSOR - {}", opts.map) },
+                        title: if opts.login_screen { "DSOR - Login".into() } else { format!("DSOR - {}", opts.map) },
                         // Uncapped frame rate so the FPS readout means something.
                         present_mode: bevy::window::PresentMode::AutoNoVsync,
                         fit_canvas_to_parent: true,
