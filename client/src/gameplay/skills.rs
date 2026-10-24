@@ -1157,7 +1157,10 @@ fn cast_input(
     // FAILURE (2026-10-24): a right click on a monster walked the warrior to it
     //   ("I right click to use my skill, with my mouse hovering over a monster and
     //   I walk to it"; clips 20261024-1143-13, 20261024-1259-25).
-    let walks = left || from_queue;
+    // Shift + left button strikes in place, as the right button does, with the
+    // left button's skill (the user, on release261_192: "shift left click treats
+    // it like a right click").
+    let walks = (left && !shift) || from_queue;
     if let (true, Some((e, at, _, radius, _, footprint))) = (approaches(skill), aimed) {
         // Walking (towards the monster or anywhere), the server still measures
         // from the last MoveCommand: stop one tick's walk inside the reach.

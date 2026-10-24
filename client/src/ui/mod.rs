@@ -548,6 +548,8 @@ struct Figures {
     bar: Vec<Option<String>>,
     name: String,
     online: bool,
+    /// The character they are for (Net::local_name): another one starts over.
+    character: Option<String>,
     level: Option<u32>,
     /// The money and the other currencies (0 until the server sends them).
     wallet: controls::currency::Wallet,
@@ -1509,8 +1511,11 @@ fn read_figures(net: Option<NonSend<crate::network::net::Net>>, mut figures: Res
         }
         return;
     };
-    if !figures.online {
+    // Online, or another character after switching (the maxima are the largest
+    // seen, so the warrior's 330055 health stayed on the mage).
+    if !figures.online || figures.character != net.local_name {
         figures.online = true;
+        figures.character = net.local_name.clone();
         figures.health = (0.0, 0.0);
         figures.resource = (0.0, 0.0);
         figures.xp = 0.0;

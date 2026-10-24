@@ -1756,6 +1756,9 @@ pub(crate) fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u3
             // gameplay_commands.py writes them there; CurrencyChanged repeats them).
             net.glyphs = Some(p.long_376);
             net.game_currencies = p.entries_384.iter().cloned().collect();
+            // Another character: the last one's maximum health is not this one's.
+            // FAILURE (2026-10-24): the mage showed the warrior's 330055 maximum.
+            if net.local_name.as_deref() != Some(p.name.as_str()) { net.max_health = None; }
             net.local_name = Some(p.name.clone());
             // The third leading bool is the admin byte (OverheadAdminColor name).
             let admin = p.leading_flags[2];
