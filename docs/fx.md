@@ -202,7 +202,8 @@ Counts are models of the 2018 data using the shader.
 | volumefog | 302 | tex x vcol x (1 + emissive); alpha sat(max(vcol.a, tex.a) x depth behind x Intensity0) x silhouette (Intensity2) x Intensity1; scroll by Velocity | `NebulaMaterial` VolumeFog: **drawn** (was hidden): window light shafts, black depth fog in arches |
 | monster, character, characterfalloff, monsterexp | 380 | lit x 1.5 + 0.2625 x colour, item dyes (MatDiffuse / MatSpecular masked by SpecMap0 g / b), overlay DiffMap1, cube reflection, rim light, HitColor flash | **StandardMaterial only**: next step for characters |
 | glow | 108 | no texture: additive shell, N.V through FresnelPower's curve x MatDiffuse x Amplitude, pushed out by FresnelBias x 0.1 | `NebulaMaterial` Glow (were **solid white shells**); not the push-out, not an animated Amplitude |
-| ocean, coast | 46 | water plus vertex waves (Velocity, Vector0..2) and foam | drawn as Water, without the waves and foam |
+| ocean | 46 with coast | unlit; four Gerstner waves (Velocity, Vector0..2) bend the frame of two normal maps scrolled at 0.05 x Intensity3; lerp(MatDiffuse, cube x Intensity1 x vcol + DiffMap0 x Amplitude, pow(1 - N.V, MaxDist)); foam (DiffMap1 x MinSpriteSize) on crests (x MaxSpriteSize) and within 10 x BumpScale of the ground; alpha DiffMap0.a x Amplitude x soft border | `NebulaMaterial` Ocean (foam map from `tools/embed_textures.py`); waves per pixel, **the vertices are not moved** |
+| coast | (in ocean's 46) | ocean with foam mask, crest and DuDv maps | drawn as Water |
 | sequenceadditive / sequencealpha, unlitalphavertexcolors, skybox, lightmapped2, treetrunk | 18 | sprite-sheet sequences, test shaders | StandardMaterial |
 
 Plants: the 2018 vegetation is shd:standard, AlphaTest, with no wind (no

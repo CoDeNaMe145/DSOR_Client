@@ -15,6 +15,11 @@ Usage: embed_textures.py <export_win32> <assets> <DSO_Godot>
   EVIDENCE: shaders_sm30 "simplelayer" SimpleLayerSolid ps_3_0 (disassembled):
     colour = lerp(DiffMap0(uv0), DiffMap2(uv1 x layerTiling), DiffMap3(uv1).r),
     layerTiling's semantic Intensity1.
+- The foam map of shd:ocean (DiffMap1, `foamMapSampler`): DSO_Godot keeps only
+  its name. It becomes a texture of the glb and the material gets
+  extras.dsor_foam = its texture index (crate::rendering::surfaces Kind::Ocean).
+  EVIDENCE: shaders_sm30 "ocean" AlphaUnlit ps_3_0: s4 foamMapSampler, read at
+    uv x foamUvScale for the wave crests and the shore.
 Idempotent: a material already marked is left alone.
 """
 import io, os, re, struct, sys
@@ -196,6 +201,12 @@ for dirpath, _dirs, files in os.walk(assets):
                 ex["dsor_layer"] = {"color": color, "mask": mask, "normal": None, "tiling": tiling}
                 stats["layer materials"] += 1
                 changed = True
+            if ex.get("nebula_shader") == "shd:ocean" and "dsor_foam" not in ex:
+                foam = add_texture(doc, dirpath, ex.get("nebula_textures", {}).get("DiffMap1"))
+                if foam is not None:
+                    ex["dsor_foam"] = foam
+                    stats["foam materials"] = stats.get("foam materials", 0) + 1
+                    changed = True
         # Repair: models converted before that keep the normal map listed. Its
         # texture is pointed at the layer's colour image (no index moves) and
         # the image entry at the colour file, so nothing loads it any more.

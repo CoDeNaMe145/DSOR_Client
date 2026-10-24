@@ -562,6 +562,12 @@ fn dye_mask(textures: &[Option<Handle<Image>>], extras: &str) -> Option<Handle<I
     textures.get(v.get("dsor_dye")?.get("mask")?.as_u64()? as usize)?.clone()
 }
 
+/// An ocean's foam map (extras.dsor_foam, tools/embed_textures.py).
+fn foam_of(textures: &[Option<Handle<Image>>], extras: &str) -> Option<Handle<Image>> {
+    let v: serde_json::Value = serde_json::from_str(extras).ok()?;
+    textures.get(v.get("dsor_foam")?.as_u64()? as usize)?.clone()
+}
+
 /// The second layer's textures and tiling (extras.dsor_layer).
 fn layer_of(textures: &[Option<Handle<Image>>], extras: &str) -> Option<(Handle<Image>, Handle<Image>, f32)> {
     let v: serde_json::Value = serde_json::from_str(extras).ok()?;
@@ -722,6 +728,30 @@ impl GltfExtensionHandler for NebulaStates {
                     params.p2 = Vec4::new(f("Amplitude", 0.0), f("BumpScale", 0.0), 0.0, 0.0);
                     base.perceptual_roughness = 1.0;
                     base.metallic = 0.0;
+                }
+                // EVIDENCE: shaders_sm30 "ocean" AlphaUnlit (tools/shader_dis.py): the
+                //   parameters' semantics (reflectivityFactor Intensity1, colorTransparency
+                //   Amplitude, softBorderLineRange BumpScale, bumpScaling0/1 Intensity0 /
+                //   Scale, riverSpeed Intensity3, bump2SpeedFactor Intensity2,
+                //   fresnelPower MaxDist, foamUvScale MinSpriteSize, foamCrestIntensity
+                //   MaxSpriteSize, refractionColor MatDiffuse, wave0..3Settings Velocity,
+                //   Vector0..2). Drawn as Water, the sea scrolled 20 times too fast, lit,
+                //   with no fresnel to the dark refractionColor and no foam: Gorga's sea a
+                //   bright speckled blue.
+                Kind::Ocean => {
+                    let v = |k: &str| node.vectors.get(k).copied().unwrap_or(Vec4::ZERO);
+                    params.p0 = Vec4::new(kind as u32 as f32, f("Intensity1", 0.0), f("MinSpriteSize", 1.0), f("MaxSpriteSize", 1.0));
+                    params.p1 = Vec4::new(f("Intensity0", 0.0), f("Scale", 0.0), f("Intensity3", 0.0), f("Intensity2", 0.0));
+                    params.p2 = Vec4::new(f("Amplitude", 0.0), f("BumpScale", 0.0), f("MaxDist", 1.0), 0.0);
+                    params.p3 = node.vectors.get("MatDiffuse").copied().unwrap_or(Vec4::new(0.32, 0.39, 0.56, 1.0));
+                    params.waves = [v("Velocity"), v("Vector0"), v("Vector1"), v("Vector2")];
+                    layer = foam_of(&self.textures, &extras);
+                    // Without its foam map (a model converted before
+                    // tools/embed_textures.py added it), no foam: the fallback
+                    // image's alpha 1 would cover the sea.
+                    params.p2.w = layer.is_some() as u32 as f32;
+                    base.unlit = true;
+                    base.alpha_mode = AlphaMode::Blend;
                 }
                 Kind::VolumeFog => {
                     params.p2 = Vec4::new(f("Intensity0", 1.0), f("Intensity1", 0.0), f("Intensity2", 0.0), intensity.unwrap_or(0.0));
