@@ -1030,7 +1030,8 @@ fn cast_input(
     // as in the game, paced by the cast, the cooldown and the resource: Shift or a
     // monster under the cursor with the left button, the right button anywhere
     // ("je peux pas rester appuye sur clique droit pour lancer un sort").
-    let slot = if !ui.blocks(MouseButton::Left) && (shift || (settings.current.attack_hovered && hovered.0.is_some())) && buttons.pressed(MouseButton::Left) {
+    let left = !ui.blocks(MouseButton::Left) && (shift || (settings.current.attack_hovered && hovered.0.is_some())) && buttons.pressed(MouseButton::Left);
+    let slot = if left {
         Some(0)
     } else if !ui.blocks(MouseButton::Right) && buttons.pressed(MouseButton::Right) {
         Some(1)
@@ -1040,13 +1041,13 @@ fn cast_input(
     // DSOR_TEST_SLOT=<slot>: that quick slot pressed all the time (testing online
     // without a keyboard; the cooldowns pace it).
     let slot = slot.or(clicked_slot).or_else(|| std::env::var("DSOR_TEST_SLOT").ok().and_then(|v| v.parse().ok()));
-    let (slot, aimed) = match slot {
+    let (slot, aimed, from_queue) = match slot {
         Some(s) => {
             *queued = None;
-            (s, hovered.0.map(|(e, _)| e))
+            (s, hovered.0.map(|(e, _)| e), false)
         }
         None => match *queued {
-            Some((s, e)) => (s, Some(e)),
+            Some((s, e)) => (s, Some(e), true),
             None => return,
         },
     };
@@ -1095,8 +1096,15 @@ fn cast_input(
     // does a melee skill with no target of its own (approaches).
     let targeted = matches!(skill.kind.as_str(), "MeleeTarget" | "RangedTarget");
     let target_actor = if targeted { aimed.map(|(_, _, a, ..)| a) } else { None };
+    // Only the left button walks into reach (a click on a monster: go there and
+    // strike). The right button and the keys strike from where the player stands,
+    // turned to the monster, never stepping: the server decides whether it lands.
+    // FAILURE (2026-10-24): a right click on a monster walked the warrior to it
+    //   ("I right click to use my skill, with my mouse hovering over a monster and
+    //   I walk to it"; clips 20261024-1143-13, 20261024-1259-25).
+    let walks = left || from_queue;
     if let (true, Some((e, at, _, radius, _, footprint))) = (approaches(skill), aimed) {
-        if beyond_reach(skill, tf.translation, at, radius, footprint) {
+        if walks && beyond_reach(skill, tf.translation, at, radius, footprint) {
             player.target = Some(at);
             *queued = Some((slot, e));
             return;
