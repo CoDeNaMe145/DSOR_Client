@@ -3,6 +3,8 @@
 # Game data belongs to the publisher: converted assets are generated locally by
 # tools/convert_assets.sh and never committed.
 /assets
+# The original client's data, which the account screen downloads (crates/game-data).
+/game-data
 *.glb
 *.png
 !/client/src/screens/login/icons/github.png

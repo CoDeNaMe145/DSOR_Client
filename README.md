@@ -49,6 +49,7 @@ account service (default: `http://127.0.0.1:8080`). The guide also covers
 - [Source layout](docs/source-layout.md): where client features and supporting crates live.
 - [Getting started](docs/getting-started.md): prerequisites, asset conversion, native and browser clients, controls.
 - [Testing and diagnostics](docs/testing-and-diagnostics.md): automated checks, environment variables, profiling.
+- [Game data](docs/game-data.md): the original client's data, downloaded from Bigpoint's CDN by the account screen.
 - [Asset reference](docs/assets.md): converted data formats and conversion details.
 - [Effects and rendering](docs/fx.md): shaders, lighting, particles, and rendering diagnostics.
 - [Interface](docs/ui.md): UI assets, implementation, and interactions.

@@ -41,6 +41,8 @@ gltf = { version = "1.4.1", default-features = false, features = ["extras"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 dsor-level-data = { path = "../crates/level-data" }
+# The original client's data from Bigpoint's CDN (the account screen's game data strip).
+dsor-game-data = { path = "../crates/game-data" }
 bevy_egui = { version = "=0.42.0", default-features = false, features = ["render", "default_fonts", "manage_clipboard"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

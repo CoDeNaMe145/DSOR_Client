@@ -1,0 +1,20 @@
+[package]
+name = "dsor-game-data"
+description = "The original game client's data from Bigpoint's CDN: tables of contents, NB3 bundles, download and verification"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+log.workspace = true
+flate2 = "1"
+md-5 = "0.10"
+# The account server's static database: its sha256, its JSON manifest.
+sha2 = "0.10"
+serde_json = "1"
+# HTTPS through rustls (ring, Mozilla's roots compiled in): no OpenSSL to install.
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+
+[[bin]]
+name = "dsor-game-data"
+path = "src/main.rs"

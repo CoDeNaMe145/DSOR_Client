@@ -1251,3 +1251,77 @@ an emote, a mount and a pet in the album. `profile_native_maps.py kingscity`:
 inventory open one preview built while loading then 0 (p50 7.9 ms: the window
 and its turning character). Captures, routes and logs: `.local/logs/preview/`,
 `.local/logs/map-fps/kingscity-preview-*`. Not yet seen online.
+
+## The game data from Bigpoint's CDN, and the account screen's strip (2026-10-24)
+
+The client now downloads the original client's data itself, so it no longer
+waits for the official launcher's cache. `crates/game-data` (`dsor-game-data`,
+also a command) reads the CDN's build key and its 2,844 tables of contents, then
+unpacks the 644 NB3 bundles into `game-data/export_win32/` exactly as the tables
+list it. The bundle format is simo8902's extractor's (WTFPL), reimplemented in
+Rust. Every blob is checked against its md5 from the root key down, and the
+database's bundle member `global/export_win32/db/static.db4` lands in
+`export_win32/db/`. The account screen runs the download in a thread and shows
+it in a strip across the top (stage, bar, bytes, speed, time left, Retry).
+*Sign in & play* and *Create account & play* are dimmed and refuse until every
+file is on disk; saving the settings is not held up. Details: docs/game-data.md.
+
+- Updates fetch only the files whose md5 changed (single files up to 2,000;
+  more unpack the bundles that changed). An interrupted download resumes from
+  its manifest, and deleted files come back. Offline, the build installed last
+  is checked instead.
+- Speed: 16 download connections feed 8 writer threads through a bounded queue.
+  Files are written in place with no temporary-file rename (10x faster on the
+  HDD volume, see the doc), folders are made up front, and only missing
+  members are hashed and unpacked. Every start's check uses one directory
+  listing per folder. The connection pool keeps all connections open (ureq's
+  default of 10 forced a TLS handshake per table). The screen is held to 60
+  frames a second while a download runs.
+- `UiWork::game_data_bars` counts the strip's repaints: four a second at most
+  while bytes move, none once the run has finished.
+
+Validation: `cargo test -p dsor-game-data` 16 passed (synthetic builds: fresh
+folder, check, repair, an update that drops a file, resume, damaged downloads,
+offline, a second client). `cargo test -p dsor-client` 421 passed. Real CDN,
+build `6a8b704d`: a first install on the HDD volume took 5 min 42 s (2.21 GB,
+164,026 files). An install interrupted after 25 s resumed on the NVMe drive with
+626 bundles in 3 min 47 s. Every later check takes 1.0 s. The tree has exactly the
+tables' 164,026 files (4.75 GB), none outside `export_win32/`. Compared with the
+launcher's October 20 tree, 1,484 of 1,500 sampled same-size files are
+identical; the files that differ are the October 22 patch's (maps, audio,
+languages), and fetching them one by one from the CDN gives the same bytes as
+the bundles. Captures of the strip complete, failed and downloading (fast
+build). `profile_native_maps.py kingscity game-data-strip` (fast build): `ui
+work` 0 when still, 170-207 FPS.
+
+## The account server's static database (2026-10-24)
+
+Signing in now gives the game data the account server's `static.db4` when it
+differs from the CDN's copy. The live server plays with the October 20 build's
+database plus its admin-buff rows, and status effect wire ids are rowids.
+Server (the live tree, `D:\_dso_retired\dso-server\dso_server`; originals in
+`dso_server_backup_2026-10-24-static-db`): `services/content.py` publishes the
+database the game services load. `GET /api/content` gives its sha256, size and
+packed size. `POST /api/content/static-db` with a live session gives the
+database packed as the CDN packs files (`__ZN`), at most 6 times per address
+per 15 minutes. The file is read between two identical `stat` calls, hashed and
+packed once per revision. `/api/status` and the launcher's endpoints are
+unchanged; `DSO_PUBLISH_STATIC_DB=0` turns it off. Client:
+`dsor_game_data::adopt_static_db` checks size, sha256 and the SQLite header,
+replaces `export_win32/db/static.db4` in one step and records it in
+`.dsor/overrides.txt`, so the CDN check keeps it (a lost copy comes back from
+the CDN and the next sign-in brings the server's again). The account screen runs
+it between `/api/login` and connecting; a failure is logged and play goes on.
+Details: docs/game-data.md.
+
+Validation: server `pytest` 104 passed (5 new in
+`tests/test_account_static_db.py`, plus the account, admin, maintenance and
+standalone suites). `cargo test -p dsor-game-data` 20 passed (3 against a
+local HTTP account service: install then match, no session or an old server,
+a damaged or non-SQLite download; 1 for the override against the CDN check).
+`cargo test -p dsor-client` 421 passed. End to end with the live tree's
+account service on port 18080 and its real database: the first manifest took
+0.6 s (68.8 MB packed to 7.5 MB). A sign-in replaced the CDN's copy
+(`4e4b9038...`) with the server's (`81a09c5c...`) in 0.17 s, the next one found
+it matching, and a wrong session got 401 with nothing written. The running server
+needs a restart to serve the endpoints.

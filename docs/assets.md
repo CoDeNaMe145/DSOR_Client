@@ -9,9 +9,9 @@ folder outside the repository.
 ## Producing it
 
 ```sh
-# <export_win32> is the unpacked client tree (models/, meshes/, maps/, textures/, ...)
-tools/convert_assets.sh ~/Downloads/DSOClient2018_rel_206-7-32bit/export_win32 \
-                        ~/Documents/Drakensang/dsor_assets
+# <export_win32> is the unpacked client tree (models/, meshes/, maps/, textures/, ...):
+# game-data/export_win32 once the account screen has downloaded it (docs/game-data.md)
+tools/convert_assets.sh game-data/export_win32 ~/Documents/Drakensang/dsor_assets
 ln -sfn ~/Documents/Drakensang/dsor_assets assets
 ```
 

@@ -8,7 +8,7 @@ use bevy::window::PrimaryWindow;
 pub(super) const GOLD: Color = Color::srgb(0.85, 0.73, 0.48);
 pub(super) const IVORY: Color = Color::srgb(0.96, 0.91, 0.79);
 pub(super) const MUTED: Color = Color::srgb(0.65, 0.65, 0.61);
-const ERROR: Color = Color::srgb(1.0, 0.59, 0.49);
+pub(super) const ERROR: Color = Color::srgb(1.0, 0.59, 0.49);
 const PANEL_WIDTH: f32 = 480.0;
 
 #[derive(Resource)]
@@ -265,7 +265,9 @@ pub(super) fn paint(form: Res<Form>, time: Res<Time>,
     mut status: Query<(&mut Text, &mut TextColor), (With<Status>, Without<FieldText>, Without<StatusMark>, Without<RevealLabel>)>,
     mut marks: Query<&mut ImageNode, (With<StatusMark>, Without<Field>, Without<ButtonSkin>)>,
     mut reveal: Query<&mut Text, (With<RevealLabel>, Without<FieldText>)>,
-    mut sweeps: Query<&mut Node, With<Sweep>>) {
+    mut sweeps: Query<&mut Node, With<Sweep>>, data: Option<Res<super::game_data::GameData>>) {
+    // Play waits for the game data (super::game_data): its button looks it.
+    let locked = !form.busy() && form.page != Page::Settings && data.is_some_and(|d| !d.ready());
     for (field, mut text, mut color) in &mut texts {
         let input = &form.inputs[field.0];
         let focus = form.focus == field.0;
@@ -290,7 +292,8 @@ pub(super) fn paint(form: Res<Form>, time: Res<Time>,
             Interaction::Pressed => Rect::new(351.0, 397.0, 501.0, 461.0),
             Interaction::None => Rect::new(181.0, 397.0, 331.0, 461.0),
         } });
-        image.color = if *interaction == Interaction::Pressed { Color::srgb(0.72, 0.72, 0.72) } else { Color::WHITE };
+        image.color = if skin.0 && locked { Color::srgb(0.45, 0.45, 0.45) }
+            else if *interaction == Interaction::Pressed { Color::srgb(0.72, 0.72, 0.72) } else { Color::WHITE };
     }
     for (mut text, mut color) in &mut status {
         **text = form.status.clone(); color.0 = if form.error { ERROR } else { MUTED };

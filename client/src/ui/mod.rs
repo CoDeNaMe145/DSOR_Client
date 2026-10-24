@@ -567,6 +567,8 @@ pub(crate) struct UiWork {
     pub status_bars: u64,
     /// 3D preview subjects built (preview::choose): a character, a model.
     pub previews: u64,
+    /// The account screen's game data strip repainted (screens::login::game_data::paint).
+    pub game_data_bars: u64,
 }
 
 pub struct UiPlugin;

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/raknet", "crates/proto", "crates/transport", "crates/relay", "crates/level-data", "crates/texture-pack", "client"]
+members = ["crates/raknet", "crates/proto", "crates/transport", "crates/relay", "crates/level-data", "crates/texture-pack", "crates/game-data", "client"]
 
 [workspace.package]
 edition = "2021"

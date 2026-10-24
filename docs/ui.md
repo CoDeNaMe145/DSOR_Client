@@ -322,7 +322,11 @@ What this means for new interface code:
   `views_are_built_only_for_open_windows_and_only_when_something_changed`,
   `the_quest_list_is_rebuilt_only_when_something_changed`,
   `the_status_rows_are_reassigned_only_when_what_they_show_changes`,
-  `subjects_are_built_when_what_they_show_changes_and_never_on_idle_frames`).
+  `subjects_are_built_when_what_they_show_changes_and_never_on_idle_frames`,
+  `the_strip_is_repainted_only_when_the_download_moves`).
+- **Progress from another thread** (the account screen's game data strip)
+  compares the run's revision counter with the one painted, and repaints at
+  most four times a second while it moves (`screens::login::game_data::paint`).
 - **Something that counts down** (the status effects' time labels) computes
   when it next reads differently and does nothing until then
   (`controls::effects::sync`).

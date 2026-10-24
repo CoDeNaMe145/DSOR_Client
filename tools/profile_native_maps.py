@@ -101,6 +101,6 @@ report = dict(tag=tag, map=map_name, position=pos, flags=env['DSOR_FLAGS'],
 print(json.dumps({k:v for k,v in report.items() if k not in ('stages','focus')}, indent=2),flush=True)
 # The fixed view is idle: after loading, the interface must rebuild nothing
 # (docs/ui.md, "Per-frame cost"). A UI route legitimately opens windows.
-idle = re.findall(r'ui work: (\d+) layouts prepared, (\d+) system views, (\d+) quest lists(?:, (\d+) status bars)?(?:, (\d+) previews)?', data)
+idle = re.findall(r'ui work: (\d+) layouts prepared, (\d+) system views, (\d+) quest lists(?:, (\d+) status bars)?(?:, (\d+) previews)?(?:, (\d+) game data bars)?', data)
 if not a.ui_route and len(idle) >= 2 and any(int(n or 0) for n in idle[-1]):
     print('WARNING: the interface rebuilt something every window while idle: ' + report['ui_work'][-1], flush=True)

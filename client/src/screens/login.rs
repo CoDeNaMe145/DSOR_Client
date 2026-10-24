@@ -13,6 +13,7 @@ use crate::{network::net, LoginGate, Options};
 
 mod view;
 mod footer;
+mod game_data;
 
 const SETTINGS: &str = "client-auth.json";
 
@@ -22,7 +23,8 @@ impl Plugin for LoginPlugin {
         app.add_systems(Startup, (setup, view::load).run_if(resource_exists::<LoginGate>))
             .add_systems(PostStartup, view::preload.run_if(resource_exists::<LoginGate>))
             .add_systems(Update, (buttons, keyboard, poll, view::draw, view::resize, view::paint, footer::animate).chain()
-                .run_if(resource_exists::<LoginGate>));
+                .run_if(resource_exists::<LoginGate>))
+            .add_plugins(game_data::GameDataPlugin);
     }
 }
 
@@ -90,7 +92,7 @@ enum Page { Login, Register, Settings }
 #[derive(Component)] struct Root;
 #[derive(Component, Clone, Copy)]
 enum Action { Field(usize), Play, Register, Settings, Back, Class, Gender, Cancel, Reveal, Retry }
-enum Reply { Status(Value), Authenticated(net::NetConfig) }
+enum Reply { Status(Value), Authenticated(net::NetConfig), Progress(&'static str) }
 struct Job { receiver: Mutex<mpsc::Receiver<Result<Reply, String>>>, authentication: bool }
 
 #[derive(Resource)]
@@ -146,7 +148,7 @@ impl Form {
             let _ = tx.send(request(&address, "GET", "/api/status", json!(null)).map(Reply::Status));
         });
     }
-    fn submit(&mut self) {
+    fn submit(&mut self, data: Option<&game_data::GameData>) {
         if self.busy() { return; }
         if self.page == Page::Settings {
             match account_address(&self.inputs[3].value) {
@@ -175,17 +177,29 @@ impl Form {
         preferences.server = address.clone();
         let login_override = self.login_override.clone();
         let character_id = self.character_id;
+        let game_data = data.and_then(game_data::GameData::folder);
         self.save();
         self.message(if register { "Creating your account..." } else { "Signing in..." }, false);
         let (tx, rx) = mpsc::channel();
         self.job = Some(Job { receiver: Mutex::new(rx), authentication: true });
         self.redraw = true;
         std::thread::spawn(move || {
+            let progress = tx.clone();
             let result = (|| {
                 let payload = json!({"username": username, "password": password});
                 if register { request(&address, "POST", "/api/register", payload.clone())?; }
                 let reply = request(&address, "POST", "/api/login", payload)?;
                 let config = session_config(&reply, &preferences, login_override, character_id)?;
+                // The server's static database, when it plays with another than the
+                // game data's (dsor_game_data::adopt_static_db). The client reads none
+                // at run time, so a failure here is logged and play goes on.
+                if let Some(folder) = &game_data {
+                    let _ = progress.send(Ok(Reply::Progress("Checking the server's game database...")));
+                    match dsor_game_data::adopt_static_db(folder, &address, &config.session) {
+                        Ok(adopted) => info!("game data: the server's static database: {adopted:?}"),
+                        Err(error) => warn!("game data: the server's static database: {error}"),
+                    }
+                }
                 // DNS may block, so resolve here rather than in the rendering thread.
                 let target = dsor_proto::session::resolve(&config.login, 2190)
                     .ok_or("The game server address could not be resolved.")?;
@@ -267,7 +281,7 @@ fn setup(mut commands: Commands, mut options: ResMut<Options>) {
     commands.insert_resource(form);
 }
 
-fn buttons(mut form: ResMut<Form>, interactions: Query<(&Interaction, &Action), Changed<Interaction>>) {
+fn buttons(mut form: ResMut<Form>, interactions: Query<(&Interaction, &Action), Changed<Interaction>>, data: Option<Res<game_data::GameData>>) {
     for (interaction, action) in &interactions {
         if *interaction != Interaction::Pressed { continue; }
         if form.busy() {
@@ -276,7 +290,10 @@ fn buttons(mut form: ResMut<Form>, interactions: Query<(&Interaction, &Action), 
         }
         match *action {
             Action::Field(i) => { form.focus = i; form.inputs[i].cursor = form.inputs[i].value.len(); }
-            Action::Play => form.submit(),
+            Action::Play => match game_data::refusal(form.page, data.as_deref()) {
+                Some(why) => form.message(why, true),
+                None => form.submit(data.as_deref()),
+            },
             Action::Register => { form.job = None; form.page = Page::Register; form.focus = 0; form.reveal_password = false; form.redraw = true; form.message("Create an account on this server.", false); }
             Action::Settings => { form.job = None; form.page = Page::Settings; form.focus = 3; form.reveal_password = false; form.redraw = true; form.message("Choose your server and new character defaults.", false); }
             Action::Back => form.back(),
@@ -289,7 +306,8 @@ fn buttons(mut form: ResMut<Form>, interactions: Query<(&Interaction, &Action), 
     }
 }
 
-fn keyboard(mut events: MessageReader<KeyboardInput>, keys: Res<ButtonInput<KeyCode>>, mut clipboard: ResMut<Clipboard>, mut form: ResMut<Form>) {
+fn keyboard(mut events: MessageReader<KeyboardInput>, keys: Res<ButtonInput<KeyCode>>, mut clipboard: ResMut<Clipboard>, mut form: ResMut<Form>,
+    data: Option<Res<game_data::GameData>>) {
     for event in events.read() {
         if !event.state.is_pressed() { continue; }
         if event.key_code == KeyCode::Escape {
@@ -306,7 +324,10 @@ fn keyboard(mut events: MessageReader<KeyboardInput>, keys: Res<ButtonInput<KeyC
             form.focus = fields[(current + if shift { fields.len() - 1 } else { 1 }) % fields.len()];
             continue;
         }
-        if event.key_code == KeyCode::Enter || event.key_code == KeyCode::NumpadEnter { form.submit(); continue; }
+        if event.key_code == KeyCode::Enter || event.key_code == KeyCode::NumpadEnter {
+            match game_data::refusal(form.page, data.as_deref()) { Some(why) => form.message(why, true), None => form.submit(data.as_deref()) }
+            continue;
+        }
         let focus = form.focus;
         let input = &mut form.inputs[focus];
         if control {
@@ -337,9 +358,15 @@ fn poll(world: &mut World) {
             Err(_) => Some(Err("The sign-in request ended unexpectedly. Try again.".into()))
         })
     };
+    // A step of the sign-in: shown, and the job goes on.
+    let reply = match reply {
+        Some(Ok(Reply::Progress(step))) => { world.resource_mut::<Form>().message(step, false); None }
+        other => other,
+    };
     if let Some(reply) = reply {
         world.resource_mut::<Form>().job = None;
         match reply {
+            Ok(Reply::Progress(_)) => {}
             Ok(Reply::Status(doc)) => {
                 let mut form = world.resource_mut::<Form>();
                 if doc["service"] == "dso-account-service" {

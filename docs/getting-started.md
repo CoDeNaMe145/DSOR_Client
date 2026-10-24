@@ -17,13 +17,20 @@ locally into `assets/` and are never committed (see `tools/convert_assets.sh`).
 - [vgmstream-cli](https://github.com/vgmstream/vgmstream/releases) with its companion libraries
   (audio extraction; on `PATH` or selected with `DSOR_VGMSTREAM`)
 - ALSA development headers for native Linux audio builds
-- the unpacked 2018 client (`DSOClient2018_rel_206-7-32bit/export_win32`)
+- the game's own data: the client downloads it from Bigpoint's CDN into
+  `game-data/` on its account screen, or `cargo run --release -p dsor-game-data`
+  does without a window ([the game data](game-data.md)). Any unpacked client
+  tree (`export_win32`) works too.
 
 ## 2. Convert the game data
 
+The current build downloads into `game-data/` (2.2 GB, 4.75 GB on disk) when
+the client's account screen opens, or with
+`cargo run --release -p dsor-game-data`; see [the game data](game-data.md).
+Convert its `export_win32` (or any other unpacked client tree):
+
 ```sh
-tools/convert_assets.sh ~/Downloads/DSOClient2018_rel_206-7-32bit/export_win32 \
-                        ~/Documents/Drakensang/dsor_assets
+tools/convert_assets.sh game-data/export_win32 ~/Documents/Drakensang/dsor_assets
 ln -sfn ~/Documents/Drakensang/dsor_assets assets
 ```
 
@@ -96,7 +103,9 @@ The client the upgraded server matches comes extracted from its bundles
 (here `D:\dso-client-october-26`): `export_win32/` is the data tree with its
 static database at `export_win32/db/static.db4` as usual (the extractor may
 write that one under `global/export_win32/db/`: move it into
-`export_win32/db/`), `_toc/` the bundles' listings. Convert into a new folder,
+`export_win32/db/`), `_toc/` the bundles' listings. The client's own download
+(`game-data/`, [the game data](game-data.md)) makes the same tree from the
+CDN's current build, the database already in place. Convert into a new folder,
 then put it in place of `assets` (keep `fonts/`, which the conversion does not
 make):
 
