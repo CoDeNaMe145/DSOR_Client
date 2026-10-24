@@ -1137,8 +1137,15 @@ fn cast_input(
         aimed => aimed,
     };
     let target_actor = if targeted { aimed.map(|(_, _, a, ..)| a) } else { None };
+    // Only the left button walks into reach (a click on a monster: go there and
+    // strike). The right button and the keys strike from where the player stands,
+    // turned to the monster, never stepping: the server decides whether it lands.
+    // FAILURE (2026-10-24): a right click on a monster walked the warrior to it
+    //   ("I right click to use my skill, with my mouse hovering over a monster and
+    //   I walk to it"; clips 20261024-1143-13, 20261024-1259-25).
+    let walks = left || from_queue;
     if let (true, Some((e, at, _, radius, _, footprint))) = (approaches(skill), aimed) {
-        if beyond_reach(skill, tf.translation, at, radius, footprint) {
+        if walks && beyond_reach(skill, tf.translation, at, radius, footprint) {
             tell(format!("walking into reach: {:.2} m (flat {:.2}, height {:.2}) from the monster, footprint {:?}, capsule {:.2}, range {:.2}",
                 tf.translation.distance(at), Vec2::new(at.x - tf.translation.x, at.z - tf.translation.z).length(), at.y - tf.translation.y,
                 footprint, radius, skill.range));
