@@ -59,7 +59,9 @@ try {
     }
     $target = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $workspace 'target' }
     if (-not $SkipBuild) {
-        $features = if ($NoDlss) { @('--no-default-features') } else { @() }
+        # @(...) keeps it an array: `if` alone unrolls a one-item array to a
+        # string, which splats as single characters (cargo saw "-").
+        $features = @(if ($NoDlss) { '--no-default-features' })
         Run 'build the client' { cargo build --locked --release -p dsor-client @features }
         Run 'build the level tool' { cargo build --locked --release -p dsor-level-data --bin dsor-levels }
         Run 'build the texture packer' { cargo build --locked --release -p dsor-texture-pack --bin dsor-ktx2 }
