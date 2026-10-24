@@ -417,7 +417,7 @@ mod tests {
             .init_asset::<Layout>().init_asset::<items::Catalog>().init_asset::<Mesh>().init_asset::<UiMaterial>()
             .init_asset::<Image>().init_asset::<Font>().init_asset::<crate::gameplay::skills::SkillTable>()
             .init_resource::<Screen>().init_resource::<Loaded>().init_resource::<settings::Settings>()
-            .init_resource::<Pointer>().init_resource::<hotbar::Hotbar>().init_resource::<dialogue::Presentation>()
+            .init_resource::<Pointer>().init_resource::<hotbar::Hotbar>().init_resource::<crate::ui::controls::hotbar::ItemCooldowns>().init_resource::<dialogue::Presentation>()
             .init_resource::<items::Interaction>().init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<effects::StatusBar>().init_asset::<effects::Catalog>()
             .init_resource::<Figures>().init_resource::<currency::Shown>().init_resource::<systems::Views>()

@@ -847,6 +847,7 @@ pub(in crate::ui) fn send(
     mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
     primary: Query<&Window, With<bevy::window::PrimaryWindow>>,
     quests: Res<super::quests::Quests>,
+    (mut item_cooldowns, items_data, items_catalogs): (ResMut<super::hotbar::ItemCooldowns>, Res<items::Data>, Res<Assets<items::Catalog>>),
 ) {
     let Some(mut net) = net else { return };
     let fallback = SystemsCatalog::default();
@@ -1041,7 +1042,13 @@ pub(in crate::ui) fn send(
             Request::Sticker(template) => commands.push(ClientCommand::UseStickerBookItem(inventory::UseStickerBookItem { template })),
             // A sticker clicked is shown in the preview; right-clicked, also used.
             Request::Pick(id, use_it) => {
-                if use_it { commands.extend(use_sticker(&views.album, &id)); }
+                // Not while its cooldown runs (a mount 0.5 s, a pet 2-5 s).
+                if use_it {
+                    commands.extend(use_sticker(&views.album, &id).filter(|c| match c {
+                        ClientCommand::UseStickerBookItem(u) => item_cooldowns.start(items_catalogs.get(&items_data.catalog), &u.template, time.elapsed_secs_f64()),
+                        _ => true,
+                    }));
+                }
                 if state.album_sticker.as_ref() != Some(&id) { state.album_sticker = Some(id); }
             }
             Request::AlbumBook(book, sticker) => {

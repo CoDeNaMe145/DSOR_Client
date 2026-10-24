@@ -623,13 +623,14 @@ impl Plugin for UiPlugin {
             .init_resource::<controls::Pointer>()
             .init_resource::<SkillClicks>()
             .init_resource::<controls::social::SocialUi>()
-            .init_resource::<controls::trade::TradeUi>()
+            .init_resource::<controls::trade::TradeUi>().init_resource::<crate::ui::controls::hotbar::ItemCooldowns>()
             .init_resource::<controls::party::Party>()
             .init_resource::<controls::quests::Quests>()
             .init_resource::<crate::gameplay::quests::QuestUi>().init_resource::<crate::ui::controls::systems::Views>()
             .init_resource::<controls::items::pins::Pins>()
             .init_resource::<Settings>()
-            .init_resource::<controls::hotbar::Hotbar>()
+            .init_resource::<controls::hotbar::Hotbar>().init_resource::<crate::ui::controls::hotbar::ItemCooldowns>()
+            .init_resource::<controls::hotbar::ItemCooldowns>()
             .insert_resource(local_map::MapSettings::load())
             .add_systems(Startup, (setup, controls::items::setup, dialogue::setup, controls::message::setup))
             .add_systems(Update, follow_screen)
@@ -1696,7 +1697,7 @@ fn update_slots(
     catalogs: Res<Assets<Catalog>>,
     screen: Res<Screen>,
     (skill_data, skill_tables, resource_max, char_stats): (Res<crate::gameplay::skills::SkillData>, Res<Assets<crate::gameplay::skills::SkillTable>>, Res<crate::gameplay::stats::ResourceMax>, Res<crate::gameplay::stats::CharacterStats>),
-    (cooldowns, time, pointer): (Res<crate::gameplay::skills::SkillCooldowns>, Res<Time<Real>>, Res<controls::Pointer>),
+    (cooldowns, time, pointer, item_cooldowns): (Res<crate::gameplay::skills::SkillCooldowns>, Res<Time<Real>>, Res<controls::Pointer>, Res<controls::hotbar::ItemCooldowns>),
 ) {
     let Some(table) = icon_table.get(&loaded.icons) else { return };
     let catalog = catalogs.get(&data.catalog);
@@ -1713,11 +1714,16 @@ fn update_slots(
         // A skill cooling down (cast_input refuses it until then) gets a dark
         // sweep over its icon, redrawn in COOLDOWN_STEPS steps as it turns.
         let cool = skill.as_deref().map_or(0.0, |id| cooldowns.remaining(&skill_data, &skill_tables, id, now));
+        // A mount, pet or item shortcut cooling down draws the same way.
+        let shortcut = skill.is_none().then(|| controls::hotbar::slot_template(s.slot, hotbar.active, net.as_deref())).flatten();
+        let (item_cool, item_seconds) = shortcut.as_deref().map_or((0.0, 0.0), |t| item_cooldowns.remaining(catalog, t, now));
+        let cool = cool.max(item_cool);
         let step = (cool * COOLDOWN_STEPS as f32).ceil().min(COOLDOWN_STEPS as f32) as u8;
         // And the seconds left on it, as the original's "21 s".
         // FAILURE (2026-10-24): "the skills still don't have a cooldown": only the
         //   sweep showed, hard to see on dark icons.
-        let tenths = skill.as_deref().map_or(0, |id| crate::gameplay::skills::cooldown_tenths(cooldowns.seconds_left(&skill_data, &skill_tables, id, now)));
+        let tenths = skill.as_deref().map_or(0, |id| crate::gameplay::skills::cooldown_tenths(cooldowns.seconds_left(&skill_data, &skill_tables, id, now)))
+            .max(crate::gameplay::skills::cooldown_tenths(item_seconds));
         // A spell being dragged off this slot leaves it empty meanwhile, as in the game.
         let lifted = pointer.lifted_slot() == Some((hotbar.active, s.slot));
         let want = controls::hotbar::appearance(s.slot, hotbar.active, net.as_deref(), &figures, catalog, table)

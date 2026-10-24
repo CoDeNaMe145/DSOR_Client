@@ -28,6 +28,9 @@ def export_inventory(db, textures, loca, assets):
             return re.sub(r'<[^>]*>', '', short[key])
         return fallback
 
+    def cooldown(r):
+        seconds = float(r.get('CoolDown') or 0)
+        return dict(cooldown=seconds, cooldown_category=r.get('CoolDownCategory') or '') if seconds > 0 else {}
     result = dict(items={}, ingredients=[], colors={}, appearances={}, icon_configs={}, rarity_backgrounds=[], enchantments={})
     cursor = db.execute('SELECT * FROM _Template_Item')
     columns = [c[0] for c in cursor.description]
@@ -55,6 +58,8 @@ def export_inventory(db, textures, loca, assets):
             # The raw category (the localized one is `category`): Mount items are
             # used, not equipped (crate::ui::controls::items).
             item_category=r.get('ItemCategory') or '',
+            # Its use cooldown, shared by its category (every mount VanityItem).
+            **cooldown(r),
             unique_effects=unique_effects(r.get('UniqueModifier'), local))
     for eid, name, base in db.execute('SELECT Id, Name, BaseEnchantment FROM _Template_Enchantment'):
         result['enchantments'][eid] = dict(name=(name or eid).removeprefix('Base Enchantment ').removeprefix('Item Enchantment '), base=bool(base))

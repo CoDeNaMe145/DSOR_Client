@@ -11,6 +11,10 @@ pub struct Definition {
     #[serde(default)] pub icon_config: String,
     /// The raw _Template_Item ItemCategory ("Mount", "Armor"...).
     #[serde(default)] pub item_category: String,
+    /// Its use cooldown in seconds and the category sharing it
+    /// (_Template_Item.CoolDown / CoolDownCategory; hotbar::ItemCooldowns).
+    #[serde(default)] pub cooldown: f32,
+    #[serde(default)] pub cooldown_category: String,
     #[serde(default)] pub unique_values: Vec<String>,
     #[serde(default)] pub unique_effects: Vec<String>,
 }
@@ -459,7 +463,7 @@ impl Lookups<'_> {
 pub fn input(mut ui:ResMut<Interaction>,mut pointer:ResMut<Pointer>,mut windows:Windows,
     primary:Query<&Window,With<PrimaryWindow>>,mouse:Res<ButtonInput<MouseButton>>,keys:Res<ButtonInput<KeyCode>>,
     net:Option<NonSendMut<crate::network::net::Net>>,data:Res<Data>,catalogs:Res<Assets<Catalog>>,time:Res<Time<Real>>,
-    mut last_click:Local<Option<(u32,f64)>>,mut trade:ResMut<super::trade::TradeUi>,capture:Res<crate::ui::input::UiInput>,mut tested:Local<bool>,
+    mut last_click:Local<Option<(u32,f64)>>,(mut trade,mut cooldowns):(ResMut<super::trade::TradeUi>,ResMut<super::hotbar::ItemCooldowns>),capture:Res<crate::ui::input::UiInput>,mut tested:Local<bool>,
     mut lookups:Lookups,mut audio:Option<ResMut<crate::audio::AudioRequests>>) {
     let Some(mut net)=net else{return}; let Some(catalog)=catalogs.get(&data.catalog) else{return};
     let Ok(window)=primary.single() else{return};
@@ -588,7 +592,10 @@ pub fn input(mut ui:ResMut<Interaction>,mut pointer:ResMut<Pointer>,mut windows:
                     pointer.open_window=Some("travelmap"); net.travel_source=None;
                 } else if let Some(cmd)=use_consumable(&net.inventory,catalog,id) {
                     if trading { trade.add.push(id); }
-                    else { net.send(&cmd);ui.pending=Some((net.inventory.revision,time.elapsed_secs_f64())); }
+                    // Still cooling down (a mount used 0.5 s ago): refused, as the original.
+                    else if net.inventory.items.get(&id).is_none_or(|i| cooldowns.start(Some(catalog),&i.template,time.elapsed_secs_f64())) {
+                        net.send(&cmd);ui.pending=Some((net.inventory.revision,time.elapsed_secs_f64()));
+                    }
                 }
             }
         }
@@ -880,7 +887,7 @@ mod tests {
             .init_asset::<Layout>().init_asset::<Mesh>().init_asset::<UiMaterial>()
             .init_asset::<Image>().init_asset::<Font>().init_asset::<Catalog>()
             .init_resource::<Loaded>().init_resource::<Screen>().init_resource::<Figures>()
-            .init_resource::<settings::Settings>().init_resource::<hotbar::Hotbar>()
+            .init_resource::<settings::Settings>().init_resource::<hotbar::Hotbar>().init_resource::<crate::ui::controls::hotbar::ItemCooldowns>()
             .init_resource::<dialogue::Presentation>().init_asset::<dialogue::Catalog>()
             .init_resource::<crate::gameplay::dialogue::Dialogue>()
             .init_resource::<crate::gameplay::stats::Sheet>().init_resource::<crate::actors::monsters::HoverInfo>()

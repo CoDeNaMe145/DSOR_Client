@@ -7,6 +7,47 @@ use dsor_proto::commands::{inventory::{ItemInfo, QuickSlot as Slot, UseStickerBo
 pub(super) const PRIMARY_ESSENCE: usize = 17;
 pub(super) const BACKUP_ESSENCE: usize = 18;
 
+/// Item and sticker use cooldowns (_Template_Item.CoolDown, shared by its
+/// CoolDownCategory: every mount VanityItem 0.5 s, pets 2-5 s, Shadow Souls 30
+/// s): (start, ready) on Time<Real>, by category, else by template. A use while
+/// one runs is refused, and the quick slots draw it as a skill's.
+/// EVIDENCE: static.db4 _Template_Item; the original greys a used sticker and
+///   counts "0.4 s" .. "0.1 s" (the user's release261_192 recording).
+/// FAILURE (2026-10-24): no cooldown at all on mounts and pets.
+#[derive(Resource, Default)]
+pub(in crate::ui) struct ItemCooldowns(std::collections::HashMap<String, (f64, f64)>);
+
+impl ItemCooldowns {
+    fn key(catalog: &items::Catalog, template: &str) -> Option<(String, f64)> {
+        let d = catalog.items.get(template).filter(|d| d.cooldown > 0.0)?;
+        Some((if d.cooldown_category.is_empty() { template.to_owned() } else { d.cooldown_category.clone() }, d.cooldown as f64))
+    }
+    /// Starts `template`'s cooldown; false while it still runs (the use is refused).
+    pub(in crate::ui) fn start(&mut self, catalog: Option<&items::Catalog>, template: &str, now: f64) -> bool {
+        let Some((key, seconds)) = catalog.and_then(|c| Self::key(c, template)) else { return true };
+        if self.0.get(&key).is_some_and(|&(_, ready)| now < ready) { return false; }
+        self.0.insert(key, (now, now + seconds));
+        true
+    }
+    /// The part of `template`'s cooldown left (1 just used, 0 ready) and its seconds.
+    pub(in crate::ui) fn remaining(&self, catalog: Option<&items::Catalog>, template: &str, now: f64) -> (f32, f64) {
+        let Some((key, _)) = catalog.and_then(|c| Self::key(c, template)) else { return (0.0, 0.0) };
+        self.0.get(&key).filter(|&&(_, ready)| now < ready)
+            .map_or((0.0, 0.0), |&(start, ready)| (((ready - now) / (ready - start).max(1e-6)) as f32, ready - now))
+    }
+}
+
+/// The item or sticker a shortcut slot holds (its template), for its cooldown.
+pub(in crate::ui) fn slot_template(index: usize, bar: usize, net: Option<&crate::network::net::Net>) -> Option<String> {
+    let net = net?;
+    let s = slot(net, bar, index)?;
+    match s.kind {
+        1 => item(s, &net.inventory).map(|i| i.template.clone()).or_else(|| s.id.clone()),
+        2 => s.id.clone(),
+        _ => None,
+    }
+}
+
 #[derive(Resource, Default)]
 pub(in crate::ui) struct Hotbar {
     pub active: usize,
@@ -123,7 +164,7 @@ pub(in crate::ui) fn appearance(index: usize, bar: usize, net: Option<&crate::ne
 
 pub(in crate::ui) fn input(mut bar: ResMut<Hotbar>, keys: Res<ButtonInput<KeyCode>>, settings: Res<settings::Settings>,
     mut pointer: ResMut<Pointer>, windows: Query<(&Window2018, &Visibility)>, mut clicks: ResMut<SkillClicks>, net: Option<NonSendMut<crate::network::net::Net>>,
-    (data, catalogs): (Res<items::Data>, Res<Assets<items::Catalog>>)) {
+    (data, catalogs): (Res<items::Data>, Res<Assets<items::Catalog>>), (mut cooldowns, time): (ResMut<ItemCooldowns>, Res<Time<Real>>)) {
     let Some(mut net) = net else { return; };
     let blocked = pointer.focus.is_some() || settings.open || windows.iter().any(|(w,v)| *v != Visibility::Hidden && matches!(w.0.as_str(), "gamemenu" | "unstackwindow"));
     if blocked { bar.change = 0; bar.swap_essence = false; clicks.0 = None; return; }
@@ -164,8 +205,10 @@ pub(in crate::ui) fn input(mut bar: ResMut<Hotbar>, keys: Res<ButtonInput<KeyCod
             // The Universal Map's slot opens the travel map, as its right click does.
             let map = s.kind == 1 && item(s, &net.inventory).zip(catalogs.get(&data.catalog)).is_some_and(|(i, c)| items::travel_map(c, &i.template));
             if map { pointer.open_window = Some("travelmap"); }
+            // A mount or pet still cooling down is not used again.
+            let ready = map || slot_template(index, bar.active, Some(&net)).is_none_or(|t| cooldowns.start(catalogs.get(&data.catalog), &t, time.elapsed_secs_f64()));
             let command = match s.kind {
-                1 if map => None,
+                1 | 2 if map || !ready => None,
                 1 => item(s, &net.inventory).map(|i| crate::gameplay::inventory::command(i.id, dsor_proto::commands::inventory::Inventory::USE, vec![])),
                 2 => s.id.clone().map(|template| ClientCommand::UseStickerBookItem(UseStickerBookItem { template })),
                 _ => None,
