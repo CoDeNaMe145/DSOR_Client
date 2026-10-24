@@ -1225,8 +1225,11 @@ fn hover(
     monsters: Query<(Entity, &GlobalTransform, &Monster, &CharacterAnim, &InheritedVisibility, Option<&crate::actors::picking::PickBoxes>)>,
     joints: Query<&GlobalTransform>,
     mut hovered: ResMut<Hovered>,
+    buttons: Res<ButtonInput<MouseButton>>,
+    mut held: Local<Option<Entity>>,
 ) {
-    if ui.over_ui {
+    if ui.over_ui && !buttons.pressed(MouseButton::Left) {
+        *held = None;
         if hovered.0.is_some() { hovered.0 = None; }
         return;
     }
@@ -1288,10 +1291,25 @@ fn hover(
                 .min_by(|a, b| a.0.total_cmp(&b.0));
         }
     }
-    let now = best.map(|(_, e, a)| (e, a));
+    let alive = |e: Entity| monsters.get(e).is_ok_and(|(_, _, m, a, shown, _)| m.targetable && m.is_alive(a) && shown.get());
+    *held = held_target(buttons.pressed(MouseButton::Left), buttons.just_pressed(MouseButton::Left), *held, best.map(|(_, e, _)| e), alive);
+    let now = held.and_then(|e| monsters.get(e).ok().map(|(_, _, m, ..)| (e, m.actor))).or(best.map(|(_, e, a)| (e, a)));
     if hovered.0 != now {
         hovered.0 = now;
     }
+}
+
+/// The monster the left button went down on stays the one under the cursor
+/// while the button is held and it lives: attacks (crate::gameplay::skills) and
+/// the walk (click_to_move) keep to it when the cursor slips off a monster that
+/// moves. Released, dead or gone, the cursor's own pick again.
+/// FAILURE (2026-10-24): "I seem to miss a lot of my attacks": the cursor left
+///   the moving monster and the next swing had no target.
+/// UNVERIFIED: the original's hold (its attacks follow the monster clicked).
+fn held_target(pressed: bool, just_pressed: bool, held: Option<Entity>, under_cursor: Option<Entity>, alive: impl Fn(Entity) -> bool) -> Option<Entity> {
+    if !pressed { return None; }
+    let held = if just_pressed { under_cursor } else { held };
+    held.filter(|e| alive(*e))
 }
 
 /// A blow's hit sequences on its victim `e`: one per damage type it carries (the
