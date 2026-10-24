@@ -2656,10 +2656,15 @@ fn follow_camera(
     }
 }
 
-/// One MoveCommand per game tick, as the 2018 client sends them: where the player
-/// is, speed 0 (the 2018 client never fills it), heading and facing in 256ths of a
+/// One MoveCommand per game tick: where the player is, its speed (0 standing,
+/// 0x40 at the run speed, more under a movement buff, as release261 fills it and
+/// remote players are read: RUN_SPEED_BYTE), heading and facing in 256ths of a
 /// turn, the tick, and a 20-tick duration.
-fn send_moves(mut net: NonSendMut<Net>, time: Res<Time<Real>>, mut players: Query<(&Transform, &mut LocalPlayer)>) {
+/// FAILURE (2026-10-24): sent 0 always (the 2018 client never fills it), so the
+///   server, which cancels a mount cast on a move with a speed (services/world.py
+///   "movement interrupted cast"), mounted the player who walked away.
+fn send_moves(mut net: NonSendMut<Net>, time: Res<Time<Real>>, mut players: Query<(&Transform, &mut LocalPlayer)>,
+    stats: Option<Res<crate::gameplay::stats::CharacterStats>>) {
     let Ok((tf, mut player)) = players.single_mut() else { return };
     if net.centre.is_none() {
         return;
@@ -2675,7 +2680,9 @@ fn send_moves(mut net: NonSendMut<Net>, time: Res<Time<Real>>, mut players: Quer
         x,
         elevation,
         y,
-        speed: 0,
+        speed: if player.target.is_some() {
+            (RUN_SPEED_BYTE * stats.as_ref().and_then(|s| s.movement_speed()).unwrap_or(RUN_SPEED) / RUN_SPEED).round().clamp(1.0, 255.0) as u8
+        } else { 0 },
         heading: turn(player.facing),
         facing: turn(player.facing),
         start_tick: tick,

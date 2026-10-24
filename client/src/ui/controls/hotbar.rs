@@ -164,7 +164,8 @@ pub(in crate::ui) fn appearance(index: usize, bar: usize, net: Option<&crate::ne
 
 pub(in crate::ui) fn input(mut bar: ResMut<Hotbar>, keys: Res<ButtonInput<KeyCode>>, settings: Res<settings::Settings>,
     mut pointer: ResMut<Pointer>, windows: Query<(&Window2018, &Visibility)>, mut clicks: ResMut<SkillClicks>, net: Option<NonSendMut<crate::network::net::Net>>,
-    (data, catalogs): (Res<items::Data>, Res<Assets<items::Catalog>>), (mut cooldowns, time): (ResMut<ItemCooldowns>, Res<Time<Real>>)) {
+    (data, catalogs): (Res<items::Data>, Res<Assets<items::Catalog>>), (mut cooldowns, time): (ResMut<ItemCooldowns>, Res<Time<Real>>),
+    (buttons, ui): (Res<ButtonInput<MouseButton>>, Res<crate::ui::input::UiInput>)) {
     let Some(mut net) = net else { return; };
     let blocked = pointer.focus.is_some() || settings.open || windows.iter().any(|(w,v)| *v != Visibility::Hidden && matches!(w.0.as_str(), "gamemenu" | "unstackwindow"));
     if blocked { bar.change = 0; bar.swap_essence = false; clicks.0 = None; return; }
@@ -196,7 +197,16 @@ pub(in crate::ui) fn input(mut bar: ResMut<Hotbar>, keys: Res<ButtonInput<KeyCod
     }
     bar.swap_essence = false;
     if net.death.dead { clicks.0 = None; return; }
-    let requested = clicks.0.or_else(|| settings.current.slot_pressed(&keys));
+    // The mouse buttons' slots, when they hold a pet, mount or item rather than a
+    // skill (crate::gameplay::skills casts those): one use a press, the right
+    // button or Shift + the left one.
+    // FAILURE (2026-10-24): a pet on the left button's slot did nothing on Shift +
+    //   left click.
+    let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+    let mouse = if !ui.blocks(MouseButton::Right) && buttons.just_pressed(MouseButton::Right) { Some(1) }
+        else if shift && !ui.blocks(MouseButton::Left) && buttons.just_pressed(MouseButton::Left) { Some(0) } else { None };
+    let mouse = mouse.filter(|i| slot(&net, bar.active, *i).is_some_and(|s| matches!(s.kind, 1 | 2)));
+    let requested = clicks.0.or_else(|| settings.current.slot_pressed(&keys)).or(mouse);
     if let Some(index) = requested {
         if index >= PRIMARY_ESSENCE { clicks.0 = None; return; }
         // A shortcut used from the bar is no travel stone's.
