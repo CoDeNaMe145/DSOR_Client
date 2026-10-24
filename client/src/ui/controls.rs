@@ -671,10 +671,13 @@ pub(super) struct Pointer {
     focus: Option<(Entity, String)>,
     spell_drag: Option<spells::DragSpell>,
     spell_drop: Option<spells::DropSpell>,
-    /// A Collector's Bag sticker being dragged, and the (sticker, quick slot) it
-    /// was dropped on, for stickers::apply_drop.
+    /// A Collector's Bag sticker being dragged, and the shortcut dropped on a quick
+    /// slot (kind 2 + sticker id, or kind 1 + item template; slot), for
+    /// stickers::apply_drop.
     sticker_drag: Option<stickers::StickerDrag>,
-    sticker_drop: Option<(String, usize)>,
+    sticker_drop: Option<(i32, String, usize)>,
+    /// A window to toggle (the Universal Map's travel map), for keyboard.
+    open_window: Option<&'static str>,
     item_command: Option<i32>,
     /// The destroy dialog's answer, for items::input.
     destroy: Option<bool>,
@@ -832,6 +835,7 @@ fn toggle(name: &str, windows: &mut Windows) {
 pub(super) fn keyboard(keys: Res<ButtonInput<KeyCode>>, mut windows: Windows, mut pointer: ResMut<Pointer>, mut items: ResMut<items::Interaction>,
     cameras: Query<Has<crate::diagnostics::debug::DetachedCamera>, With<crate::FreeCamera>>, mut players: Query<&mut crate::network::net::LocalPlayer>, mut dialogue: ResMut<crate::gameplay::dialogue::Dialogue>,
     mut settings: ResMut<settings::Settings>) {
+    if let Some(name) = pointer.open_window.take() { toggle(name, &mut windows); }
     if settings.keyboard(&keys) { return; }
     if keys.just_pressed(KeyCode::Escape) && items.cancel_drag() { pointer.down = None; return; }
     if keys.just_pressed(KeyCode::Escape) && pointer.spell_drag.take().is_some() {

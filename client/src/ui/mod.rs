@@ -518,7 +518,7 @@ struct QuickSlot {
     /// The icon and count drawn, whether greyed (its skill costs more than
     /// the resource there is), the cooldown sweep's step (0: ready) and its
     /// seconds left in tenths (skills::cooldown_tenths).
-    shown: Option<(String, u32, bool, u8, u32)>,
+    shown: Option<(String, u32, bool, u8, u32, Option<String>)>,
 }
 
 /// The figures the interface shows (from the server when online).
@@ -1677,17 +1677,17 @@ fn update_slots(
         let lifted = pointer.lifted_slot() == Some((hotbar.active, s.slot));
         let want = controls::hotbar::appearance(s.slot, hotbar.active, net.as_deref(), &figures, catalog, table)
             .filter(|_| !lifted)
-            .map(|(path, count)| (path, count, dim, step, tenths));
+            .map(|(path, count)| (path, count, dim, step, tenths, controls::hotbar::backdrop(s.slot, hotbar.active, net.as_deref(), catalog)));
         if want == s.shown && !screen.is_changed() { continue; }
         commands.entity(e).despawn_related::<Children>();
-        if let Some((path, count, dim, step, tenths)) = &want {
+        if let Some((path, count, dim, step, tenths, backdrop)) = &want {
             let [l, t, r, b] = s.rect;
             let shade = if *dim { [0.35, 0.35, 0.35, 1.0] } else { [1.0; 4] };
-            let art = Art { tex: None, pos: vec![l,t,r,t,r,b,l,b],
-                uv: vec![0.0,0.0,1.0,0.0,1.0,1.0,0.0,1.0], color: shade.repeat(4), idx: vec![0,1,2,0,2,3] };
-            let mut run = Run { k:s.k, ..default() }; run.push(&art,0.0);
-            let m = materials.add(material(Some(assets.load(path.clone()))));
-            commands.spawn((Mesh2d(meshes.add(run.mesh())), MeshMaterial2d(m), Transform::IDENTITY, RenderLayers::layer(LAYER), ChildOf(e)));
+            for (layer, z) in backdrop.iter().map(|b| (b, -0.05)).chain([(path, 0.0)]) {
+                let mut run = Run { k:s.k, ..default() }; run.push(&slot_art(s.slot, s.rect, shade), 0.0);
+                let m = materials.add(material(Some(assets.load(layer.clone()))));
+                commands.spawn((Mesh2d(meshes.add(run.mesh())), MeshMaterial2d(m), Transform::from_xyz(0.0, 0.0, z), RenderLayers::layer(LAYER), ChildOf(e)));
+            }
             if *step > 0 {
                 let mut run = Run { k: s.k, ..default() };
                 run.push(&cooldown_sweep(s.rect, *step as f32 / COOLDOWN_STEPS as f32), 0.0);
@@ -1714,6 +1714,30 @@ fn update_slots(
         }
         s.shown = want;
     }
+}
+
+/// What of a slot its picture covers: the round mount and companion sockets (8,
+/// 9) a disc inside their ring, every other slot its whole square.
+/// FAILURE (2026-10-24): the Manticore's square picture spilled over the mount
+///   socket's ring (the user's shot beside the original's round one).
+/// UNVERIFIED: the disc's size, matched by eye to the ring's opening.
+const ROUND_SLOT: f32 = 0.88;
+
+fn slot_art(slot: usize, rect: [f32; 4], shade: [f32; 4]) -> Art {
+    let [l, t, r, b] = rect;
+    if !matches!(slot, 8 | 9) {
+        return Art { tex: None, pos: vec![l,t,r,t,r,b,l,b], uv: vec![0.0,0.0,1.0,0.0,1.0,1.0,0.0,1.0], color: shade.repeat(4), idx: vec![0,1,2,0,2,3] };
+    }
+    const SIDES: u32 = 40;
+    let (cx, cy, radius) = ((l + r) * 0.5, (t + b) * 0.5, (r - l).min(b - t) * 0.5 * ROUND_SLOT);
+    let (mut pos, mut uv, mut idx) = (vec![cx, cy], vec![0.5, 0.5], Vec::new());
+    for i in 0..SIDES {
+        let (sin, cos) = (i as f32 / SIDES as f32 * std::f32::consts::TAU).sin_cos();
+        pos.extend([cx + cos * radius, cy + sin * radius]);
+        uv.extend([0.5 + cos * 0.5, 0.5 + sin * 0.5]);
+        idx.extend([0, 1 + i, 1 + (i + 1) % SIDES]);
+    }
+    Art { tex: None, pos, uv, color: shade.repeat(SIDES as usize + 1), idx }
 }
 
 /// Steps of the cooldown sweep: a redraw every 1/64 of the cooldown.

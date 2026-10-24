@@ -14,6 +14,8 @@ const BAR_SIZE: usize = 17;
 /// Skill slots (0..8) and the collection slots (8..13: mount, companion...);
 /// never the four consumable slots.
 const STICKER_SLOTS: usize = 13;
+/// The four consumable slots (U, G, R, T): potions, elixirs, the Universal Map.
+pub(super) const CONSUMABLE_SLOTS: std::ops::Range<usize> = 13..17;
 
 pub(super) struct StickerDrag {
     id: String,
@@ -41,7 +43,7 @@ pub(super) fn drag(pointer: &mut Pointer, windows: &Windows, views: &systems::Vi
     if mouse.just_released(MouseButton::Left) {
         if let Some(d) = pointer.sticker_drag.take().filter(|d| d.active) {
             if let Some(("bottombar", Action::Skill(slot))) = hit.and_then(action).as_ref().map(|(n, a)| (n.as_str(), a.clone())) {
-                if slot < STICKER_SLOTS { pointer.sticker_drop = Some((d.id, slot)); }
+                if slot < STICKER_SLOTS { pointer.sticker_drop = Some((2, d.id, slot)); }
             }
             pointer.down = None;
             return true;
@@ -56,33 +58,37 @@ pub(super) fn dragged<'a>(pointer: &Pointer, views: &'a systems::Views) -> Optio
     pointer.sticker_drag.as_ref().filter(|d| d.active).and_then(|d| views.album.sticker(&d.id)).map(|s| s.icon.image.as_str()).filter(|i| !i.is_empty())
 }
 
-/// The active bar with `slot` holding the sticker `key` (the same sticker leaves
-/// any other slot of the bar); None when nothing changes.
-fn edited_bar(slots: &[Slot], slot: usize, key: &str) -> Option<Vec<Slot>> {
-    if slots.len() != BAR_SIZE || slot >= STICKER_SLOTS { return None; }
+/// The active bar with `slot` holding the shortcut (`kind` 2 a sticker, on a
+/// skill or collection slot; 1 an item, on a consumable slot); the same one
+/// leaves any other slot of the bar. None when nothing changes.
+fn edited_bar(slots: &[Slot], kind: i32, slot: usize, key: &str) -> Option<Vec<Slot>> {
+    let fits = if kind == 2 { slot < STICKER_SLOTS } else { (CONSUMABLE_SLOTS).contains(&slot) };
+    if slots.len() != BAR_SIZE || !fits { return None; }
     let mut edited = slots.to_vec();
     for s in &mut edited {
-        if s.kind == 2 && s.id.as_deref() == Some(key) { *s = Slot { kind: Slot::EMPTY, id: None }; }
+        if s.kind == kind && s.id.as_deref() == Some(key) { *s = Slot { kind: Slot::EMPTY, id: None }; }
     }
-    edited[slot] = Slot { kind: 2, id: Some(key.to_owned()) };
+    edited[slot] = Slot { kind, id: Some(key.to_owned()) };
     (edited != slots).then_some(edited)
 }
 
 pub(in crate::ui) fn apply_drop(mut pointer: ResMut<Pointer>, views: Res<systems::Views>, hotbar: Res<hotbar::Hotbar>,
     net: Option<NonSendMut<crate::network::net::Net>>) {
-    let Some((id, slot)) = pointer.sticker_drop.take() else { return };
+    let Some((kind, id, slot)) = pointer.sticker_drop.take() else { return };
     let Some(mut net) = net else { return };
-    let Some(sticker) = views.album.sticker(&id).filter(|s| s.owned) else { return };
-    let key = sticker.server_key().to_owned();
+    let key = if kind == 2 {
+        let Some(sticker) = views.album.sticker(&id).filter(|s| s.owned) else { return };
+        sticker.server_key().to_owned()
+    } else { id.clone() };
     let bar = hotbar.active;
-    let Some(slots) = net.quickbars.bars.get(bar).and_then(|b| edited_bar(b, slot, &key)) else { return };
+    let Some(slots) = net.quickbars.bars.get(bar).and_then(|b| edited_bar(b, kind, slot, &key)) else { return };
     // The collection slots are the same on every bar (the server copies them).
     if slot >= 8 {
         for b in net.quickbars.bars.iter_mut().filter(|b| b.len() == BAR_SIZE) { b[slot] = slots[slot].clone(); }
     }
     net.bar = slots.iter().map(|s| if s.kind == 0 { s.id.clone() } else { None }).collect();
     net.quickbars.bars[bar] = slots.clone();
-    info!("sticker {id} ({key}) on quick slot {slot}");
+    info!("shortcut {id} ({key}, kind {kind}) on quick slot {slot}");
     net.send(&ClientCommand::QuickSlots(QuickSlots { slots, bar: bar as u32 }));
 }
 
@@ -96,11 +102,14 @@ mod tests {
         let mut bar = vec![empty.clone(); BAR_SIZE];
         bar[0] = Slot { kind: 0, id: Some("angrystrike".into()) };
         bar[3] = Slot { kind: 2, id: Some("mount_x".into()) };
-        let edited = edited_bar(&bar, 8, "mount_x").unwrap();
+        let edited = edited_bar(&bar, 2, 8, "mount_x").unwrap();
         assert_eq!(edited[8], Slot { kind: 2, id: Some("mount_x".into()) });
         assert_eq!(edited[3], empty, "moved, not copied");
         assert_eq!(edited[0], bar[0]);
-        assert!(edited_bar(&edited, 8, "mount_x").is_none(), "already there");
-        assert!(edited_bar(&bar, 13, "mount_x").is_none(), "consumable slot");
+        assert!(edited_bar(&edited, 2, 8, "mount_x").is_none(), "already there");
+        assert!(edited_bar(&bar, 2, 13, "mount_x").is_none(), "consumable slot");
+        // An item only on the consumable slots.
+        assert_eq!(edited_bar(&bar, 1, 14, "misc_travelmap").unwrap()[14], Slot { kind: 1, id: Some("misc_travelmap".into()) });
+        assert!(edited_bar(&bar, 1, 2, "misc_travelmap").is_none(), "skill slot");
     }
 }
