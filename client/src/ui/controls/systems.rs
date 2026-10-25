@@ -107,6 +107,8 @@ pub(crate) enum Request {
     Socket(usize),
     /// A socket's gem, hovered (its card); a click does nothing.
     SocketGem(usize),
+    /// A workbench ingredient (its index) or its result (usize::MAX), hovered.
+    BenchItem(usize),
     /// Buy the next socket of the gem desk's item.
     BuySocket,
     RecipeCategory(String),
@@ -529,6 +531,7 @@ pub(super) fn action(window: &str, w: &Widget) -> Option<Action> {
             "Unpick" => Request::Unpick(arg.parse().ok()?),
             "Socket" => Request::Socket(arg.parse().ok()?),
             "SocketGem" => Request::SocketGem(arg.parse().ok()?),
+            "BenchItem" => Request::BenchItem(arg.parse().ok()?),
             "Category" => Request::RecipeCategory(arg.to_owned()),
             "Recipe" => Request::Recipe(arg.to_owned()),
             "WorkbenchTab" => Request::WorkbenchTab(arg.parse().ok()?),
@@ -739,7 +742,7 @@ pub(super) fn tooltip(request: &Request) -> Option<(&'static str, String)> {
         Request::AddSticker(_) => ("Add to the album", "Adds the carried item to your collection.".into()),
         Request::Salvage => ("Melt down", "Melts the items placed here into Glyphs of Power and materials.".into()),
         Request::Unpick(_) => ("Take back", String::new()),
-        Request::SocketGem(_) => ("Gem", String::new()),
+        Request::SocketGem(_) | Request::BenchItem(_) => ("Item", String::new()),
         Request::Socket(_) => ("Lock / unlock", "An open padlock sets the placed gem; a closed one takes the gem out.".into()),
         Request::BuySocket => ("Unlock socket", "Unlocks the next socket for Andermant.".into()),
         Request::WorkbenchTab(_) => ("Recipes", "Shows this kind of recipes.".into()),
@@ -1010,7 +1013,7 @@ pub(in crate::ui) fn send(
                 if !items.is_empty() { commands.push(ClientCommand::Salvage(proto::Salvage { items, mode: 0 })); wait = true; }
                 state.salvage.clear();
             }
-            Request::SocketGem(_) => {}
+            Request::SocketGem(_) | Request::BenchItem(_) => {}
             Request::Unpick(index) => { if index < state.salvage.len() { state.salvage.remove(index); } }
             Request::Socket(socket) if state.gem_preview.iter().any(|(s, _)| *s == socket) => {
                 let gem = state.gem_preview.iter().find(|(s, _)| *s == socket).map(|(_, g)| *g).unwrap_or_default();

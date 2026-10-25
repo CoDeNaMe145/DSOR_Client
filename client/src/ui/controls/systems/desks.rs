@@ -83,6 +83,8 @@ pub(in crate::ui) struct Socket {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(in crate::ui) struct Gems {
     pub target: Option<(String, Icon)>,
+    /// The item's level: its gems are valued at it.
+    pub level: u32,
     pub sockets: Vec<Socket>,
 }
 
@@ -98,7 +100,7 @@ pub(super) fn gems(sources: &Sources) -> Gems {
         gem: None,
         price: (n == count).then(|| sources.catalog.socket_price(n + 1, item.kind, trinket)),
     }).map(|mut s: Socket| { s.gem = s.template.as_ref().map(|g| (sources.name(g, None), sources.icon(g, None))); s }).collect();
-    Gems { target: Some((sources.name(&item.template, Some(item)), sources.icon(&item.template, Some(item)))), sockets }
+    Gems { target: Some((sources.name(&item.template, Some(item)), sources.icon(&item.template, Some(item)))), sockets, level: item.durability }
 }
 
 /// The gem desk: the item's name and icon, its sockets open or closed, their
@@ -190,6 +192,8 @@ pub(in crate::ui) struct Detail {
     /// The recipe crafted (the first the carried items make, else its first).
     pub recipe: String,
     pub result: Icon,
+    /// The crafted item's template (the hover card).
+    pub result_template: String,
     pub ingredients: Vec<Ingredient>,
     pub price_vc: u64,
     pub price_rc: u32,
@@ -284,6 +288,7 @@ pub(super) fn workbench(sources: &Sources) -> Workbench {
             placeholders: if locked { Vec::new() } else { book.placeholders.iter().filter(|p| !p.icon.is_empty()).map(|p| Icon { image: texture_path(&p.icon), ..Default::default() }).collect() },
             recipe: recipe_id,
             result: recipe.map(|r| sources.icon(&r.crafted, None)).unwrap_or_default(),
+            result_template: recipe.map(|r| ingredient(&r.crafted).0.to_owned()).unwrap_or_default(),
             ingredients: recipe.map(|r| r.ingredients.iter().take(MOST_INGREDIENTS).enumerate().map(|(n, i)| {
                 let (template, need) = ingredient(i);
                 Ingredient { template: template.to_owned(), icon: sources.icon(template, None), have: carried_amount(sources, template), need: need * amount,
@@ -452,6 +457,7 @@ pub(super) fn prepare_workbench(source: &Layout, bench: &Workbench) -> Layout {
                 // An empty slot shows its ingredient faintly, a short one dimmed.
                 if !ingredient.placed { for l in &mut layers { dim(l, 0.2); } }
                 else if ingredient.have < ingredient.need { for l in &mut layers { dim(l, 0.5); } }
+                make_button(&mut w, &format!("Sys:BenchItem:{n}"));
                 set_text(&mut w, "");
                 layout.widgets.extend(layers);
             }
@@ -464,6 +470,7 @@ pub(super) fn prepare_workbench(source: &Layout, bench: &Workbench) -> Layout {
     }
     for mut w in clone_at(source, &format!("{BENCH}/WorkbenchResultLabel/TemplateIcon"), &format!("{BENCH}/WorkbenchResultLabel/Icon"), 0.0, 0.0) {
         let layers = icon_layers(&mut w, &detail.result);
+        make_button(&mut w, &format!("Sys:BenchItem:{}", usize::MAX));
         set_text(&mut w, "");
         layout.widgets.extend(layers);
         layout.widgets.push(w);
