@@ -133,7 +133,7 @@ const RESPAWN_COST: u32 = 40;
 const INSTANT_RESPAWN_COST: u32 = 120;
 
 fn is_menu(name: &str) -> bool {
-    MENU_WINDOWS.iter().any(|(n, _, _)| *n == name) || NAV_WINDOWS.contains(&name) || dialogue::WINDOWS.contains(&name) || name == "unstackwindow" || name == controls::items::DESTROY_DIALOG || name == DEATH_WINDOW || name == CHAT_MENU || name == controls::settings::WINDOW
+    MENU_WINDOWS.iter().any(|(n, _, _)| *n == name) || NAV_WINDOWS.contains(&name) || dialogue::WINDOWS.contains(&name) || name == "unstackwindow" || name == controls::items::DESTROY_DIALOG || name == controls::logout::WINDOW || name == DEATH_WINDOW || name == CHAT_MENU || name == controls::settings::WINDOW
         || name == controls::systems::talents::DIALOG
         || SOCIAL_WINDOWS.iter().any(|(n, _)| *n == name) || controls::systems::DESKS.iter().any(|(n, _)| *n == name)
         || name == controls::currency::BAG
@@ -494,6 +494,10 @@ enum ValueKind {
     XpPercent,
     WisdomLevel,
     WisdomProgress,
+    /// The bottom bar's level labels: "Level {0:i}" (levelShort) and "Wisdom
+    /// Level {0:i}" (wisdomLevelShort), as the original's bars read.
+    BarLevel,
+    BarWisdomLevel,
     LocationName,
     Name,
     Page,
@@ -524,8 +528,9 @@ struct QuickSlot {
     k: f32,
     rect: [f32; 4],
     /// The icon and count drawn, whether greyed (its skill costs more than
-    /// the resource there is), and the cooldown sweep's step (0: ready).
-    shown: Option<(String, u32, bool, u8)>,
+    /// the resource there is), the cooldown sweep's step (0: ready) and its
+    /// seconds left in tenths (skills::cooldown_tenths).
+    shown: Option<(String, u32, bool, u8, u32, Option<String>)>,
 }
 
 /// The figures the interface shows (from the server when online).
@@ -537,6 +542,8 @@ struct Figures {
     /// The Wisdom level and the way to the next one (the HUD's wisdom bar):
     /// TalentCategoryPointsInfo's Knowledge XP against the talents catalog's
     /// levels (BottombarProperty's SetWisdomInfo: (xp - level's) / (next's - level's)).
+    /// Total experience and the next level's (net.xp), for the bar's tooltip.
+    xp_points: Option<(u32, u32)>,
     wisdom: (u32, f32),
     bar: Vec<Option<String>>,
     name: String,
@@ -619,7 +626,7 @@ impl Plugin for UiPlugin {
             .init_resource::<controls::trade::TradeUi>()
             .init_resource::<controls::party::Party>()
             .init_resource::<controls::quests::Quests>()
-            .init_resource::<crate::gameplay::quests::QuestUi>()
+            .init_resource::<crate::gameplay::quests::QuestUi>().init_resource::<crate::ui::controls::systems::Views>()
             .init_resource::<controls::items::pins::Pins>()
             .init_resource::<Settings>()
             .init_resource::<controls::hotbar::Hotbar>()
@@ -637,7 +644,7 @@ impl Plugin for UiPlugin {
                 .before(bevy::sprite_render::check_entities_needing_specialization::<UiMaterial>))
             .add_systems(
                 Update,
-                ((dialogue::sync, controls::party::sync, controls::quests::sync, controls::systems::sync, controls::currency::sync_bar, controls::message::sync, spawn_windows, controls::sync_chat).chain(), controls::spells::sync, controls::items::sync, (controls::items::pins::update, controls::keyboard).chain(), controls::interact, (controls::settings::sync, controls::settings::sliders, controls::hotbar::input, controls::spells::apply_drop).chain(), read_figures, controls::edit_text, (controls::items::input, controls::items::sell_cursor, controls::consent::sync).chain(), controls::order_windows, (update_fills, (update_values, fit_texts).chain(), update_slots, (local_map::update, local_map::update_markers, local_map::appearance).chain(), (controls::effects::fixture, controls::effects::sync, controls::effects::draw).chain()), controls::chat_rows, controls::sheet::rows, controls::paint, (controls::items::render, controls::items::destroy_dialog), (controls::spells::overlay, controls::items::overlay, controls::tooltips), show_hover_window, death_dialog, (controls::trade::sync, controls::social::column, controls::social::context_menu, controls::social::answer, controls::systems::send, controls::systems::talents::dialogs, controls::social::dialogs, controls::trade::render).chain()).chain().after(crate::actors::monsters::MonsterHoverInfo).before(crate::network::net::NetSystems).run_if(crate::screens::loading::gameplay_ready),
+                ((dialogue::sync, controls::party::sync, controls::quests::sync, controls::systems::sync, controls::currency::sync_bar, controls::message::sync, spawn_windows, controls::sync_chat).chain(), controls::spells::sync, controls::items::sync, (controls::items::pins::update, controls::keyboard).chain(), controls::interact, (controls::settings::sync, controls::settings::sliders, controls::hotbar::input, controls::spells::apply_drop, controls::stickers::apply_drop).chain(), read_figures, controls::edit_text, (controls::items::input, controls::items::sell_cursor, controls::consent::sync).chain(), controls::order_windows, (update_fills, (update_values, fit_texts).chain(), update_slots, (local_map::update, local_map::update_markers, local_map::appearance).chain(), (controls::effects::fixture, controls::effects::sync, controls::effects::draw).chain()), controls::chat_rows, controls::sheet::rows, controls::paint, (controls::items::render, controls::items::destroy_dialog), (controls::spells::overlay, controls::items::overlay, controls::tooltips), show_hover_window, death_dialog, (controls::trade::sync, controls::social::column, controls::social::context_menu, controls::social::answer, controls::logout::dialog, controls::systems::send, controls::systems::talents::dialogs, controls::social::dialogs, controls::trade::render).chain()).chain().after(crate::actors::monsters::MonsterHoverInfo).before(crate::network::net::NetSystems).run_if(crate::screens::loading::gameplay_ready),
             );
         // The 3D previews: once this frame's clicks moved the pages and the
         // views were rebuilt.
@@ -685,6 +692,7 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>, mut quest_ui: ResMut<
     loaded.layouts.push((assets.load(format!("interface/{}.ui.json", controls::items::DESTROY_DIALOG)), 610.0, None));
     // The talents' reset confirmation (controls::systems::talents), modal.
     loaded.layouts.push((assets.load(format!("interface/{}.ui.json", controls::systems::talents::DIALOG)), 615.0, None));
+    loaded.layouts.push((assets.load(format!("interface/{}.ui.json", controls::logout::WINDOW)), 612.0, None));
     loaded.layouts.push((assets.load("interface/settingswindow2.ui.json"), 550.0, None));
     loaded.layouts.push((assets.load(format!("interface/{CHAT_WINDOW}.ui.json")), CHAT_DEPTH, None));
     loaded.layouts.push((assets.load(format!("interface/{CHAT_MENU}.ui.json")), CHAT_DEPTH + 3.0, None));
@@ -814,9 +822,14 @@ fn value_of(id: &str) -> Option<ValueKind> {
         "copper_display" => ValueKind::Copper,
         "andermant_display" => ValueKind::Andermant,
         "template_amount" if id == controls::currency::PICKED_AMOUNT => ValueKind::Picked,
-        "Level" if id.contains("ProgressBar_xp") || id.contains("/bottombar_xp_bar/") => ValueKind::Level,
+        // The bottom bar reads "Level 36" / "Wisdom Level 6" and shows no
+        // percentages (the user's release261_192 shots; the numbers are its
+        // tooltips').
+        // FAILURE (2026-10-24): ours read "55 ... 82%" and "0 ... 0%".
+        "Level" if id.contains("/bottombar_xp_bar/") => ValueKind::BarLevel,
+        "Level" if id.contains("ProgressBar_xp") => ValueKind::Level,
         "XP" if id.contains("/bottombar_xp_bar/") => ValueKind::XpPercent,
-        "Level" if id.contains("/bottombar_wisdom_bar/") => ValueKind::WisdomLevel,
+        "Level" if id.contains("/bottombar_wisdom_bar/") => ValueKind::BarWisdomLevel,
         "Wisdom" if id.contains("/bottombar_wisdom_bar/") => ValueKind::WisdomProgress,
         "ActorName" if id.contains("/Healthbar/") => ValueKind::TargetName,
         "Level" if id.contains("/Levelcircle4/") => ValueKind::TargetLevel,
@@ -1008,6 +1021,8 @@ fn spawn_windows(
             prepared = controls::effects::prepare_target(layout); &prepared
         } else if layout.window == controls::items::DESTROY_DIALOG {
             prepared = controls::items::prepare_confirm(layout); &prepared
+        } else if layout.window == controls::logout::WINDOW {
+            prepared = controls::logout::prepare(layout); &prepared
         } else if layout.window == "inventory" {
             prepared = preview::prepare_inventory(layout); &prepared
         } else if layout.window == controls::currency::BAR {
@@ -1519,6 +1534,9 @@ fn read_figures(net: Option<NonSend<crate::network::net::Net>>, mut figures: Res
         if figures.xp != f {
             figures.xp = f;
         }
+        if figures.xp_points != Some((total, ceiling)) {
+            figures.xp_points = Some((total, ceiling));
+        }
     }
     // The currencies and the Wisdom come with server commands: read again when
     // one came (or the talents catalog loaded: the levels are in it).
@@ -1619,9 +1637,11 @@ fn update_values(
             ValueKind::Andermant => controls::currency::clamped(wallet.andermant, 9),
             ValueKind::Picked => controls::currency::clamped(wallet.balance(&shown.id), 10),
             ValueKind::Level => figures.level.map(|l| l.to_string()).unwrap_or_else(|| "-".to_owned()),
-            ValueKind::XpPercent => format!("{:.0}%", figures.xp * 100.0),
+            ValueKind::XpPercent | ValueKind::WisdomProgress => String::new(),
             ValueKind::WisdomLevel => figures.wisdom.0.to_string(),
             ValueKind::WisdomProgress => format!("{:.0}%", figures.wisdom.1 * 100.0),
+            ValueKind::BarLevel => figures.level.map(|l| format!("Level {l}")).unwrap_or_default(),
+            ValueKind::BarWisdomLevel => format!("Wisdom Level {}", figures.wisdom.0),
             ValueKind::LocationName => current_map.as_ref().map(|m| m.name.split_once('_').map_or(m.name.as_str(), |(_, name)| name).replace('_', " ")).unwrap_or_else(|| "Map".to_owned()),
             ValueKind::Name => figures.name.clone(),
             // Each window owns its current page (controls::paint).
@@ -1687,21 +1707,25 @@ fn update_slots(
         // sweep over its icon, redrawn in COOLDOWN_STEPS steps as it turns.
         let cool = skill.as_deref().map_or(0.0, |id| cooldowns.remaining(&skill_data, &skill_tables, id, now));
         let step = (cool * COOLDOWN_STEPS as f32).ceil().min(COOLDOWN_STEPS as f32) as u8;
+        // And the seconds left on it, as the original's "21 s".
+        // FAILURE (2026-10-24): "the skills still don't have a cooldown": only the
+        //   sweep showed, hard to see on dark icons.
+        let tenths = skill.as_deref().map_or(0, |id| crate::gameplay::skills::cooldown_tenths(cooldowns.seconds_left(&skill_data, &skill_tables, id, now)));
         // A spell being dragged off this slot leaves it empty meanwhile, as in the game.
         let lifted = pointer.lifted_slot() == Some((hotbar.active, s.slot));
         let want = controls::hotbar::appearance(s.slot, hotbar.active, net.as_deref(), &figures, catalog, table)
             .filter(|_| !lifted)
-            .map(|(path, count)| (path, count, dim, step));
+            .map(|(path, count)| (path, count, dim, step, tenths, controls::hotbar::backdrop(s.slot, hotbar.active, net.as_deref(), catalog)));
         if want == s.shown && !screen.is_changed() { continue; }
         commands.entity(e).despawn_related::<Children>();
-        if let Some((path, count, dim, step)) = &want {
+        if let Some((path, count, dim, step, tenths, backdrop)) = &want {
             let [l, t, r, b] = s.rect;
             let shade = if *dim { [0.35, 0.35, 0.35, 1.0] } else { [1.0; 4] };
-            let art = Art { tex: None, pos: vec![l,t,r,t,r,b,l,b],
-                uv: vec![0.0,0.0,1.0,0.0,1.0,1.0,0.0,1.0], color: shade.repeat(4), idx: vec![0,1,2,0,2,3], saturation: 1.0 };
-            let mut run = Run { k:s.k, ..default() }; run.push(&art,0.0);
-            let m = materials.add(material(Some(assets.load(path.clone()))));
-            commands.spawn((Mesh2d(meshes.add(run.mesh())), MeshMaterial2d(m), Transform::IDENTITY, RenderLayers::layer(LAYER), ChildOf(e)));
+            for (layer, z) in backdrop.iter().map(|b| (b, -0.05)).chain([(path, 0.0)]) {
+                let mut run = Run { k:s.k, ..default() }; run.push(&slot_art(s.slot, s.rect, shade), 0.0);
+                let m = materials.add(material(Some(assets.load(layer.clone()))));
+                commands.spawn((Mesh2d(meshes.add(run.mesh())), MeshMaterial2d(m), Transform::from_xyz(0.0, 0.0, z), RenderLayers::layer(LAYER), ChildOf(e)));
+            }
             if *step > 0 {
                 let mut run = Run { k: s.k, ..default() };
                 run.push(&cooldown_sweep(s.rect, *step as f32 / COOLDOWN_STEPS as f32), 0.0);
@@ -1709,6 +1733,16 @@ fn update_slots(
                     Transform::from_xyz(0.0, 0.0, 0.5), RenderLayers::layer(LAYER), ChildOf(e)));
             }
             // This parent is y-flipped for the artwork; text flips back.
+            if *tenths > 0 {
+                let text = crate::gameplay::skills::cooldown_text(*tenths);
+                let font = TextFont { font: assets.load("fonts/tahoma.ttf").into(), font_size: bevy::text::FontSize::Px(11.0 * screen.scale), ..default() };
+                let at = Vec3::new((l + r) * 0.5, (t + b) * 0.5, 1.2);
+                for (offset, color) in [(Vec3::new(0.8, 0.8, -0.1), Color::BLACK), (Vec3::ZERO, Color::WHITE)] {
+                    commands.spawn((Text2d::new(text.clone()), font.clone(), TextColor(color), Anchor::CENTER,
+                        Transform::from_translation(at + offset).with_scale(Vec3::new(1.0, -1.0, 1.0) / screen.scale),
+                        RenderLayers::layer(LAYER), ChildOf(e)));
+                }
+            }
             if *count > 0 {
                 commands.spawn((Text2d::new(count.to_string()), TextFont { font: assets.load("fonts/tahoma.ttf").into(),
                     font_size: bevy::text::FontSize::Px(10.0 * screen.scale), ..default() }, TextColor(Color::WHITE),
@@ -1718,6 +1752,30 @@ fn update_slots(
         }
         s.shown = want;
     }
+}
+
+/// What of a slot its picture covers: the round mount and companion sockets (8,
+/// 9) a disc inside their ring, every other slot its whole square.
+/// FAILURE (2026-10-24): the Manticore's square picture spilled over the mount
+///   socket's ring (the user's shot beside the original's round one).
+/// UNVERIFIED: the disc's size, matched by eye to the ring's opening.
+const ROUND_SLOT: f32 = 0.88;
+
+fn slot_art(slot: usize, rect: [f32; 4], shade: [f32; 4]) -> Art {
+    let [l, t, r, b] = rect;
+    if !matches!(slot, 8 | 9) {
+        return Art { tex: None, pos: vec![l,t,r,t,r,b,l,b], uv: vec![0.0,0.0,1.0,0.0,1.0,1.0,0.0,1.0], color: shade.repeat(4), idx: vec![0,1,2,0,2,3], saturation: 1.0 };
+    }
+    const SIDES: u32 = 40;
+    let (cx, cy, radius) = ((l + r) * 0.5, (t + b) * 0.5, (r - l).min(b - t) * 0.5 * ROUND_SLOT);
+    let (mut pos, mut uv, mut idx) = (vec![cx, cy], vec![0.5, 0.5], Vec::new());
+    for i in 0..SIDES {
+        let (sin, cos) = (i as f32 / SIDES as f32 * std::f32::consts::TAU).sin_cos();
+        pos.extend([cx + cos * radius, cy + sin * radius]);
+        uv.extend([0.5 + cos * 0.5, 0.5 + sin * 0.5]);
+        idx.extend([0, 1 + i, 1 + (i + 1) % SIDES]);
+    }
+    Art { tex: None, pos, uv, color: shade.repeat(SIDES as usize + 1), idx, saturation: 1.0 }
 }
 
 /// Steps of the cooldown sweep: a redraw every 1/64 of the cooldown.
