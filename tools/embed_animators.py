@@ -72,6 +72,36 @@ def sprite_nodes(d):
         at = i
 
 
+def billboard_nodes(d):
+    """Names of transform nodes flagged as billboards ("BLBS" = 1) and not as
+    sprites ("RPSS"): they turn to the viewer about the vertical axis only
+    (client FacesViewerUpright). EVIDENCE: three of them looked right only so:
+    the mage's Singularity rings (flat, 2026-10-21), the exit glow (a vertical
+    plane that must face the camera's heading) and the Manticore's summoning fire
+    vortex (effects/mount_manticore_summon_01 moveMeBillboard_1_1: turned fully to
+    the camera its helices lay flat on the ground, 2026-10-25; the user's
+    release261_192 recording shows an upright swirl).
+    UNVERIFIED: the engine's own code (no Nebula source at hand)."""
+    out = set()
+    at = 0
+    while True:
+        at = d.find(b"DNM>", at)
+        if at < 0:
+            return out
+        try:
+            name, i = string(d, at + 8)
+        except (struct.error, UnicodeDecodeError):
+            at += 4
+            continue
+        end = d.find(b"DNM", i)
+        end = len(d) if end < 0 else end
+        j = d.find(b"RPSS", i, end)
+        k = d.find(b"BLBS", i, end)
+        if k >= 0 and d[k + 4] == 1 and not (j >= 0 and d[j + 4] == 1):
+            out.add(name)
+        at = i
+
+
 def flat_subtree(doc, nodes, start):
     """Whether the meshes under a node lie flat: their height (local Y) under a
     fifth of their narrower width (X, Z). None without meshes."""
@@ -313,6 +343,7 @@ for root, _dirs, files in os.walk(models):
         anims = animators(raw)
         floats = shader_floats(raw)
         sprites = sprite_nodes(raw)
+        billboards = billboard_nodes(raw)
         uvs = uv_animators(raw)
         vectors = shader_vectors(raw)
         states = node_states(raw)
@@ -354,7 +385,7 @@ for root, _dirs, files in os.walk(models):
         # UNVERIFIED: how the 2018 engine orients such a billboard (no Nebula
         #   source at hand); a quad sprite (upright geometry) is unchanged.
         for i, nd in enumerate(nodes):
-            if nd.get("extras", {}).get("dsor_sprite") and flat_subtree(doc, nodes, i):
+            if nd.get("extras", {}).get("dsor_sprite") and (nd.get("name") in billboards or flat_subtree(doc, nodes, i)):
                 nd["extras"]["dsor_sprite_upright"] = True
                 stats["upright sprites"] = stats.get("upright sprites", 0) + 1
         shaded = 0

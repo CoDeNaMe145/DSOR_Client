@@ -2422,8 +2422,10 @@ fn test_shot(
     }
 }
 
-/// DSOR_SEQ_VIEW=<sequence>[,<x>,<y>,<z>]: that sequence plays in a loop at a fixed
-/// point (default: the demo character's spot + 1.5 up), to look at an effect alone.
+/// DSOR_SEQ_VIEW=<sequence>[,<x>,<y>,<z>]: that sequence plays over and over at a
+/// fixed point (default: the demo character's spot + 1.5 up), to look at an effect
+/// alone. Each run starts afresh, so one-shot emitters (mount_summon_end's burst)
+/// fire every time; looped in place, they fired once and the view stayed empty.
 fn test_view(
     mut commands: Commands,
     data: Res<SkillData>,
@@ -2457,7 +2459,7 @@ fn test_view(
         Vec3::from(m.center) + Vec3::Y * 1.5
     };
     let anchor = commands.spawn((Transform::from_translation(at), Visibility::default())).id();
-    play(&mut commands, seq.clone(), None, anchor, true);
+    play(&mut commands, seq.clone(), None, anchor, false);
     if clock.0.is_none() {
             clock.0 = Some(time.elapsed_secs());
     }
