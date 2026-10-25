@@ -484,9 +484,10 @@ pub fn texture_path(reference: &str) -> String {
 impl SystemsCatalog {
     /// The Andermant the next socket (1-based) costs on an item of this rarity
     /// (ItemInfo.kind: 0 common .. 5 unique).
-    pub fn socket_price(&self, socket: usize, rarity: u8) -> u32 {
+    /// A trinket's sockets cost the TrinketSocketCosts column, whatever its rarity.
+    pub fn socket_price(&self, socket: usize, rarity: u8, trinket: bool) -> u32 {
         const RARITIES: [&str; 6] = ["Common", "Uncommon", "Magic", "Rare", "Epic", "Unique"];
-        let name = RARITIES.get(rarity as usize).copied().unwrap_or("Unique");
+        let name = if trinket { "TrinketSocketCosts" } else { RARITIES.get(rarity as usize).copied().unwrap_or("Unique") };
         self.socket_costs.get(&format!("socket_{socket}")).and_then(|c| c.get(name)).copied().unwrap_or(0)
     }
 }
@@ -523,7 +524,7 @@ mod tests {
         assert_eq!(catalog.achievements["a"].title_text, "Regicide");
         assert_eq!(catalog.events["e"].teleport.split_once(':'), Some(("a0200_kingscity", "a0200_fairground")));
         assert_eq!(catalog.skins["k"].slots, [7]);
-        assert_eq!((catalog.socket_price(1, 0), catalog.socket_price(1, 4), catalog.socket_price(2, 0), catalog.socket_price(3, 0)), (5, 75, 10, 0));
+        assert_eq!((catalog.socket_price(1, 0, false), catalog.socket_price(1, 4, false), catalog.socket_price(2, 0, false), catalog.socket_price(3, 0, false)), (5, 75, 10, 0));
         assert!(catalog.recipes.is_empty() && catalog.wanted.is_empty());
     }
 }

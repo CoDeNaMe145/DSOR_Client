@@ -70,6 +70,8 @@ pub(super) fn prepare_salvage(source: &Layout, salvage: &Salvage) -> Layout {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(in crate::ui) struct Socket {
     pub open: bool,
+    /// Its gem only placed, not set yet (State::gem_preview).
+    pub preview: bool,
     pub gem: Option<(String, Icon)>,
     /// The Andermant to open it, when it is the next one.
     pub price: Option<u32>,
@@ -85,10 +87,14 @@ pub(in crate::ui) struct Gems {
 pub(super) fn gems(sources: &Sources) -> Gems {
     let Some(item) = sources.state.gem_target.and_then(|id| sources.net.inventory.items.get(&id)) else { return Gems::default() };
     let count = item.tenth as usize;
+    let trinket = sources.items.and_then(|c| c.items.get(&item.template)).is_some_and(|m| m.item_category.ends_with("Trinket"));
     let sockets = (0..MOST_SOCKETS).map(|n| Socket {
         open: n < count,
-        gem: item.names.get(n).filter(|g| !g.is_empty()).map(|g| (sources.name(g, None), sources.icon(g, None))),
-        price: (n == count).then(|| sources.catalog.socket_price(n + 1, item.kind)),
+        preview: sources.state.gem_preview.iter().any(|(s, _)| *s == n),
+        gem: item.names.get(n).filter(|g| !g.is_empty()).cloned()
+            .or_else(|| sources.state.gem_preview.iter().find(|(s, _)| *s == n).and_then(|(_, gem)| sources.net.inventory.items.get(gem)).map(|g| g.template.clone()))
+            .map(|g| (sources.name(&g, None), sources.icon(&g, None))),
+        price: (n == count).then(|| sources.catalog.socket_price(n + 1, item.kind, trinket)),
     }).collect();
     Gems { target: Some((sources.name(&item.template, Some(item)), sources.icon(&item.template, Some(item)))), sockets }
 }
@@ -101,13 +107,15 @@ pub(super) fn prepare_gemdesk(source: &Layout, gems: &Gems) -> Layout {
     let mut layout = without(source, |id| {
         // Jeweler: the jeweller's own window, which the desk is (no other).
         is_template(id) || id.starts_with("Canvas/CraftingBackgroundLabel") || id.contains("/StatsLabel") || has_part(id, "ButtonJeweler")
-            // A socket's button takes its gem out: its open lock, not the closed one.
-            || has_part(id, "IconClose")
+            // A placed gem shows the open padlock (click: set it), a set gem
+            // the closed one (click: take it out).
             || (gems.target.is_some() && id.ends_with("/ItemDragAndDropTargetLabel")) || (gems.target.is_none() && id.contains("/ItemLabel/ItemSlot"))
             || socket_of(id).is_some_and(|n| {
                 let socket = gems.sockets.get(n);
                 let open = socket.is_some_and(|s| s.open);
+                let preview = socket.is_some_and(|s| s.preview);
                 (id.contains("/SocketOpen") && !open) || (id.contains("/SocketClosed") && open)
+                    || (has_part(id, "IconClose") && preview) || (has_part(id, "IconOpen") && !preview)
                     || (id.contains("/ItemSlot") && socket.is_none_or(|s| s.gem.is_none()))
                     || (has_part(id, "Button") && socket.is_none_or(|s| s.gem.is_none()))
                     || (has_part(id, "BuyButton") && socket.is_none_or(|s| s.price.is_none()))
@@ -500,8 +508,8 @@ mod tests {
         let refs: Vec<(&str, &str, bool)> = ids.iter().map(|(a, b, c)| (a.as_str(), *b, *c)).collect();
         let source = layout(super::super::GEMDESK, &refs);
         let gems = Gems { target: Some(("Helmet".into(), Icon { image: "h.png".into(), ..Default::default() })), sockets: vec![
-            Socket { open: true, gem: Some(("Ruby".into(), Icon { image: "r.png".into(), ..Default::default() })), price: None },
-            Socket { open: false, gem: None, price: Some(75) }, Socket { open: false, gem: None, price: None }] };
+            Socket { open: true, preview: false, gem: Some(("Ruby".into(), Icon { image: "r.png".into(), ..Default::default() })), price: None },
+            Socket { open: false, preview: false, gem: None, price: Some(75) }, Socket { open: false, preview: false, gem: None, price: None }] };
         let prepared = prepare_gemdesk(&source, &gems);
         let ids: Vec<_> = prepared.widgets.iter().map(|w| w.id.clone()).collect();
         assert_eq!(text_of(&prepared, &format!("{GEM_ITEM}/ItemNameTextLabel")), "Helmet");

@@ -197,6 +197,11 @@ pub(crate) struct State {
     pub salvage: Vec<u32>,
     /// The equipment on the gem desk, the one on the transmog desk.
     pub gem_target: Option<u32>,
+    /// Gems placed on the desk's sockets but not set yet (socket, gem item):
+    /// the socket's open padlock sets one (GemDeskWidget::SocketUI
+    /// HandleLockUnlockButtonClick 0x140436bf0: a placed gem, state 2, is only
+    /// sent to the server when locked).
+    pub gem_preview: Vec<(usize, u32)>,
     /// An item right-clicked while the workbench is open: its recipe opens
     /// (send resolves it against the catalog).
     pub workbench_pick: Option<String>,
@@ -719,7 +724,7 @@ pub(super) fn tooltip(request: &Request) -> Option<(&'static str, String)> {
         Request::AddSticker(_) => ("Add to the album", "Adds the carried item to your collection.".into()),
         Request::Salvage => ("Melt down", "Melts the items placed here into Glyphs of Power and materials.".into()),
         Request::Unpick(_) => ("Take back", String::new()),
-        Request::Socket(_) => ("Remove the gem", "The gem returns to your inventory.".into()),
+        Request::Socket(_) => ("Lock / unlock", "An open padlock sets the placed gem; a closed one takes the gem out.".into()),
         Request::BuySocket => ("Unlock socket", "Unlocks the next socket for Andermant.".into()),
         Request::WorkbenchTab(_) => ("Recipes", "Shows this kind of recipes.".into()),
         Request::WorkbenchFilter(0) => ("Craftable only", "Lists the recipes your items make now.".into()),
@@ -849,6 +854,7 @@ pub(in crate::ui) fn send(
     // inventory (or refuses silently; two seconds then).
     let busy = state.pending.is_some();
     let mut wait = false;
+    if !state.gem_preview.is_empty() && !state.opened.contains(GEMDESK) { state.gem_preview.clear(); }
     // A right-clicked item on the workbench opens the book of a recipe it is
     // the first ingredient of: a known one first, a combination (a gem with
     // its dust to the next tier: GemCombinationCraftingCyanit_a_to_b) before
@@ -983,6 +989,14 @@ pub(in crate::ui) fn send(
                 state.salvage.clear();
             }
             Request::Unpick(index) => { if index < state.salvage.len() { state.salvage.remove(index); } }
+            Request::Socket(socket) if state.gem_preview.iter().any(|(s, _)| *s == socket) => {
+                let gem = state.gem_preview.iter().find(|(s, _)| *s == socket).map(|(_, g)| *g).unwrap_or_default();
+                state.gem_preview.retain(|(s, _)| *s != socket);
+                if let Some(target) = state.gem_target.filter(|id| net.inventory.items.contains_key(id)).filter(|_| net.inventory.items.contains_key(&gem)) {
+                    commands.push(crate::gameplay::inventory::command(gem, 0x11, vec![target as i32, socket as i32]));
+                    wait = true;
+                }
+            }
             Request::Socket(socket) => {
                 if let Some(target) = state.gem_target.filter(|id| net.inventory.items.get(id).is_some_and(|i| i.names.get(socket).is_some_and(|g| !g.is_empty()))) {
                     commands.push(crate::gameplay::inventory::command(target, 0x14, vec![socket as i32]));
@@ -1162,12 +1176,19 @@ pub(in crate::ui) fn pick(state: &mut State, desk: &str, net: &Net, item: &inven
     match desk {
         SALVAGE if carried && !state.salvage.contains(&item.id) && state.salvage.len() < desks::SALVAGE_SLOTS => { state.salvage.push(item.id); None }
         GEMDESK if matches!(category, "EquipmentGem" | "EquipmentJewel" | "EquipmentRune") && carried => {
-            // A gem goes into the desk's item's first free socket (op 0x11).
+            // A gem is placed on the desk's item's first free socket; its
+            // padlock then sets it (op 0x11, Request::Socket).
+            // FAILURE: set at once, the padlock the player clicked to lock it
+            //   took it out again ("quand je verrouille le slot ca me la remet
+            //   en inventaire").
             let target = net.inventory.items.get(&state.gem_target?)?;
-            let socket = target.names.iter().position(|g| g.is_empty()).filter(|s| *s < target.tenth as usize)?;
-            Some(crate::gameplay::inventory::command(item.id, 0x11, vec![target.id as i32, socket as i32]))
+            if state.gem_preview.iter().any(|(_, gem)| *gem == item.id) { return None; }
+            let socket = (0..target.tenth as usize).find(|n| target.names.get(*n).is_none_or(|g| g.is_empty())
+                && !state.gem_preview.iter().any(|(s, _)| s == n))?;
+            state.gem_preview.push((socket, item.id));
+            None
         }
-        GEMDESK if carried || worn => { state.gem_target = Some(item.id); None }
+        GEMDESK if carried || worn => { state.gem_target = Some(item.id); state.gem_preview.clear(); None }
         WORKBENCH if carried => { state.workbench_pick = Some(item.template.clone()); None }
         TRANSMOG if worn => {
             if let Some(Place::Equipment(slot)) = net.inventory.location(item.id) { state.skin_slot = Some(slot); }

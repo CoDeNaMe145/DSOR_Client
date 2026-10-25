@@ -1612,11 +1612,26 @@ pub fn reshape(commands: &mut Commands, character: &mut Character, shape: Option
         _ => false,
     };
     if same { return; }
+    // Only a new body shape needs a fresh skeleton (the Iron Dwarf); a costume
+    // is dressed as an equipment change, on the live one.
+    let varied = |s: &Option<NpcLook>| s.as_ref().is_some_and(|s| !s.variation.is_empty());
+    let new_skeleton = varied(&character.desc.shape) || varied(&shape);
     character.desc.shape = shape;
-    if let Some(skeleton) = character.skeleton.take() {
-        commands.entity(skeleton).try_despawn();
+    if new_skeleton {
+        if let Some(skeleton) = character.skeleton.take() {
+            commands.entity(skeleton).try_despawn();
+        }
+        // The old parts were skinned to its joints: left behind, they stood
+        // frozen where the change happened ("ma cape ou mon arme reste a la
+        // place ou je me suis transforme").
+        for part in character.drawn_parts.drain(..) {
+            commands.entity(part.entity).try_despawn();
+        }
+        for part in character.pending_parts.drain(..) {
+            commands.entity(part).try_despawn();
+        }
+        character.generation = character.generation.wrapping_add(1);
     }
-    character.generation = character.generation.wrapping_add(1);
     character.built = false;
 }
 

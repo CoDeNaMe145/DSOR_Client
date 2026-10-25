@@ -277,7 +277,7 @@ def export_systems(database, root, godot, assets):
             for r in q("SELECT * FROM _Template_EquipmentColor WHERE Visible=1")}
     level_costs = [float(r[0]) for r in q("SELECT VirtualCurrencyCostMultiplier FROM _Template_DynamicLevelCosts ORDER BY Level")]
 
-    sockets = {r["Id"]: {k: int(r[k] or 0) for k in ("Common", "Uncommon", "Magic", "Rare", "Epic", "Unique", "Mythic", "Set", "Amount")}
+    sockets = {r["Id"]: {k: int(r[k] or 0) for k in ("Common", "Uncommon", "Magic", "Rare", "Epic", "Unique", "Mythic", "Set", "TrinketSocketCosts", "Amount")}
                for r in q("SELECT * FROM _Template_SocketExtensionCosts")}
 
     # The currency bag's rows after the Glyphs of Power (UI::CurrencyBagWidget):
