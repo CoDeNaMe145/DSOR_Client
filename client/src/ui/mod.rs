@@ -1639,7 +1639,6 @@ fn update_values(
             ValueKind::Level => figures.level.map(|l| l.to_string()).unwrap_or_else(|| "-".to_owned()),
             ValueKind::XpPercent | ValueKind::WisdomProgress => String::new(),
             ValueKind::WisdomLevel => figures.wisdom.0.to_string(),
-            ValueKind::WisdomProgress => format!("{:.0}%", figures.wisdom.1 * 100.0),
             ValueKind::BarLevel => figures.level.map(|l| format!("Level {l}")).unwrap_or_default(),
             ValueKind::BarWisdomLevel => format!("Wisdom Level {}", figures.wisdom.0),
             ValueKind::LocationName => current_map.as_ref().map(|m| m.name.split_once('_').map_or(m.name.as_str(), |(_, name)| name).replace('_', " ")).unwrap_or_else(|| "Map".to_owned()),
