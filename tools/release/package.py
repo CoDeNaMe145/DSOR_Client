@@ -132,6 +132,15 @@ def main():
     # malloc_size, which answers the same.
     for header in ("crn_decomp.h", "crnlib.h"):
         fetch(f"{CRUNCH}/{header}", temp / header)
+    # Its pointer-sized integer knows only _WIN64 and x86_64 as 64-bit: on
+    # Apple Silicon it was 32 bits, and clang refuses the casts to it.
+    header = temp / "crn_decomp.h"
+    text = header.read_text(encoding="latin-1")
+    sixty_four = "   #ifdef __x86_64__\n      typedef uint64 ptr_bits;"
+    if text.replace("\r\n", "\n").count(sixty_four) != 1:
+        sys.exit(f"{header}: its ptr_bits is not where it was")
+    header.write_text(text.replace("\r\n", "\n").replace(sixty_four,
+        "   #if defined(__x86_64__) || defined(__aarch64__)\n      typedef uint64 ptr_bits;"), encoding="latin-1")
     if sys.platform == "darwin":
         (temp / "shim").mkdir()
         (temp / "shim" / "malloc.h").write_text(
