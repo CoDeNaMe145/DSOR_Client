@@ -45,7 +45,7 @@ pub(super) fn sticker(catalog: &Catalog, layout: Option<&Layout>, template: &str
     // A template has no instance colour; the original writes a Mythic one red.
     // UNVERIFIED: the exact red, matched by eye on the user's Manticore shot.
     let tint = if rarity == "Mythic" { Color::srgb(0.86, 0.12, 0.08) } else { tint };
-    card.title(&format!("<i>{}</>", catalog.name(template, None)), None, tint);
+    card.heading(&format!("<i>{}</>", catalog.name(template, None)), tint);
     if let Some(m) = meta.filter(|m| !m.category.is_empty()) { card.text(&format!("<i>{}</>", m.category), tint); }
     card.text("<i>Use, is not depleted when used</>", MUTED);
     if let Some(m) = meta.filter(|m| !m.description.is_empty()) {

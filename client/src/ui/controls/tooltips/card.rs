@@ -60,6 +60,13 @@ impl Card {
         self.title *= k;
     }
 
+    /// A centred name in the regular weight (a Collector's Bag sticker's, which
+    /// the original writes in italics, not bold).
+    pub fn heading(&mut self, value: &str, color: Color) {
+        self.paragraph(value, color, self.title, 16.0, true, false);
+        self.y += 3.0;
+    }
+
     pub fn title(&mut self, value: &str, icon: Option<&str>, color: Color) {
         let start = self.y;
         if let Some(path) = icon {
@@ -194,7 +201,12 @@ impl Card {
         for part in &self.parts {
             match part {
                 Part::Text { value, at, size, color, italic, bold } => {
-                    commands.spawn((Text2d::new(value.clone()), TextFont { font: assets.load("fonts/tahoma.ttf").into(),
+                    // Italic in the slanted copy of Tahoma (lighting-work scripts
+                    // make_italic_font.py): the bundled Tahoma has no italic face, so
+                    // FontStyle::Italic alone drew upright text (the original slants
+                    // it: the user's shots of the Collector's Bag cards).
+                    let face = if *italic && !*bold { "fonts/tahoma_italic.ttf" } else { "fonts/tahoma.ttf" };
+                    commands.spawn((Text2d::new(value.clone()), TextFont { font: assets.load(face).into(),
                         font_size: bevy::text::FontSize::Px(size * screen.scale),
                         style: if *italic { bevy::text::FontStyle::Italic } else { default() },
                         weight: if *bold { bevy::text::FontWeight::BOLD } else { default() }, ..default() }, TextColor(*color),
