@@ -1679,6 +1679,7 @@ pub(crate) fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u3
                 // the server sends (dsor/newplayer.py DEFAULT_ARMAMENT).
                 armament: p.rank.max(0),
                 look: None,
+                shape: None,
                 cosmetics: Vec::new(),
                 // parts: class, gender, hair, beard, body style, stature.
                 body: p.parts[4],
@@ -1736,6 +1737,7 @@ pub(crate) fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u3
                 equipment,
                 armament,
                 look: None,
+                shape: None,
                 cosmetics: Vec::new(),
                 // parts: class, gender, hair, beard, body style, stature.
                 body: p.parts[4],

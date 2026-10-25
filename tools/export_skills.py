@@ -398,6 +398,18 @@ def holds_movement(text):
         if kind.strip().casefold() == "actorfeature" and values[:1] == ["off"] and "movement" in values[1:]:
             return True
     return False
+def transform_modifiers(text):
+    """A transformation's look: SkinModifier's skin (before '#'), VariationModifier
+    and AnimSet (skill_irondwarf_transform: irondwarf, var_irondwarf,
+    dwarf_transformed), or None. crate::actors::mounts wears it."""
+    found = {}
+    for part in (text or "").split(";"):
+        kind, _, args = part.partition(":")
+        value = args.split("#")[0].split(",")[0].strip()
+        key = {"skinmodifier": "skin", "variationmodifier": "variation", "animset": "anim_set"}.get(kind.strip().casefold())
+        if key and value:
+            found[key] = value
+    return found if "skin" in found and "anim_set" in found else None
 for r in db.execute("select rowid, * from _Template_StatusEffect order by rowid"):
     mount, bonus = ride_modifiers(r["StartModifiers"])
     status[r["rowid"] - 1] = {
@@ -413,6 +425,7 @@ for r in db.execute("select rowid, * from _Template_StatusEffect order by rowid"
         "mount": mount,
         "movement_bonus": bonus,
         "holds": holds_movement(r["StartModifiers"]),
+        "transform": transform_modifiers(r["StartModifiers"]),
     }
 
 os.makedirs(os.path.join(assets, "skills"), exist_ok=True)

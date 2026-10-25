@@ -83,6 +83,13 @@ impl Plugin for MountsPlugin {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// A player wearing a status effect's transformation (StatusDef::transform),
+/// by that effect's instance.
+#[derive(Component)]
+pub(crate) struct Transformed {
+    instance: u32,
+}
+
 fn apply_rides(
     mut commands: Commands,
     net: Option<NonSendMut<Net>>,
@@ -93,8 +100,9 @@ fn apply_rides(
     assets: Res<AssetServer>,
     time: Res<Time>,
     actors: Query<(Entity, Option<&LocalPlayer>, Option<&RemotePlayer>), With<Character>>,
-    mut riders: Query<(&mut Character, Option<&Riding>)>,
+    mut riders: Query<(&mut Character, Option<&Riding>, Option<&Transformed>)>,
     mut pending: Local<Pending>,
+    (library, variations): (Option<Res<crate::actors::character::CharacterLibrary>>, Res<Assets<crate::actors::npc::Variations>>),
     mut tested: Local<(u8, f32)>,
 ) {
     let now = time.elapsed_secs();
@@ -140,7 +148,7 @@ fn apply_rides(
     let (Some(table), Some(mounts)) = (skills.as_ref().and_then(|s| statuses.get(s.status())), mounts.get(&data.0)) else { return };
     let mut keep = Vec::new();
     for (holder, index, instance, added, at) in std::mem::take(&mut pending.0) {
-        let Some(def) = table.0.get(&(index as u32)).filter(|d| !d.mount.is_empty()) else { continue };
+        let Some(def) = table.0.get(&(index as u32)).filter(|d| !d.mount.is_empty() || d.transform.is_some()) else { continue };
         let entity = actors.iter().find_map(|(e, l, r)| {
             (l.is_some_and(|l| l.actor == holder) || r.is_some_and(|r| r.actor == holder)).then_some(e)
         });
@@ -151,7 +159,33 @@ fn apply_rides(
             }
             continue;
         };
-        let Ok((mut character, riding)) = riders.get_mut(entity) else { continue };
+        let Ok((mut character, riding, transformed)) = riders.get_mut(entity) else { continue };
+        if let Some(t) = &def.transform {
+            if added {
+                let skeleton = character.desc.skeleton().to_owned();
+                let variation = library.as_deref().map(|l| crate::actors::character::named_variation(l, &variations, &skeleton, &t.variation)).unwrap_or_default();
+                if variation.is_empty() && !t.variation.is_empty() && now - at < 10.0 {
+                    // Its skeleton's shapes are still loading.
+                    keep.push((holder, index, instance, added, at));
+                    continue;
+                }
+                let look = crate::actors::character::NpcLook {
+                    sound_profile: String::new(),
+                    skeleton,
+                    parts: vec![t.skin.clone()],
+                    anim_set: t.anim_set.clone(),
+                    variation,
+                };
+                crate::actors::character::reshape(&mut character, Some(look));
+                commands.entity(entity).try_insert(Transformed { instance });
+                info!("{holder:#x} transforms ({})", def.id);
+            } else if transformed.is_some_and(|t| t.instance == instance) {
+                crate::actors::character::reshape(&mut character, None);
+                commands.entity(entity).remove::<Transformed>();
+                info!("{holder:#x} transforms back ({})", def.id);
+            }
+            continue;
+        }
         if added {
             if riding.is_some_and(|r| r.instance == instance) {
                 continue;

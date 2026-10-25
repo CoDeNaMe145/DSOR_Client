@@ -132,7 +132,7 @@ impl Look {
     }
     fn desc(&self) -> CharacterDesc {
         CharacterDesc { class: self.class, gender: self.gender, equipment: self.equipment.clone(), armament: self.armament,
-            cosmetics: self.cosmetics.clone(), look: None, body: self.body, stature: self.stature, styles: self.styles }
+            cosmetics: self.cosmetics.clone(), look: None, shape: None, body: self.body, stature: self.stature, styles: self.styles }
     }
 }
 

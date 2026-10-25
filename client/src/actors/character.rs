@@ -192,6 +192,13 @@ pub struct CharacterDesc {
     pub styles: Option<(u8, u8)>,
     /// An NPC: its outfit replaces class, gender and equipment (crate::actors::npc).
     pub look: Option<NpcLook>,
+    /// A transformation a status effect puts on a player (crate::actors::mounts:
+    /// StatusDef::transform): its skin, body shape and anim set are worn in place
+    /// of the player's own while it stays a player otherwise.
+    /// EVIDENCE (data): skill_irondwarf_transform's StartModifiers
+    ///   SkinModifier:irondwarf, VariationModifier:var_irondwarf,
+    ///   AnimSet:dwarf_transformed.
+    pub shape: Option<NpcLook>,
 }
 
 /// A body style's body set: <class>_<gender>[_<ethnicity>]_body_00, and its parts
@@ -256,8 +263,8 @@ impl CharacterDesc {
             ethnicity => format!("{}_{}_{ethnicity}", self.class_name(), self.gender_name()),
         }
     }
-    fn skeleton(&self) -> &str {
-        match &self.look {
+    pub(crate) fn skeleton(&self) -> &str {
+        match self.look.as_ref().or(self.shape.as_ref()) {
             Some(look) => &look.skeleton,
             None if self.class == 3 => "uniskel_dwarf",
             None => "uniskel",
@@ -266,7 +273,7 @@ impl CharacterDesc {
 
     /// The animation set name, GamePlayer::GetAnimSet's rule (an NPC's own AnimSet).
     pub fn animation_set(&self) -> String {
-        if let Some(look) = &self.look {
+        if let Some(look) = self.look.as_ref().or(self.shape.as_ref()) {
             return look.anim_set.clone();
         }
         let class = self.class_name();
@@ -285,7 +292,7 @@ impl CharacterDesc {
 
     /// Every part to dress, resolved against the parts that exist.
     fn parts(&self, exists: &dyn Fn(&str) -> bool, tags: &HashMap<String, SkinTag>) -> Vec<(String, Option<[f32; 4]>)> {
-        if let Some(look) = &self.look {
+        if let Some(look) = self.look.as_ref().or(self.shape.as_ref()) {
             return look.parts.iter().filter(|p| exists(p)).map(|p| (p.clone(), None)).collect();
         }
         let (class, gender) = (self.class_name(), self.gender_name());
@@ -615,6 +622,13 @@ struct EquipmentDye([f32; 4]);
 
 #[derive(Component)]
 struct EquipmentDyed;
+
+/// A skeleton's body shape by name (variations.json), or empty while it loads.
+pub(crate) fn named_variation(library: &CharacterLibrary, variations: &Assets<crate::actors::npc::Variations>, skeleton: &str, name: &str) -> Vec<(String, Vec3, Vec3)> {
+    library.variations.get(skeleton).and_then(|h| variations.get(h)).and_then(|all| all.variations.get(name))
+        .map(|shape| shape.iter().map(|j| (j.bone.clone(), Vec3::from(j.t), Vec3::from(j.s))).collect())
+        .unwrap_or_default()
+}
 
 #[derive(Resource)]
 pub struct CharacterLibrary {
@@ -1023,7 +1037,7 @@ fn adopt_skeleton(ctx: &mut SkeletonCtx, entity: Entity, owner: Entity, generati
             anim.parking = false;
         }
     }
-    let variation = match &character.desc.look {
+    let variation = match character.desc.look.as_ref().or(character.desc.shape.as_ref()) {
         Some(l) => l.variation.clone(),
         None => body_variation(&character.desc, ctx.library.as_deref(), &ctx.variations),
     };
@@ -1575,6 +1589,19 @@ pub(crate) fn drive_animations(
             }
         }
     }
+}
+
+/// Wear a status effect's transformation (CharacterDesc::shape), or drop it:
+/// the outfit is rebuilt as for an equipment change.
+pub fn reshape(character: &mut Character, shape: Option<NpcLook>) {
+    let same = match (&character.desc.shape, &shape) {
+        (None, None) => true,
+        (Some(a), Some(b)) => a.parts == b.parts && a.anim_set == b.anim_set,
+        _ => false,
+    };
+    if same { return; }
+    character.desc.shape = shape;
+    character.built = false;
 }
 
 /// Request a new outfit without touching the live skeleton, animation or parts.

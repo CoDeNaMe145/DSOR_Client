@@ -293,6 +293,19 @@ pub struct StatusDef {
     /// walked on and the server snapped them back every 0.3 s.
     #[serde(default)]
     pub holds: bool,
+    /// A transformation it puts on its holder (tools/export_skills.py
+    /// transform_modifiers; crate::actors::mounts wears it).
+    #[serde(default)]
+    pub transform: Option<StatusTransform>,
+}
+
+/// SkinModifier's skin, VariationModifier and AnimSet of a status effect.
+#[derive(Deserialize, Clone, Debug, Default)]
+pub struct StatusTransform {
+    pub skin: String,
+    #[serde(default)]
+    pub variation: String,
+    pub anim_set: String,
 }
 
 impl StatusDef {
