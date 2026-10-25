@@ -104,6 +104,7 @@ fn apply_rides(
     mut pending: Local<Pending>,
     (library, variations): (Option<Res<crate::actors::character::CharacterLibrary>>, Res<Assets<crate::actors::npc::Variations>>),
     mut tested: Local<(u8, f32)>,
+    mut redraw: Local<Vec<(Entity, crate::network::net::StatusEvent)>>,
 ) {
     let now = time.elapsed_secs();
     if let Some(net) = net.as_mut() {
@@ -142,6 +143,21 @@ fn apply_rides(
         }
         pending.0.extend(std::mem::take(&mut net.mount_events).into_iter().map(|(h, i, n, a)| (h, i, n, a, now)));
     }
+    if !redraw.is_empty() {
+        if let Some(net) = net.as_mut() {
+            redraw.retain(|(entity, event)| match riders.get(*entity) {
+                Ok((character, _, transformed)) if transformed.is_some_and(|t| t.instance == event.instance) => {
+                    if character.outfit_ready() && character.skeleton_root().is_some() {
+                        net.status_events.push(event.clone());
+                        false
+                    } else {
+                        true
+                    }
+                }
+                _ => false,
+            });
+        }
+    }
     if pending.0.is_empty() {
         return;
     }
@@ -178,6 +194,10 @@ fn apply_rides(
                 };
                 crate::actors::character::reshape(&mut commands, &mut character, Some(look));
                 commands.entity(entity).try_insert(Transformed { instance });
+                // Its own visual (dwarf_irondwarf_idle on fx_chest) rode the old
+                // skeleton's joints, gone with it: drawn again on the new one.
+                // FAILURE: "y'a plus de FX de transformation".
+                redraw.push((entity, crate::network::net::StatusEvent { holder, index, instance, seconds: 3600.0, removed: false }));
                 if let Some(net) = net.as_mut().filter(|n| n.local_actor == Some(holder) && !t.skills.is_empty()) {
                     let base = net.quickbars.bars.first().cloned().unwrap_or_default();
                     net.hidden_bar = Some(crate::network::net::hidden_bar(&base, &t.skills));

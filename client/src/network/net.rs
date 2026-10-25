@@ -363,6 +363,7 @@ pub struct Net {
 
 /// A status effect started on an actor (StatusEffectCommand 82): its
 /// _Template_StatusEffect index, the instance the client keys on, how long.
+#[derive(Clone)]
 pub struct StatusEvent {
     pub holder: u32,
     pub index: u16,
