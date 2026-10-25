@@ -240,6 +240,22 @@ pub struct RecipeDef {
     /// The recipe book that unlocks it (RecipeBookInfo lists the books known).
     #[serde(default)]
     pub book: String,
+    /// Its RecipeItemReference: the item that unlocks it, what RecipeBookInfo
+    /// lists (DSOR_Server player_init_world.py sends the character's resources);
+    /// empty, it needs none.
+    #[serde(default)]
+    pub unlock: String,
+}
+
+impl SystemsCatalog {
+    /// Whether a recipe book is known: named itself, or one of its recipes
+    /// unlocked by an item the character has (or by none).
+    /// FAILURE: books were matched against the unlock items' names only, so
+    ///   every book showed locked ("faut que tu m'unlock les recettes").
+    pub fn book_known(&self, book: &str, known: &[String]) -> bool {
+        known.contains(&book.to_lowercase()) || self.recipe_books.get(book).is_some_and(|b| b.recipes.iter()
+            .filter_map(|r| self.recipes.get(r)).any(|r| r.unlock.is_empty() || known.contains(&r.unlock.to_lowercase())))
+    }
 }
 
 /// A workbench tab (WorkbenchTab) and its icon.

@@ -246,7 +246,7 @@ pub(super) fn workbench(sources: &Sources) -> Workbench {
     // A category's books: known, or locked ones it lists; as the filters keep.
     let books = |category: &str| -> Vec<Row> {
         let mut rows: Vec<(i32, Row)> = catalog.recipe_books.iter().filter(|(_, b)| b.category == category).filter_map(|(id, b)| {
-            let is_known = known.contains(&id.to_lowercase());
+            let is_known = catalog.book_known(id, &known);
             if !is_known && !b.unlockable { return None; }
             if state.workbench_locked_only && is_known { return None; }
             if state.workbench_craftable_only && (!is_known || !b.recipes.iter().filter_map(|r| catalog.recipes.get(r)).any(|r| craftable(sources, r) > 0)) { return None; }
@@ -270,7 +270,7 @@ pub(super) fn workbench(sources: &Sources) -> Workbench {
         }
     }
     let detail = state.recipe.as_ref().and_then(|id| catalog.recipe_books.get(id).map(|b| (id, b))).map(|(id, book)| {
-        let locked = !known.contains(&id.to_lowercase());
+        let locked = !catalog.book_known(id, &known);
         let recipes: Vec<(&String, &crate::gameplay::systems::RecipeDef)> = book.recipes.iter().filter_map(|r| catalog.recipes.get(r).map(|d| (r, d))).collect();
         let (recipe_id, recipe) = recipes.iter().find(|(_, r)| craftable(sources, r) > 0).or(recipes.first()).map(|(id, r)| ((*id).clone(), Some(*r))).unwrap_or_default();
         let most = recipe.map_or(0, |r| craftable(sources, r));

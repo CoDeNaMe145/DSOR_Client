@@ -216,11 +216,11 @@ def export_systems(database, root, godot, assets):
     recipes = {}
     by_book = {}
     for r in q("SELECT Id, CraftedItemId, IngredientItemId1, IngredientItemId2, IngredientItemId3, IngredientItemId4, PriceVC, PriceRC, "
-               "CraftingCategory, UnlockLevel, RecipeBookReference FROM _Template_CraftingRecipes WHERE IsLive<>0 AND RecipeBookReference IS NOT NULL AND RecipeBookReference!=''"):
+               "CraftingCategory, UnlockLevel, RecipeBookReference, RecipeItemReference FROM _Template_CraftingRecipes WHERE IsLive<>0 AND RecipeBookReference IS NOT NULL AND RecipeBookReference!=''"):
         recipes[r["Id"]] = dict(
             crafted=r["CraftedItemId"] or "", ingredients=[r[f"IngredientItemId{n}"] for n in range(1, 5) if r[f"IngredientItemId{n}"]],
             price_vc=int(r["PriceVC"] or 0), price_rc=int(r["PriceRC"] or 0), category=r["CraftingCategory"] or "",
-            level=int(r["UnlockLevel"] or 0), book=r["RecipeBookReference"],
+            level=int(r["UnlockLevel"] or 0), book=r["RecipeBookReference"], unlock=r["RecipeItemReference"] or "",
         )
         by_book.setdefault(r["RecipeBookReference"], []).append(r["Id"])
     recipe_books = {}

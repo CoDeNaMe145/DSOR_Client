@@ -886,7 +886,7 @@ pub(in crate::ui) fn send(
         let first_is = |r: &crate::gameplay::systems::RecipeDef| r.ingredients.first().is_some_and(|i| i.split(':').next() == Some(template.as_str()));
         let mut books: Vec<(&String, &crate::gameplay::systems::RecipeBookDef)> = catalog.recipe_books.iter()
             .filter(|(_, b)| b.recipes.iter().filter_map(|r| catalog.recipes.get(r)).any(first_is)).collect();
-        books.sort_by_key(|(id, _)| (!known.contains(&id.to_lowercase()), !id.contains("Combination"), (*id).clone()));
+        books.sort_by_key(|(id, _)| (!catalog.book_known(id, &known), !id.contains("Combination"), (*id).clone()));
         if let Some((id, book)) = books.first() {
             let tab_id = catalog.workbench_categories.iter().find(|c| c.id == book.category).map(|c| c.tab.clone()).unwrap_or_default();
             if let Some(tab) = catalog.workbench_tabs.iter().position(|t| t.id == tab_id) { state.workbench_tab = tab; }
