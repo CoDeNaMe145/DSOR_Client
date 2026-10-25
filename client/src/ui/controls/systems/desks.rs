@@ -72,6 +72,8 @@ pub(in crate::ui) struct Socket {
     pub open: bool,
     /// Its gem only placed, not set yet (State::gem_preview).
     pub preview: bool,
+    /// Its gem's template (the hover card, tooltips).
+    pub template: Option<String>,
     pub gem: Option<(String, Icon)>,
     /// The Andermant to open it, when it is the next one.
     pub price: Option<u32>,
@@ -91,11 +93,11 @@ pub(super) fn gems(sources: &Sources) -> Gems {
     let sockets = (0..MOST_SOCKETS).map(|n| Socket {
         open: n < count,
         preview: sources.state.gem_preview.iter().any(|(s, _)| *s == n),
-        gem: item.names.get(n).filter(|g| !g.is_empty()).cloned()
-            .or_else(|| sources.state.gem_preview.iter().find(|(s, _)| *s == n).and_then(|(_, gem)| sources.net.inventory.items.get(gem)).map(|g| g.template.clone()))
-            .map(|g| (sources.name(&g, None), sources.icon(&g, None))),
+        template: item.names.get(n).filter(|g| !g.is_empty()).cloned()
+            .or_else(|| sources.state.gem_preview.iter().find(|(s, _)| *s == n).and_then(|(_, gem)| sources.net.inventory.items.get(gem)).map(|g| g.template.clone())),
+        gem: None,
         price: (n == count).then(|| sources.catalog.socket_price(n + 1, item.kind, trinket)),
-    }).collect();
+    }).map(|mut s: Socket| { s.gem = s.template.as_ref().map(|g| (sources.name(g, None), sources.icon(g, None))); s }).collect();
     Gems { target: Some((sources.name(&item.template, Some(item)), sources.icon(&item.template, Some(item)))), sockets }
 }
 
@@ -133,7 +135,12 @@ pub(super) fn prepare_gemdesk(source: &Layout, gems: &Gems) -> Layout {
         if leaf(&w.id) == "ItemNameTextLabel" { set_text(w, gems.target.as_ref().map_or("", |(name, _)| name.as_str())); }
         if let Some(n) = socket_of(&w.id) {
             if w.id.ends_with("/ItemSlot/Icon") {
-                if let Some((_, icon)) = gems.sockets.get(n).and_then(|s| s.gem.as_ref()) { extra.extend(icon_layers(w, icon)); set_text(w, ""); w.hidden = false; }
+                if let Some((_, icon)) = gems.sockets.get(n).and_then(|s| s.gem.as_ref()) {
+                    extra.extend(icon_layers(w, icon));
+                    // Hovered, the gem's card (GemDeskWidget::SocketUI::GenerateItemTooltip).
+                    make_button(w, &format!("Sys:SocketGem:{n}"));
+                    set_text(w, ""); w.hidden = false;
+                }
             }
         }
     }
@@ -167,6 +174,8 @@ pub(in crate::ui) struct Ingredient {
     pub icon: Icon,
     pub have: u32,
     pub need: u32,
+    /// Put in its slot by the player (State::workbench_placed).
+    pub placed: bool,
 }
 
 /// The book chosen: its text, the items it uses, the recipe it crafts.
@@ -275,9 +284,10 @@ pub(super) fn workbench(sources: &Sources) -> Workbench {
             placeholders: if locked { Vec::new() } else { book.placeholders.iter().filter(|p| !p.icon.is_empty()).map(|p| Icon { image: texture_path(&p.icon), ..Default::default() }).collect() },
             recipe: recipe_id,
             result: recipe.map(|r| sources.icon(&r.crafted, None)).unwrap_or_default(),
-            ingredients: recipe.map(|r| r.ingredients.iter().take(MOST_INGREDIENTS).map(|i| {
+            ingredients: recipe.map(|r| r.ingredients.iter().take(MOST_INGREDIENTS).enumerate().map(|(n, i)| {
                 let (template, need) = ingredient(i);
-                Ingredient { template: template.to_owned(), icon: sources.icon(template, None), have: carried_amount(sources, template), need: need * amount }
+                Ingredient { template: template.to_owned(), icon: sources.icon(template, None), have: carried_amount(sources, template), need: need * amount,
+                    placed: state.workbench_placed.contains(&n) }
             }).collect()).unwrap_or_default(),
             price_vc: recipe.map_or(0, |r| r.price_vc as u64 * amount as u64),
             price_rc: recipe.map_or(0, |r| r.price_rc * amount),
@@ -439,7 +449,9 @@ pub(super) fn prepare_workbench(source: &Layout, bench: &Workbench) -> Layout {
             rename(&mut w, "TemplateIcon", "Icon");
             if leaf(&w.id) == "Icon" {
                 let mut layers = icon_layers(&mut w, &ingredient.icon);
-                if ingredient.have < ingredient.need { for l in &mut layers { dim(l, 0.5); } }
+                // An empty slot shows its ingredient faintly, a short one dimmed.
+                if !ingredient.placed { for l in &mut layers { dim(l, 0.2); } }
+                else if ingredient.have < ingredient.need { for l in &mut layers { dim(l, 0.5); } }
                 set_text(&mut w, "");
                 layout.widgets.extend(layers);
             }
@@ -508,8 +520,8 @@ mod tests {
         let refs: Vec<(&str, &str, bool)> = ids.iter().map(|(a, b, c)| (a.as_str(), *b, *c)).collect();
         let source = layout(super::super::GEMDESK, &refs);
         let gems = Gems { target: Some(("Helmet".into(), Icon { image: "h.png".into(), ..Default::default() })), sockets: vec![
-            Socket { open: true, preview: false, gem: Some(("Ruby".into(), Icon { image: "r.png".into(), ..Default::default() })), price: None },
-            Socket { open: false, preview: false, gem: None, price: Some(75) }, Socket { open: false, preview: false, gem: None, price: None }] };
+            Socket { open: true, preview: false, template: None, gem: Some(("Ruby".into(), Icon { image: "r.png".into(), ..Default::default() })), price: None },
+            Socket { open: false, preview: false, template: None, gem: None, price: Some(75) }, Socket { open: false, preview: false, template: None, gem: None, price: None }] };
         let prepared = prepare_gemdesk(&source, &gems);
         let ids: Vec<_> = prepared.widgets.iter().map(|w| w.id.clone()).collect();
         assert_eq!(text_of(&prepared, &format!("{GEM_ITEM}/ItemNameTextLabel")), "Helmet");
@@ -559,7 +571,7 @@ mod tests {
             rows: vec![Row { id: "gems".into(), title: "Gems".into(), kind: RowKind::Category, selected: true }, Row { id: "ruby".into(), title: "Ruby".into(), kind: RowKind::Book, selected: true },
                 Row { id: "opal".into(), title: "Opal".into(), kind: RowKind::Locked, selected: false }],
             detail: Some(Detail { title: "Ruby".into(), text: "Combine rubies.".into(), placeholders: vec![Icon { image: "p.png".into(), ..Default::default() }], recipe: "r1".into(),
-                result: Icon { image: "e.png".into(), ..Default::default() }, ingredients: vec![Ingredient { template: "ruby_a".into(), icon: Icon { image: "h.png".into(), ..Default::default() }, have: 2, need: 3 }],
+                result: Icon { image: "e.png".into(), ..Default::default() }, ingredients: vec![Ingredient { template: "ruby_a".into(), icon: Icon { image: "h.png".into(), ..Default::default() }, have: 2, need: 3, placed: true }],
                 price_vc: 20_000, price_rc: 4, amount: 1, most: 0, ..Default::default() }),
             ..Default::default()
         };

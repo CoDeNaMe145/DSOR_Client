@@ -200,6 +200,11 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
                     let template = &views.album.sticker(id).unwrap().template;
                     detail = Some(items::sticker_card(catalog.unwrap(), layouts.get(&data.tooltip), template));
                 }
+                // A gem desk socket's gem: its item card.
+                Action::System(super::systems::Request::SocketGem(n)) if catalog.is_some() && views.gems.sockets.get(*n).is_some_and(|s| s.template.is_some()) => {
+                    let template = views.gems.sockets[*n].template.clone().unwrap_or_default();
+                    detail = Some(items::preview_card(catalog.unwrap(), layouts.get(&data.tooltip), &template, None, 1, settings.current.advanced_tooltips(&keys, pointer.focus.is_some())));
+                }
                 Action::System(request) if w.0 == systems::talents::WINDOW => match systems::talents::card(request, &views.talents,
                     net.as_ref().map(|n| n.server_tick(crate::network::net::now_ms(&real)))) {
                     Some(tip) => { let (card, compact) = talent_card(&tip, template); detail = Some(card); hint = compact; }

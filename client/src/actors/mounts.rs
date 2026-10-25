@@ -105,6 +105,7 @@ fn apply_rides(
     (library, variations): (Option<Res<crate::actors::character::CharacterLibrary>>, Res<Assets<crate::actors::npc::Variations>>),
     mut tested: Local<(u8, f32)>,
     mut redraw: Local<Vec<(Entity, crate::network::net::StatusEvent)>>,
+    mut worn: Local<HashMap<Entity, u32>>,
 ) {
     let now = time.elapsed_secs();
     if let Some(net) = net.as_mut() {
@@ -194,6 +195,7 @@ fn apply_rides(
                 };
                 crate::actors::character::reshape(&mut commands, &mut character, Some(look));
                 commands.entity(entity).try_insert(Transformed { instance });
+                worn.insert(entity, instance);
                 // Its own visual (dwarf_irondwarf_idle on fx_chest) rode the old
                 // skeleton's joints, gone with it: drawn again on the new one.
                 // FAILURE: "y'a plus de FX de transformation".
@@ -203,7 +205,13 @@ fn apply_rides(
                     net.hidden_bar = Some(crate::network::net::hidden_bar(&base, &t.skills));
                 }
                 info!("{holder:#x} transforms ({})", def.id);
-            } else if transformed.is_some_and(|t| t.instance == instance) {
+            } else if worn.get(&entity).copied().or(transformed.map(|t| t.instance)) == Some(instance) {
+                // CONTRACT: the instance worn now, as this loop left it: a
+                //   costume swap sends the new one, then the old one's removal,
+                //   in one batch, before Transformed is updated.
+                // FAILURE: "quand j'ai un costume et que j'en equipe un autre ca
+                //   me remet ma tenue initiale".
+                worn.remove(&entity);
                 crate::actors::character::reshape(&mut commands, &mut character, None);
                 commands.entity(entity).remove::<Transformed>();
                 if let Some(net) = net.as_mut().filter(|n| n.local_actor == Some(holder)) {

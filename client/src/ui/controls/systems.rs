@@ -105,6 +105,8 @@ pub(crate) enum Request {
     Unpick(usize),
     /// A gem socket's button: take its gem out.
     Socket(usize),
+    /// A socket's gem, hovered (its card); a click does nothing.
+    SocketGem(usize),
     /// Buy the next socket of the gem desk's item.
     BuySocket,
     RecipeCategory(String),
@@ -205,6 +207,11 @@ pub(crate) struct State {
     /// An item right-clicked while the workbench is open: its recipe opens
     /// (send resolves it against the catalog).
     pub workbench_pick: Option<String>,
+    /// The recipe's slots the player filled (a right-clicked carried item of
+    /// that ingredient); Craft needs them all.
+    /// FAILURE: the recipe took the bag's items itself ("je veux devoir placer
+    ///   ma pierre et les poussieres dans les slots").
+    pub workbench_placed: std::collections::BTreeSet<usize>,
     /// The transmog desk's slot picked (an equipment slot), its tab (skins,
     /// dyes) and filters (owned, the shop's).
     pub skin_slot: Option<i8>,
@@ -521,6 +528,7 @@ pub(super) fn action(window: &str, w: &Widget) -> Option<Action> {
             "Add" => Request::AddSticker(arg.to_owned()),
             "Unpick" => Request::Unpick(arg.parse().ok()?),
             "Socket" => Request::Socket(arg.parse().ok()?),
+            "SocketGem" => Request::SocketGem(arg.parse().ok()?),
             "Category" => Request::RecipeCategory(arg.to_owned()),
             "Recipe" => Request::Recipe(arg.to_owned()),
             "WorkbenchTab" => Request::WorkbenchTab(arg.parse().ok()?),
@@ -663,9 +671,16 @@ fn scrolled(window: &Window, windows: &Query<(&Window2018, &Visibility, &WindowC
             let p = point - offset - Vec2::new(k * (width - crate::ui::BASE_W), 0.0);
             p.x >= rect[0] && p.x <= rect[2] && p.y >= rect[1] && p.y <= rect[3]
         };
+        // A list scrolls with its window's own horizontal anchor (its widest
+        // region's): the workbench is drawn on the left, not centred.
+        // FAILURE: on a wide screen its area sat hundreds of pixels right of
+        //   the list ("je peux pas scroll les recettes").
+        let window_k = controls.regions.iter()
+            .max_by(|a, b| ((a.1[2] - a.1[0]) * (a.1[3] - a.1[1])).total_cmp(&((b.1[2] - b.1[0]) * (b.1[3] - b.1[1]))))
+            .map(|r| r.0);
         for (window, page, key, rect, k) in SCROLL_AREAS {
             if window != name.0 || page.is_some_and(|(group, n)| controls.pages.get(group).copied().unwrap_or(0) != n) { continue; }
-            if inside(rect, k) { return Some(Request::Scroll(key.to_owned(), rows)); }
+            if inside(rect, if window == WORKBENCH { window_k.unwrap_or(k) } else { k }) { return Some(Request::Scroll(key.to_owned(), rows)); }
         }
         if name.0 == LEADERBOARDS && inside([406.0, 297.0, 1048.0, 560.0], 0.5) {
             return Some(Request::Page(if rows > 0 { Paging::Next } else { Paging::Previous }));
@@ -724,6 +739,7 @@ pub(super) fn tooltip(request: &Request) -> Option<(&'static str, String)> {
         Request::AddSticker(_) => ("Add to the album", "Adds the carried item to your collection.".into()),
         Request::Salvage => ("Melt down", "Melts the items placed here into Glyphs of Power and materials.".into()),
         Request::Unpick(_) => ("Take back", String::new()),
+        Request::SocketGem(_) => ("Gem", String::new()),
         Request::Socket(_) => ("Lock / unlock", "An open padlock sets the placed gem; a closed one takes the gem out.".into()),
         Request::BuySocket => ("Unlock socket", "Unlocks the next socket for Andermant.".into()),
         Request::WorkbenchTab(_) => ("Recipes", "Shows this kind of recipes.".into()),
@@ -861,7 +877,11 @@ pub(in crate::ui) fn send(
     // its dismantling (GemDustCreation).
     // FAILURE: "je peux pas fusionner quand j'ai le workbench ouvert et que je
     //   clique droit sur mes pierres".
-    if let Some(template) = state.workbench_pick.take() {
+    let picked = state.workbench_pick.take();
+    let in_recipe = picked.as_ref().and_then(|t| views.workbench.detail.as_ref().filter(|d| state.recipe.is_some() && !d.locked)
+        .and_then(|d| d.ingredients.iter().position(|i| &i.template == t)));
+    if let Some(n) = in_recipe { state.workbench_placed.insert(n); }
+    if let Some(template) = picked.filter(|_| in_recipe.is_none()) {
         let known: Vec<String> = net.recipes.iter().map(|(book, _)| book.to_lowercase()).collect();
         let first_is = |r: &crate::gameplay::systems::RecipeDef| r.ingredients.first().is_some_and(|i| i.split(':').next() == Some(template.as_str()));
         let mut books: Vec<(&String, &crate::gameplay::systems::RecipeBookDef)> = catalog.recipe_books.iter()
@@ -874,6 +894,8 @@ pub(in crate::ui) fn send(
             state.recipe = Some((*id).clone());
             state.craft_amount = 1;
             state.scroll.remove(desks::LIST);
+            // The clicked item goes in its first slot.
+            state.workbench_placed = std::iter::once(0).collect();
         }
     }
     for request in std::mem::take(&mut pointer.system) {
@@ -988,6 +1010,7 @@ pub(in crate::ui) fn send(
                 if !items.is_empty() { commands.push(ClientCommand::Salvage(proto::Salvage { items, mode: 0 })); wait = true; }
                 state.salvage.clear();
             }
+            Request::SocketGem(_) => {}
             Request::Unpick(index) => { if index < state.salvage.len() { state.salvage.remove(index); } }
             Request::Socket(socket) if state.gem_preview.iter().any(|(s, _)| *s == socket) => {
                 let gem = state.gem_preview.iter().find(|(s, _)| *s == socket).map(|(_, g)| *g).unwrap_or_default();
@@ -1014,7 +1037,7 @@ pub(in crate::ui) fn send(
                 state.recipe_category = if state.recipe_category.as_ref() == Some(&category) { None } else { Some(category) };
                 state.recipe = None;
             }
-            Request::Recipe(id) => { state.recipe = Some(id).filter(|id| !id.is_empty()); state.craft_amount = 1; }
+            Request::Recipe(id) => { state.recipe = Some(id).filter(|id| !id.is_empty()); state.craft_amount = 1; state.workbench_placed.clear(); }
             Request::WorkbenchTab(tab) => {
                 state.workbench_tab = tab;
                 state.recipe_category = None;
@@ -1034,8 +1057,11 @@ pub(in crate::ui) fn send(
             // The chosen book's recipe, the amount chosen, a carried item of each
             // ingredient (the server takes the amounts by template).
             Request::Craft(andermant) => {
+                let mut crafted = false;
                 let sources = Sources { net: &net, catalog, items: None, names: None, state: &state, class: None, talents: None, bonuses: None };
-                if let Some(detail) = views.workbench.detail.as_ref().filter(|d| !d.locked && d.most > 0 && !d.recipe.is_empty()) {
+                if let Some(detail) = views.workbench.detail.as_ref().filter(|d| !d.locked && d.most > 0 && !d.recipe.is_empty()
+                    && (0..d.ingredients.len()).all(|n| state.workbench_placed.contains(&n))) {
+                    crafted = true;
                     let mut items = Vec::new();
                     for ingredient in &detail.ingredients {
                         let carried = sources.carried(&ingredient.template);
@@ -1046,6 +1072,7 @@ pub(in crate::ui) fn send(
                         wait = true;
                     }
                 }
+                if crafted { state.workbench_placed.clear(); }
             }
             Request::Skin(id) => state.skin = Some(id),
             // The chosen skin (or dye) on the picked slot's item; the old one
