@@ -526,7 +526,7 @@ mod tests {
         }
         let refs: Vec<(&str, &str, bool)> = ids.iter().map(|(a, b, c)| (a.as_str(), *b, *c)).collect();
         let source = layout(super::super::GEMDESK, &refs);
-        let gems = Gems { target: Some(("Helmet".into(), Icon { image: "h.png".into(), ..Default::default() })), sockets: vec![
+        let gems = Gems { level: 1, target: Some(("Helmet".into(), Icon { image: "h.png".into(), ..Default::default() })), sockets: vec![
             Socket { open: true, preview: false, template: None, gem: Some(("Ruby".into(), Icon { image: "r.png".into(), ..Default::default() })), price: None },
             Socket { open: false, preview: false, template: None, gem: None, price: Some(75) }, Socket { open: false, preview: false, template: None, gem: None, price: None }] };
         let prepared = prepare_gemdesk(&source, &gems);
