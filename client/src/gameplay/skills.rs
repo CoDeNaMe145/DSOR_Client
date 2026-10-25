@@ -305,6 +305,8 @@ pub struct StatusTransform {
     pub skin: String,
     #[serde(default)]
     pub variation: String,
+    /// Empty for a costume: the wearer keeps its own anim set.
+    #[serde(default)]
     pub anim_set: String,
     /// Its UnlockHiddenSkills, in order (crate::network::net::hidden_bar).
     #[serde(default)]

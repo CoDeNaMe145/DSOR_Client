@@ -273,7 +273,7 @@ impl CharacterDesc {
 
     /// The animation set name, GamePlayer::GetAnimSet's rule (an NPC's own AnimSet).
     pub fn animation_set(&self) -> String {
-        if let Some(look) = self.look.as_ref().or(self.shape.as_ref()) {
+        if let Some(look) = self.look.as_ref().or(self.shape.as_ref().filter(|s| !s.anim_set.is_empty())) {
             return look.anim_set.clone();
         }
         let class = self.class_name();
@@ -292,7 +292,10 @@ impl CharacterDesc {
 
     /// Every part to dress, resolved against the parts that exist.
     fn parts(&self, exists: &dyn Fn(&str) -> bool, tags: &HashMap<String, SkinTag>) -> Vec<(String, Option<[f32; 4]>)> {
-        if let Some(look) = self.look.as_ref().or(self.shape.as_ref()) {
+        // A whole transformation (its own anim set: the Iron Dwarf) wears its
+        // skin alone; a costume (a SkinModifier only) goes over the outfit, its
+        // tags covering what it hides (cull_covered_parts).
+        if let Some(look) = self.look.as_ref().or(self.shape.as_ref().filter(|s| !s.anim_set.is_empty())) {
             return look.parts.iter().filter(|p| exists(p)).map(|p| (p.clone(), None)).collect();
         }
         let (class, gender) = (self.class_name(), self.gender_name());
@@ -342,6 +345,11 @@ impl CharacterDesc {
         for part in &self.cosmetics {
             if exists(part) && !out.iter().any(|(name, _)| name == part) {
                 out.push((part.clone(), None));
+            }
+        }
+        for skin in self.shape.iter().flat_map(|s| s.parts.iter()) {
+            if let Some(part) = resolve(skin).filter(|p| !out.iter().any(|(name, _)| name == p)) {
+                out.push((part, None));
             }
         }
         cull_covered_parts(&mut out, tags);
@@ -1037,7 +1045,7 @@ fn adopt_skeleton(ctx: &mut SkeletonCtx, entity: Entity, owner: Entity, generati
             anim.parking = false;
         }
     }
-    let variation = match character.desc.look.as_ref().or(character.desc.shape.as_ref()) {
+    let variation = match character.desc.look.as_ref().or(character.desc.shape.as_ref().filter(|s| !s.variation.is_empty())) {
         Some(l) => l.variation.clone(),
         None => body_variation(&character.desc, ctx.library.as_deref(), &ctx.variations),
     };

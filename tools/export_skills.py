@@ -411,7 +411,7 @@ def transform_modifiers(text):
             found[key] = value
         if kind.strip().casefold() == "unlockhiddenskills":
             found["skills"] = [v.strip() for v in args.split(",") if v.strip()]
-    return found if "skin" in found and "anim_set" in found else None
+    return found if "skin" in found else None
 for r in db.execute("select rowid, * from _Template_StatusEffect order by rowid"):
     mount, bonus = ride_modifiers(r["StartModifiers"])
     status[r["rowid"] - 1] = {
