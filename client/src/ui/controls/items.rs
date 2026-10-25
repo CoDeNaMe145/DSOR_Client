@@ -525,7 +525,9 @@ pub fn input(mut ui:ResMut<Interaction>,mut pointer:ResMut<Pointer>,mut windows:
     if mouse.just_pressed(MouseButton::Right) && !busy {
         if let Some((root,cell))=hovered {
             let (_,_,c,_,_)=windows.get(root).unwrap();
-            if let Some(id)=place(cell,c).and_then(|p|net.inventory.at(p)).map(|i|i.id) {
+            // An ingredient bag cell shows the stack its tab and slot name.
+            let ingredient_stack=matches!(cell,Cell::Ingredient(_)).then(||displayed(cell,c,&net.inventory,catalog).and_then(|d|d.item.map(|i|i.id))).flatten();
+            if let Some(id)=place(cell,c).and_then(|p|net.inventory.at(p)).map(|i|i.id).or(ingredient_stack) {
                 let selling=lookups.shop.as_ref().and_then(|p|p.open_shop()).filter(|(_,can_sell)|*can_sell).map(|(shop,_)|shop.to_owned());
                 let carried=matches!(net.inventory.location(id),Some(Place::Bag(_)|Place::Extra(_)));
                 let unidentified=net.inventory.items.get(&id).is_some_and(|i|i.flag_0);

@@ -322,8 +322,13 @@ impl Sources<'_> {
     /// The carried items of a template, by id.
     pub fn carried(&self, template: &str) -> Vec<u32> {
         let inventory = &self.net.inventory;
+        // The ingredient bag's stacks count too (allocation words_180): the
+        // workbench's Shiny Dust lives there.
+        // FAILURE: "ca doit compter ca comme un item alors que la gem powder
+        //   est dans l'inventaire mais dans son onglet special".
         let mut ids: Vec<u32> = inventory.items.values().filter(|i| i.template == template)
-            .filter(|i| matches!(inventory.location(i.id), Some(Place::Bag(_) | Place::Extra(_)))).map(|i| i.id).collect();
+            .filter(|i| matches!(inventory.location(i.id), Some(Place::Bag(_) | Place::Extra(_))) || inventory.allocation.words_180.contains(&i.id))
+            .map(|i| i.id).collect();
         ids.sort_unstable();
         ids
     }
@@ -1219,7 +1224,7 @@ pub(in crate::ui) fn pick(state: &mut State, desk: &str, net: &Net, item: &inven
             None
         }
         GEMDESK if carried || worn => { state.gem_target = Some(item.id); state.gem_preview.clear(); None }
-        WORKBENCH if carried => { state.workbench_pick = Some(item.template.clone()); None }
+        WORKBENCH if carried || net.inventory.allocation.words_180.contains(&item.id) => { state.workbench_pick = Some(item.template.clone()); None }
         TRANSMOG if worn => {
             if let Some(Place::Equipment(slot)) = net.inventory.location(item.id) { state.skin_slot = Some(slot); }
             state.skin = None;
