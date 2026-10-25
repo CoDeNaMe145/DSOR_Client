@@ -93,7 +93,7 @@ pub(super) fn card(d: &DisplayItem, catalog: &Catalog, layout: Option<&Layout>, 
                     }
                 }
             }
-            if !item.names.is_empty() || item.tenth>0 {
+            if item.names.iter().any(|g|!g.is_empty()) || item.tenth>0 {
                 card.section("Gems");
                 if advanced {
                     let mut groups=std::collections::HashSet::new();
@@ -105,16 +105,24 @@ pub(super) fn card(d: &DisplayItem, catalog: &Catalog, layout: Option<&Layout>, 
                         let mut combined=value.clone(); combined.amount=group.iter().map(|v|v.amount).sum();
                         card.text(&format!("{}{}",attribute(&combined,true),details),BLUE);
                     }
-                    if values.gems.is_empty() {for name in &item.names {card.text(&catalog.items.get(name).map_or_else(||readable(name),|g|g.name.clone()),BLUE);}}
-                    if item.tenth as usize>item.names.len() {card.hint(&format!("{} empty sockets",item.tenth as usize-item.names.len()));}
                     card.gap(3.0);
                 } else {
                     for value in values.gems.iter().filter(|v| !v.item_local || !values.base.iter().any(|b| b.item_local && !b.relative && b.name==v.name)) {
                         card.text(&attribute(value,false),BLUE);
                     }
                 }
-                card.icons(item.names.iter().filter_map(|name|catalog.icon(name,None).0.map(str::to_owned)));
-                if item.names.is_empty() {card.hint("No gems socketed");}
+                // Every socket: its gem, or empty (names holds "" for an empty
+                // one; tenth is the item's socket count).
+                // FAILURE: "ça affiche pas dans la description d'un items ses
+                //   slots et les gems qu'il a equipé".
+                let sockets=(item.tenth as usize).max(item.names.len());
+                for n in 0..sockets {
+                    match item.names.get(n).filter(|g|!g.is_empty()) {
+                        Some(gem)=>card.text(&format!("Socket {}: {}",n+1,catalog.items.get(gem).map_or_else(||readable(gem),|g|g.name.clone())),BLUE),
+                        None=>card.hint(&format!("Socket {}: empty",n+1)),
+                    }
+                }
+                card.icons(item.names.iter().filter(|g|!g.is_empty()).filter_map(|name|catalog.icon(name,None).0.map(str::to_owned)));
             }
             let enchantments:Vec<_>=values.enchantments.iter().filter(|v| advanced || !v.item_local
                 || !values.base.iter().any(|b| b.item_local && !b.relative && b.name==v.name)).collect();

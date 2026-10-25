@@ -197,6 +197,9 @@ pub(crate) struct State {
     pub salvage: Vec<u32>,
     /// The equipment on the gem desk, the one on the transmog desk.
     pub gem_target: Option<u32>,
+    /// An item right-clicked while the workbench is open: its recipe opens
+    /// (send resolves it against the catalog).
+    pub workbench_pick: Option<String>,
     /// The transmog desk's slot picked (an equipment slot), its tab (skins,
     /// dyes) and filters (owned, the shop's).
     pub skin_slot: Option<i8>,
@@ -846,6 +849,27 @@ pub(in crate::ui) fn send(
     // inventory (or refuses silently; two seconds then).
     let busy = state.pending.is_some();
     let mut wait = false;
+    // A right-clicked item on the workbench opens the book of a recipe it is
+    // the first ingredient of: a known one first, a combination (a gem with
+    // its dust to the next tier: GemCombinationCraftingCyanit_a_to_b) before
+    // its dismantling (GemDustCreation).
+    // FAILURE: "je peux pas fusionner quand j'ai le workbench ouvert et que je
+    //   clique droit sur mes pierres".
+    if let Some(template) = state.workbench_pick.take() {
+        let known: Vec<String> = net.recipes.iter().map(|(book, _)| book.to_lowercase()).collect();
+        let first_is = |r: &crate::gameplay::systems::RecipeDef| r.ingredients.first().is_some_and(|i| i.split(':').next() == Some(template.as_str()));
+        let mut books: Vec<(&String, &crate::gameplay::systems::RecipeBookDef)> = catalog.recipe_books.iter()
+            .filter(|(_, b)| b.recipes.iter().filter_map(|r| catalog.recipes.get(r)).any(first_is)).collect();
+        books.sort_by_key(|(id, _)| (!known.contains(&id.to_lowercase()), !id.contains("Combination"), (*id).clone()));
+        if let Some((id, book)) = books.first() {
+            let tab_id = catalog.workbench_categories.iter().find(|c| c.id == book.category).map(|c| c.tab.clone()).unwrap_or_default();
+            if let Some(tab) = catalog.workbench_tabs.iter().position(|t| t.id == tab_id) { state.workbench_tab = tab; }
+            state.recipe_category = Some(book.category.clone());
+            state.recipe = Some((*id).clone());
+            state.craft_amount = 1;
+            state.scroll.remove(desks::LIST);
+        }
+    }
     for request in std::mem::take(&mut pointer.system) {
         if busy && matches!(request, Request::AddSticker(_) | Request::Salvage | Request::Socket(_) | Request::BuySocket | Request::Craft(_) | Request::Apply | Request::TransmogReset(_)) { continue; }
         match request {
@@ -1144,6 +1168,7 @@ pub(in crate::ui) fn pick(state: &mut State, desk: &str, net: &Net, item: &inven
             Some(crate::gameplay::inventory::command(item.id, 0x11, vec![target.id as i32, socket as i32]))
         }
         GEMDESK if carried || worn => { state.gem_target = Some(item.id); None }
+        WORKBENCH if carried => { state.workbench_pick = Some(item.template.clone()); None }
         TRANSMOG if worn => {
             if let Some(Place::Equipment(slot)) = net.inventory.location(item.id) { state.skin_slot = Some(slot); }
             state.skin = None;
