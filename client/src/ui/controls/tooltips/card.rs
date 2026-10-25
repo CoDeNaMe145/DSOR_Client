@@ -42,6 +42,14 @@ impl Card {
 
     pub fn height(&self) -> f32 { self.y + 16.0 }
 
+    /// Every text size of the card times `k` (a card the original draws in a
+    /// smaller hand, items::preview::sticker).
+    pub fn scale_text(&mut self, k: f32) {
+        self.size *= k;
+        self.small *= k;
+        self.title *= k;
+    }
+
     /// The body text size (reference pixels), for a card sized to its text.
     pub fn text_size(&self) -> f32 { self.size }
 

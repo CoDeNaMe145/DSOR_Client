@@ -24,6 +24,9 @@ fn readable(id: &str) -> String {
     result.trim().to_owned()
 }
 
+/// The sticker card's text against an item card's (Card::scale_text).
+const STICKER_TEXT: f32 = 0.55;
+
 /// A Collector's Bag sticker's card, as the original's (the user's release261_192
 /// shots of the Manticore and the armoured war horse): its name and kind in its
 /// rarity's colour, then gui.window consumableUnderTitleInfinite, its description,
@@ -32,12 +35,17 @@ fn readable(id: &str) -> String {
 pub(super) fn sticker(catalog: &Catalog, layout: Option<&Layout>, template: &str) -> Card {
     let meta = catalog.items.get(template);
     let mut card = Card::new(285.0, layout);
+    // The original writes it in a small hand, its name no larger than the rest.
+    // FAILURE (2026-10-25): about 1.8 times the original's (the user's shots of the
+    //   Battle-boar's card, measured against the sticker icon).
+    // UNVERIFIED: the factor, measured from screenshots.
+    card.scale_text(STICKER_TEXT);
     card.background = Color::srgba(0.01, 0.01, 0.005, 0.985);
     let (rarity, tint) = rarity(catalog, template, None);
     // A template has no instance colour; the original writes a Mythic one red.
     // UNVERIFIED: the exact red, matched by eye on the user's Manticore shot.
     let tint = if rarity == "Mythic" { Color::srgb(0.86, 0.12, 0.08) } else { tint };
-    card.title(catalog.name(template, None), None, tint);
+    card.title(&format!("<i>{}</>", catalog.name(template, None)), None, tint);
     if let Some(m) = meta.filter(|m| !m.category.is_empty()) { card.text(&format!("<i>{}</>", m.category), tint); }
     card.text("<i>Use, is not depleted when used</>", MUTED);
     if let Some(m) = meta.filter(|m| !m.description.is_empty()) {
