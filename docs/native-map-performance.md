@@ -36,6 +36,14 @@ and unwanted skins. The changes now separate these decisions:
   Models are shared between resident cells; distant geometry, merged meshes,
   projected decals, and unused model handles are released. Material deduplication
   caches are cleared when residency changes so they cannot pin old textures.
+  A placement belongs to the cell of its origin, but all three distances are
+  measured to where the cell's placements reach. When a map starts, the native
+  client reads every model's bounds from its GLB JSON chunk (`<model>.bounds`,
+  read before the binary data) and holds the loading screen until they are in.
+  Without this, `g0003_tribe_01_hub` lost its ground in the south: the whole
+  ground is one placement, about 160 units across, whose origin's cell is at the
+  north end (2026-10-25). Browser builds skip the read and keep measuring to the
+  cell squares.
 - Decorative characters and sequences use the same 70/90-unit buffer. Offline
   NPC placements also stream, with four new actors per system per frame. Live
   network actor identities still follow the server's interest-management

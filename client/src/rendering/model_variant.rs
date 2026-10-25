@@ -14,6 +14,9 @@ use serde_json::Value;
 
 const MARKER: &str = ".dsor-set-";
 const STATE_MARKER: &str = ".dsor-state-";
+/// `<model>.bounds`: the model's glTF JSON alone, its binary chunk left unread
+/// (crate::world::map::ModelBounds: how far a map model reaches before it loads).
+pub const BOUNDS: &str = ".bounds";
 
 pub fn prop_path(graphics: &str, state: &str) -> String {
     let model = crate::world::map::model_path(graphics);
@@ -57,6 +60,9 @@ struct VariantReader {
 
 impl AssetReader for VariantReader {
     async fn read<'a>(&'a self, path: &'a Path) -> Result<Box<dyn Reader + 'a>, AssetReaderError> {
+        if let Some(model) = path.to_str().and_then(|p| p.strip_suffix(BOUNDS)) {
+            return Ok(Box::new(VecReader::new(self.glb_json(model).await?)));
+        }
         let mut reader = self.read_variant(path).await?;
         if path.extension().is_none_or(|e| e != "glb") { return Ok(reader); }
         let Some(packed) = self.packed_textures().await else { return Ok(reader) };
@@ -117,6 +123,23 @@ impl VariantReader {
             let _ = PACKED.set(list);
         }
         PACKED.get().filter(|list| !list.is_empty())
+    }
+
+    /// A GLB's JSON chunk, read from the start of the file: Kingshill's 788
+    /// models hold 3 MB of it in 36 MB of files.
+    async fn glb_json(&self, model: &str) -> Result<Vec<u8>, AssetReaderError> {
+        use bevy::tasks::futures_lite::AsyncReadExt;
+        let path = format!("{model}.glb");
+        let mut reader = self.inner.read(Path::new(&path)).await?;
+        let mut head = [0u8; 20];
+        AsyncReadExt::read_exact(&mut reader, &mut head).await?;
+        let word = |at: usize| u32::from_le_bytes([head[at], head[at + 1], head[at + 2], head[at + 3]]);
+        if word(0) != 0x46546c67 || word(16) != 0x4e4f534a {
+            return Err(std::io::Error::other(format!("{model}.glb: expected a GLB JSON chunk")).into());
+        }
+        let mut json = vec![0; word(12) as usize];
+        AsyncReadExt::read_exact(&mut reader, &mut json).await?;
+        Ok(json)
     }
 
     async fn read_variant<'a>(&'a self, path: &'a Path) -> Result<Box<dyn Reader + 'a>, AssetReaderError> {

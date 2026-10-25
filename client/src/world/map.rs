@@ -202,6 +202,94 @@ impl AssetLoader for MapManifestLoader {
     }
 }
 
+/// Where a model's geometry lies in its own space: every mesh's bounds through
+/// its node chain, read from its glTF JSON alone (`<model>.bounds`,
+/// crate::rendering::model_variant) before the model itself loads.
+#[derive(Asset, TypePath, Debug, Clone, Copy, PartialEq)]
+pub struct ModelBounds {
+    pub min: Vec3,
+    pub max: Vec3,
+}
+
+#[derive(Default, TypePath)]
+pub struct ModelBoundsLoader;
+
+impl AssetLoader for ModelBoundsLoader {
+    type Asset = ModelBounds;
+    type Settings = ();
+    type Error = std::io::Error;
+
+    async fn load(
+        &self,
+        reader: &mut dyn Reader,
+        _settings: &(),
+        _ctx: &mut LoadContext<'_>,
+    ) -> Result<ModelBounds, Self::Error> {
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).await?;
+        let doc: serde_json::Value = serde_json::from_slice(&bytes).map_err(std::io::Error::other)?;
+        document_bounds(&doc).ok_or_else(|| std::io::Error::other("no geometry"))
+    }
+
+    fn extensions(&self) -> &[&str] {
+        &["bounds"]
+    }
+}
+
+/// The bounds of a glTF document's meshes (their POSITION accessors' min and
+/// max) through each node's chain of parents; None without geometry.
+fn document_bounds(doc: &serde_json::Value) -> Option<ModelBounds> {
+    let nodes = doc["nodes"].as_array()?;
+    let mut parent = vec![None; nodes.len()];
+    for (i, node) in nodes.iter().enumerate() {
+        for child in node["children"].as_array().into_iter().flatten().filter_map(|c| c.as_u64()) {
+            if let Some(p) = parent.get_mut(child as usize) {
+                *p = Some(i);
+            }
+        }
+    }
+    let floats = |v: &serde_json::Value| -> Option<Vec<f32>> {
+        v.as_array()?.iter().map(|x| x.as_f64().map(|x| x as f32)).collect()
+    };
+    let local = |node: &serde_json::Value| -> Mat4 {
+        if let Some(m) = floats(&node["matrix"]).filter(|m| m.len() == 16) {
+            return Mat4::from_cols_slice(&m);
+        }
+        let t = floats(&node["translation"]).filter(|v| v.len() == 3).map_or(Vec3::ZERO, |v| Vec3::from_slice(&v));
+        let r = floats(&node["rotation"]).filter(|v| v.len() == 4).map_or(Quat::IDENTITY, |v| Quat::from_slice(&v));
+        let s = floats(&node["scale"]).filter(|v| v.len() == 3).map_or(Vec3::ONE, |v| Vec3::from_slice(&v));
+        Mat4::from_scale_rotation_translation(s, r, t)
+    };
+    let (mut min, mut max) = (Vec3::MAX, Vec3::MIN);
+    for (i, node) in nodes.iter().enumerate() {
+        let Some(mesh) = node["mesh"].as_u64() else { continue };
+        let mut world = local(node);
+        let mut at = i;
+        // Bounded: a malformed file's cycle ends here.
+        for _ in 0..nodes.len() {
+            let Some(p) = parent[at] else { break };
+            world = local(&nodes[p]) * world;
+            at = p;
+        }
+        for primitive in doc["meshes"][mesh as usize]["primitives"].as_array().into_iter().flatten() {
+            let Some(position) = primitive["attributes"]["POSITION"].as_u64() else { continue };
+            let accessor = &doc["accessors"][position as usize];
+            let (Some(lo), Some(hi)) = (floats(&accessor["min"]), floats(&accessor["max"])) else { continue };
+            if lo.len() != 3 || hi.len() != 3 {
+                continue;
+            }
+            let (lo, hi) = (Vec3::from_slice(&lo), Vec3::from_slice(&hi));
+            for corner in 0..8 {
+                let c = Vec3::select(BVec3::new(corner & 1 != 0, corner & 2 != 0, corner & 4 != 0), hi, lo);
+                let w = world.transform_point3(c);
+                min = min.min(w);
+                max = max.max(w);
+            }
+        }
+    }
+    (min.x <= max.x).then_some(ModelBounds { min, max })
+}
+
 /// How many model files may be loading at once.
 ///
 /// CONTRACT: keep this bounded. Bevy 0.19's glTF loader waits on a
@@ -227,6 +315,18 @@ pub struct CurrentMap {
     /// Placements per model, built once the manifest arrives.
     pub by_model: Vec<Vec<usize>>,
     by_cell: HashMap<(i32, i32), Vec<usize>>,
+    /// Each model's bounds, requested with the manifest (natively), until all
+    /// are read: then `measured`.
+    bounds: Vec<Handle<ModelBounds>>,
+    /// The models' bounds by manifest index (None: unknown), once read.
+    measured: Option<Vec<Option<ModelBounds>>>,
+    /// How far each cell's placements reach (its square at least), once
+    /// measured. A placement is filed under the cell of its origin, but its
+    /// geometry can lie far beyond: g0003_tribe_01_hub's whole ground is one
+    /// placement, 160 units across, whose origin's cell is at the map's north
+    /// end. Measured by the square, the ground vanished from under the player
+    /// in the south ("ground textures disappearing"). SEE: CurrentMap::distance.
+    reach: HashMap<(i32, i32), Rect>,
     wanted_cells: HashSet<(i32, i32)>,
     wanted_models: HashSet<usize>,
     /// Geometry roots, separate from the lightweight cells used by level lights.
@@ -266,6 +366,9 @@ impl CurrentMap {
             in_flight: Vec::new(),
             by_model: Vec::new(),
             by_cell: Default::default(),
+            bounds: Vec::new(),
+            measured: None,
+            reach: Default::default(),
             wanted_cells: Default::default(),
             wanted_models: Default::default(),
             contents: Default::default(),
@@ -308,6 +411,46 @@ impl CurrentMap {
         }
         (done, self.wanted_models.len())
     }
+
+    /// How far the focus is from what a cell holds: as far as its placements
+    /// reach once measured, else its square. Streaming and culling both go by it.
+    fn distance(&self, key: (i32, i32), focus: Vec3) -> f32 {
+        let reach = self.reach.get(&key).copied().unwrap_or_else(|| cell_square(key));
+        focus.xz().distance(focus.xz().clamp(reach.min, reach.max))
+    }
+
+    /// Measures again where a cell's placements reach (they changed, or the
+    /// models' bounds came in).
+    fn measure(&mut self, manifest: &MapManifest, key: (i32, i32)) {
+        let Some(measured) = &self.measured else { return };
+        let placements = self.by_cell.get(&key).map(Vec::as_slice).unwrap_or_default();
+        let reach = cell_reach(key, placements.iter().filter_map(|&i| {
+            let inst = manifest.instances.get(i)?;
+            Some((inst, (*measured.get(inst.m)?)?))
+        }));
+        self.reach.insert(key, reach);
+    }
+}
+
+fn cell_square((x, z): (i32, i32)) -> Rect {
+    Rect::new(x as f32 * CELL, z as f32 * CELL, (x + 1) as f32 * CELL, (z + 1) as f32 * CELL)
+}
+
+/// A cell's square grown by the ground each placement's model covers.
+fn cell_reach<'a>(key: (i32, i32), placements: impl Iterator<Item = (&'a Placement, ModelBounds)>) -> Rect {
+    placements.fold(cell_square(key), |reach, (inst, bounds)| {
+        let at = Transform {
+            translation: game_to_bevy(inst.p),
+            rotation: Quat::from_xyzw(inst.r[0], inst.r[1], inst.r[2], inst.r[3]).normalize(),
+            scale: Vec3::from_array(inst.s),
+        }
+        .compute_affine();
+        (0..8).fold(reach, |reach, corner| {
+            let c = Vec3::select(BVec3::new(corner & 1 != 0, corner & 2 != 0, corner & 4 != 0), bounds.max, bounds.min);
+            let w = at.transform_point3(c);
+            reach.union_point(w.xz())
+        })
+    })
 }
 
 /// Root entity of the spawned map; every placement is its child.
@@ -331,7 +474,9 @@ impl Plugin for MapPlugin {
     fn build(&self, app: &mut App) {
         app.init_asset::<MapManifest>()
             .init_asset_loader::<MapManifestLoader>()
-            .add_systems(Update, (start_map, follow_events, stream_models, cull_cells).chain().run_if(resource_exists::<CurrentMap>));
+            .init_asset::<ModelBounds>()
+            .init_asset_loader::<ModelBoundsLoader>()
+            .add_systems(Update, (start_map, measure_cells, follow_events, stream_models, cull_cells).chain().run_if(resource_exists::<CurrentMap>));
     }
 }
 
@@ -380,6 +525,13 @@ fn start_map(
         }
     }
     current.by_model = by_model;
+    // Natively, every model's bounds (event scenery's included), read from the
+    // head of its file. The browser would download whole files for them: its
+    // cells keep to their squares.
+    if cfg!(not(target_arch = "wasm32")) {
+        current.bounds = manifest.models.iter().map(|m| asset_server.load(format!("{}{}",
+            model_path(m).trim_end_matches(".glb"), crate::rendering::model_variant::BOUNDS))).collect();
+    }
     current.events_revision = Some(net.as_deref().map(|n| n.props.revision()));
     current.root = Some(
         commands
@@ -404,6 +556,37 @@ fn start_map(
         manifest.models.len(),
         current.conditional.len()
     );
+}
+
+/// Once every model's bounds are read (or failed): how far each cell's
+/// placements reach. Streaming waits for it (stream_models' `ready`).
+fn measure_cells(
+    asset_server: Res<AssetServer>,
+    manifests: Res<Assets<MapManifest>>,
+    bounds: Res<Assets<ModelBounds>>,
+    mut current: ResMut<CurrentMap>,
+) {
+    if current.measured.is_some() || current.root.is_none() {
+        return;
+    }
+    if !current.bounds.iter().all(|h| matches!(asset_server.load_state(h), LoadState::Loaded | LoadState::Failed(_))) {
+        return;
+    }
+    let Some(manifest) = manifests.get(&current.manifest) else { return };
+    let measured: Vec<_> = std::mem::take(&mut current.bounds).iter().map(|h| bounds.get(h).copied()).collect();
+    let known = measured.iter().flatten().count();
+    current.measured = Some(measured);
+    let keys: Vec<_> = current.by_cell.keys().copied().collect();
+    for &key in &keys {
+        current.measure(manifest, key);
+    }
+    let overhang = |key: (i32, i32)| {
+        let (reach, square) = (current.reach[&key], cell_square(key));
+        (square.min - reach.min).max(reach.max - square.max).max_element()
+    };
+    let wide: Vec<_> = keys.iter().copied().filter(|&k| overhang(k) > 1.0).collect();
+    info!("map {}: {known} of {} models measured; {} cells reach beyond their square, up to {:.0} units",
+        current.name, manifest.models.len(), wide.len(), wide.iter().map(|&k| overhang(k)).fold(0.0, f32::max));
 }
 
 /// The server's map events moved (EventUpdate, a map change, an event's end):
@@ -452,6 +635,7 @@ fn follow_events(
         if let Some(content) = current.contents.remove(cell) {
             commands.entity(content).try_despawn();
         }
+        current.measure(manifest, *cell);
     }
     // The models those cells now want are loaded with them.
     let wanted_models: HashSet<usize> = current.wanted_cells.iter().filter_map(|k| current.by_cell.get(k))
@@ -497,7 +681,7 @@ fn stream_models(
     current.stream_focus = Some(focus);
     let wanted: HashSet<_> = current.by_cell.keys().copied().filter(|key| {
         let radius = if current.wanted_cells.contains(key) { UNLOAD_DISTANCE } else { LOAD_DISTANCE };
-        cell_distance(*key, focus) <= radius
+        current.distance(*key, focus) <= radius
     }).collect();
     if current.spawned && !current.rebuild && wanted == current.wanted_cells { return; }
     if wanted != current.wanted_cells {
@@ -522,7 +706,7 @@ fn stream_models(
     current.in_flight = active;
     // Nearest cells first; only a bounded number of model loads may run at once.
     let mut cells: Vec<_> = current.wanted_cells.iter().copied().collect();
-    cells.sort_by(|a, b| cell_distance(*a, focus).total_cmp(&cell_distance(*b, focus)));
+    cells.sort_by(|a, b| current.distance(*a, focus).total_cmp(&current.distance(*b, focus)));
     for key in &cells {
         let placements = current.by_cell[key].clone();
         for i in placements {
@@ -636,7 +820,9 @@ fn stream_models(
         if key.decal_receiver { e.insert(crate::rendering::decals::DecalReceiver); }
         if let Some(g) = key.group { e.insert(crate::rendering::occlusion::VisibilityGroup(g)); }
     }
-    let ready = current.wanted_cells.iter().all(|k| current.contents.contains_key(k));
+    // Not before the cells are measured: a far placement reaching here (a
+    // ground) would come after the loading screen.
+    let ready = current.measured.is_some() && current.wanted_cells.iter().all(|k| current.contents.contains_key(k));
     if ready && !current.spawned {
         info!("map {}: {} of {} cells resident, {} of {} models loaded", current.name, current.contents.len(), current.by_cell.len(), current.models.len(), manifest.models.len());
     }
@@ -670,11 +856,6 @@ pub const CULL_DISTANCE: f32 = 50.0;
 pub const LOAD_DISTANCE: f32 = 70.0;
 pub const UNLOAD_DISTANCE: f32 = 90.0;
 
-fn cell_distance((x, z): (i32, i32), focus: Vec3) -> f32 {
-    let min = Vec2::new(x as f32 * CELL, z as f32 * CELL);
-    focus.xz().distance(focus.xz().clamp(min, min + Vec2::splat(CELL)))
-}
-
 fn cell_of(p: Vec3) -> (i32, i32) {
     ((p.x / CELL).floor() as i32, (p.z / CELL).floor() as i32)
 }
@@ -695,7 +876,8 @@ pub fn camera_focus(cam: &GlobalTransform, player: Option<Vec3>, ground: f32) ->
     o + d * 30.0
 }
 
-/// Culling: hide whole cells away from the camera's focus.
+/// Culling: hide whole cells away from the camera's focus, measured to where
+/// their placements reach (CurrentMap::distance), not to their square.
 /// CONTRACT: hidden for every view, the shadow cascade included -- frustum culling
 ///   alone left the shadow pass ~12 700 surfaces in Kingshill (the camera drew
 ///   1 840), each prepared on the CPU every frame: 30 FPS in the browser.
@@ -709,8 +891,8 @@ pub fn cull_cells(
     let Ok(cam) = cameras.single() else { return };
     let ground = manifests.get(&current.manifest).map(|m| m.center[1]).unwrap_or(0.0);
     let focus = camera_focus(cam, players.iter().next().map(|p| p.translation()), ground);
-    for (&(x, z), &e) in &current.cells {
-        let near = cell_distance((x, z), focus) <= CULL_DISTANCE;
+    for (&key, &e) in &current.cells {
+        let near = current.distance(key, focus) <= CULL_DISTANCE;
         let Ok(mut v) = cells.get_mut(e) else { continue };
         let wanted = if near { Visibility::Inherited } else { Visibility::Hidden };
         if *v != wanted {
@@ -905,5 +1087,44 @@ mod tests {
             ]}"#).unwrap();
         let groups: Vec<_> = manifest.instances.iter().map(|p| manifest.visibility_group(p)).collect();
         assert_eq!(groups, [Some(1), None, None, None]);
+    }
+
+    #[test]
+    fn model_bounds_follow_each_mesh_node_chain() {
+        let doc = serde_json::json!({
+            "nodes": [
+                {"name": "model", "children": [1], "translation": [10.0, 0.0, 0.0]},
+                {"name": "static_0_0", "mesh": 0, "rotation": [0.0, 1.0, 0.0, 0.0], "scale": [2.0, 2.0, 2.0]},
+                {"name": "locator"}
+            ],
+            "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+            "accessors": [{"min": [-1.0, 0.0, 0.0], "max": [1.0, 1.0, 3.0]}]
+        });
+        let b = document_bounds(&doc).unwrap();
+        // Doubled, turned about Y (z to -z), moved 10 along x.
+        assert!(b.min.abs_diff_eq(Vec3::new(8.0, 0.0, -6.0), 1e-5) && b.max.abs_diff_eq(Vec3::new(12.0, 2.0, 0.0), 1e-5), "{b:?}");
+        assert_eq!(document_bounds(&serde_json::json!({"nodes": [{"name": "locator"}]})), None);
+    }
+
+    #[test]
+    fn a_cell_reaches_as_far_as_its_placements_models() {
+        // g0003_tribe_01_hub: the whole ground is one placement, its origin's
+        // cell at the north end of the map.
+        let manifest: MapManifest = serde_json::from_str(r#"{
+            "map": "m", "center": [0, 0, 0], "extents": [1, 1, 1], "models": ["village_ground_uniqe"],
+            "instances": [{"m": 0, "p": [-22, 4, -38], "r": [0, 1, 0, 0], "s": [1, 1, 1]}]}"#).unwrap();
+        let mut map = CurrentMap::new("m".into(), Handle::default());
+        let key = cell_of(game_to_bevy(manifest.instances[0].p));
+        map.by_cell.insert(key, vec![0]);
+        // Where one arrives from g0002_jungle_01_dun, in the south.
+        let arrival = Vec3::new(-20.4, -4.0, 74.4);
+        assert!(map.distance(key, arrival) > UNLOAD_DISTANCE, "by its square, the ground is gone there");
+        map.measured = Some(vec![None]);
+        map.measure(&manifest, key);
+        assert!(map.distance(key, arrival) > UNLOAD_DISTANCE, "an unknown model keeps the square");
+        map.measured = Some(vec![Some(ModelBounds { min: Vec3::new(-60.1, -50.7, -132.8), max: Vec3::new(86.4, 20.7, 26.3) })]);
+        map.measure(&manifest, key);
+        assert_eq!(map.distance(key, arrival), 0.0, "the ground lies under the player");
+        assert!(map.distance(key, Vec3::new(60.0, 0.0, 0.0)) > 20.0, "and ends at its edge (x 38)");
     }
 }
