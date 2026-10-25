@@ -938,6 +938,26 @@ impl Body for ResetTalentCategory {
     }
 }
 
+/// Talents::UnlockSkillTalentPreselectionCommand (284), client -> server: buy the
+/// next Skill tree preset (UnlockPreselectionCost), u32 the presets bought then
+/// (those bought so far + 1). DSOR_Server does not handle it (it always sends
+/// UnlockSkillTalentPreselectionInfo 0).
+/// EVIDENCE: release261 SkillTalentsWidget "SkillPresetLock" (data/diagnostics
+///   skilltalents-widget.annotated.txt).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct UnlockSkillTalentPreselection {
+    pub unlocked: u32,
+}
+
+impl Body for UnlockSkillTalentPreselection {
+    fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self { unlocked: r.u32()? })
+    }
+    fn encode(&self, w: &mut BitWriter) {
+        w.u32(self.unlocked);
+    }
+}
+
 /// Talents::TalentCategoryPointsInfoCommand (282), actor-scoped: the progression
 /// behind the talent points. u8 category (0xFF: all of them), then four u32 in the
 /// wire order skill, fame, wisdom, group.
@@ -1008,54 +1028,65 @@ impl Body for DeselectTalent {
     }
 }
 
-/// One selected talent: rank (u16), a u16 (production field_04, meaning UNKNOWN),
-/// the talent's resource id.
+/// One selected talent: its rank (u16), its bonus ranks (u16: equipment's
+/// TalentLevelBonus; the client keeps its own and ignores this), its resource id.
+/// EVIDENCE: release261 0x140a25254 (diagnostics talents-manager.annotated.txt).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TalentEntry {
     pub rank: u16,
-    pub unknown_u16_04: u16,
+    pub bonus: u16,
     pub id: String,
 }
 
-/// One talent category of a full selection: its preset, then skills and talents.
+/// One tree of a selection: its active preset, the talents picked in it, and
+/// (Knowledge, Group) each branch's ranks together, as {ranks, 0, branch id}.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TalentCategory {
     pub preset: u8,
-    pub skills: Vec<TalentEntry>,
-    pub talents: Vec<TalentEntry>,
+    pub picks: Vec<TalentEntry>,
+    pub branches: Vec<TalentEntry>,
 }
 
-/// TalentSelectionInfoCommand (release261: 283): the selected talents. Context 3
-/// (a skill refresh): u8 preset, u8 count, entries. Context 0 (everything): four
-/// categories, each u8 preset, u8-counted skill entries, u8-counted talent entries.
-/// Other contexts are refused (production does not model them either).
-/// SOURCE: dso-server-production protocol/player_init_protocol.py:875-950 (the 2018
-///   entry was u8 rank + string).
+/// TalentSelectionInfoCommand (release261: 283): the talents picked in the
+/// trees' active presets. u8 context: 0 every tree (Skill, Knowledge, Group,
+/// Fame, each u8 preset, u8-counted picks, u8-counted branch counters); 1 to 4
+/// one tree (1 Fame, 2 Knowledge, 3 Skill, 4 Group: u8 preset, u8-counted picks,
+/// and for Knowledge and Group u8-counted branch counters). The lists replace
+/// the tree's and the preset becomes its active one.
+/// SOURCE: dso-server-production protocol/player_init_protocol.py:875-950 (the
+///   server sends contexts 0 and 3); release261 decode 0x140a25254 (contexts 1,
+///   2 and 4).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TalentSelectionInfo {
     pub context: u8,
-    /// Context 3.
+    /// Contexts 1 to 4: the tree's preset, picks and branch counters.
     pub preset: u8,
-    pub talents: Vec<TalentEntry>,
-    /// Context 0.
+    pub picks: Vec<TalentEntry>,
+    pub branches: Vec<TalentEntry>,
+    /// Context 0: the four trees.
     pub categories: Vec<TalentCategory>,
 }
 
 impl TalentSelectionInfo {
     pub const SKILL_CONTEXT: u8 = 3;
     pub const ALL_CONTEXT: u8 = 0;
+
+    /// The tree (0 Skill, 1 Knowledge, 2 Group, 3 Fame) a one-tree context is.
+    pub fn tree(context: u8) -> Option<u8> {
+        match context { 1 => Some(3), 2 => Some(1), 3 => Some(0), 4 => Some(2), _ => None }
+    }
 }
 
 fn talent_entries(r: &mut BitReader<'_>) -> Result<Vec<TalentEntry>, DecodeError> {
     let n = byte_count(r)?;
-    list(r, n, |r| Ok(TalentEntry { rank: r.u16()?, unknown_u16_04: r.u16()?, id: r.string()? }))
+    list(r, n, |r| Ok(TalentEntry { rank: r.u16()?, bonus: r.u16()?, id: r.string()? }))
 }
 
 fn write_talent_entries(w: &mut BitWriter, entries: &[TalentEntry]) {
     w.u8(entries.len() as u8);
     for e in entries {
         w.u16(e.rank);
-        w.u16(e.unknown_u16_04);
+        w.u16(e.bonus);
         w.string(&e.id);
     }
 }
@@ -1063,21 +1094,23 @@ fn write_talent_entries(w: &mut BitWriter, entries: &[TalentEntry]) {
 impl Body for TalentSelectionInfo {
     fn decode(r: &mut BitReader<'_>) -> Result<Self, DecodeError> {
         let context = r.u8()?;
-        match context {
-            Self::SKILL_CONTEXT => {
-                let preset = r.u8()?;
-                Ok(Self { context, preset, talents: talent_entries(r)?, categories: Vec::new() })
-            }
-            Self::ALL_CONTEXT => {
+        match (context, Self::tree(context)) {
+            (Self::ALL_CONTEXT, _) => {
                 let mut categories = Vec::with_capacity(4);
                 for _ in 0..4 {
                     let preset = r.u8()?;
-                    let skills = talent_entries(r)?;
-                    categories.push(TalentCategory { preset, skills, talents: talent_entries(r)? });
+                    let picks = talent_entries(r)?;
+                    categories.push(TalentCategory { preset, picks, branches: talent_entries(r)? });
                 }
                 Ok(Self { context, categories, ..Default::default() })
             }
-            other => Err(DecodeError::Invalid { what: "talent selection context (0 and 3 known)", value: other as i64 }),
+            (_, Some(tree)) => {
+                let preset = r.u8()?;
+                let picks = talent_entries(r)?;
+                let branches = if matches!(tree, 1 | 2) { talent_entries(r)? } else { Vec::new() };
+                Ok(Self { context, preset, picks, branches, categories: Vec::new() })
+            }
+            (other, None) => Err(DecodeError::Invalid { what: "talent selection context (0 to 4)", value: other as i64 }),
         }
     }
     fn encode(&self, w: &mut BitWriter) {
@@ -1086,12 +1119,13 @@ impl Body for TalentSelectionInfo {
             for i in 0..4 {
                 let c = self.categories.get(i).cloned().unwrap_or_default();
                 w.u8(c.preset);
-                write_talent_entries(w, &c.skills);
-                write_talent_entries(w, &c.talents);
+                write_talent_entries(w, &c.picks);
+                write_talent_entries(w, &c.branches);
             }
         } else {
             w.u8(self.preset);
-            write_talent_entries(w, &self.talents);
+            write_talent_entries(w, &self.picks);
+            if matches!(Self::tree(self.context), Some(1 | 2)) { write_talent_entries(w, &self.branches); }
         }
     }
 }

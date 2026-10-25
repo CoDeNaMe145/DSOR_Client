@@ -273,6 +273,15 @@ scene instances, first poses, and the player's complete outfit. Failed optional
 assets settle with their existing asset diagnostics; a failed player appearance
 keeps the loading error visible.
 
+Under the bar, a line says what the loading is doing in plain words ("Loading
+the world: 312 of 488 models", "Dressing your character", "Preparing
+graphics"...), with the seconds taken once past 5. A light crosses the bar while
+work goes on. When neither the percent nor that step moves for 15 s, a note says
+the game is still working (shader preparation has its own). After 45 s it offers
+**Enter anyway**, once the map and the player are in, and **Close client**. Both
+are logged (`loading screen: no progress for ...`, `entered by the player
+...`) with the readiness stage.
+
 The selected class preloads its skill and status-effect models, hit effects,
 and the selected skin variants and spawn/hit/death effects of its summons.
 These requests run four at a time after initial geometry/props settle, and

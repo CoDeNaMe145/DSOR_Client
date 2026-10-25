@@ -229,6 +229,8 @@ pub struct Net {
     /// the points (282).
     pub talents: Option<dsor_proto::commands::inventory::TalentSelectionInfo>,
     pub talent_points: Option<dsor_proto::commands::inventory::TalentCategoryPointsInfo>,
+    /// The Skill tree presets bought beyond the free ones (UnlockSkillTalentPreselectionInfo 285).
+    pub skill_presets_unlocked: Option<u32>,
     /// The collector's album (StickerbookInfo 303, StickerbookItemInfo 304): the
     /// entries owned, by resource id (state 2 owned, 3 a favourite).
     pub stickerbook: HashMap<String, dsor_proto::commands::systems::StickerbookEntry>,
@@ -964,6 +966,7 @@ pub fn start_offline(world: &mut World, class: u8, gender: u8) {
         glyphs: None,
         talents: None,
         talent_points: None,
+        skill_presets_unlocked: None,
         stickerbook: HashMap::new(),
         recipes: Vec::new(),
         event_progress: HashMap::new(),
@@ -1265,6 +1268,7 @@ pub(crate) fn start_session(world: &mut World, config: NetConfig) {
         glyphs: None,
         talents: None,
         talent_points: None,
+        skill_presets_unlocked: None,
         stickerbook: HashMap::new(),
         recipes: Vec::new(),
         event_progress: HashMap::new(),
@@ -1633,6 +1637,21 @@ fn actor_stream(command: &ServerCommand) -> bool {
         | ServerCommand::SustainedSkill(_) | ServerCommand::NewItem(_) | ServerCommand::DiscardItem(_))
 }
 
+/// A TalentSelectionInfo over the last one, kept as a full snapshot (context
+/// 0): a snapshot replaces it; a one-tree context (3 the Skill tree, as
+/// DSOR_Server sends after a pick; 1 Fame, 2 Knowledge, 4 Group) replaces that
+/// tree's preset and lists.
+pub(crate) fn merge_talents(old: Option<dsor_proto::commands::inventory::TalentSelectionInfo>,
+    new: dsor_proto::commands::inventory::TalentSelectionInfo) -> dsor_proto::commands::inventory::TalentSelectionInfo {
+    use dsor_proto::commands::inventory::{TalentCategory, TalentSelectionInfo};
+    let Some(tree) = TalentSelectionInfo::tree(new.context) else { return new };
+    let mut merged = old.filter(|o| o.context == TalentSelectionInfo::ALL_CONTEXT)
+        .unwrap_or_else(|| TalentSelectionInfo { context: TalentSelectionInfo::ALL_CONTEXT, ..Default::default() });
+    merged.categories.resize_with(4, TalentCategory::default);
+    merged.categories[tree as usize] = TalentCategory { preset: new.preset, picks: new.picks, branches: new.branches };
+    merged
+}
+
 pub(crate) fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u32>) {
     if !actor_stream(&command) { net.touch_ui(); }
     net.props.receive(&command);
@@ -1852,7 +1871,9 @@ pub(crate) fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u3
             net.wallet = Some(c.wallet);
             net.glyphs = Some(c.unknown_u64_5);
         }
-        ServerCommand::TalentSelectionInfo(t) => net.talents = Some(t),
+        // Context 3 refreshes the Skill tree's active preset alone: keep the
+        // other trees of the last full snapshot (context 0).
+        ServerCommand::TalentSelectionInfo(t) => net.talents = Some(merge_talents(net.talents.take(), t)),
         // The systems' answers (systems.rs): kept for the windows, the notable ones
         // told in the chat.
         ServerCommand::StickerbookInfo(s) => {
@@ -1926,7 +1947,12 @@ pub(crate) fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u3
         ServerCommand::HonorRankingPage(p) => net.ranking = Some(p),
         ServerCommand::OverallRankingPage(p) => net.overall_ranking = Some(p),
         ServerCommand::LocalRanking(l) => net.local_rank = Some(l),
+        // The four values are always every tree's: the category byte only says
+        // which one moved (0xFF: all, the login's).
+        // EVIDENCE: release261 decode 0x140a264b4, handler 0x14035b4dc (diagnostics
+        //   talents-manager.annotated.txt).
         ServerCommand::TalentCategoryPointsInfo(p) => net.talent_points = Some(p),
+        ServerCommand::UnlockSkillTalentPreselectionInfo(u) => net.skill_presets_unlocked = Some(u.unlocked),
         ServerCommand::PlayerLogoutInfo(l) => net.social_notes.push(if l.seconds > 0 {
             format!("Leaving for the character screen in {} seconds; a hit cancels it.", l.seconds)
         } else {

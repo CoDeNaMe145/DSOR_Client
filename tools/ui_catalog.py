@@ -38,6 +38,9 @@ def spell_grid(widgets, db, textures, loca):
     l, t, r, b = source["rect"]
     width, height = r-l, b-t
     grid = source["id"].rsplit("/", 1)[0]
+    # A cell's centre is the grid's corner + (Column + 0.5, Row + 0.5) cells,
+    # TemplateSkill's size (release261 SkillTalentsWidget 0x14036c93c).
+    gl, gt = next(w for w in widgets if w["id"] == grid)["rect"][:2]
     rows = db.execute('''SELECT t.Id, t.CharClass, t.Icon, t.SkillTemplateId,
         t.UnlockLevel, t.Category, u.Column, u.Row, s.rowid, s.UnlockLevel,
         s.Name, s.IconBrush FROM _Template_SkillTalent t
@@ -52,8 +55,9 @@ def spell_grid(widgets, db, textures, loca):
         active = category == "Skill" and wire is not None
         template = source if active else talent
         target = f"{grid}/Class{class_id}/{'Spell'+str(wire-1) if active else 'Talent'+tid}"
-        dx = l + column*width - template["rect"][0]
-        dy = t + (row-1)*height - template["rect"][1]
+        tl, tt, tr, tb = template["rect"]
+        dx = gl + (column + 0.5)*width - (tl + tr)/2
+        dy = gt + (row + 0.5)*height - (tt + tb)/2
         copies = translated_subtree(widgets, template["id"], target, dx, dy)
         brush = skill_icon if active else icon
         if not brush or not textures.get(brush):

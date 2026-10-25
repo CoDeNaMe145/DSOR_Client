@@ -185,7 +185,9 @@ struct Split { id:u32, revision:u64, target:Place, total:u32 }
 #[derive(Resource,Default)]
 pub struct Interaction { drag:Option<DragItem>, split:Option<Split>, pending:Option<(u64,f64)>,
     /// The item DESTROY_DIALOG asks about.
-    destroy:Option<u32> }
+    destroy:Option<u32>,
+    /// The talent the split dialog's talent mode was opened for (its amount set).
+    talent:Option<String> }
 impl Interaction {
     pub(super) fn cancel_drag(&mut self)->bool { self.drag.take().is_some() }
     /// The item being dragged, once the drag is under way.
@@ -211,14 +213,18 @@ const DELETE_ITEM: &str = "Canvas/DialogCenter/Content/DeleteItem";
 /// gui.window.general_confirmText.
 const DESTROY_QUESTION: &str = "Do you really wish to destroy this item?";
 
-pub(in crate::ui) fn prepare_destroy(layout:&Layout)->Layout {
+/// The dialog with the two layers the client asks with, one shown at a time
+/// (section: the page consent::PAGES): DeleteItem, an item to destroy, and
+/// DefaultDoNotShowAgain, a large Andermant purchase (consent). Their
+/// questions are drawn at run time (destroy_dialog, consent::sync).
+pub(in crate::ui) fn prepare_confirm(layout:&Layout)->Layout {
     let mut out=layout.clone();
     // DialogBottom is the same dialog placed lower.
     out.widgets.retain(|w|!w.id.starts_with("Canvas/DialogBottom"));
     for w in &mut out.widgets {
         let Some(rest)=w.id.strip_prefix("Canvas/DialogCenter/Content/") else{continue};
-        // The question and the item are drawn by destroy_dialog.
-        w.hidden=(rest!="DeleteItem" && !rest.starts_with("DeleteItem/")) || rest.ends_with("/Question");
+        let layer=["DeleteItem","DefaultDoNotShowAgain"].iter().any(|l|rest==*l || rest.starts_with(&format!("{l}/")));
+        w.hidden=!layer || rest.ends_with("/Question");
     }
     out
 }
@@ -233,7 +239,8 @@ fn destroyable(state:&InventoryState, id:u32)->bool {
 fn ask_destroy(ui:&mut Interaction, windows:&mut Windows, id:u32)->bool {
     let mut found=false;
     for (_,name,mut c,mut v,_) in windows.iter_mut() { if name.0==DESTROY_DIALOG {
-        c.hovered=None;c.pressed=None;*v=Visibility::Inherited;ui.destroy=Some(id);found=true;
+        c.hovered=None;c.pressed=None;c.set_page(super::consent::PAGES,super::consent::DESTROY);
+        *v=Visibility::Inherited;ui.destroy=Some(id);found=true;
     }}
     found
 }
@@ -380,13 +387,34 @@ fn test_drop_slots(offline:bool)->u64 {
     *SLOTS.get_or_init(||std::env::var("DSOR_TEST_DROP_SLOTS").map_or(0,|v|v.split(',').filter_map(|s|s.trim().parse::<u32>().ok()).filter(|s|*s<64).fold(0,|bits,s|bits|1<<s)))
 }
 
+/// The sell cursor (crate::ui::cursor::TradeHover) over an item a right click
+/// sells to the open trader (input): carried, movable and identified, not a
+/// travel item, no desk open. Looks nothing up while no trader that buys is.
+#[allow(clippy::type_complexity)]
+pub fn sell_cursor(windows:Query<(&Window2018,&WindowControls,&Visibility)>,net:Option<NonSend<crate::network::net::Net>>,
+    shop:Option<Res<crate::ui::dialogue::Presentation>>,
+    (quest_data,quest_ui):(Option<Res<Assets<crate::gameplay::quests::QuestCatalog>>>,Option<Res<crate::gameplay::quests::QuestUi>>),
+    mut hover:ResMut<crate::ui::cursor::TradeHover>) {
+    let selling=shop.as_ref().and_then(|p|p.open_shop()).is_some_and(|(_,can_sell)|can_sell);
+    let sell=selling && net.as_ref().is_some_and(|net| {
+        let shown=||windows.iter().filter(|(_,_,v)|**v!=Visibility::Hidden);
+        let desk=shown().any(|(n,_,_)|super::systems::DESKS.iter().any(|(d,_)|*d==n.0.as_str()));
+        let item=shown().filter_map(|(n,c,_)|c.hovered.and_then(|b|item_cell(&n.0,&c.buttons[b].action)).and_then(|cell|place(cell,c))).next()
+            .and_then(|p|net.inventory.at(p));
+        let travel=|template:&str|quest_data.as_ref().zip(quest_ui.as_ref()).and_then(|(d,u)|d.get(&u.catalog)).is_some_and(|q|q.travel_items.contains_key(template));
+        !desk && item.is_some_and(|i|!i.flag_0 && net.inventory.movable(i.id)
+            && matches!(net.inventory.location(i.id),Some(Place::Bag(_)|Place::Extra(_))) && !travel(&i.template))
+    });
+    if hover.sell!=sell {hover.sell=sell;}
+}
+
 /// What a right click looks up: the open shop (selling) and the travel items.
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct Lookups<'w> {
     shop: Option<Res<'w, crate::ui::dialogue::Presentation>>,
     quest_data: Option<Res<'w, Assets<crate::gameplay::quests::QuestCatalog>>>,
     quest_ui: Option<Res<'w, crate::gameplay::quests::QuestUi>>,
-    /// The NPC desks' picks (super::systems::pick).
+    /// The NPC desks' picks (super::systems::pick); the split dialog's talent mode.
     desks: Option<ResMut<'w, super::systems::State>>,
 }
 
@@ -395,7 +423,7 @@ pub fn input(mut ui:ResMut<Interaction>,mut pointer:ResMut<Pointer>,mut windows:
     primary:Query<&Window,With<PrimaryWindow>>,mouse:Res<ButtonInput<MouseButton>>,keys:Res<ButtonInput<KeyCode>>,
     net:Option<NonSendMut<crate::network::net::Net>>,data:Res<Data>,catalogs:Res<Assets<Catalog>>,time:Res<Time<Real>>,
     mut last_click:Local<Option<(u32,f64)>>,mut trade:ResMut<super::trade::TradeUi>,capture:Res<crate::ui::input::UiInput>,mut tested:Local<bool>,
-    mut lookups:Lookups) {
+    mut lookups:Lookups,mut audio:Option<ResMut<crate::audio::AudioRequests>>) {
     let Some(mut net)=net else{return}; let Some(catalog)=catalogs.get(&data.catalog) else{return};
     let Ok(window)=primary.single() else{return};
     let point=window.cursor_position().map(|p|p*(BASE_H/window.height().max(1.0)));
@@ -403,6 +431,29 @@ pub fn input(mut ui:ResMut<Interaction>,mut pointer:ResMut<Pointer>,mut windows:
     if ui.pending.is_some_and(|(r,t)|r!=net.inventory.revision || time.elapsed_secs_f64()-t>2.0) {ui.pending=None;}
     let busy=ui.pending.is_some() || net.offline || !net.inventory.ready;
     let dialog=windows.iter().find(|(_,n,_,v,_)|n.0=="unstackwindow" && **v!=Visibility::Hidden).map(|(e,_,_,_,_)|e);
+    // Its talent mode (systems::talents, a right click on a talent): how many
+    // ranks, 1 to the most, starting at the most; Level Up buys them.
+    // EVIDENCE: release261 UI::StackSplitWidget::SetupTalentMode 0x140540834.
+    if let (Some(e),Some((talent,most)))=(dialog,lookups.desks.as_ref().and_then(|t|t.talent_split.clone())) {
+        ui.split=None;
+        let (_,_,mut c,_,tf)=windows.get_mut(e).unwrap();
+        if ui.talent.as_ref()!=Some(&talent) {set_amount(&mut c,most);ui.talent=Some(talent.clone());}
+        let change=pointer.item_command.take();
+        if let Some(delta)=change.filter(|d|*d!=0) {let n=(amount(&c).unwrap_or(most) as i64+delta as i64).clamp(1,most as i64) as u32;set_amount(&mut c,n);}
+        if window.focused && mouse.pressed(MouseButton::Left) {
+            if let (Some(b),Some(p))=(c.pressed.map(|i|&c.buttons[i]),point) {if b.action==Action::SplitSlider {
+                let x=p.x-window_offset(&tf).x-b.k*(BASE_H*window.width()/window.height().max(1.0)-BASE_W);
+                let f=((x-b.rect[0])/(b.rect[2]-b.rect[0])).clamp(0.0,1.0);
+                set_amount(&mut c,1+(f*most.saturating_sub(1) as f32).round() as u32);
+            }}
+        }
+        if change==Some(0) || keys.just_pressed(KeyCode::Enter) {
+            let n=amount(&c).unwrap_or(most).clamp(1,most);
+            pointer.system.push(super::systems::Request::TalentLevels(talent,n));pointer.focus=None;
+        }
+        return;
+    }
+    ui.talent=None;
     if let Some(e)=dialog {
         let valid=ui.split.as_ref().is_some_and(|s|s.revision==net.inventory.revision && net.inventory.items.contains_key(&s.id));
         if !valid {windows.get_mut(e).unwrap().3.set_if_neq(Visibility::Hidden); ui.split=None;return;}
@@ -434,7 +485,8 @@ pub fn input(mut ui:ResMut<Interaction>,mut pointer:ResMut<Pointer>,mut windows:
     }
     // Confirmed, the server destroys the item (InventoryCommand operation 0) and
     // sends the inventory back: nothing is removed here before that.
-    let asking=windows.iter().find(|(_,n,_,v,_)|n.0==DESTROY_DIALOG && **v!=Visibility::Hidden).map(|(e,_,_,_,_)|e);
+    // Its page: an item to destroy (the other, a purchase, is consent's).
+    let asking=windows.iter().find(|(_,n,c,v,_)|n.0==DESTROY_DIALOG && **v!=Visibility::Hidden && c.page(super::consent::PAGES)==super::consent::DESTROY).map(|(e,_,_,_,_)|e);
     if let Some(e)=asking {
         let answer=pointer.destroy.take();
         let item=ui.destroy.filter(|id|destroyable(&net.inventory,*id));
@@ -484,6 +536,9 @@ pub fn input(mut ui:ResMut<Interaction>,mut pointer:ResMut<Pointer>,mut windows:
                     if net.inventory.movable(id) && matches!(net.inventory.location(id),Some(Place::Bag(_)|Place::Extra(_))) {
                         net.send(&dsor_proto::commands::ClientCommand::Transaction(dsor_proto::commands::inventory::Transaction::sell(&shop,id)));
                         ui.pending=Some((net.inventory.revision,time.elapsed_secs_f64()));
+                        // EVIDENCE: release261 ClientTradingManager::SellItem (0x14027F3E8)
+                        //   plays these once it has queued the sale.
+                        if let Some(audio)=audio.as_mut() {audio.ui("ui/trader/ui_trader_sell");audio.ui("ui/general/ui_click");}
                     }
                 } else if let Some(cmd)=use_consumable(&net.inventory,catalog,id) {
                     if trading { trade.add.push(id); }
@@ -849,21 +904,23 @@ mod tests {
         assert_eq!(*app.world().get::<Visibility>(skills).unwrap(), Visibility::Inherited, "typing must consume shortcuts");
 
         let mut values = app.world_mut().query::<(&Value, &Text2d)>();
-        for (kind, expected, count) in [(ValueKind::WisdomLevel, "0", 2), (ValueKind::WisdomProgress, "0%", 1), (ValueKind::WisdomPoints, "Available Points: 0", 1)] {
+        // The HUD's wisdom bar (the talents window's Wisdom tab is prepared from
+        // its view: controls::systems::talents).
+        for (kind, expected, count) in [(ValueKind::WisdomLevel, "0", 1), (ValueKind::WisdomProgress, "0%", 1)] {
             let actual: Vec<_> = values.iter(app.world()).filter(|(v, _)| v.0 == kind).map(|(_, t)| t.0.as_str()).collect();
             assert_eq!(actual, vec![expected; count]);
         }
         let mut gauges = app.world_mut().query::<(&Fill, &MeshMaterial2d<UiMaterial>)>();
         let wisdom: Vec<_> = gauges.iter(app.world()).filter(|(f, _)| f.which == Gauge::Wisdom).collect();
-        assert!(wisdom.len() >= 2, "both the HUD and talents wisdom bars must be dynamic");
+        assert!(!wisdom.is_empty(), "the HUD's wisdom bar must be dynamic");
         for (_, handle) in wisdom {
             let clip = app.world().resource::<Assets<UiMaterial>>().get(&handle.0).unwrap().clip;
             assert_eq!(clip.x, clip.z, "zero wisdom must have an empty progress bar");
         }
         // Late-arriving layouts must receive defaults without a stats update.
-        let late = app.world_mut().spawn((Value(ValueKind::WisdomPoints), Text2d::new("Available Points: 19"))).id();
+        let late = app.world_mut().spawn((Value(ValueKind::WisdomLevel), Text2d::new("19"))).id();
         app.update();
-        assert_eq!(app.world().get::<Text2d>(late).unwrap().0, "Available Points: 0");
+        assert_eq!(app.world().get::<Text2d>(late).unwrap().0, "0");
     }
 
     #[test]
@@ -1038,7 +1095,7 @@ mod tests {
         w.rect = [100.0, 200.0, 170.0, 270.0];
         // Its corners and a vertex of its line (15 % inside), as the layout's.
         w.art = Some(Art { tex: Some("textures/ui/deco_elemente.png".into()), pos: vec![100.0, 200.0, 170.0, 270.0, 110.5, 210.5],
-            uv: vec![0.9; 6], color: vec![1.0; 12], idx: vec![0, 1, 2] });
+            uv: vec![0.9; 6], color: vec![1.0; 12], idx: vec![0, 1, 2], saturation: 1.0 });
         let (mesh, tex) = drop_highlight(&layout).unwrap();
         let Some(bevy::mesh::VertexAttributeValues::Float32x3(pos)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else { panic!() };
         assert_eq!(pos, &vec![[0.0, 0.0, 0.0], [1.0, -1.0, 0.0], [0.15, -0.15, 0.0]]);

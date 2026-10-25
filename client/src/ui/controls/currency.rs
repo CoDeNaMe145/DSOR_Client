@@ -87,12 +87,16 @@ pub(in crate::ui) fn clamped(mut value: u64, digits: u32) -> String {
 }
 
 /// What the bar and the bag count: the wallet (Andermant, gold in copper,
-/// honour, draken), the Glyphs of Power and the keyed game currencies.
+/// honour, the legacy balance, draken), the Glyphs of Power and the keyed game
+/// currencies.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(in crate::ui) struct Wallet {
     pub andermant: u64,
     pub copper: u64,
     pub honor: u64,
+    /// CurrencyChanged's fourth balance, what shops' PriceUC is paid in
+    /// (DSOR_Server commerce_protocol.debit_currency: legacy_progression).
+    pub legacy: u64,
     pub draken: u64,
     pub glyphs: u64,
     pub keyed: HashMap<String, u64>,
@@ -101,7 +105,7 @@ pub(in crate::ui) struct Wallet {
 impl Wallet {
     pub(in crate::ui) fn of(net: &Net) -> Self {
         let w = net.wallet.unwrap_or_default();
-        Self { andermant: w[0], copper: w[1], honor: w[2], draken: w[4], glyphs: net.glyphs.unwrap_or(0), keyed: net.game_currencies.clone() }
+        Self { andermant: w[0], copper: w[1], honor: w[2], legacy: w[3], draken: w[4], glyphs: net.glyphs.unwrap_or(0), keyed: net.game_currencies.clone() }
     }
 
     /// A currency of the bag by its id: 0 for one the server never sent.
@@ -432,7 +436,7 @@ mod tests {
         }
         let net = world.non_send::<Net>();
         let state = super::super::systems::State::default();
-        let sources = super::super::systems::Sources { net: &net, catalog: &catalog, items: None, names: None, state: &state, class: None };
+        let sources = super::super::systems::Sources { net: &net, catalog: &catalog, items: None, names: None, state: &state, class: None, talents: None, bonuses: None };
         let bag = bag(&sources);
         assert_eq!(bag.rows.iter().map(|r| (r.id.as_str(), r.amount)).collect::<Vec<_>>(),
             [(GLYPHS, 710_712_427), ("money_cc", 0), (HONOR, 870), ("materi_fragment_01", 15_931)]);

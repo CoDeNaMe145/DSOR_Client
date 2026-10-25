@@ -177,15 +177,6 @@ fn edited_bar(slots: &[Slot], drop: &DropSpell) -> Option<Vec<Slot>> {
 
 pub(in crate::ui) fn apply_drop(mut pointer: ResMut<Pointer>, net: Option<NonSendMut<crate::network::net::Net>>) {
     let Some(mut net) = net else { return };
-    // A talent card buys one rank; a preset button switches the category's preset
-    // (DSOR_Server services/talents.py answers with the effects and the selection,
-    // or a snapshot when it refuses).
-    if let Some(talent) = pointer.talent.take() {
-        if !net.offline { net.send(&dsor_proto::commands::ClientCommand::SelectTalent(dsor_proto::commands::inventory::SelectTalent { talent, ranks: 1 })); }
-    }
-    if let Some((preselection, category)) = pointer.preset.take() {
-        if !net.offline { net.send(&dsor_proto::commands::ClientCommand::TalentPreselection(dsor_proto::commands::inventory::TalentPreselection { preselection, category })); }
-    }
     let Some(drop) = pointer.spell_drop.take() else { return };
     if drop.source.is_none() && !net.offline && !drop.spell.wire.is_some_and(|wire|
         net.skill_book.as_ref().is_some_and(|b| b.entries.iter().any(|e| e.skill == wire && e.owned && !e.unknown_flag_1))) { return; }

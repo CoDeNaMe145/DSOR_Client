@@ -1,6 +1,13 @@
 //! NPC shops use the authored trading screen and the current server snapshot.
 use super::*;
+use controls::currency::{self, Wallet};
 use controls::items;
+
+/// _Globals LargeRCExpensesNotificationThreshold (static.db4: 20000): from this
+/// Andermant price on, a purchase asks for consent first (controls::consent).
+/// EVIDENCE: release261 UI::TradingWidget::BuyItemClick (0x14055C418) compares
+///   the offer's Andermant price with TemplateManager +0x1C3C.
+pub(super) const LARGE_ANDERMANT: u32 = 20_000;
 
 const ROOT: &str = "Canvas/Label_blur/Label_texture";
 const LIST: &str = "Canvas/Label_blur/Label_texture/ListBackground/List";
@@ -11,6 +18,10 @@ pub(super) struct Catalog {
     categories: HashMap<u16, Category>,
     offers: HashMap<String, OfferLook>,
     currencies: HashMap<String, String>,
+    /// What a shop's PriceIC is paid in: its _Template_ItemCurrency.CurrencyItem
+    /// (tools/trading_catalog.py).
+    #[serde(default)]
+    currency_items: HashMap<String, String>,
     glyph: String,
 }
 #[derive(Deserialize, Clone, PartialEq, Eq)]
@@ -25,7 +36,9 @@ impl Price {
     fn width(&self) -> f32 { 22.0 + self.amount.to_string().len() as f32 * 6.0 }
 }
 #[derive(Clone, PartialEq, Eq)]
-pub(super) struct MerchantItem { name: String, icon: String, background: String, frame: String, amount: u32, prices: Vec<Price>, action: Option<Action> }
+pub(super) struct MerchantItem { name: String, icon: String, background: String, frame: String, amount: u32, prices: Vec<Price>, action: Option<Action>,
+    /// Whether the wallet pays it (affordable): its item greyed and no order.
+    affordable: bool }
 #[derive(Clone, PartialEq, Eq)]
 pub(super) struct MerchantView {
     pub items: Vec<MerchantItem>,
@@ -48,8 +61,8 @@ impl MerchantView {
         }
         if self.page > 0 { choices.push(Choice::new("Previous page", "talk", Action::Previous)); }
         if self.page + 1 < self.pages { choices.push(Choice::new("Next page", "talk", Action::Next)); }
-        // Each card is a choice of its own: a click buys the offer or buys the
-        // stack back; the hover caption is the item's name.
+        // Each card is a choice of its own: a right click on its item buys the
+        // offer or buys the stack back (prepare).
         for item in &self.items {
             if let Some(action) = &item.action { choices.push(Choice::new(&item.name, "shop", action.clone())); }
         }
@@ -72,11 +85,42 @@ fn suitable(offer: &inventory::ShopOffer, items: Option<&items::Catalog>, catalo
         })
 }
 
-fn prices(offer: &inventory::ShopOffer, shop: &str, catalog: &Catalog) -> Vec<Price> {
-    // The release 261 server applies the strongest supplied veteran discount
-    // with round-to-nearest-even (protocol/commerce_protocol.py price_for_offer).
+/// One copy's price in a currency: the release 261 server applies the strongest
+/// supplied veteran discount with round-to-nearest-even
+/// (protocol/commerce_protocol.py price_for_offer).
+fn discounted(offer: &inventory::ShopOffer) -> impl Fn(u32) -> u32 {
     let discount = offer.veteran_discounts.iter().map(|(_, v)| *v as f64).filter(|v| v.is_finite()).fold(0.0, f64::max).clamp(0.0, 1.0);
-    let discounted = |v: u32| (v as f64 * (1.0 - discount)).round_ties_even() as u32;
+    move |v: u32| (v as f64 * (1.0 - discount)).round_ties_even() as u32
+}
+
+/// One copy's Andermant price.
+pub(super) fn andermant(offer: &inventory::ShopOffer) -> u32 { discounted(offer)(offer.price_rc) }
+
+/// Whether the wallet pays one copy, as the server debits it (DSOR_Server
+/// commerce_protocol.debit_purchase_currency): RC from the Andermant, VC the
+/// gold, GC the Glyphs of Power, EC the Draken, UC the legacy balance, Arena
+/// the Badges of Honor, IC the shop's currency (the Honor or the Draken after
+/// their own price). A shop the catalog has no currency for is left to the
+/// server.
+/// EVIDENCE: release261 ClientTradingManager::IsOfferPurchasable (0x14027C184)
+///   refuses an offer one of these does not cover, before any order.
+pub(super) fn affordable(offer: &inventory::ShopOffer, shop: &str, catalog: &Catalog, wallet: &Wallet) -> bool {
+    let price = discounted(offer);
+    let [rc, vc, gc, ec, uc, arena, ic] = [offer.price_rc, offer.price_vc, offer.price_gc, offer.price_ec, offer.price_uc,
+        offer.price_arena, offer.price_ic].map(|v| price(v) as u64);
+    let (mut honor, mut draken) = (arena, ec);
+    let items = ic == 0 || match catalog.currency_items.get(shop).map(String::as_str) {
+        None => true,
+        Some(currency::HONOR) => { honor += ic; true }
+        Some(currency::DRAKEN) => { draken += ic; true }
+        Some(item) => wallet.keyed.get(item).copied().unwrap_or(0) >= ic,
+    };
+    items && rc <= wallet.andermant && vc <= wallet.copper && gc <= wallet.glyphs && uc <= wallet.legacy
+        && honor <= wallet.honor && draken <= wallet.draken
+}
+
+fn prices(offer: &inventory::ShopOffer, shop: &str, catalog: &Catalog) -> Vec<Price> {
+    let discounted = discounted(offer);
     let mut out = Vec::new();
     let mut push = |amount, icon: &str, label: &str, texture: &str| {
         out.push(Price { amount, icon: icon.into(), label: label.into(), texture: texture.into() });
@@ -107,8 +151,11 @@ fn price_rows(prices: &[Price]) -> u32 {
     rows
 }
 
+/// The trader's selection on screen; `wallet` (None before the server sent it)
+/// marks the offers it does not pay.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn build(offers: Option<&inventory::Offer>, selection: &Selection, page: usize,
-    items: Option<&items::Catalog>, catalog: &Catalog, class: Option<u8>, level: Option<u32>) -> MerchantView {
+    items: Option<&items::Catalog>, catalog: &Catalog, class: Option<u8>, level: Option<u32>, wallet: Option<&Wallet>) -> MerchantView {
     let can_sell = offers.is_some_and(|o| o.can_sell);
     let buyback = selection.buyback && can_sell;
     let mut codes = Vec::new();
@@ -130,7 +177,7 @@ pub(super) fn build(offers: Option<&inventory::Offer>, selection: &Selection, pa
                 let (icon, background, frame) = items.map(|c| c.icon_parts(&item.template, Some(item))).unwrap_or_default();
                 cards.push(MerchantItem { name: def.map(|d| d.name.clone()).unwrap_or_else(|| readable(&item.template)),
                     icon: icon.unwrap_or_default().into(), background: background.unwrap_or_default().into(), frame: frame.unwrap_or_default().into(),
-                    amount: item.third, prices: vec![], action: Some(Action::Restore(item.id)) });
+                    amount: item.third, prices: vec![], action: Some(Action::Restore(item.id)), affordable: true });
             }
         } else {
             for offer in offers.offers.iter().flatten().filter(|o| Some(o.category) == category) {
@@ -155,7 +202,8 @@ pub(super) fn build(offers: Option<&inventory::Offer>, selection: &Selection, pa
                     else { Some(c.background.as_str()) }).or(background).unwrap_or_default().into();
                 let frame = config.map(|c| c.frame.as_str()).filter(|f| !f.is_empty()).or(frame).unwrap_or_default().into();
                 cards.push(MerchantItem { name: def.map(|d| d.name.clone()).unwrap_or_else(|| readable(&offer.item)), icon, background, frame,
-                    amount: offer.amount, prices: prices(offer, &offers.shop, catalog), action: Some(Action::Buy(offer.id.clone())) });
+                    amount: offer.amount, prices: prices(offer, &offers.shop, catalog), action: Some(Action::Buy(offer.id.clone())),
+                    affordable: wallet.is_none_or(|w| affordable(offer, &offers.shop, catalog, w)) });
             }
         }
     }
@@ -250,10 +298,6 @@ pub(super) fn prepare(source: &Layout, view: &View, merchant: &MerchantView, lay
         for widget in source.widgets.iter().filter(|w| w.id == ENTRY || w.id.starts_with(&format!("{ENTRY}/"))) {
             if ["/MoneyDisplay", "/FlagDiscount", "/LabelDiscount"].iter().any(|p| widget.id.contains(p)) { continue; }
             let mut w = clone_widget(widget, ENTRY, &replacement);
-            if widget.id == ENTRY {
-                // The authored card is a label; as a button its whole area orders.
-                if let Some(action) = &item.action { w.kind = "Button".into(); event(&mut w, view, action.clone()); }
-            }
             if widget.id == ENTRY && merchant.row_height > 64 {
                 map_widget(&mut w, |x| x, |y| stretch(y, 202.0, 223.38, (merchant.row_height - 64) as f32));
             }
@@ -266,12 +310,34 @@ pub(super) fn prepare(source: &Layout, view: &View, merchant: &MerchantView, lay
                     let mut layer = w.clone();
                     layer.id = format!("{replacement}/ItemSlot/{suffix}");
                     layer.text = None;
-                    layer.art = Some(image_art(layer.rect, texture.clone()));
+                    let mut art = image_art(layer.rect, texture.clone());
+                    // An offer the wallet does not pay: greyscale, as the
+                    // layouts' disabled states are (Art::saturation 0).
+                    if !item.affordable { art.saturation = 0.0; }
+                    layer.art = Some(art);
                     map_widget(&mut layer, |x| x + dx, |y| y + dy);
                     layout.widgets.push(layer);
                 }
                 w.art = None;
                 set_text(&mut w, &if item.amount > 1 { item.amount.to_string() } else { String::new() });
+                // The item is the original's Icon: a right click on it buys the
+                // offer (or the stack back) and the trader's cursor shows over it
+                // (controls::interact, crate::ui::cursor); a left click orders
+                // nothing. The rest of the card takes no clicks.
+                // EVIDENCE: release261 UI::TradingWidget::HandleEvent (0x14055FB8C):
+                //   right button (event +0x3C 0xB, +0x40 1) on an Icon ->
+                //   BuyItemClick (0x14055C418); the left button only names
+                //   buttons (Close, SwitchFilter, NextPage, ..., Premium).
+                //   UpdateMouseCursor (0x140565F3C): an Icon under the pointer
+                //   sets CursorManager mode 2 (mousecursor/buy).
+                if let Some(index) = item.action.as_ref().and_then(|a| view.options.iter().position(|c| c.action == *a)) {
+                    w.kind = "Button".into();
+                    w.event = format!("NpcOffer:{index}");
+                    // Greyed: no click, no buy cursor, so no order the server
+                    // would refuse (DEVIATION: the original takes the click and
+                    // names the missing currency, insufficientVCToBuy...).
+                    w.enabled = item.affordable;
+                }
             }
             map_widget(&mut w, |x| x + dx, |y| y + dy);
             layout.widgets.push(w);
@@ -340,18 +406,18 @@ mod tests {
         let mut shop = inventory::Offer { categories: vec![46, 4, 7, 4], ..default() };
         shop.offers = (0..25).map(|i| offer(&format!("gem{i}"), 4)).collect();
         shop.offers.extend([None, offer("misc", 46)]);
-        let first = build(Some(&shop), &Selection::default(), 0, None, &Catalog::default(), None, None);
+        let first = build(Some(&shop), &Selection::default(), 0, None, &Catalog::default(), None, None, None);
         assert_eq!(first.tabs.iter().map(|(id, _)| *id).collect::<Vec<_>>(), [46, 4, 7]);
         assert_eq!(first.items[0].name, "Misc");
         assert_eq!(first.items[0].action, Some(Action::Buy("misc".into())));
         let selection = Selection { category: Some(4), ..default() };
-        let last = build(Some(&shop), &selection, 99, None, &Catalog::default(), None, None);
+        let last = build(Some(&shop), &selection, 99, None, &Catalog::default(), None, None, None);
         assert_eq!((last.page, last.pages, last.items.len()), (2, 3, 1));
         assert_eq!(last.items[0].name, "Gem24");
-        let empty = build(Some(&shop), &Selection { category: Some(7), ..default() }, 0, None, &Catalog::default(), None, None);
+        let empty = build(Some(&shop), &Selection { category: Some(7), ..default() }, 0, None, &Catalog::default(), None, None, None);
         assert!(empty.items.is_empty());
         shop.categories.clear();
-        let fallback = build(Some(&shop), &selection, 0, None, &Catalog::default(), None, None);
+        let fallback = build(Some(&shop), &selection, 0, None, &Catalog::default(), None, None, None);
         assert_eq!(fallback.category, Some(4));
         assert_eq!(fallback.items.len(), 12);
     }
@@ -363,10 +429,10 @@ mod tests {
         let mut shop = inventory::Offer { offers: vec![offer("mage", 4), offer("high", 4), offer("all", 4)], ..default() };
         shop.offers[1].as_mut().unwrap().min_player_level = 50;
         let selection = Selection { usable: true, ..default() };
-        let result = build(Some(&shop), &selection, 0, None, &catalog, Some(3), Some(20));
+        let result = build(Some(&shop), &selection, 0, None, &catalog, Some(3), Some(20), None);
         assert_eq!(result.items.iter().map(|i| i.name.as_str()).collect::<Vec<_>>(), ["All"]);
         shop.offers[0].as_mut().unwrap().hide_not_suitable = true;
-        let result = build(Some(&shop), &Selection::default(), 0, None, &catalog, Some(3), Some(20));
+        let result = build(Some(&shop), &Selection::default(), 0, None, &catalog, Some(3), Some(20), None);
         assert_eq!(result.items.len(), 2);
         assert!(class_matches("mage;dwarf;", Some(3)));
     }
@@ -397,7 +463,7 @@ mod tests {
         assert!(shop.can_sell);
         assert_eq!(shop.categories, [4]);
         assert_eq!(shop.offers.len(), 1);
-        let result = build(Some(shop), &Selection { buyback: true, ..default() }, 0, None, &Catalog::default(), None, None);
+        let result = build(Some(shop), &Selection { buyback: true, ..default() }, 0, None, &Catalog::default(), None, None, None);
         assert!(result.buyback);
         assert_eq!(result.items[0].name, "Sold");
         assert_eq!(result.items[0].amount, 2);
@@ -405,6 +471,76 @@ mod tests {
         let mut choices = Vec::new();
         result.choices(&mut choices);
         assert!(choices.iter().any(|c| c.label == "Sold" && c.action == Action::Restore(91)));
+    }
+
+    #[test]
+    fn the_item_icon_takes_the_right_click_and_the_card_no_click() {
+        let (icon, name) = (format!("{ENTRY}/ItemSlot/Icon"), format!("{ENTRY}/Label_empty/ItemDescription"));
+        let source = controls::template::fixture::layout("tradingscreen", &[(ENTRY, "Label", false), (&icon, "Icon", true), (&name, "TextLabel", true)]);
+        let shop = inventory::Offer { offers: vec![offer("gem", 4), offer("rune", 4)], ..default() };
+        let merchant = build(Some(&shop), &Selection::default(), 0, None, &Catalog::default(), None, None, None);
+        let mut options = Vec::new();
+        merchant.choices(&mut options);
+        let view = View { name: String::new(), portrait: String::new(), body: None, merchant: None, quest: None, options };
+        let mut layout = Layout { window: "tradingscreen".into(), widgets: Vec::new() };
+        prepare(&source, &view, &merchant, &mut layout);
+        let rune = view.options.iter().position(|c| c.action == Action::Buy("rune".into())).unwrap();
+        let find = |id: String| layout.widgets.iter().find(|w| w.id == id).unwrap();
+        let icon = find(format!("{LIST}/Offer1/ItemSlot/Icon"));
+        assert_eq!((icon.kind.as_str(), icon.event.clone()), ("Button", format!("NpcOffer:{rune}")));
+        let card = find(format!("{LIST}/Offer1"));
+        assert!(card.kind != "Button" && card.event.is_empty(), "a left click on the card orders nothing");
+    }
+
+    /// As the server debits a purchase: each price from its own balance, the
+    /// shop's currency (IC) from its wallet key, the Honor or the Draken after
+    /// their own price; the veteran discount first.
+    #[test]
+    fn the_wallet_pays_an_offer_as_the_server_debits_it() {
+        let catalog = Catalog { currency_items: HashMap::from([("arena".into(), currency::HONOR.into()), ("cook".into(), "money_cc".into())]), ..default() };
+        let wallet = Wallet { andermant: 100, copper: 5_000, honor: 30, legacy: 2, draken: 4, glyphs: 9,
+            keyed: HashMap::from([("money_cc".into(), 7)]) };
+        let pays = |shop: &str, set: fn(&mut inventory::ShopOffer)| {
+            let mut o = inventory::ShopOffer::default();
+            set(&mut o);
+            affordable(&o, shop, &catalog, &wallet)
+        };
+        assert!(pays("x", |o| o.price_rc = 100) && !pays("x", |o| o.price_rc = 101));
+        assert!(pays("x", |o| o.price_vc = 5_000) && !pays("x", |o| o.price_vc = 5_001));
+        assert!(pays("x", |o| o.price_gc = 9) && !pays("x", |o| o.price_gc = 10));
+        assert!(pays("x", |o| o.price_uc = 2) && !pays("x", |o| o.price_uc = 3));
+        assert!(pays("x", |o| o.price_ec = 4) && !pays("x", |o| o.price_ec = 5));
+        assert!(pays("arena", |o| { o.price_arena = 20; o.price_ic = 10; }) && !pays("arena", |o| { o.price_arena = 20; o.price_ic = 11; }));
+        assert!(pays("cook", |o| o.price_ic = 7) && !pays("cook", |o| o.price_ic = 8));
+        assert!(pays("unknown", |o| o.price_ic = 1_000), "a shop without a known currency is left to the server");
+        // 105 with 5% off: 99.75, rounded to 100.
+        assert!(pays("x", |o| { o.price_rc = 105; o.veteran_discounts = vec![("Veteran3".into(), 0.05)]; }));
+        assert_eq!(andermant(&inventory::ShopOffer { price_rc: 40, veteran_discounts: vec![("Veteran3".into(), 0.05)], ..default() }), 38);
+    }
+
+    /// What the wallet does not pay: its item greyscale and no click (no
+    /// order, no buy cursor); before the wallet is known, nothing is greyed.
+    #[test]
+    fn offers_the_wallet_does_not_pay_are_greyed_and_take_no_click() {
+        let (icon, name) = (format!("{ENTRY}/ItemSlot/Icon"), format!("{ENTRY}/Label_empty/ItemDescription"));
+        let source = controls::template::fixture::layout("tradingscreen", &[(ENTRY, "Label", false), (&icon, "Icon", true), (&name, "TextLabel", true)]);
+        let mut shop = inventory::Offer { offers: vec![offer("gem", 4), offer("statue", 4)], ..default() };
+        for o in shop.offers.iter_mut().flatten() { o.icon = o.id.clone(); }
+        shop.offers[1].as_mut().unwrap().price_rc = 30_000;
+        let wallet = Wallet { andermant: 20_000, ..default() };
+        let merchant = build(Some(&shop), &Selection::default(), 0, None, &Catalog::default(), None, None, Some(&wallet));
+        assert_eq!(merchant.items.iter().map(|i| i.affordable).collect::<Vec<_>>(), [true, false]);
+        let unknown = build(Some(&shop), &Selection::default(), 0, None, &Catalog::default(), None, None, None);
+        assert!(unknown.items.iter().all(|i| i.affordable));
+        let mut options = Vec::new();
+        merchant.choices(&mut options);
+        let view = View { name: String::new(), portrait: String::new(), body: None, merchant: None, quest: None, options };
+        let mut layout = Layout { window: "tradingscreen".into(), widgets: Vec::new() };
+        prepare(&source, &view, &merchant, &mut layout);
+        let find = |id: String| layout.widgets.iter().find(|w| w.id == id).unwrap();
+        let saturation = |card: usize| find(format!("{LIST}/Offer{card}/ItemSlot/Image")).art.as_ref().unwrap().saturation;
+        assert!(find(format!("{LIST}/Offer0/ItemSlot/Icon")).enabled && saturation(0) == 1.0);
+        assert!(!find(format!("{LIST}/Offer1/ItemSlot/Icon")).enabled && saturation(1) == 0.0);
     }
 
     #[test]
@@ -419,10 +555,10 @@ mod tests {
         })).unwrap();
         let mut shop = inventory::Offer { offers: vec![offer("carbine", 46)], ..default() };
         shop.offers[0].as_mut().unwrap().rarity = 6;
-        let result = build(Some(&shop), &Selection::default(), 0, Some(&items), &Catalog::default(), Some(3), Some(1));
+        let result = build(Some(&shop), &Selection::default(), 0, Some(&items), &Catalog::default(), Some(3), Some(1), None);
         assert_eq!((&result.items[0].background, &result.items[0].frame), (&"blue.png".to_string(), &"gold.png".to_string()));
         shop.offers[0].as_mut().unwrap().icon_config = "override".into();
-        let result = build(Some(&shop), &Selection::default(), 0, Some(&items), &Catalog::default(), Some(3), Some(1));
+        let result = build(Some(&shop), &Selection::default(), 0, Some(&items), &Catalog::default(), Some(3), Some(1), None);
         assert_eq!(result.items[0].frame, "override-frame.png");
     }
 }

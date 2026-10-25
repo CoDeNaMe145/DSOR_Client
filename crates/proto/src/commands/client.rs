@@ -106,6 +106,7 @@ client_commands! {
     279 => SelectTalent(inventory::SelectTalent),
     280 => DeselectTalent(inventory::DeselectTalent),
     281 => TalentPreselection(inventory::TalentPreselection),
+    284 => UnlockSkillTalentPreselection(inventory::UnlockSkillTalentPreselection),
     286 => ResetTalents(inventory::ResetTalents),
     287 => ResetTalentCategory(inventory::ResetTalentCategory),
     309 => UseStickerBookItem(inventory::UseStickerBookItem),

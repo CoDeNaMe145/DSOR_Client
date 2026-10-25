@@ -128,8 +128,6 @@ pub(super) fn action(window: &str, widget: &Widget) -> Option<Action> {
     match window {
         "skilltalentswindow" => {
             if let Some(i) = ["ExperienceTab", "KnowledgeTab", "GroupTab", "FameTab"].iter().position(|s| *s == leaf) { return tab("talents", i); }
-            if let Some(i) = leaf.strip_prefix("PresetButton").and_then(|s| s.parse::<usize>().ok()) { return tab("preset", i.saturating_sub(1)); }
-            if event == "Shop" || event == "pvpShop" { return Some(Action::Window("shopwindow")); }
         }
         "questlog" => {
             if let Some(i) = ["QuestTabSelected", "CompendiumTabSelected", "AchievementsTabSelected", "DailyAchievementTabSelected", "WantedMissionsSelected"].iter().position(|e| *e == event) {

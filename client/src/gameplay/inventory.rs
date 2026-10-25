@@ -16,11 +16,14 @@ pub struct InventoryState {
     pub revision: u64,
     pub ready: bool,
     pub premium: bool,
+    /// The active membership: 0 none, 1 Premium, 2 Deluxe (MembershipUpdate tier).
+    pub membership: u32,
 }
 
 impl InventoryState {
     pub fn membership(&mut self, tier: u32, active: bool) {
         self.premium = active && matches!(tier, 1 | 2);
+        self.membership = if self.premium { tier } else { 0 };
         self.revision = self.revision.wrapping_add(1);
     }
 

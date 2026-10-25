@@ -12,6 +12,9 @@ struct UiMaterial {
     // 3D preview's image (crate::ui::preview), whose multisampled edges hold
     // their colour times their coverage.
     flags: vec4<f32>,
+    // x: the element's saturation (1 unchanged, 0 greyscale): Nebula's
+    // UI::Element::SetSaturation (the layouts' Saturation attribute).
+    effects: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> material: UiMaterial;
@@ -38,6 +41,10 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
 #ifdef VERTEX_COLORS
     c = c * in.color;
 #endif
+    if material.effects.x < 0.999 {
+        let grey = dot(c.rgb, vec3<f32>(0.299, 0.587, 0.114));
+        c = vec4<f32>(mix(vec3<f32>(grey), c.rgb, material.effects.x), c.a);
+    }
     c.a *= 1.0 - material.flags.y;
 #ifdef VERTEX_COLORS
     // A dark translucent shade over the scene:

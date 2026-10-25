@@ -24,6 +24,7 @@ pub(super) mod transmog;
 pub(super) mod desks;
 pub(super) mod log;
 pub(super) mod rosters;
+pub(in crate::ui) mod talents;
 
 use bevy::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -154,6 +155,25 @@ pub(crate) enum Request {
     SocialSort(rosters::Column),
     /// A player's row: the player menu (crate::ui::controls::interact opens it).
     Player(String),
+    /// The Skills & Talents window (talents): a talent, trait or focus talent
+    /// clicked; a skill clicked (by its skill id) to level it up; a right
+    /// click (the split dialog, or a focus point taken back; "skill:<id>" for
+    /// a skill); the split dialog's ranks.
+    Talent(String),
+    Skill(String),
+    TalentMore(String),
+    TalentLevels(String, u32),
+    /// A tree's preset (tree, preset); a locked Skill preset bought.
+    Preset(u8, u8),
+    UnlockPreset(u8),
+    /// A tree's reset; a Wisdom or Group category's (tree, category id).
+    Reset(u8),
+    ResetBranch(u8, String),
+    /// The reset's (or unlock's) confirmation answered.
+    TalentAnswer(bool),
+    /// The Wisdom tab's portable workbench; a trader the window opens by name.
+    Workbench,
+    TalentShop(String),
 }
 
 /// The windows' selections and what their buttons asked for.
@@ -222,6 +242,15 @@ pub(crate) struct State {
     social_query_id: u32,
     /// A request the server has not answered: (inventory revision, time).
     pending: Option<(u64, f64)>,
+    /// The talents catalog (crate::gameplay::talents), the reset or unlock
+    /// waiting for its confirmation, the split dialog's talent and most ranks.
+    pub talents: Handle<crate::gameplay::talents::TalentCatalog>,
+    pub talent_dialog: Option<talents::Ask>,
+    pub talent_split: Option<(String, u32)>,
+    /// A window the talents window opens (the portable workbench), a trader it
+    /// opens by name (talents::dialogs carries them out).
+    pub talent_open: Option<&'static str>,
+    pub talent_trader: Option<String>,
 }
 
 /// What every window shows. Only the open windows' views are kept current
@@ -240,6 +269,9 @@ pub(in crate::ui) struct Views {
     pub titles: log::Titles,
     pub rosters: rosters::Rosters,
     pub currencies: super::currency::Bag,
+    pub talents: talents::Talents,
+    pub talent_dialog: Option<talents::Ask>,
+    pub talent_split: Option<(String, u32)>,
 }
 
 /// What the views are built from.
@@ -251,6 +283,9 @@ pub(in crate::ui) struct Sources<'a> {
     pub names: Option<&'a crate::ui::local_map::MapNames>,
     pub state: &'a State,
     pub class: Option<u8>,
+    pub talents: Option<&'a crate::gameplay::talents::TalentCatalog>,
+    /// The talent ranks the equipment adds (crate::gameplay::stats::TalentBonuses).
+    pub bonuses: Option<&'a HashMap<String, u32>>,
 }
 
 impl Sources<'_> {
@@ -283,8 +318,9 @@ pub(in crate::ui) fn unix_seconds() -> u64 {
 }
 
 /// The windows each view (`Views`, in `refresh`'s order) fills.
-const VIEW_WINDOWS: [&[&str]; 12] = [&[LEADERBOARDS, MATCHMAKING], &[SHOP], &[EVENTS], &[ALBUM], &[TRANSMOG],
-    &[SALVAGE], &[GEMDESK], &[WORKBENCH], &[QUESTLOG], &[SHEET], &[SOCIAL], &[super::currency::BAG]];
+const VIEW_WINDOWS: [&[&str]; 15] = [&[LEADERBOARDS, MATCHMAKING], &[SHOP], &[EVENTS], &[ALBUM], &[TRANSMOG],
+    &[SALVAGE], &[GEMDESK], &[WORKBENCH], &[QUESTLOG], &[SHEET], &[SOCIAL], &[super::currency::BAG],
+    &[talents::WINDOW], &[talents::DIALOG], &[talents::SPLIT]];
 
 /// Builds view `index` of `VIEW_WINDOWS` into `views`; true when it changed.
 fn refresh(index: usize, sources: &Sources, views: &mut Views) -> bool {
@@ -305,7 +341,11 @@ fn refresh(index: usize, sources: &Sources, views: &mut Views) -> bool {
         8 => set(&mut views.log, log::log(sources)),
         9 => set(&mut views.titles, log::titles(sources)),
         10 => set(&mut views.rosters, rosters::rosters(sources)),
-        _ => set(&mut views.currencies, super::currency::bag(sources)),
+        11 => set(&mut views.currencies, super::currency::bag(sources)),
+        12 => set(&mut views.talents, talents::talents(sources)),
+        13 => set(&mut views.talent_dialog, sources.state.talent_dialog.clone()),
+        // The split dialog's talent mode takes the talents' texts.
+        _ => set(&mut views.talent_split, sources.state.talent_split.clone()) | set(&mut views.talents, talents::talents(sources)),
     }
 }
 
@@ -314,12 +354,17 @@ fn refresh(index: usize, sources: &Sources, views: &mut Views) -> bool {
 struct Inputs {
     /// Net::ui_revision and the inventory's revision.
     net: (u64, u64),
-    /// Which catalogs have loaded: the systems', the items', the map names.
-    catalogs: (bool, bool, bool),
+    /// Which catalogs have loaded: the systems', the items', the map names,
+    /// the talents'.
+    catalogs: (bool, bool, bool, bool),
     class: Option<u8>,
     /// The clock's minute while the events or the quest log (the Wanted
     /// board) show their countdowns; 0 otherwise.
     minute: u64,
+    /// While the talents window is open, what it shows besides the server's
+    /// commands: the action bar's skills (their glow) and the player's preset
+    /// and reset effects (StatusEffect stays out of Net::ui_revision); 0 otherwise.
+    talents: u64,
 }
 
 /// Which views are current, and what for.
@@ -353,6 +398,8 @@ pub(in crate::ui) fn sync(
     layouts: Res<Assets<Layout>>,
     windows: Query<(Entity, &Window2018, &Visibility)>,
     map_names: Res<Assets<crate::ui::local_map::MapNames>>,
+    talent_catalogs: Option<Res<Assets<crate::gameplay::talents::TalentCatalog>>>,
+    bonuses: Option<Res<crate::gameplay::stats::TalentBonuses>>,
 ) {
     let Some(net) = net else { return };
     let mut open = [false; VIEW_WINDOWS.len()];
@@ -364,9 +411,11 @@ pub(in crate::ui) fn sync(
     let names = map_names.get(&loaded.map_names);
     let class = players.iter().next().map(|c| c.desc.class);
     let countdown = VIEW_WINDOWS.iter().zip(open).any(|(names, open)| open && (names.contains(&EVENTS) || names.contains(&QUESTLOG)));
+    let talent_catalog = talent_catalogs.as_ref().and_then(|c| c.get(&state.talents));
     let inputs = Inputs { net: (net.ui_revision, net.inventory.revision),
-        catalogs: (catalogs.get(&state.catalog).is_some(), items.is_some(), names.is_some()), class,
-        minute: if countdown { unix_seconds() / 60 } else { 0 } };
+        catalogs: (catalogs.get(&state.catalog).is_some(), items.is_some(), names.is_some(), talent_catalog.is_some()), class,
+        minute: if countdown { unix_seconds() / 60 } else { 0 },
+        talents: if open[12] || open[14] { talents_key(&net, talent_catalog, bonuses.as_deref().map(|b| &b.0)) } else { 0 } };
     if built.inputs != Some(inputs) || state.is_changed() {
         built.inputs = Some(inputs);
         built.current = [false; VIEW_WINDOWS.len()];
@@ -379,7 +428,7 @@ pub(in crate::ui) fn sync(
     if !(0..open.len()).any(|i| open[i] && (!built.current[i] || audit)) { return; }
     let fallback = SystemsCatalog::default();
     let catalog = catalogs.get(&state.catalog).unwrap_or(&fallback);
-    let sources = Sources { net: &net, catalog, items, names, state: &state, class };
+    let sources = Sources { net: &net, catalog, items, names, state: &state, class, talents: talent_catalog, bonuses: bonuses.as_deref().map(|b| &b.0) };
     let mut changed: Vec<&str> = Vec::new();
     for index in (0..open.len()).filter(|&i| open[i]) {
         let current = built.current[index];
@@ -402,6 +451,25 @@ pub(in crate::ui) fn sync(
     }
 }
 
+/// What the talents window shows outside the server's commands, as a number
+/// that moves with it: the bar's skills and the preset and reset effects.
+fn talents_key(net: &Net, catalog: Option<&crate::gameplay::talents::TalentCatalog>, bonuses: Option<&HashMap<String, u32>>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    net.bar.hash(&mut hasher);
+    let mut ranks: Vec<_> = bonuses.into_iter().flatten().collect();
+    ranks.sort_unstable();
+    ranks.hash(&mut hasher);
+    if let Some(catalog) = catalog {
+        let mut effects: Vec<(u16, u32, u32)> = net.stat_effects.values()
+            .filter(|e| catalog.reset_effects.contains(&(e.index as u32)) || catalog.preset_effects.contains_key(&e.index.to_string()))
+            .map(|e| (e.index, e.instance, e.tail.as_ref().and_then(|t| t.parameters.first()).map_or(0, |v| v.to_bits()))).collect();
+        effects.sort_unstable();
+        effects.hash(&mut hasher);
+    }
+    hasher.finish().max(1)
+}
+
 /// The window a layout is, prepared from its view; None for the others.
 pub(in crate::ui) fn prepare(layout: &Layout, views: &Views, quests: &super::quests::Quests) -> Option<Layout> {
     Some(match layout.window.as_str() {
@@ -417,6 +485,9 @@ pub(in crate::ui) fn prepare(layout: &Layout, views: &Views, quests: &super::que
         QUESTLOG => log::prepare_questlog(&super::quests::prepare_log(layout, quests), &views.log),
         SHEET => log::prepare_sheet(layout, &views.titles),
         SOCIAL => rosters::prepare_social(layout, &views.rosters),
+        talents::WINDOW => talents::prepare_window(layout, &views.talents),
+        talents::DIALOG => talents::prepare_dialog(layout, views.talent_dialog.as_ref()),
+        talents::SPLIT => talents::prepare_split(layout, views.talent_split.as_ref(), &views.talents),
         _ => return None,
     })
 }
@@ -462,9 +533,20 @@ pub(super) fn action(window: &str, w: &Widget) -> Option<Action> {
             // A list's scroll arrows: "<key>:<rows>".
             "Scroll" => { let (key, rows) = arg.rsplit_once(':')?; Request::Scroll(key.to_owned(), rows.parse().ok()?) }
             "Player" => Request::Player(arg.to_owned()),
+            "Talent" => Request::Talent(arg.to_owned()),
+            "Preset" => { let (tree, preset) = arg.split_once(':')?; Request::Preset(tree.parse().ok()?, preset.parse().ok()?) }
+            "UnlockPreset" => Request::UnlockPreset(arg.parse().ok()?),
+            "Reset" => Request::Reset(arg.parse().ok()?),
+            "ResetBranch" => { let (tree, branch) = arg.split_once(':')?; Request::ResetBranch(tree.parse().ok()?, branch.to_owned()) }
+            "Workbench" => Request::Workbench,
+            "TalentShop" => Request::TalentShop(arg.to_owned()),
             _ => return None,
         };
         return Some(Action::System(request));
+    }
+    // The talents' reset confirmation.
+    if window == talents::DIALOG {
+        return matches!(event, "confirm" | "cancel").then(|| Action::System(Request::TalentAnswer(event == "confirm")));
     }
     // The gem desk's "Open Workbench".
     if window == GEMDESK && event == "Crafting" { return Some(Action::Window(WORKBENCH)); }
@@ -526,9 +608,13 @@ pub(super) fn clicked(mut request: Request, controls: &mut WindowControls) -> Re
 /// click only shows it in the preview).
 // FAILURE (2026-10-23): a second left click on the sticker previewed used it;
 //   the user found that unusable: one right click uses it.
-pub(super) fn right_clicked(action: &Action) -> Option<Request> {
+// A right click on a talent opens the split dialog (or takes a focus point
+// back), on a skill of the talents window too ("skill:<id>").
+pub(super) fn right_clicked(action: &Action, window: &str, spell: Option<&str>) -> Option<Request> {
     match action {
         Action::System(Request::Pick(id, _)) => Some(Request::Pick(id.clone(), true)),
+        Action::System(Request::Talent(id)) => Some(Request::TalentMore(id.clone())),
+        Action::Spell if window == talents::WINDOW => spell.map(|s| Request::TalentMore(format!("skill:{s}"))),
         _ => None,
     }
 }
@@ -863,7 +949,7 @@ pub(in crate::ui) fn send(
             Request::Favorite(id, favorite) => commands.push(ClientCommand::SetStickerbookFavorite(proto::SetStickerbookFavorite { id, favorite })),
             Request::Upgrade(id) => commands.push(ClientCommand::UpgradeStickerbookItem(proto::UpgradeStickerbookItem { id })),
             Request::AddSticker(id) => {
-                let sources = Sources { net: &net, catalog, items: None, names: None, state: &state, class: None };
+                let sources = Sources { net: &net, catalog, items: None, names: None, state: &state, class: None, talents: None, bonuses: None };
                 let item = catalog.stickers.get(&id).into_iter().flat_map(album::templates).find_map(|t| sources.carried(t).first().copied());
                 if let Some(item) = item { commands.push(ClientCommand::AddStickerbookFromInventory(proto::AddStickerbookFromInventory { item })); wait = true; }
             }
@@ -910,7 +996,7 @@ pub(in crate::ui) fn send(
             // The chosen book's recipe, the amount chosen, a carried item of each
             // ingredient (the server takes the amounts by template).
             Request::Craft(andermant) => {
-                let sources = Sources { net: &net, catalog, items: None, names: None, state: &state, class: None };
+                let sources = Sources { net: &net, catalog, items: None, names: None, state: &state, class: None, talents: None, bonuses: None };
                 if let Some(detail) = views.workbench.detail.as_ref().filter(|d| !d.locked && d.most > 0 && !d.recipe.is_empty()) {
                     let mut items = Vec::new();
                     for ingredient in &detail.ingredients {
@@ -1012,6 +1098,10 @@ pub(in crate::ui) fn send(
                 };
             }
             Request::Player(_) => {}
+            Request::Talent(_) | Request::Skill(_) | Request::TalentMore(_) | Request::TalentLevels(..) | Request::Preset(..) | Request::UnlockPreset(_)
+            | Request::Reset(_) | Request::ResetBranch(..) | Request::TalentAnswer(_) | Request::Workbench | Request::TalentShop(_) => {
+                commands.extend(talents::request(request, &views.talents, &mut state, &mut net));
+            }
         }
     }
     if net.offline || commands.is_empty() { return; }
@@ -1111,8 +1201,8 @@ mod tests {
     fn a_click_previews_a_sticker_and_a_right_click_uses_an_owned_one() {
         let pick = action(ALBUM, &widget("Sys:Pick:sb_x", "a/b")).unwrap();
         assert_eq!(pick, Action::System(Request::Pick("sb_x".into(), false)));
-        assert_eq!(right_clicked(&pick), Some(Request::Pick("sb_x".into(), true)));
-        assert_eq!(right_clicked(&Action::System(Request::Favorite("sb_x".into(), true))), None);
+        assert_eq!(right_clicked(&pick, ALBUM, None), Some(Request::Pick("sb_x".into(), true)));
+        assert_eq!(right_clicked(&Action::System(Request::Favorite("sb_x".into(), true)), ALBUM, None), None);
         // Used under the server's key; a sticker not collected is only shown.
         let owned = album::Sticker { id: "sb_x".into(), key: "mount_x".into(), owned: true, ..Default::default() };
         let missing = album::Sticker { id: "sb_y".into(), ..Default::default() };

@@ -39,6 +39,12 @@ mod tests;
 /// Recomputed when equipment, level or active status instances change.
 #[derive(Resource, Default, Debug)]
 pub struct CharacterStats(pub HashMap<String, f64>);
+
+/// The talent ranks the equipment adds (TalentLevelBonus: unique items, their
+/// sockets, set thresholds), by talent id in lower case; recomputed with
+/// CharacterStats. The Skills & Talents window shows them (a green "7/17").
+#[derive(Resource, Default, Debug, PartialEq)]
+pub struct TalentBonuses(pub HashMap<String, u32>);
 impl CharacterStats {
     pub fn value(&self, key: &str) -> Option<f32> { self.0.get(key).map(|v| *v as f32) }
     pub fn animation_speed(&self) -> f32 {
@@ -216,6 +222,7 @@ impl Plugin for StatsPlugin {
             .init_resource::<ResourceMax>()
             .init_resource::<SheetRows>()
             .init_resource::<CharacterStats>()
+            .init_resource::<TalentBonuses>()
             .add_systems(Startup, |mut commands: Commands, assets: Res<AssetServer>| {
                 commands.insert_resource(Data(assets.load("characters/stats.json")));
             })
@@ -230,6 +237,7 @@ fn update_stats(
     players: Query<&crate::actors::character::Character, With<crate::network::net::LocalPlayer>>,
     mut output: ResMut<CharacterStats>,
     mut previous: Local<Option<(u8, u32, u64, u64)>>,
+    mut bonuses: ResMut<TalentBonuses>,
 ) {
     let _profile = crate::diagnostics::hud::FrameSpan::new("stats::update_stats");
     let (Some(d), Some(net), Some(player)) = (stats.get(&data.0), net, players.iter().next()) else {
@@ -245,6 +253,8 @@ fn update_stats(
     let mut effects: Vec<_> = net.stat_effects.values().cloned().collect();
     effects.sort_by_key(|e| e.instance);
     output.0 = calculation::calculate(d, CLASSES[class as usize], level, &net.inventory, effects);
+    let talents = calculation::talent_bonuses(d, &net.inventory);
+    if bonuses.0 != talents { bonuses.0 = talents; }
 }
 
 /// One actor attribute.

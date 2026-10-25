@@ -7,3 +7,4 @@ pub(crate) mod quests;
 pub(crate) mod skills;
 pub(crate) mod systems;
 pub(crate) mod stats;
+pub(crate) mod talents;

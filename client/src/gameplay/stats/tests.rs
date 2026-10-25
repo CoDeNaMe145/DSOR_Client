@@ -64,3 +64,24 @@ fn banner_of_war_makes_the_player_skills_free() {
     assert_eq!(factor(vec![]), 1.0);
     assert_eq!(factor(vec![banner]), 0.0);
 }
+
+#[test]
+fn equipment_adds_talent_ranks() {
+    // A unique weapon's TalentLevelBonus, a set's at three of its parts.
+    let mut fixture: serde_json::Value = serde_json::from_str(include_str!("../../../tests/fixtures/character_stats.json")).unwrap();
+    let item = |modifiers: serde_json::Value| serde_json::json!({"damage": [0.0, 0.0], "scaled": false, "modifiers": modifiers, "base": [], "enchantments": []});
+    let combat = &mut fixture["data"]["combat"];
+    combat["items"]["dwarf_unique_gun"] = item(serde_json::json!([["talentlevelbonus", ["4", "dwarf_turretcoveringfire_talent", "stringparamlocaoverride", "db.skilltalent2.table"]]]));
+    for part in ["set_a", "set_b", "set_c"] { combat["items"][part] = item(serde_json::json!([])); }
+    combat["sets"].as_array_mut().unwrap().push(serde_json::json!({"parts": ["set_a", "set_b", "set_c"],
+        "tiers": [[2, [["talentlevelbonus", ["3", "dwarf_turretcoveringfire_talent"]]]], [3, [["talentlevelbonus", ["1", "dwarf_talent_fire_master"]]]]]}));
+    let data: StatsData = serde_json::from_value(fixture["data"].clone()).unwrap();
+    let mut inventory = crate::gameplay::inventory::InventoryState::default();
+    for (id, template, slot) in [(1, "dwarf_unique_gun", 0i8), (2, "set_a", 1), (3, "set_b", 2)] {
+        inventory.items.insert(id, ItemInfo { id, template: template.into(), durability: 1, ..default() });
+        inventory.allocation.slots.push((id, vec![slot]));
+    }
+    let bonuses = calculation::talent_bonuses(&data, &inventory);
+    assert_eq!(bonuses.get("dwarf_turretcoveringfire_talent"), Some(&7));
+    assert_eq!(bonuses.get("dwarf_talent_fire_master"), None, "the set's third part is missing");
+}

@@ -44,6 +44,8 @@ fn repeats_label(window: &str, button: &Button, layout: Option<&Layout>) -> bool
         // The quest screen's Accept and Back are icons: their tooltips name them
         // (crate::ui::dialogue::quest).
         Action::NpcChoice(_) => window != "questscreen2",
+        // A trader's item: its card names it.
+        Action::Offer(_) => true,
         Action::Edit(_) | Action::ChatChannel(_) => true,
         Action::Settings(event) => event.starts_with("row") || matches!(event.as_str(), "previous" | "next"),
         _ => layout.is_some_and(|layout| layout.widgets.iter().any(|w|
@@ -57,10 +59,29 @@ pub(super) fn clean_text(raw: &str) -> String {
     card::plain(raw)
 }
 
+/// A talents window card (systems::talents::Tip): its title (and icon), its
+/// lines in their colours; a title alone is a compact hint.
+fn talent_card(tip: &systems::talents::Tip, template: Option<&Layout>) -> (Card, bool) {
+    let colour = |c: [f32; 4]| Color::srgba(c[0], c[1], c[2], c[3]);
+    if tip.lines.is_empty() && tip.icon.is_empty() {
+        let width = crate::network::chat::text_width(&tip.title, 12.0).ceil() + 32.0;
+        let mut card = Card::new(width.clamp(70.0, 300.0), template);
+        card.y = 12.0;
+        card.centered(&tip.title, WHITE, false);
+        card.y -= 4.0;
+        return (card, true);
+    }
+    let mut card = Card::new(340.0, template);
+    card.title(&tip.title, (!tip.icon.is_empty()).then_some(tip.icon.as_str()), WHITE);
+    if !tip.lines.is_empty() { card.rule(); }
+    for (text, c) in &tip.lines { card.text(text, colour(*c)); }
+    (card, false)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018, &WindowControls, &Visibility, &Transform), Without<Tooltip>>,
     primary: Query<&Window, With<PrimaryWindow>>, screen: Res<Screen>, settings: Res<settings::Settings>,
-    (pointer,keys,figures,shown):(Res<Pointer>,Res<ButtonInput<KeyCode>>,Res<Figures>,Res<currency::Shown>),
+    (pointer,keys,figures,shown,views,real):(Res<Pointer>,Res<ButtonInput<KeyCode>>,Res<Figures>,Res<currency::Shown>,Res<systems::Views>,Res<Time<Real>>),
     net: Option<NonSend<crate::network::net::Net>>, hotbar: Res<hotbar::Hotbar>,
     (data, catalogs, dialogue): (Res<items::Data>, Res<Assets<items::Catalog>>, Res<dialogue::Presentation>), layouts: Res<Assets<Layout>>, loaded: Res<Loaded>,
     (skill_tables, status_bar, status_catalogs, status_slots): (Res<Assets<crate::gameplay::skills::SkillTable>>,
@@ -77,11 +98,25 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
     // Cards over status effects open above or below them, clear of their bar
     // (the placement's vertical-first order).
     let mut above = false;
+    // A talents window card shown as a compact hint (a title alone).
+    let mut hint = false;
     let template = layouts.get(&data.tooltip);
     if enabled && point.is_some() {
         let hovered = windows.iter().filter(|(_,_,v,_)| **v != Visibility::Hidden)
             .find_map(|(w,c,_,tf)| c.hovered.filter(|i| !matches!(c.buttons[*i].action, Action::Item(_))).map(|i| (w,c,&c.buttons[i],tf)));
-        if let Some((w,c,b,tf)) = hovered.filter(|(w,_,b,_)| !repeats_label(&w.0,b,
+        // The talents window's locked tabs say when their tree opens (their
+        // caption would otherwise do).
+        let talent_tab = hovered.and_then(|(w,c,b,_)| match b.action {
+            Action::Tab("talents", i) if w.0 == systems::talents::WINDOW && !c.enabled(b) => systems::talents::tab_card(i, &views.talents),
+            _ => None,
+        });
+        if let (Some(tip), Some((_,_,b,tf))) = (talent_tab, hovered) {
+            let [l,t,r,bottom] = b.rect;
+            let offset = window_offset(tf) + Vec2::new(b.k*(screen.width-BASE_W),0.0);
+            anchor = Some([l+offset.x,t+offset.y,r+offset.x,bottom+offset.y]);
+            let (card, compact) = talent_card(&tip, template);
+            detail = Some(card); hint = compact;
+        } else if let Some((w,c,b,tf)) = hovered.filter(|(w,_,b,_)| !repeats_label(&w.0,b,
             loaded.layouts.iter().filter_map(|(h,_,_)| layouts.get(h)).find(|l| l.window == w.0))) {
             let [l,t,r,bottom] = b.rect;
             let offset = window_offset(tf) + Vec2::new(b.k*(screen.width-BASE_W),0.0);
@@ -155,6 +190,14 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
                 Action::QuestCompact(compact) => heading = if *compact { "Hide the objectives" } else { "Show the objectives" }.into(),
                 Action::PartyCompact(compact) => heading = if *compact { "Hide the group" } else { "Show the group" }.into(),
                 Action::QuestTrack(delta) => heading = if *delta < 0 { "Previous quest" } else { "Next quest" }.into(),
+                Action::System(request) if w.0 == systems::talents::WINDOW => match systems::talents::card(request, &views.talents,
+                    net.as_ref().map(|n| n.server_tick(crate::network::net::now_ms(&real)))) {
+                    Some(tip) => { let (card, compact) = talent_card(&tip, template); detail = Some(card); hint = compact; }
+                    None => match super::systems::tooltip(request) {
+                        Some((title, text)) => { heading = title.into(); body = text; }
+                        None => return,
+                    },
+                },
                 Action::System(request) => match super::systems::tooltip(request) {
                     Some((title, text)) => { heading = title.into(); body = text; }
                     None => return,
@@ -192,7 +235,11 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
                     card.text(&format!("Cool-down: {} s",def.cooldown), WHITE);
                 }
                 if !c.spells.available(s) && s.wire.is_some() { card.text(&format!("Required level: {}",s.unlock), Color::srgb(0.9,0.65,0.3)); }
-                if s.talent_cost > 0 { card.text(&format!("Cost: {} Talent Points", s.talent_cost), WHITE); }
+                // In the talents window: its upgrade's price and level, how to level it.
+                let upgrade = (w.0 == systems::talents::WINDOW).then(|| views.talents.skill(&s.id)).flatten();
+                if let Some(e) = upgrade {
+                    for (text, c) in &e.tip.lines { card.text(text, Color::srgba(c[0], c[1], c[2], c[3])); }
+                } else if s.talent_cost > 0 { card.text(&format!("Cost: {} Talent Points", s.talent_cost), WHITE); }
                 if let Action::Skill(index) = b.action { card.hint(&format!("Press {}",settings.current.slot_label(index))); }
                 else if s.wire.is_some() { card.hint("Drag to the action bar"); }
                 else { card.hint("Passive talent"); }
@@ -219,6 +266,18 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
                     // The currency bar as drawn in game (its layout keeps other money displays).
                     let drawn = |x: &Widget| if w.0 == currency::BAR { currency::bar_part(&x.id).unwrap_or(!x.hidden) } else { !x.hidden };
                     for widget in layout.widgets.iter().rev().filter(|x| drawn(x) && contains(x.k,x.rect,p-window_offset(tf),screen.width)) {
+                        // The talents window's level bars and points.
+                        if w.0 == systems::talents::WINDOW {
+                            if let Some(tip) = systems::talents::label_card(&widget.id, &views.talents) {
+                                let [l,t,r,b] = widget.rect;
+                                let offset = window_offset(tf) + Vec2::new(widget.k*(screen.width-BASE_W),0.0);
+                                anchor = Some([l+offset.x,t+offset.y,r+offset.x,b+offset.y]);
+                                let (card, compact) = talent_card(&tip, template);
+                                detail = Some(card); hint = compact;
+                                break;
+                            }
+                            continue;
+                        }
                         let tip = if w.0 == currency::BAR { currency::tip(&widget.id, &figures.wallet) }
                         else if widget.id.contains("andermant") { Some("Andermant".into()) } else if widget.id.contains("VirtualCurrency") { Some("Coins: 100 copper = 1 silver; 100 silver = 1 gold".into()) }
                         else if widget.id.contains("bottombar_xp_bar") { Some("Experience: earn experience to level up".into()) } else if widget.id.contains("bottombar_wisdom_bar") { Some("Ancient Wisdom".into()) }
@@ -235,7 +294,7 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
             }
         }
     }
-    let compact = detail.is_none() && content.as_ref().is_some_and(|(_,_,icon)| icon.is_none());
+    let compact = hint || (detail.is_none() && content.as_ref().is_some_and(|(_,_,icon)| icon.is_none()));
     let card = detail.or_else(|| content.map(|(heading,body,icon)| {
         let mut card = if compact {
             let width = heading.lines().chain(body.lines()).map(|s| crate::network::chat::text_width(s,12.0))
@@ -279,7 +338,7 @@ mod tests {
             .init_resource::<Pointer>().init_resource::<hotbar::Hotbar>().init_resource::<dialogue::Presentation>()
             .init_resource::<items::Interaction>().init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<effects::StatusBar>().init_asset::<effects::Catalog>()
-            .init_resource::<Figures>().init_resource::<currency::Shown>()
+            .init_resource::<Figures>().init_resource::<currency::Shown>().init_resource::<systems::Views>()
             .add_systems(Update,(overlay,items::overlay).chain());
         app.world_mut().resource_mut::<settings::Settings>().current.advanced_tooltips=false;
         let dir=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/interface");

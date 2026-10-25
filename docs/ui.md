@@ -32,7 +32,11 @@ All styles are resampled from 64×64 to 42×42 before native cursor creation,
 making them about 35% smaller while retaining the full artwork and click hotspot.
 World hover switches to the sword for enemies, speech bubble for NPCs, shop
 cursor for merchants, and gears for loot and exits. UI input and dragging keep
-the hand; free-camera cursor visibility still follows the camera controls.
+the hand, except while trading (the original's `TradingWidget::UpdateMouseCursor`):
+the shop cursor over a trader's item, the sell cursor over a carried item a
+right click sells to the open trader (`cursor::TradeHover`, set by
+`controls::interact` and `controls::items::sell_cursor`). Free-camera cursor
+visibility still follows the camera controls.
 
 **Settings > Mouse > Classic cursor** selects the original gold arrow
 (`mousecursor/arrow.png`). Like the original client's `classiccursor` option,
@@ -123,6 +127,22 @@ clip rectangle). A resize only moves the per-k parents. Texts are Text2d.
 Authored labels and runtime UI text use a shared 80% text scale, including item
 counts, tooltips, map captions and character-selection dialogs.
 
+Two rules of Nebula's renderer apply to every window:
+
+- **Saturation.** A widget's `Saturation` attribute (exported as the artwork's
+  `saturation`; 1 when absent) mixes its colour towards grey: 0 is greyscale.
+  Every disabled button state is authored at 0, so disabled faces are grey.
+  The value is the element's own and is not inherited by its children
+  (release261 `UI::Element::SetSaturation` 0x14072a908). Windows also set it
+  at run time (the talents window's unbought talents). Runs of artwork split
+  where it changes; `ui.wgsl` applies it per run.
+- **Wrapped UVs.** Atlases are sampled wrapped. An artwork lying wholly in
+  another tile of its texture (the reset gears' v from 1.37 to 1.41 in
+  `button_general_icons`) is drawn from that tile's [0, 1) part. Sampled
+  clamped, these 207 artworks drew nothing (the social window's and transmog
+  desk's icons among them). Artwork spanning tiles keeps its UVs; the
+  textures that need it are loaded with a repeating sampler.
+
 Drawn:
 
 - always: the current `bottombar/Canvas/Label_new` layout: horizontal health and
@@ -143,10 +163,11 @@ Live values: health and resource (`Net::health` / `resource`), level, XP, wallet
 the character sheet's available figures, the quick slot bar (`Net::bar`, wire slots: 0 left
 button, 1 right button, 2-6 keys 1-5), the character name. Offline (map viewer)
 the map viewer shows resting values (80 % health, 60 % resource, 35 % XP, the mage's
-skills). Wisdom starts at level 0, 0% progress and 0 available points, matching
-the server default. Both the HUD and wisdom tab use these defaults; server
-wisdom progression is not decoded yet. Late-loading layouts receive the current
-values without waiting for another stat update.
+skills). The HUD's wisdom bar shows the Wisdom level and the way to the next
+one: TalentCategoryPointsInfo's Knowledge XP against the talents catalog's
+levels, as the original's `BottombarProperty` (`SetWisdomInfo`) does. Without
+them it shows level 0 and 0%. Late-loading layouts receive the current values
+without waiting for another stat update.
 
 ## Status effects above the action bar
 
@@ -510,6 +531,148 @@ DEVIATION, not done:
 - A hair, beard or ethnicity click during `CharSelectStart` cuts it short. The
   figure is remade; the original updates it in place.
 
+## The Skills & Talents window
+
+`skilltalentswindow` (S) has four tabs: Experience (the class's skills and
+skill talents), Wisdom, Group and Honor. `controls/systems/talents.rs` fills
+them as release261's `Talents::SkillTalentsWidget` does from
+`ClientTalentManager` and `PlayerTalentModule`. These were decompiled with
+annotations into the live server tree's
+`data/diagnostics/skilltalents-widget.annotated.txt` and
+`talents-manager.annotated.txt`; the code comments cite their addresses. It is
+a systems window: its view is built from `Net` and the talents catalog when
+one of them changes, and the window is rebuilt from it.
+
+**What the server says.** TalentSelectionInfo (283) carries each tree's active
+preset and the ranks picked in it. Context 0 carries the four trees; contexts 1
+to 4 carry one tree each (3, the Skill tree, comes after every pick) and
+replace that tree only. TalentCategoryPointsInfo (282) carries each tree's XP
+(the Skill tree's is the character's). A tree's level is the highest
+`_Template_TalentXPLevel` level its XP reaches; for Experience it is the
+character's level. Its points are what the levels up to it grant, minus what
+the picks cost. A talent's first rank costs `UnlockCosts`; each further rank
+costs `CostsPerLevel` (server formula, `services/talents.py`). The client
+sends one command a click and changes nothing before the server answers.
+
+**The tabs.**
+
+- Each tab shows its level in the circle, the level bar (level / highest level,
+  filled from the bottom in the tab's colour) and "Available ... Talent Points".
+  Hovering the bar shows the level and XP, then what the next level still
+  needs; at the top level it shows "Maximum level reached". Hovering the points
+  shows the points spent.
+- **Experience.** Only the player's class grid is built, from
+  `_Template_SkillUIConfig`. A cell's centre is the grid's corner plus
+  (Column + 0.5, Row + 0.5) cells (`tools/ui_catalog.py`). Every cell shows
+  "rank/most". Bonus ranks from equipment (`TalentLevelBonus` on unique items,
+  their sockets and set thresholds: `gameplay::stats::TalentBonuses`) raise
+  both numbers and turn them green, as in "7/17". A skill on the action bar
+  glows. A skill below its level is disabled, with the level in red. Clicking a
+  skill (not dragging it) levels it up.
+- **Wisdom and Group.** Each `_Template_TalentCategories` row of the tree gets a
+  box, cloned from `TemplateWisdomTalents` into its column's list
+  (`TalentListOffense`, `TalentListDefense`, then `TalentListCombatEffects` or
+  `TalentListAura`) in table order. A box holds its title with "(ranks/most)"
+  where the localized title has the placeholders, its talents of the player's
+  class with "rank/most", and its reset gear. The Wisdom tab's Workbench and
+  Shop buttons open once their talents (`trait_wisdom_all_dungeon_workbench`,
+  `..._shop`) have a rank.
+- **Honor.** The four focus talents (25 ranks, a point each) with their
+  counters: grey with no point, gold with points. Then the class's four traits
+  with their price. Names stay hidden. There is one preset, so the preset
+  buttons are hidden; the reset is free.
+
+**Faces.** An unbought talent is greyscale (saturation 0), in colour while
+hovered if its price can be paid. A bought one shows its pressed face, the gold
+frame. One below its level is disabled, greyed at half alpha, with the level in
+red. Talents unlock at the character's level, at the earliest 4. The Wisdom
+and Group tabs open at the lowest level among their talents for the class; a
+locked tab's card names that level.
+
+**Clicks** (`ClientTalentManager::SelectTalent` 0x14035e5e4):
+
+- A left click buys one rank: `SelectTalent` (279) with the id and 1. A click
+  is refused, with the original's message in the chat, when the points are
+  short, the level is too low, the category is at its most, the talent is at
+  its most, or another talent of its exclusive group (the skill tree's
+  `GroupId`: the elemental masters, the builds) has ranks.
+- A right click opens the split dialog in its talent mode ("Talent Level",
+  "Level Up"; `unstackwindow`) when more than one rank can be bought. Its slider
+  runs from 1 to the most ranks the points pay for and starts at the most;
+  Level Up sends them in one `SelectTalent`.
+- Honor's focus talents always send: a left click adds a point, a right click
+  takes one back (`DeselectTalent`, 280). A trait toggles.
+- A preset button switches presets (`EnableTalentPreselection`, 281). The
+  membership allows two presets (Premium three, Deluxe four,
+  `_Template_Privileges.NumTalentSets`); the others are disabled. The Skill
+  tree's fifth to eighth are bought with Andermant, one after the other, through
+  their lock (`UnlockPreselectionCost`, command 284). A preset cooldown effect on
+  the player (`SkillPresetCooldown`, ...) disables the tree's other presets;
+  their cards show the seconds left ((end tick - now) x 0.04).
+- The reset gear: Experience resets the tree (`ResetTalents`, 286). A Wisdom or
+  Group box resets its category (`ResetTalentCategory`, 287). Honor resets at
+  once. A reset costs gold: `VCRespecCostsPerPoint` x `RespecVCCostMultiplier`
+  of the character's level x the points spent x `TalentRespecCostFactor`
+  (0x1409d0960). It is confirmed in `confirmingamepaymentdialog` with the price;
+  a free reset needs no confirmation, and without the money the chat says so.
+
+**Cards.** A talent's card shows its name, with "(rank)" while partly bought,
+its description at its rank (locale tokens evaluated from the talent's effects:
+base + stack x (rank - 1), actor variables within their limits), and the
+per-rank increase. It adds the price (red when unaffordable), the required
+level (red when not met) and how to pick it (yellow). A skill's spell card adds
+its upgrade's price, level and "(Left-click to level up)". Presets and resets
+have their own cards.
+
+**Data.** `tools/talent_catalog.py <export_win32> <assets> <DSO_Godot>` writes
+`interface/talents.catalog.json`, and `export_ui.py` writes it with
+`skilltalentswindow`. It holds the trees, categories, costs, levels, names,
+descriptions, tokens, icons, the `_Globals` used, the reset multipliers, the
+preset effects and the window's texts. Re-export `skilltalentswindow` for the
+grid placement, saturation and background order.
+
+**Offline checks.** `python tools/talent_fixture_packets.py <server> <out.json>
+[--fresh]` writes packets that reproduce the user's reference shots of a dwarf
+(levels 100, 300, 200 and 43, every point spent), or the same levels with
+nothing picked. Run with `DSOR_PACKET_REPLAY=<out.json>`,
+`DSOR_UI_OPEN=skilltalentswindow`, `--play 3 0`. Offline, clicks, dialogs and
+messages run, but nothing is sent.
+
+**The server** (DSOR_Server, live tree, `services/talents.py`, since
+2026-10-25) applies the window's rules. It answers a refused command with its
+own state: TalentCategoryPointsInfo and TalentSelectionInfo, or 285 for a preset
+purchase.
+
+- A Wisdom or Group talent's `UnlockLevel` is checked against the character's
+  level; the skill tree's exclusive groups are checked.
+- `DeselectTalent` (280) takes a focus point back or switches a trait off.
+- `UnlockSkillTalentPreselection` (284) takes the next price in Andermant, then
+  sends CurrencyChanged and `UnlockSkillTalentPreselectionInfo` (285). The count
+  is saved with the character and sent at login.
+- A switch to a preset past the membership's count, or to a Skill preset not
+  bought, is refused. Outside a hub, a switch puts the tree's preset cooldown
+  effect (300 s) on the player, and other switches are refused while it runs.
+  The server removes the effect when it ends (the client keeps an effect until
+  told) and when the player enters a hub. The waiting presets' cards count its
+  seconds down.
+- Resets cost gold, priced as the window prices them; one the wallet cannot pay
+  is refused. CurrencyChanged follows a paid reset.
+- The Wisdom Shop's trader, opened without an NPC, needs
+  `trait_wisdom_all_dungeon_shop`.
+
+DEVIATION:
+
+- Refusals show in the chat, not as the original's screen messages.
+- The PvP-map check of the Wisdom tab's Workbench and Shop is missing.
+- The respec block (`TalentRespecBlock`, the category reset's cooldown) is not
+  shown, and the server does not apply it.
+- The confirmation dialogs' "do not show again" setting is missing.
+- Of the talents' locale tokens, the level-dependent ones (52) show an em dash.
+
+The Wisdom Shop and PvP Merchant buttons open their traders by name
+(`skilltree_wisdom_trader`, `skilltree_pvp_trader`) in the trading window
+alone, without an NPC (`Dialogue::trade`); Back or Escape closes them.
+
 ## Per-frame cost
 
 **Rule: a frame in which nothing the interface shows has changed does no
@@ -799,7 +962,7 @@ respects the UI under the cursor.
 
 The chat panel and channel dropdown stay anchored to the screen's left edge at
 every aspect ratio and starts compact on login. V and the mode button switch between expanded controls and
-a compact preview. Compact mode shows only the expand button and the four newest
+a compact preview. Compact mode shows only the expand button (on its backdrop, in its frame) and the four newest
 message rows; the text lets clicks pass through to the world. Enter expands the
 chat and focuses its entry. Expanded scrollback is preserved while the compact
 preview continues to show recent messages.
@@ -931,8 +1094,39 @@ can use taller cards and fewer rows. Prices use the received values and the loca
 server's veteran-discount rounding. Item-currency icons come from the shop's
 `_Template_ItemCurrency`, and offer icon/configuration overrides take precedence
 over the item template. Buyback-only updates preserve the shop selection and
-refresh its returned item list. Buying, selling and restoring items still need
-the transaction controller; buyback prices are not supplied by these snapshots.
+refresh its returned item list; buyback prices are not supplied by these snapshots.
+
+As in the original (`TradingWidget::HandleEvent` 0x14055FB8C), a card's item
+icon (`ItemSlot/Icon`, the original's `Icon`) is what takes the order: a right
+click on it buys one of the offer, or buys a sold stack back, and plays
+`ui/trader/ui_trader_buy` with `ui/general/ui_click` once the order is sent (one
+order at a time, online only). A left click orders nothing, and the rest of the
+card takes no clicks. A right click on a carried item while a trader that buys
+is open sells it, with `ui/trader/ui_trader_sell` and `ui/general/ui_click`.
+
+An offer the wallet does not pay is greyed (its item in greyscale) and its
+icon takes no click, so no order the server would refuse is sent. The check
+follows the server's debit: Andermant, gold, Glyphs of Power, Draken, the
+legacy balance, Badges of Honor, and the shop's own currency (its
+`_Template_ItemCurrency.CurrencyItem`, exported by `tools/trading_catalog.py`
+as `currency_items`), after the veteran discount. The view is rebuilt when the
+wallet changes (CurrencyChanged bumps `Net::ui_revision`).
+
+From 20,000 Andermant on (`_Globals.LargeRCExpensesNotificationThreshold`), a
+purchase first asks "You are about to spend a large amount of Andermant!
+(price)" (`controls::consent`, the original's `AskForLargeRCExpenseConsent`).
+It uses the confirmation dialog's `DefaultDoNotShowAgain` layer; the dialog's
+page `confirm_layer` picks it or the item-destroy layer. Confirm orders it.
+Cancel, Escape or the end of the conversation drop it. "Do not show this
+window again", ticked when confirming, stops asking: the dialog's id (6) goes
+into `Preferences::skipped_dialogs`.
+
+DEVIATION: the original's item icons can also be dragged (the drag system's
+`Offer` type; INFERRED: a drop in the bags buys), which is not reproduced. It
+also takes the click on an unaffordable offer and names the missing currency
+(`IsOfferPurchasable`'s `insufficientVCToBuy`...), and checks for a free bag
+slot; here the server decides the slot. Buy-back cards are never greyed: their
+price is not in the snapshot.
 The top-navigation `shopwindow` remains the separate global shop. Other NPC
 services and delivery/payment choices are not implemented by this controller.
 
@@ -970,7 +1164,7 @@ for the selected NPC in offline mode, including categories, prices and buyback.
   workbench, transmog) are bound on their 2026 layouts
   (`client/src/ui/controls/systems.rs`, see docs/client-progress.md "The
   systems' windows" and "The systems' windows on their 2026 layouts"), and so
-  is the social window; talent allocation is not drawn yet. Lists scroll with the
+  are the social window and the Skills & Talents window (see above). Lists scroll with the
   wheel; their scroll handles follow but cannot be dragged. The transmog desk's
   eye toggles have no server command and are hidden.
 

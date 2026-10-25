@@ -387,11 +387,16 @@ impl CurrentMap {
         }
     }
 
-    /// (models fully loaded including textures, or failed; models needed nearby)
+    /// (models needed nearby fully loaded including textures, or failed; models
+    /// needed nearby). Only wanted models count: `models` may still hold one a
+    /// map event took the last placement of.
+    /// FAILURE: counted over `models`, Kingshill's server events left 488 done
+    ///   of 487 wanted, and the loading screen (done == total) stayed at 98%.
     pub fn progress(&self, asset_server: &AssetServer) -> (usize, usize) {
         let done = self
-            .models
-            .values()
+            .wanted_models
+            .iter()
+            .filter_map(|m| self.models.get(m))
             .filter(|h| {
                 matches!(asset_server.get_load_state(*h), Some(LoadState::Failed(_))) || matches!(
                     asset_server.get_recursive_dependency_load_state(*h),
@@ -640,9 +645,15 @@ fn follow_events(
     // The models those cells now want are loaded with them.
     let wanted_models: HashSet<usize> = current.wanted_cells.iter().filter_map(|k| current.by_cell.get(k))
         .flat_map(|list| list.iter().map(|&i| manifest.instances[i].m)).collect();
+    // A model whose last placement went is released, as stream_models
+    // releases those of cells left behind.
+    let held = current.models.len();
+    current.models.retain(|m, _| wanted_models.contains(m));
+    current.in_flight.retain(|m| wanted_models.contains(m));
+    let released = held - current.models.len();
     current.wanted_models = wanted_models;
     current.rebuild = true;
-    info!("map {}: map events changed {} cells", current.name, changed.len());
+    info!("map {}: map events changed {} cells, released {released} models", current.name, changed.len());
 }
 
 /// Load models needed by nearby cells, with bounded IO and cell creation.
@@ -1070,6 +1081,31 @@ mod tests {
         // A manifest read without parse (tests elsewhere) stands as written.
         let plain: MapManifest = serde_json::from_value(value).unwrap();
         assert_eq!(*plain.condition(1), Condition::Always);
+    }
+
+    /// Kingshill online: the server's events took away the last placement of a
+    /// loaded model, leaving 488 models done of 487 wanted, and the loading
+    /// screen (done == total) held at 98%.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn progress_counts_only_the_models_still_wanted() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default())).init_asset::<Gltf>();
+        let server = app.world().resource::<AssetServer>().clone();
+        // Failed loads count as done: two missing files.
+        let models: Vec<Handle<Gltf>> = ["__map_progress_test_a__.glb", "__map_progress_test_b__.glb"].iter().map(|p| server.load(*p)).collect();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while !models.iter().all(|h| server.load_state(h).is_failed()) {
+            assert!(std::time::Instant::now() < deadline, "missing models must fail to load");
+            app.update();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let mut map = CurrentMap::new("m".into(), Handle::default());
+        map.models.extend(models.into_iter().enumerate());
+        map.wanted_models = HashSet::from([0]);
+        assert_eq!(map.progress(&server), (1, 1), "a model no placement wants any more is not counted");
+        map.wanted_models.insert(2);
+        assert_eq!(map.progress(&server), (1, 2), "a wanted model not requested yet is not done");
     }
 
     #[test]

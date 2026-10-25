@@ -1634,3 +1634,239 @@ then `--database-only` (5.0 min) left Kingshill's NPCs 119/119, exits 21/21 and
 props 13/13 on the server's Guids. `profile_native_maps.py kingscity`: 140-160
 FPS (the build before: 114-130 in the same warm run), `ui work` 0 after loading.
 Not yet seen online: the live server was down after a crash.
+
+## The Skills & Talents window: Experience, Wisdom, Group, Honor (2026-10-25)
+
+Requested with four reference shots of a dwarf's window; the
+English texts come from the localization. The four tabs are drawn and work as
+release261 draws them (docs/ui.md, "The Skills & Talents window"). Before this
+change only the skill icons were drawn: no ranks, no level, no points, and the
+other three tabs were empty.
+
+- **Spec.** `Talents::SkillTalentsWidget`, `ClientTalentManager` and
+  `PlayerTalentModule` were decompiled into the live server tree's
+  `data/diagnostics/skilltalents-widget.annotated.txt` and
+  `talents-manager.annotated.txt`. The rules the server enforces are in
+  `services/talents.py`. The four shots match the database: every tree's points
+  are spent (Experience 100 with Covering Fire's 7 ranks from equipment,
+  Wisdom 2865, Group 2025, Honor 43).
+- **Data.** `tools/talent_catalog.py` writes `interface/talents.catalog.json`
+  (and `export_ui.py` writes it with the window). The catalog asset and its
+  rules (costs, levels, points, tokens) are in `gameplay/talents.rs`.
+- **Protocol.** TalentSelectionInfo now decodes contexts 1, 2 and 4, and Net
+  merges a one-tree context into the full snapshot. A skill-preset refresh
+  (context 3) used to replace the whole snapshot and lose Wisdom, Group and
+  Honor. TalentCategoryPointsInfo keeps its four values whatever its category
+  byte. UnlockSkillTalentPreselectionInfo (285) is kept, and
+  UnlockSkillTalentPreselection (284) was added.
+- **Window.** `controls/systems/talents.rs` adds the view, the layout fill, the
+  reset confirmation (`confirmingamepaymentdialog`) and the split dialog's
+  talent mode. Requests go through `systems::send`. The old `Action::Talent`
+  and preset tabs are gone.
+- **Renderer.** Widgets' `Saturation` is exported and drawn. Artwork in another
+  texture tile is wrapped, which brings back 207 icons, among them the reset
+  gears, the social window's icons and the transmog desk's reset buttons.
+- **Layout export.** Talent cells are placed as the original places them (4 px
+  higher). The Group art and the Honor boxes are drawn behind their content;
+  before, they covered the Group level bar and the Honor talents.
+- **Other.** The HUD's wisdom bar shows the Wisdom level and progress.
+  Equipment talent ranks (`gameplay::stats::TalentBonuses`) appear in green. A
+  trader can open without an NPC (`Dialogue::trade`: the Wisdom Shop, the PvP
+  Merchant).
+
+Validation: `cargo test -p dsor-client` 454 passed, `-p dsor-proto` all passed.
+The new tests cover:
+
+- the view against the server's picks and the catalog's rules;
+- the client-side refusals, right clicks, resets and unlocks;
+- a preset cooldown;
+- no rebuild on idle frames or on unrelated effects;
+- costs, levels and tokens;
+- equipment bonus ranks.
+
+With `--ignored`, `the_real_window_fills_its_tabs_from_the_view` passes
+against the converted assets. So do the other UI asset tests, except the
+known Kingscity doorway lighting test.
+
+Captures were made with `tools/talent_fixture_packets.py`
+(`DSOR_PACKET_REPLAY`, `--play 3 0`). They show all four tabs, the
+talent/focus/skill cards, the reset confirmation (2074 Gold for 100 points at
+level 100) and the split dialog.
+
+`profile_native_maps.py kingscity` with the window open: 160-170 FPS, `ui work`
+0 after the first build. The same with `--flags uiaudit` logged no errors.
+Closed: 175-184 FPS (the difference is the window's drawing).
+
+The server's gaps found here were closed the same day (see "The talent rules
+on the server" below).
+
+Not seen online yet.
+
+## Buying from a trader with a right click (2026-10-25)
+
+The trading screen now takes orders as the 2026 client does. Before, a left
+click anywhere on a card bought the offer, and a right click did nothing.
+
+Decompiled in the live server tree's Ghidra project:
+
+- `TradingWidget::HandleEvent` (0x14055FB8C): a right click on an item `Icon`
+  calls `BuyItemClick`.
+- `TradingPort::HandleMessage` (0x140560848): once the order is queued, it
+  plays `ui/trader/ui_trader_buy`, then `ui/general/ui_click`.
+- `ClientTradingManager::SellItem` (0x14027F3E8): the same with
+  `ui_trader_sell`.
+- `TradingWidget::UpdateMouseCursor` (0x140565F3C): `mousecursor/buy` over a
+  trader's icon, `mousecursor/sell` over an inventory icon.
+
+What changed:
+
+- **Target.** Each card's `ItemSlot/Icon` is the control (`NpcOffer:<choice>`,
+  `controls::Action::Offer`).
+- **Clicks.** A right click buys one copy of the offer, or buys the stack back.
+  A left click orders nothing, and the rest of the card takes no clicks.
+- **Sounds.** The buy sounds play when the order is sent (online, one order at
+  a time). Right-click selling plays the sell sounds.
+- **Cursor.** `cursor::TradeHover` shows the buy cursor over a trader's item.
+  It shows the sell cursor over a carried item that a right click would sell
+  (`controls::items::sell_cursor`).
+
+Added the same day:
+
+- **Unaffordable offers.** An offer the wallet does not pay is greyed (its item
+  at saturation 0) and its icon takes no click, so no order is sent. The check
+  follows the server's debit (`commerce_protocol.debit_purchase_currency`),
+  currency by currency, after the veteran discount. The shop's own currency
+  comes from the new `currency_items` of `tools/trading_catalog.py` (the
+  current `dialogue.catalog.json` was patched with the same query).
+  `currency::Wallet` gained the legacy balance (`price_uc`).
+- **Large Andermant purchases.** From 20,000 Andermant
+  (`_Globals.LargeRCExpensesNotificationThreshold`), `controls::consent` asks
+  first, as the original's `AskForLargeRCExpenseConsent` does (0x1403E9E6C). It
+  uses `confirmdialog`'s `DefaultDoNotShowAgain` layer; the dialog's page
+  `confirm_layer` now picks between it and the item-destroy layer. Ticking "Do
+  not show this window again" and confirming adds the original's DialogId 6 to
+  the new `Preferences::skipped_dialogs`.
+- **Replay fixtures.** `wallet` and `npc_offers_rc` (offline only).
+
+Not reproduced:
+
+- dragging an item icon into the bags;
+- `IsOfferPurchasable`'s messages (which currency is missing), and its free bag
+  slot check;
+- greying buy-back cards (their price is not in the snapshot).
+
+Tests: 465 client tests passed, 7 of them new (the card wiring, the
+right-click-only order, the trade cursors, the wallet rules, the greyed card,
+and two for the consent). With `--ignored`, the UI asset tests pass except the
+known Kingscity doorway lighting test.
+
+Offline replays of the gem merchant used `npc_offers`, because the old
+`.local/merchant-offers.bin` no longer decodes ("invalid offer category: 92").
+The first replay:
+
+- a left click on an icon logged no order;
+- right clicks on two icons logged choices 3 and 4;
+- a right click on a card's text did nothing.
+
+The second replay had 50,000 Andermant and offers at 25,000 and 60,000:
+
+- the 60,000 offer was greyed and its right click did nothing;
+- the 25,000 offer asked first, and Cancel dropped it;
+- ticking the box and confirming saved `skipped_dialogs: [6]` (in a scratch
+  working directory), and the next right click did not ask.
+
+`profile_native_maps.py kingscity` (debug build): `ui work` 0 after the first
+build. Not tried online yet.
+
+## The talent rules on the server, and the preset countdown (2026-10-25)
+
+Requested after the Skills & Talents window: "add the server support for the
+missing features ... and wire the implemented features to the client". The
+live server tree (`D:\_dso_retired\dso-server\dso_server`) now applies the
+rules the window applies. The originals of the changed files are in
+`dso_server_backup_2026-10-25-talents` (new file:
+`tests/test_talent_services.py`).
+
+Rules added (`services/talents.py`, `protocol/talent_protocol.py`):
+
+- **Unlock levels.** A Wisdom or Group talent's `UnlockLevel` is compared with
+  the character's level, not with that tree's level.
+- **Exclusive groups.** A skill talent is refused while another talent of its
+  `GroupId` has ranks in the preset.
+- **DeselectTalent (280).** It takes a focus point back or switches a trait off,
+  and replaces the talent's effects.
+- **UnlockSkillTalentPreselection (284).** It buys the next Skill preset for
+  `UnlockPreselectionCost` Andermant (10000, 30000, 50000, 100000), then sends
+  CurrencyChanged and 285. The count is saved (`AccountState`
+  `unlocked_skill_presets`) and sent at login; before, 285 always said 0.
+- **Preset limit.** A switch past the membership's `NumTalentSets` (none 2,
+  Premium 3, Deluxe 4), or to a Skill preset not bought, is refused.
+- **Preset cooldown.** Outside a hub (ruleset 5), a switch puts the tree's
+  `SkillPresetCooldown` / `KnowledgePresetCooldown` / `GroupPresetCooldown`
+  (300 s) on the player as a saved, timed effect, and refuses other switches
+  while it runs. The client keeps an effect until the server removes it, so a
+  timer sends the removal when it ends. Entering a hub lifts it ("or you must
+  enter an urban area"), and a map load re-arms the timer.
+- **Reset prices.** ResetTalents (286) and ResetTalentCategory (287) cost gold,
+  priced as the client prices them. The factor comes from
+  `talent_reset_costs_buff`; Honor is free. A reset the wallet cannot pay is
+  refused.
+- **Wisdom Shop.** `skilltree_wisdom_trader`, opened without an NPC, needs
+  `trait_wisdom_all_dungeon_shop`.
+- **Classes.** `niwalk` traits have a class.
+
+A refused command is answered with the server's state: TalentCategoryPointsInfo
+and TalentSelectionInfo, or 285.
+
+Client: the waiting presets' cards now count the cooldown down from the
+effect's end tick ((end - now) x 0.04 s, `talents::card`). Before, they named
+the full 300 s.
+
+Validation:
+
+- `tests/test_talent_services.py`: 14 passed (codecs, preset rules, prices; and
+  through a full login: deselect, unlock levels, groups, purchase and relog,
+  membership, cooldown start, refusal, expiry, re-arm and hub lift, both
+  resets, the trader gate).
+- dso_server suite: 1348 passed, 211 failed. The same 211 fail on a copy with
+  the original files (1334 passed there): combat, summon, wave and mount-speed
+  tests that were already failing.
+- `cargo test -p dsor-client`: 457 passed. The cooldown test now checks the
+  countdown. With `--ignored`, `the_real_window_fills_its_tabs_from_the_view`
+  passes.
+
+The live server needs a restart to load this. Not tried online yet. Still
+missing on both sides: `TalentRespecBlock`.
+
+## The loading screen no longer holds at 98% in Kingshill (2026-10-25)
+
+Online in Kingshill, the loading screen stayed at 98% with every readiness
+check done. Its log said "render warm-up, progress 100%", and the HUD said
+`models 488/487`.
+
+- **The cause:** the server's events take away base scenery (Kingshill's
+  `event_rules`). When a model's last placement went, the events path
+  (`world/map.rs`, since "Map scenery, exits and events follow the server")
+  recounted the wanted models but kept the model loaded. `CurrentMap::progress`
+  counted the loaded models over all handles against the wanted count, and the
+  loading screen waits for `done == total`: 488 never equals 487. `main.rs`'s
+  `total - done` would underflow on the same numbers.
+- **The fix:** `progress` counts only wanted models, and the events path
+  releases a model whose last placement went, as streaming releases those of
+  cells left behind. Its log line now says how many it released.
+
+Validation: a new test (`progress_counts_only_the_models_still_wanted`);
+`cargo test -p dsor-client` 458 passed. Offline Kingshill with the EventUpdate
+and ExitInfo the live server sends at login (taken from its own init code):
+"map events changed 6 cells, released 2 models", HUD `models 535/535`. The old
+code would have kept those 2. Not yet tried online.
+
+The loading screen also tells players it has not frozen (`screens/loading.rs`).
+A status line under the caption names the step in plain words and shows the
+seconds taken. A light crosses the bar while work goes on. After 15 s with
+neither the percent nor the step moving, a note says the game is still working.
+After 45 s, **Enter anyway** (once the map and the player are in) and **Close
+client** appear. Tests: stall timing, wording and buttons (3 new, 461 passed).
+A temporary build held the screen to capture each state: the status line, the
+note, then both buttons. A normal offline Kingshill load still finishes with no
+stall warning.

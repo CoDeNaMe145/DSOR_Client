@@ -19,6 +19,7 @@ pub(super) mod hotbar;
 pub(super) mod effects;
 pub(super) mod currency;
 pub(super) mod message;
+pub(super) mod consent;
 mod tooltips;
 pub(super) use tooltips::overlay as tooltips;
 
@@ -150,6 +151,12 @@ fn section(window: &str, id: &str) -> Section {
         if let Some(row) = leaf.strip_prefix("row").or_else(|| leaf.strip_prefix("label")).and_then(|s| s.parse().ok()) { return Section::SettingsRow(row); }
     }
     let parts: Vec<_> = id.split('/').collect();
+    // The confirmation dialog's two questions (items::prepare_confirm): an item
+    // to destroy, a large Andermant purchase (consent).
+    if window == items::DESTROY_DIALOG {
+        if parts.contains(&"DeleteItem") { return Section::Page(consent::PAGES, 1u32 << consent::DESTROY); }
+        if parts.contains(&"DefaultDoNotShowAgain") { return Section::Page(consent::PAGES, 1u32 << consent::SPEND); }
+    }
     // The hovered monster's ornament -- its top and bottom flourishes -- only
     // on a boss (ui show_hover_window); the frame (gothic_panel) and the level
     // ring stay for every monster.
@@ -189,9 +196,11 @@ fn section(window: &str, id: &str) -> Section {
         }
     }
     if window == CHAT_WINDOW {
-        // Compact mode keeps only the expand button; runtime rows are click-through.
+        // Compact mode keeps only the expand button, on its backdrop and in its
+        // frame (ChatMenuBackgroundLabel, Frame2); runtime rows are click-through.
+        // FAILURE (2026-10-25): with the button alone, it had no border.
         if parts.contains(&"LabelCompact") {
-            return if parts.contains(&"ButtonToggleMode") { Section::ChatCompact } else { Section::Hidden };
+            return if parts.contains(&"ChatMenuBackgroundLabel") { Section::ChatCompact } else { Section::Hidden };
         }
         // The List's row templates are drawn by chat_rows.
         if parts.iter().any(|p| matches!(*p, "TextEntryChannelLabel" | "ScrollHandle" | "ButtonTextLine"))
@@ -224,6 +233,9 @@ enum Action {
     Bar(i32),
     Essence,
     NpcChoice(usize),
+    /// A trader's item (dialogue::merchant): a right click buys it, the
+    /// conversation's choice of this index; a left click does nothing.
+    Offer(usize),
     Close,
     Window(&'static str),
     Inventory(u8),
@@ -268,8 +280,6 @@ enum Action {
     PartyCompact(bool),
     /// The game menu's switch character / logout (social::answer sends it).
     Logout,
-    /// A talent card of skilltalentswindow: buy one rank (spells::apply_drop sends it).
-    Talent(String),
     /// The travel map's destination (social::answer sends it).
     Travel(String),
     /// A systems window's request (systems::send carries it out).
@@ -288,9 +298,10 @@ fn action(window: &str, w: &Widget) -> Action {
     if window == "gamemenu" && matches!(w.event.as_str(), "SwitchCharacter" | "Logout") { return Action::Logout; }
     if dialogue::WINDOWS.contains(&window) {
         if let Some(index) = w.event.strip_prefix("NpcChoice:").and_then(|s| s.parse().ok()) { return Action::NpcChoice(index); }
+        if let Some(index) = w.event.strip_prefix("NpcOffer:").and_then(|s| s.parse().ok()) { return Action::Offer(index); }
     }
     let leaf = w.id.rsplit('/').next().unwrap_or("");
-    if let Some(spell) = &w.spell { return if w.event == "InspectTalent" { Action::Talent(spell.id.clone()) } else { Action::Spell }; }
+    if w.spell.is_some() { return Action::Spell; }
     if w.kind == "TextEntry" { return Action::Edit(w.id.clone()); }
     if w.event == "Close" { return Action::Close; }
     if w.event == "DragRotate" { return Action::DragRotate; }
@@ -331,7 +342,9 @@ fn action(window: &str, w: &Widget) -> Action {
             .map_or(Action::Unavailable, |i| Action::ChatChannel(i as u8));
     }
     if window == items::DESTROY_DIALOG {
-        return match w.event.as_str() { "confirm" => Action::Destroy(true), "cancel" => Action::Destroy(false), _ => Action::Unavailable };
+        return match w.event.as_str() { "confirm" => Action::Destroy(true), "cancel" => Action::Destroy(false),
+            // "Do not show this window again" (consent): ticked or not.
+            "doNotShowAgainClick" => Action::Toggle(w.id.clone()), _ => Action::Unavailable };
     }
     if window == "unstackwindow" {
         return match w.event.as_str() { "split" => Action::Split(0), "increase" => Action::Split(1), "decrease" => Action::Split(-1),
@@ -663,13 +676,11 @@ pub(super) struct Pointer {
     item_command: Option<i32>,
     /// The destroy dialog's answer, for items::input.
     destroy: Option<bool>,
+    /// The large Andermant purchase's answer, for consent::sync.
+    consent: Option<bool>,
     slider: Option<settings::SliderDrag>,
     /// The game menu's logout, for social::answer.
     logout: bool,
-    /// A talent to buy a rank of, and a (preset, category) to switch to, for
-    /// spells::apply_drop.
-    talent: Option<String>,
-    preset: Option<(u8, u8)>,
     /// The travel map's destination, for social::answer.
     travel: Option<String>,
     /// The systems windows' requests, for systems::send.
@@ -768,7 +779,7 @@ fn raise(entity: Entity, windows: &mut Windows) {
 }
 
 fn stacked_window(name: &str) -> bool {
-    is_menu(name) && !matches!(name, "gamemenu" | "unstackwindow" | items::DESTROY_DIALOG | "locationmap" | settings::WINDOW | social::CONTEXT_MENU)
+    is_menu(name) && !matches!(name, "gamemenu" | "unstackwindow" | items::DESTROY_DIALOG | systems::talents::DIALOG | "locationmap" | settings::WINDOW | social::CONTEXT_MENU)
 }
 
 /// Also cover windows opened outside toggle(), including asynchronously loaded
@@ -833,7 +844,7 @@ pub(super) fn keyboard(keys: Res<ButtonInput<KeyCode>>, mut windows: Windows, mu
         return;
     }
     if keys.just_pressed(KeyCode::Escape) {
-        if dialogue.target.is_some() {
+        if dialogue.target.is_some() || dialogue.remote.is_some() {
             dialogue.close();
             for mut player in &mut players { player.target = None; }
             for (_, name, _, mut visibility, _) in &mut windows {
@@ -953,14 +964,14 @@ pub(super) fn interact(
     mut settings: ResMut<settings::Settings>,
     mut hotbar: ResMut<hotbar::Hotbar>,
     mut audio: Option<ResMut<crate::audio::AudioRequests>>,
-    (mut quest_ui, mut party): (ResMut<crate::gameplay::quests::QuestUi>, ResMut<party::Party>),
+    (mut quest_ui, mut party, trade): (ResMut<crate::gameplay::quests::QuestUi>, ResMut<party::Party>, Option<ResMut<crate::ui::cursor::TradeHover>>),
 ) {
     let Ok(mut window) = primary.single_mut() else { return };
     let blocked = panels.iter().any(|(cursor, visible)| visible.get() && cursor.cursor_over());
     let point = window.cursor_position().filter(|_| window.focused && window.height() > 0.0)
         .map(|p| p * (BASE_H / window.height()));
     let width = BASE_H * window.width() / window.height().max(1.0);
-    let modal = windows.iter().filter(|(_, w, _, v, _)| matches!(w.0.as_str(), "gamemenu" | "unstackwindow" | items::DESTROY_DIALOG | settings::WINDOW) && *v != Visibility::Hidden)
+    let modal = windows.iter().filter(|(_, w, _, v, _)| matches!(w.0.as_str(), "gamemenu" | "unstackwindow" | items::DESTROY_DIALOG | systems::talents::DIALOG | settings::WINDOW) && *v != Visibility::Hidden)
         .max_by(|a, b| a.4.translation.z.total_cmp(&b.4.translation.z)).map(|(e, _, _, _, _)| e);
     if !window.focused || mouse.just_pressed(MouseButton::Left) { pointer.focus = None; }
 
@@ -1031,9 +1042,18 @@ pub(super) fn interact(
     let hit = hovered.filter(|(e, index)| windows.get(*e).is_ok_and(|(_, _, c, _, _)| c.enabled(&c.buttons[*index])));
     if !window.focused || blocked || pointer.down.is_some_and(|(e, _)| !windows.get(e).is_ok_and(|(_, _, _, v, _)| *v != Visibility::Hidden)) { pointer.down = None; }
     let mut clicked = pointer.update(hit, mouse.just_pressed(MouseButton::Left), mouse.just_released(MouseButton::Left));
-    // A right click on an album sticker uses it (systems::right_clicked).
+    // A trader's item under the pointer: the buy cursor (crate::ui::cursor).
+    let offer = hit.and_then(|(e, i)| windows.get(e).ok().and_then(|(_, _, c, _, _)|
+        if let Action::Offer(index) = c.buttons[i].action { Some(index) } else { None }));
+    if let Some(mut trade) = trade.filter(|t| t.buy != offer.is_some()) { trade.buy = offer.is_some(); }
+    // A right click on an album sticker uses it (systems::right_clicked); on a
+    // trader's item, buys it (crate::ui::dialogue::sync orders it).
     if mouse.just_pressed(MouseButton::Right) {
-        if let Some(request) = hit.and_then(|(e, i)| windows.get(e).ok().and_then(|(_, _, c, _, _)| systems::right_clicked(&c.buttons[i].action))) {
+        if let Some(index) = offer {
+            info!("ui right click: offer, choice {index}");
+            dialogue.choice = Some(index);
+        } else if let Some(request) = hit.and_then(|(e, i)| windows.get(e).ok().and_then(|(_, name, c, _, _)|
+            systems::right_clicked(&c.buttons[i].action, &name.0, c.buttons[i].spell.as_ref().map(|s| s.id.as_str())))) {
             info!("ui right click: {request:?}");
             pointer.system.push(request);
         }
@@ -1066,8 +1086,9 @@ pub(super) fn interact(
     let Some((entity, index)) = clicked else { return };
     let Ok((_, name, mut controls, mut visibility, _)) = windows.get_mut(entity) else { return };
     let action = controls.buttons[index].action.clone();
-    // Letting go of a turned preview is no click.
-    if action == Action::DragRotate { return; }
+    // Letting go of a turned preview is no click; a trader's item takes the
+    // right button alone.
+    if matches!(action, Action::DragRotate | Action::Offer(_)) { return; }
     if let Some(audio) = audio.as_mut() {
         audio.ui(if matches!(action, Action::Close) { "ui/general/ui_close_screen" } else { "ui/general/ui_click" });
     }
@@ -1085,6 +1106,9 @@ pub(super) fn interact(
         Action::NpcChoice(index) => dialogue.choice = Some(index),
         Action::Item(_) | Action::SplitSlider => {},
         Action::Split(delta) => pointer.item_command = Some(delta),
+        // The confirmation dialog asks about an item to destroy or a large
+        // Andermant purchase (its page, consent::PAGES).
+        Action::Destroy(confirm) if controls.page(consent::PAGES) == consent::SPEND => pointer.consent = Some(confirm),
         Action::Destroy(confirm) => pointer.destroy = Some(confirm),
         Action::Close => *visibility = Visibility::Hidden,
         Action::Inventory(page) => controls.inventory = page,
@@ -1092,7 +1116,6 @@ pub(super) fn interact(
         Action::Tab(group, page) => {
             controls.pages.insert(group, page);
             if group == "rank_group" { controls.pages.insert("rank_category", 0); }
-            if group == "preset" { pointer.preset = Some((page, controls.pages.get("talents").copied().unwrap_or(0))); }
         }
         Action::Toggle(id) => { if !controls.toggles.remove(&id) { controls.toggles.insert(id); } }
         Action::Edit(id) => { controls.entries.entry(id.clone()).or_default(); pointer.focus = Some((entity, id)); }
@@ -1123,7 +1146,10 @@ pub(super) fn interact(
                 if w.0 == CHAT_WINDOW { c.pages.insert("chat_channel", channel); }
             }
         }
-        Action::Spell | Action::Unavailable | Action::DragRotate => {}
+        Action::Spell if name.0 == systems::talents::WINDOW => {
+            if let Some(spell) = &controls.buttons[index].spell { pointer.system.push(systems::Request::Skill(spell.id.clone())); }
+        }
+        Action::Spell | Action::Unavailable | Action::DragRotate | Action::Offer(_) => {}
         Action::Social(clicked) => social.clicked = Some(clicked),
         Action::QuestSelect(id) => quest_ui.selected = Some(id),
         Action::QuestCancel(id) => quest_ui.cancel = Some(id),
@@ -1132,7 +1158,6 @@ pub(super) fn interact(
         Action::QuestCompact(compact) => quest_ui.compact = compact,
         Action::PartyCompact(compact) => party.compact = compact,
         Action::Logout => { pointer.logout = true; *visibility = Visibility::Hidden; }
-        Action::Talent(id) => pointer.talent = Some(id),
         Action::Travel(map) => { pointer.travel = Some(map); *visibility = Visibility::Hidden; }
         // A social window row: the player menu, where the cursor is (social::context_menu).
         Action::System(systems::Request::Player(name)) => { social.target = Some(name); social.menu_at_cursor = true; }
@@ -1241,7 +1266,7 @@ pub(super) fn paint(
         regions.0.extend(controls.regions.iter().filter(|(_, _, gate)| controls.visible(gate)).map(|(k, rect, _)| (*k, translated(*rect, offset))));
         regions.0.extend(controls.buttons.iter().filter(|b| controls.section_visible(b.section)).map(|b| (b.k, translated(b.rect, offset))));
         if let Some(h) = controls.drag_handle { regions.0.push((h.k, translated(h.rect, offset))); }
-        if matches!(name.0.as_str(), "gamemenu" | "unstackwindow" | items::DESTROY_DIALOG) { regions.0.push((0.0, [-1.0e6, -1.0e6, 1.0e6, 1.0e6])); }
+        if matches!(name.0.as_str(), "gamemenu" | "unstackwindow" | items::DESTROY_DIALOG | systems::talents::DIALOG) { regions.0.push((0.0, [-1.0e6, -1.0e6, 1.0e6, 1.0e6])); }
     }
 }
 
@@ -1591,6 +1616,11 @@ mod tests {
             assert!(!controls.covers(Vec2::new(100.0, 550.0), width), "recent text is click-through");
             assert!(!controls.covers(Vec2::new(100.0, 610.0), width), "compact has no entry bar");
         }
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/interface/chatwindow2.ui.json");
+        let layout: Layout = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let frame: Vec<_> = layout.widgets.iter().filter(|w| ["/LabelCompact/ChatMenuBackgroundLabel", "/LabelCompact/ChatMenuBackgroundLabel/Frame2"].iter().any(|end| w.id.ends_with(end))).collect();
+        assert_eq!(frame.len(), 2);
+        assert!(frame.iter().all(|w| controls.visible(&controls.gate(CHAT_WINDOW, w))), "the expand button keeps its backdrop and frame");
         // A tool window holding the keyboard (the Lighting Menu typing a value)
         // keeps its Enter: the chat stays as it was.
         app.world_mut().resource_mut::<crate::ui::input::UiInput>().hold_keys = true;
@@ -2132,6 +2162,43 @@ mod tests {
         assert!(app.world().resource::<Pointer>().drag.is_none(), "cannot grab a window beneath a modal");
         assert!(app.world().resource::<crate::ui::input::UiInput>().blocks(MouseButton::Left));
         release(&mut app);
+    }
+
+    /// A trader's item (dialogue::merchant): the buy cursor while it is under
+    /// the pointer; a right click buys it (the conversation's choice), a left
+    /// click nothing.
+    #[test]
+    fn trader_items_buy_on_a_right_click_alone() {
+        use crate::gameplay::dialogue::Dialogue;
+        use crate::ui::cursor::TradeHover;
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<MouseButton>>().init_resource::<Pointer>().init_resource::<settings::Settings>()
+            .init_resource::<SkillClicks>().init_resource::<crate::network::net::RespawnChoice>()
+            .init_resource::<crate::network::chat::ChatLog>().init_resource::<Dialogue>()
+            .init_resource::<social::SocialUi>().init_resource::<hotbar::Hotbar>().init_resource::<crate::gameplay::quests::QuestUi>()
+            .init_resource::<party::Party>().init_resource::<TradeHover>()
+            .add_message::<bevy::input::mouse::MouseWheel>().add_systems(Update, interact);
+        let primary = app.world_mut().spawn((Window { focused: true, resolution: (1024, 768).into(), ..default() }, PrimaryWindow)).id();
+        let layout: Layout = serde_json::from_value(serde_json::json!({ "window": "tradingscreen", "widgets": [
+            {"id": "Card/ItemSlot/Icon", "type": "Button", "event": "NpcOffer:2", "k": 0.0, "rect": [100.0, 100.0, 150.0, 150.0], "hidden": false}] })).unwrap();
+        app.world_mut().spawn((Window2018("tradingscreen".into()), WindowControls::new(&layout), Visibility::Inherited, Transform::default()));
+        let point = |app: &mut App, at: Vec2| app.world_mut().get_mut::<Window>(primary).unwrap().set_cursor_position(Some(at));
+        point(&mut app, Vec2::new(120.0, 120.0));
+        app.update();
+        assert!(app.world().resource::<TradeHover>().buy);
+        app.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(MouseButton::Left);
+        app.update();
+        app.world_mut().resource_mut::<ButtonInput<MouseButton>>().clear();
+        app.world_mut().resource_mut::<ButtonInput<MouseButton>>().release(MouseButton::Left);
+        app.update();
+        assert_eq!(app.world().resource::<Dialogue>().choice, None, "a left click buys nothing");
+        app.world_mut().resource_mut::<ButtonInput<MouseButton>>().reset_all();
+        app.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(MouseButton::Right);
+        app.update();
+        assert_eq!(app.world().resource::<Dialogue>().choice, Some(2));
+        point(&mut app, Vec2::new(300.0, 300.0));
+        app.update();
+        assert!(!app.world().resource::<TradeHover>().buy);
     }
 }
 

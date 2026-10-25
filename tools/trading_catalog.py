@@ -35,5 +35,10 @@ def export_trading(database, textures):
                 for oid, icon, cls in database.execute('SELECT Id, IconBrush, CharClass FROM _Template_Offer')},
         currencies={shop: texture(icon) for shop, icon in database.execute(
             'SELECT Id, CurrencyIcon FROM _Template_ItemCurrency')},
+        # What a shop's PriceIC is paid in (the wallet key the server debits,
+        # DSOR_Server commerce_protocol.load_shop_currency_resource): the client
+        # greys the offers the player cannot pay.
+        currency_items={shop: item for shop, item in database.execute(
+            'SELECT Id, CurrencyItem FROM _Template_ItemCurrency') if item},
         glyph=texture('ui/icon_currency_glyph'),
     )

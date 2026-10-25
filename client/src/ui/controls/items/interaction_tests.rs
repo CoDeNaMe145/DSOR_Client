@@ -206,17 +206,28 @@ fn the_destroy_dialog_closes_when_its_item_leaves_the_bags() {
 }
 
 #[test]
-fn the_destroy_dialog_shows_only_its_centred_item_variant() {
+fn the_confirmation_dialog_shows_one_centred_layer_by_its_page() {
+    use crate::ui::controls::consent::{DESTROY, PAGES, SPEND};
     let path=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/interface/confirmdialog.ui.json");
     let Ok(bytes)=std::fs::read(path) else { return };
-    let layout=prepare_destroy(&serde_json::from_slice(&bytes).unwrap());
+    let layout=prepare_confirm(&serde_json::from_slice(&bytes).unwrap());
     let shown=|id:&str|layout.widgets.iter().any(|w|w.id==id && !w.hidden);
+    let spend="Canvas/DialogCenter/Content/DefaultDoNotShowAgain";
     assert!(shown(&format!("{DELETE_ITEM}/ItemSlot")));
+    assert!(shown(&format!("{spend}/CheckBox/pressed")) && shown(&format!("{spend}/CheckBoxText")));
     assert!(shown("Canvas/DialogCenter/Confirm") && shown("Canvas/DialogCenter/Cancel"));
-    assert!(!shown(&format!("{DELETE_ITEM}/Question")),"the question is written at runtime");
+    assert!(!shown(&format!("{DELETE_ITEM}/Question")) && !shown(&format!("{spend}/Question")),"the questions are written at runtime");
     assert!(!shown("Canvas/DialogCenter/Content/Default/Question"));
     assert!(!shown("Canvas/DialogCenter/Content/DeleteItemDoNotShowAgain/CheckBox"));
     assert!(layout.widgets.iter().all(|w|!w.id.starts_with("Canvas/DialogBottom")));
+    // One layer at a time: the item to destroy, or the purchase.
+    let mut c=WindowControls::new(&layout);
+    let visible=|c:&WindowControls,id:&str|c.visible(&c.gate(DESTROY_DIALOG,layout.widgets.iter().find(|w|w.id==id).unwrap()));
+    c.set_page(PAGES,DESTROY);
+    assert!(visible(&c,&format!("{DELETE_ITEM}/ItemSlot")) && !visible(&c,&format!("{spend}/CheckBoxText")));
+    c.set_page(PAGES,SPEND);
+    assert!(!visible(&c,&format!("{DELETE_ITEM}/ItemSlot")) && visible(&c,&format!("{spend}/CheckBoxText")));
+    assert!(visible(&c,"Canvas/DialogCenter/Confirm"));
 }
 
 #[test]

@@ -76,13 +76,24 @@ pub(crate) struct Dialogue {
     pub held: bool,
     pub choice: Option<usize>,
     pub generation: u64,
+    /// A trader opened without an NPC, by its shop's name (the Skills &
+    /// Talents window's Wisdom Shop and PvP Merchant): its trading window alone.
+    pub remote: Option<String>,
     route: VecDeque<Vec3>,
     waypoint: Option<Vec3>,
 }
 
 impl Dialogue {
+    /// Opens a trader without an NPC (crate::ui::dialogue shows its offers).
+    pub fn trade(&mut self, shop: String) {
+        self.close();
+        self.generation += 1;
+        self.remote = Some(shop);
+        self.open = true;
+    }
+
     pub fn close(&mut self) {
-        if self.target.take().is_some() { self.generation += 1; }
+        if self.target.take().is_some() | self.remote.take().is_some() { self.generation += 1; }
         self.open = false;
         self.choice = None;
         self.route.clear();

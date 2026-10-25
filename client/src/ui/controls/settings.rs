@@ -38,6 +38,10 @@ pub(crate) struct Preferences {
     /// The currency the currency bar shows beside the money, picked in its bag
     /// (crate::ui::controls::currency): a currency id; empty, the honour.
     pub currency: String,
+    /// The confirmation dialogs the player asked not to see again, by the
+    /// original's DialogId (its settings' list, ClientSettingsManager +0x198):
+    /// 6, a large Andermant purchase (crate::ui::controls::consent).
+    pub skipped_dialogs: Vec<u32>,
     pub bindings: HashMap<String, String>,
     /// The revision of the default bindings the file was saved with (0: saved
     /// before revisions); `migrate` moves older files to the later defaults.
@@ -60,7 +64,7 @@ impl Default for Preferences {
             camera_shake: true, monster_effects: true, attack_hovered: true, classic_cursor: false, lock_bar: false, fullscreen: false,
             vsync: true, graphics: GraphicsSettings::default(), map_transparency: 45,
             audio_muted: false, master_volume: 80, music_volume: 60, ambient_volume: 60, effects_volume: 80,
-            return_link: true, return_checkin: true, currency: String::new(),
+            return_link: true, return_checkin: true, currency: String::new(), skipped_dialogs: Vec::new(),
             bindings: shortcuts().into_iter().map(|(id, _, key)| (id, key.to_owned())).collect(), keymap: KEYMAP }
     }
 }
@@ -209,6 +213,14 @@ impl Settings {
         if self.current.currency == id { return; }
         self.current.currency = id.to_owned();
         self.draft.currency = id.to_owned();
+        if let Err(e) = self.current.save() { warn!("Settings save failed: {e}"); }
+    }
+    /// A confirmation dialog's "Do not show this window again": never asked
+    /// again, kept in the preferences.
+    pub(super) fn skip_dialog(&mut self, id: u32) {
+        if self.current.skipped_dialogs.contains(&id) { return; }
+        self.current.skipped_dialogs.push(id);
+        if !self.draft.skipped_dialogs.contains(&id) { self.draft.skipped_dialogs.push(id); }
         if let Err(e) = self.current.save() { warn!("Settings save failed: {e}"); }
     }
     pub(super) fn begin(&mut self) {
@@ -404,7 +416,7 @@ pub(in crate::ui) fn sliders(settings: Res<Settings>, mut rows: Query<(&mut RowA
             let y = (row.rect[1] + row.rect[3]) * 0.5;
             let x = left + (right - left) * value as f32 / 100.0;
             let mut quad = |l, t, r, b, color: [f32; 4]| run.push(&Art { tex: None,
-                pos: vec![l,t,r,t,r,b,l,b], uv: vec![0.;8], color: color.repeat(4), idx: vec![0,1,2,0,2,3] }, row.depth);
+                pos: vec![l,t,r,t,r,b,l,b], uv: vec![0.;8], color: color.repeat(4), idx: vec![0,1,2,0,2,3], saturation: 1.0 }, row.depth);
             quad(left, y-3., right, y+3., [0.24,0.19,0.12,1.]);
             quad(left, y-2., x, y+2., [0.73,0.52,0.23,1.]);
             quad(x-6., y-10., x+6., y+10., [0.86,0.69,0.40,1.]);
@@ -451,7 +463,7 @@ pub(in crate::ui) fn prepare(layout: &Layout) -> Layout {
 fn add_widget(layout: &mut Layout, id: &str, rect: [f32;4], button: bool, value: &str) {
     let [l,t,r,b] = rect;
     let art = button.then(|| Art { tex: None, pos: vec![l,t,r,t,r,b,l,b,l+1.0,t+1.0,r-1.0,t+1.0,r-1.0,b-1.0,l+1.0,b-1.0], uv: vec![0.0;16],
-        color: [[0.45,0.33,0.16,1.0].repeat(4),[0.12,0.085,0.045,1.0].repeat(4)].concat(), idx: vec![0,1,2,0,2,3,4,5,6,4,6,7] });
+        color: [[0.45,0.33,0.16,1.0].repeat(4),[0.12,0.085,0.045,1.0].repeat(4)].concat(), idx: vec![0,1,2,0,2,3,4,5,6,4,6,7], saturation: 1.0 });
     layout.widgets.push(Widget { id: format!("Canvas/Runtime/{id}"), kind: if button { "Button" } else { "TextLabel" }.into(),
         event: id.into(), click_through: !button, enabled: true, button: None, state: None, spell: None,
         k: 0.5, rect, hidden: false, art, text: Some(Label { text: value.into(), key: "gui.settings.runtime".into(),

@@ -16,10 +16,19 @@ use crate::world::{drops::ItemHover, exits::Exit};
 const CURSOR_SIZE: u32 = 42;
 
 #[derive(Clone, Copy)]
-enum Kind { Default, Attack, Talk, Buy, Interact, Classic }
+enum Kind { Default, Attack, Talk, Buy, Interact, Classic, Sell }
 
 #[derive(Resource)]
-struct Cursors([Handle<Image>; 6]);
+struct Cursors([Handle<Image>; 7]);
+
+/// What the interface under the pointer trades: a trader's item, which a right
+/// click buys (controls::interact), or a carried item a right click sells to
+/// the open trader (controls::items::sell_cursor).
+/// EVIDENCE: release261 UI::TradingWidget::UpdateMouseCursor (0x140565F3C) sets
+///   CursorManager (0x140287D80) mode 2, mousecursor/buy, over an Icon of the
+///   trading screen, mode 1, mousecursor/sell, over one of the inventory, else 0.
+#[derive(Resource, Default)]
+pub(super) struct TradeHover { pub buy: bool, pub sell: bool }
 
 impl Cursors {
     fn icon(&self, kind: Kind, images: &Assets<Image>) -> Option<CursorIcon> {
@@ -37,13 +46,14 @@ pub(super) struct CursorPlugin;
 
 impl Plugin for CursorPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, load)
+        app.init_resource::<TradeHover>()
+            .add_systems(Startup, load)
             .add_systems(PostUpdate, (resize, update).chain().after(crate::rendering::highlight::pick));
     }
 }
 
 fn load(mut commands: Commands, server: Res<AssetServer>) {
-    commands.insert_resource(Cursors(["default", "attack", "talk", "buy", "interact", "arrow"].map(|name| {
+    commands.insert_resource(Cursors(["default", "attack", "talk", "buy", "interact", "arrow", "sell"].map(|name| {
         server.load_builder().with_settings(|settings: &mut ImageLoaderSettings| {
             // The OS needs CPU pixels even after the renderer has extracted assets.
             settings.asset_usage = RenderAssetUsages::MAIN_WORLD;
@@ -83,14 +93,19 @@ fn update(
     exits: Query<(), With<Exit>>,
     net: Option<NonSend<Net>>,
     settings: Res<super::Settings>,
+    trade: Res<TradeHover>,
 ) {
     let Ok((entity, window, current)) = windows.single() else { return };
-    let world_input = window.focused && window.cursor_position().is_some()
-        && login.is_none() && !loading.active() && !selection.is_some_and(|s| s.active)
-        && !ui.over_ui && !ui.blocks(MouseButton::Left)
+    let in_game = window.focused && window.cursor_position().is_some()
+        && login.is_none() && !loading.active() && !selection.is_some_and(|s| s.active);
+    let world_input = in_game && !ui.over_ui && !ui.blocks(MouseButton::Left)
         && !net.as_ref().is_some_and(|n| n.death.dead);
     let mut kind = Kind::Default;
-    if world_input {
+    if in_game && trade.buy {
+        kind = Kind::Buy;
+    } else if in_game && trade.sell {
+        kind = Kind::Sell;
+    } else if world_input {
         if monsters.0.is_some() {
             kind = Kind::Attack;
         } else if items.0.is_some() {
@@ -128,6 +143,7 @@ mod tests {
             .init_resource::<super::super::input::UiInput>()
             .init_resource::<LoadingScreen>().init_resource::<Selection>()
             .init_resource::<Hovered>().init_resource::<ItemHover>().init_resource::<Highlighted>()
+            .init_resource::<TradeHover>()
             .add_systems(PostUpdate, (resize, update).chain());
         let mut window = Window { focused: true, ..default() };
         window.set_cursor_position(Some(Vec2::new(100.0, 100.0)));
@@ -192,6 +208,25 @@ mod tests {
         app.update();
         expect(&app, window, Kind::Default);
         app.world_mut().resource_mut::<Highlighted>().0 = None;
+        app.update();
+        expect(&app, window, Kind::Default);
+    }
+
+    #[test]
+    fn trade_cursors_follow_the_interface_under_the_pointer() {
+        let (mut app, window) = app();
+        app.world_mut().resource_mut::<TradeHover>().buy = true;
+        app.update();
+        expect(&app, window, Kind::Buy);
+        *app.world_mut().resource_mut::<TradeHover>() = TradeHover { buy: false, sell: true };
+        app.update();
+        expect(&app, window, Kind::Sell);
+        app.world_mut().resource_mut::<TradeHover>().sell = false;
+        app.update();
+        expect(&app, window, Kind::Default);
+        // Outside play (here the login screen), the default hand.
+        app.world_mut().resource_mut::<TradeHover>().buy = true;
+        app.world_mut().insert_resource(crate::LoginGate);
         app.update();
         expect(&app, window, Kind::Default);
     }

@@ -21,6 +21,11 @@ struct Step {
     /// quest screen's check marks.
     npc_quest_done: Option<u16>,
     npc_offers: Option<Vec<String>>,
+    /// With npc_offers: their Andermant prices, offer by offer (0 past the list).
+    npc_offers_rc: Option<Vec<u32>>,
+    /// Offline-only wallet, CurrencyChanged's balances (Andermant, gold in
+    /// copper, Honor, legacy, Draken): the trader's greyed offers.
+    wallet: Option<[u64; 5]>,
     /// Replay a server Offer packet through the real decoder, offline only.
     npc_offer_packet: Option<String>,
     /// Offline tooltip fixture, decoded through the ordinary inventory protocol.
@@ -93,6 +98,7 @@ pub(super) fn run(mut commands: Commands, mut replay: Local<Replay>,
             if let Some(position) = step.player {
                 for (mut player, mut at) in &mut players { at.translation = Vec3::from(position); player.target = None; }
             }
+            if let (Some(wallet), Some(net)) = (step.wallet, net.as_mut()) { net.wallet = Some(wallet); net.touch_ui(); }
         }
         if let Some(template) = &step.npc {
             if let Some((npc, at)) = npcs.iter().find(|(n, _)| &n.template == template) {
@@ -121,7 +127,7 @@ pub(super) fn run(mut commands: Commands, mut replay: Local<Replay>,
                     net.npc_dialogue.offers.insert(shop.clone(), Offer { shop,
                         offers: items.iter().enumerate().map(|(i, item)| Some(ShopOffer {
                             id: format!("preview-{i}"), item: item.clone(), amount: (i + 1) as u32,
-                            price_vc: (i as u32 + 1) * 125, ..default()
+                            price_vc: (i as u32 + 1) * 125, price_rc: step.npc_offers_rc.as_ref().and_then(|p| p.get(i)).copied().unwrap_or(0), ..default()
                         })).collect(), ..default()
                     });
                 }

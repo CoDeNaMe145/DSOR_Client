@@ -131,7 +131,7 @@ pub(in crate::ui) fn wrap(text: &str, width: usize, most: usize) -> Vec<String> 
 
 pub(in crate::ui) fn image_art(rect: [f32; 4], texture: String) -> Art {
     let [l, t, r, b] = rect;
-    Art { tex: Some(texture), pos: vec![l, t, r, t, r, b, l, b], uv: vec![0., 0., 1., 0., 1., 1., 0., 1.], color: vec![1.; 16], idx: vec![0, 1, 2, 0, 2, 3] }
+    Art { tex: Some(texture), pos: vec![l, t, r, t, r, b, l, b], uv: vec![0., 0., 1., 0., 1., 1., 0., 1.], color: vec![1.; 16], idx: vec![0, 1, 2, 0, 2, 3], saturation: 1.0 }
 }
 
 /// An item's icon as the inventory draws it: the rarity background, the image,

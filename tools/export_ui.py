@@ -170,13 +170,20 @@ def widget_art(node, mesh, cx0, cy0):
     if t is None and all(c == (1.0, 1.0, 1.0, 1.0) for c in cols) and ref in ("system/white", ""):
         # Untextured white: a hit area, or a slot the game fills at run time.
         return None, None
-    return {
+    art = {
         "tex": f"textures/{ref}.png" if t else None,
         "pos": [round(c, 2) for v in verts for c in (cx0 + v[0], cy0 + v[1])],
         "uv": [round(c, 6) for u in uvs for c in u],
         "color": [round(c, 4) for col in cols for c in col],
         "idx": [i for f in faces for i in f],
-    }, None
+    }
+    # Saturation (1 unchanged, 0 greyscale): the element's own, not its
+    # children's (release261 UI::Element::SetSaturation 0x14072a908). Every
+    # disabled button state is 0.
+    saturation = gx.fvals(a.get("Saturation", "1"), 1, 1.0)[0]
+    if saturation < 0.999:
+        art["saturation"] = round(max(0.0, saturation), 4)
+    return art, None
 
 
 def local_map_controls(widgets):
@@ -216,8 +223,11 @@ def export(name):
             children.sort(key=lambda pair: pair[1].attrs.get("id") != "Artwork")
         if name == "skilltalentswindow":
             # These authored backgrounds appear after the controls in the XML;
-            # the original window controller sends them behind its content.
-            children.sort(key=lambda pair: pair[1].attrs.get("id") not in {"background", "background_classes"})
+            # the original window controller sends them behind its content: the
+            # Group tab's artwork (Label2) covered its level bar, the Honor tab's
+            # boxes (Talents_Background, Traits_Background) its talents.
+            children.sort(key=lambda pair: pair[1].attrs.get("id") not in {"background", "background_classes", "Label2",
+                                                                            "Talents_Background", "Traits_Background"})
         if node.tag in BUTTONS:
             # Nebula buttons paint their state background before their common
             # icon/label children, even when the XML lists the icon first.
@@ -436,6 +446,10 @@ if "bottombar" in only:
     # The status effects above the action bar (BuffBar): which, where, their icons.
     from status_catalog import export_status
     print("status effects:", export_status(catalog, tex, loca, assets))
+if "skilltalentswindow" in only:
+    # The Skills & Talents window's trees: costs, levels, names, icons.
+    from talent_catalog import export_talents
+    print("talents:", export_talents(catalog, tex, loca, assets))
 if "npcscreen" in only or "tradingscreen" in only:
     from dialogue_catalog import export_dialogue
     print("NPC dialogue:", export_dialogue(catalog, tex, loca, assets))

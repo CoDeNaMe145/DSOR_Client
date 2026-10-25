@@ -120,9 +120,32 @@ pub(super) struct Presentation {
     view: Option<View>,
     /// A transaction sent and not yet answered: (inventory revision, time).
     pending: Option<(u64, f64)>,
+    /// A large Andermant purchase waiting for the player's word (asked by
+    /// controls::consent; sync orders it once granted).
+    consent: Option<Consent>,
 }
 
+/// The offer a large Andermant purchase would buy, its Andermant price, and
+/// whether the player agreed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(in crate::ui) struct Consent { pub offer: String, pub andermant: u32, pub granted: bool }
+
 impl Presentation {
+    /// The large Andermant purchase asking for the player's word, if any.
+    pub(in crate::ui) fn consent(&self) -> Option<&Consent> { self.consent.as_ref() }
+    /// The player's answer: the purchase is ordered (sync) or dropped.
+    pub(in crate::ui) fn answer_consent(&mut self, granted: bool) {
+        if granted { if let Some(c) = &mut self.consent { c.granted = true; } } else { self.consent = None; }
+    }
+    /// A purchase asking for the player's word, as sync holds one back.
+    #[cfg(test)]
+    pub(in crate::ui) fn ask_consent(&mut self, offer: &str, andermant: u32) {
+        self.consent = Some(Consent { offer: offer.into(), andermant, granted: false });
+    }
+    /// The shop whose selection is open.
+    fn shop(&self) -> Option<String> {
+        match &self.detail { Some(Detail { action: Action::Shop(shop), .. }) => Some(shop.clone()), _ => None }
+    }
     pub(super) fn choice_label(&self, index: usize) -> Option<&str> {
         if index == CLOSE { Some("Close") }
         else { self.view.as_ref()?.options.get(index).map(|choice| choice.label.as_str()) }
@@ -139,8 +162,30 @@ pub(super) fn setup(mut commands: Commands, assets: Res<AssetServer>) {
     commands.insert_resource(Presentation {
         catalog: assets.load("interface/dialogue.catalog.json"),
         items: assets.load("interface/inventory.items.json"),
-        generation: 0, page: 0, detail: None, merchant: default(), view: None, pending: None,
+        generation: 0, page: 0, detail: None, merchant: default(), view: None, pending: None, consent: None,
     });
+}
+
+/// Sends one order: one copy of an offer, or a sold stack back. One order at a
+/// time: the server answers with the inventory, the wallet and, for item
+/// trades, the buyback list (an Offer that keeps the shop).
+fn order(shop: &str, action: &Action, net: &mut crate::network::net::Net, pending: &mut Option<(u64, f64)>, now: f64,
+    audio: Option<&mut crate::audio::AudioRequests>) {
+    let order = match action {
+        Action::Buy(offer) => inventory::Transaction::buy(shop, offer, 1),
+        Action::Restore(item) => inventory::Transaction::restore(shop, *item),
+        _ => return,
+    };
+    net.send(&ClientCommand::Transaction(order));
+    *pending = Some((net.inventory.revision, now));
+    // EVIDENCE: release261 UI::TradingWidget::TradingPort::HandleMessage
+    //   (0x140560848) plays these once ClientTradingManager::BuyOffer
+    //   (0x140279648) has queued the order; HandleEvent (0x14055FB8C)
+    //   the same after a buyback.
+    if let Some(audio) = audio {
+        audio.ui("ui/trader/ui_trader_buy");
+        audio.ui("ui/general/ui_click");
+    }
 }
 
 fn menu(info: Option<&actors::NpcInfo>, target: &crate::gameplay::dialogue::Target, catalog: &Catalog) -> Vec<Choice> {
@@ -197,8 +242,8 @@ pub(super) fn sync(
     players: Query<&crate::actors::character::Character, With<crate::network::net::LocalPlayer>>,
     time: Res<Time>,
     mut desk_windows: Query<(&Window2018, &mut Visibility)>,
-    (quest_ui, quest_catalogs, mut audio): (Option<Res<crate::gameplay::quests::QuestUi>>, Option<Res<Assets<crate::gameplay::quests::QuestCatalog>>>,
-        Option<ResMut<crate::audio::AudioRequests>>),
+    (quest_ui, quest_catalogs, mut audio, settings): (Option<Res<crate::gameplay::quests::QuestUi>>, Option<Res<Assets<crate::gameplay::quests::QuestCatalog>>>,
+        Option<ResMut<crate::audio::AudioRequests>>, Res<super::Settings>),
     mut seen: Local<Option<ViewKey>>,
 ) {
     if presentation.generation != dialogue.generation {
@@ -208,12 +253,20 @@ pub(super) fn sync(
         presentation.merchant = default();
         presentation.view = None;
         presentation.pending = None;
+        presentation.consent = None;
         // Old buttons belong to the old NPC, even if their release arrives now.
         dialogue.choice = None;
     }
     // The server's answer changes the inventory; a lost one must not lock the shop.
     if presentation.pending.is_some_and(|(revision, at)| net.as_ref().is_none_or(|n| n.inventory.revision != revision) || time.elapsed_secs_f64() - at > 2.0) {
         presentation.pending = None;
+    }
+    // A large Andermant purchase the player agreed to (controls::consent).
+    if presentation.consent.as_ref().is_some_and(|c| c.granted) {
+        let offer = presentation.consent.take().map(|c| c.offer).unwrap_or_default();
+        if let (Some(shop), Some(net), None) = (presentation.shop(), net.as_mut().filter(|n| !n.offline && n.inventory.ready), presentation.pending) {
+            order(&shop, &Action::Buy(offer), net, &mut presentation.pending, time.elapsed_secs_f64(), audio.as_deref_mut());
+        }
     }
     // The view is built when what it shows may have changed: a choice, the
     // conversation's page, the server's word (Net::ui_revision), a catalog
@@ -228,7 +281,14 @@ pub(super) fn sync(
     *seen = Some(key);
     let fallback = Catalog::default();
     let catalog = catalogs.get(&presentation.catalog).unwrap_or(&fallback);
-    let active = dialogue.target.as_ref().filter(|_| dialogue.open).cloned();
+    // A trader opened without an NPC (Dialogue::trade): its selection at once,
+    // under no NPC (no portrait, no menu); Back closes it.
+    let remote = dialogue.remote.clone().filter(|_| dialogue.open && dialogue.target.is_none());
+    if let Some(shop) = &remote {
+        if presentation.detail.is_none() { presentation.detail = Some(Detail { action: Action::Shop(shop.clone()), page: 0 }); }
+    }
+    let active = dialogue.target.as_ref().filter(|_| dialogue.open).cloned().or_else(|| remote.as_ref().map(|shop|
+        crate::gameplay::dialogue::Target { entity: Entity::PLACEHOLDER, actor: 0, template: shop.clone(), profile: default() }));
     let mut next = None;
     if let Some(target) = active {
         let info = net.as_ref().and_then(|n| n.npc_dialogue.infos.get(&target.actor));
@@ -244,6 +304,7 @@ pub(super) fn sync(
                     }
                     dialogue.close();
                 }
+                Some(Action::Back) if remote.is_some() => dialogue.close(),
                 Some(Action::Back) => presentation.detail = None,
                 Some(Action::Category(category)) => {
                     presentation.merchant.category = Some(category);
@@ -265,18 +326,31 @@ pub(super) fn sync(
                     else { presentation.page += 1; }
                 }
                 Some(action @ (Action::Buy(_) | Action::Restore(_))) => {
-                    // One order at a time: the server answers with the inventory, the
-                    // wallet and, for item trades, the buyback list (an Offer that keeps
-                    // the shop). A purchase buys one copy of the offer.
-                    let shop = match &presentation.detail { Some(Detail { action: Action::Shop(shop), .. }) => Some(shop.clone()), _ => None };
-                    if let (Some(shop), Some(net), None) = (shop, net.as_mut().filter(|n| !n.offline && n.inventory.ready), presentation.pending) {
-                        let order = match action {
-                            Action::Buy(offer) => inventory::Transaction::buy(&shop, &offer, 1),
-                            Action::Restore(item) => inventory::Transaction::restore(&shop, item),
-                            _ => unreachable!(),
+                    // Offline, the same checks and question; only the order needs the server.
+                    if let (Some(shop), Some(net), None) = (presentation.shop(), net.as_mut(), presentation.pending) {
+                        let offer = match &action {
+                            Action::Buy(id) => net.npc_dialogue.offers.get(&shop).and_then(|o| o.offers.iter().flatten().find(|o| o.id == *id)).cloned(),
+                            _ => None,
                         };
-                        net.send(&ClientCommand::Transaction(order));
-                        presentation.pending = Some((net.inventory.revision, time.elapsed_secs_f64()));
+                        let wallet = net.wallet.is_some().then(|| controls::currency::Wallet::of(net));
+                        match offer {
+                            // Greyed on its card, which takes no click (merchant::prepare):
+                            // never ordered.
+                            // DEVIATION: the original's IsOfferPurchasable (0x14027C184)
+                            //   names the missing currency (gui.window.messages
+                            //   insufficientVCToBuy...) and checks for a free bag slot
+                            //   (noFreeInventorySlot); the server decides the slot here.
+                            Some(o) if wallet.as_ref().is_some_and(|w| !merchant::affordable(&o, &shop, &catalog.trading, w)) => {}
+                            // From LARGE_ANDERMANT on, the player's word first (controls::consent),
+                            // unless they asked not to be asked again.
+                            Some(o) if merchant::andermant(&o) >= merchant::LARGE_ANDERMANT
+                                && !settings.current.skipped_dialogs.contains(&controls::consent::DIALOG_ID) => {
+                                presentation.consent = Some(Consent { andermant: merchant::andermant(&o), offer: o.id, granted: false });
+                            }
+                            _ if !net.offline && net.inventory.ready =>
+                                order(&shop, &action, net, &mut presentation.pending, time.elapsed_secs_f64(), audio.as_deref_mut()),
+                            _ => {}
+                        }
                     }
                 }
                 Some(action @ (Action::Quest(_) | Action::Talk(_, _) | Action::Shop(_))) if available.iter().any(|c| c.action == action) => {
@@ -366,8 +440,11 @@ pub(super) fn sync(
                         let offers = net.as_ref().and_then(|n| n.npc_dialogue.offers.get(shop));
                         let class = players.iter().next().map(|c| c.desc.class);
                         let level = net.as_ref().and_then(|n| n.level);
+                        // The wallet greys what it does not pay (CurrencyChanged bumps
+                        // Net::ui_revision: rebuilt when it changes).
+                        let wallet = net.as_ref().filter(|n| n.wallet.is_some()).map(|n| controls::currency::Wallet::of(n));
                         let merchant = merchant::build(offers, &presentation.merchant, detail.page,
-                            item_catalogs.get(&presentation.items), &catalog.trading, class, level);
+                            item_catalogs.get(&presentation.items), &catalog.trading, class, level, wallet.as_ref());
                         merchant.choices(&mut view.options);
                         let body = if offers.is_none() {
                             if net.as_ref().is_some_and(|n| n.offline) { "The merchant's selection is available when playing online." }
@@ -418,7 +495,7 @@ fn stretch(x: f32, left: f32, right: f32, extra: f32) -> f32 {
 
 fn image_art(rect: [f32; 4], texture: String) -> Art {
     let [l, t, r, b] = rect;
-    Art { tex: Some(texture), pos: vec![l, t, r, t, r, b, l, b], uv: vec![0., 0., 1., 0., 1., 1., 0., 1.], color: vec![1.; 16], idx: vec![0, 1, 2, 0, 2, 3] }
+    Art { tex: Some(texture), pos: vec![l, t, r, t, r, b, l, b], uv: vec![0., 0., 1., 0., 1., 1., 0., 1.], color: vec![1.; 16], idx: vec![0, 1, 2, 0, 2, 3], saturation: 1.0 }
 }
 
 fn set_text(w: &mut Widget, text: &str) {

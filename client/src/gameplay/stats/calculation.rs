@@ -176,6 +176,37 @@ fn resistance_targets(i: &Instruction, item: bool) -> Vec<&'static str> {
     } else { Vec::new() }
 }
 
+/// The talent ranks the equipped items add (TalentLevelBonus: amount, talent):
+/// their own and their sockets' modifiers, the sets' reached thresholds; by
+/// talent id in lower case (the programs are lowered).
+/// EVIDENCE: release261 Game::TalentLevelBonus (talentlevelbonus.cc); the
+///   talents window shows them as bonus ranks (data/diagnostics
+///   skilltalents-widget.annotated.txt, 0x14036c93c).
+pub fn talent_bonuses(d: &StatsData, inventory: &InventoryState) -> HashMap<String, u32> {
+    let mut out = HashMap::new();
+    let Some(db) = &d.combat else { return out };
+    let mut equipped = HashSet::new();
+    let mut add = |kind: &str, args: &[String]| {
+        if kind != "talentlevelbonus" { return; }
+        let (Some(amount), Some(talent)) = (args.first().and_then(|a| a.parse::<f64>().ok()), args.get(1)) else { return };
+        *out.entry(talent.clone()).or_insert(0) += amount.max(0.0).round() as u32;
+    };
+    for (id, slots) in &inventory.allocation.slots {
+        if slots.contains(&34) { continue; }
+        let Some(item) = inventory.items.get(id) else { continue };
+        if !db.items.contains_key(&item.template) { continue; }
+        equipped.insert(item.template.as_str());
+        for i in db.item(item) { add(&i.kind, &i.args); }
+    }
+    for set in &db.sets {
+        let count = set.parts.iter().filter(|part| equipped.contains(part.as_str())).count();
+        for (_, program) in set.tiers.iter().filter(|(n, _)| count >= *n) {
+            for (kind, args) in program { add(kind, args); }
+        }
+    }
+    out
+}
+
 pub fn calculate(d: &StatsData, class: &str, level: u32, inventory: &InventoryState,
     effects: impl IntoIterator<Item = StatusEffectElement>) -> HashMap<String, f64> {
     let Some(db) = &d.combat else { return HashMap::new(); };

@@ -647,7 +647,7 @@ pub(super) fn resize(
 pub(super) fn quad_art(rect: [f32; 4], stage: Stage) -> Art {
     let [l, t, r, b] = rect;
     Art { tex: Some(stage.texture().to_owned()), pos: vec![l, t, r, t, r, b, l, b], uv: vec![0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0],
-        color: vec![1.0; 16], idx: vec![0, 1, 2, 0, 2, 3] }
+        color: vec![1.0; 16], idx: vec![0, 1, 2, 0, 2, 3], saturation: 1.0 }
 }
 
 /// The inventory with its `figur`s drawn: the character's image on the
