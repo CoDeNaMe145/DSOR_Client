@@ -169,7 +169,13 @@ fn use_consumable(state: &InventoryState, catalog: &Catalog, id: u32) -> Option<
     // server summons or wears one and sends it away again (equip_toggle).
     if item.third == 0 || !state.movable(id) || !matches!(state.location(id), Some(Place::Bag(_) | Place::Extra(_)))
         || !matches!(meta.item_category.as_str(), "Consumable" | "InstantConsumable" | "SkinConsumable" | "RecipeConsumable" | "ConsumablePaymentItem"
-            | "Mount" | "Pet" | "Mercenary" | "Switchable" | "Costume" | "TempCostume") { return None; }
+            | "Mount" | "Pet" | "Mercenary" | "Switchable" | "Costume" | "TempCostume"
+            // Chests, lottery tickets, currency items and season pass items: the
+            // server opens or credits them on the same use (DSOR_Server
+            // services/inventory_map.py operation 0x13: currency credit, season
+            // pass, payment package, then chest_loot_protocol's containers).
+            // FAILURE: "les coffres ... je peux pas les utiliser dans l'inventaire".
+            | "LootGenItem" | "LootGenItemAutoIdent" | "Selective" | "LotteryTicket" | "ItemCurrency" | "SeasonPassExp") { return None; }
     Some(crate::gameplay::inventory::command(id, dsor_proto::commands::inventory::Inventory::USE, vec![]))
 }
 fn ingredient<'a>(catalog: &'a Catalog, w: &WindowControls, slot: usize) -> Option<&'a Ingredient> {
