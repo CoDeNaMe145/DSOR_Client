@@ -92,7 +92,7 @@ pub(crate) struct Transformed {
 
 fn apply_rides(
     mut commands: Commands,
-    net: Option<NonSendMut<Net>>,
+    mut net: Option<NonSendMut<Net>>,
     skills: Option<Res<SkillData>>,
     statuses: Res<Assets<StatusTable>>,
     data: Res<Data>,
@@ -106,7 +106,7 @@ fn apply_rides(
     mut tested: Local<(u8, f32)>,
 ) {
     let now = time.elapsed_secs();
-    if let Some(mut net) = net {
+    if let Some(net) = net.as_mut() {
         // DSOR_TEST_MOUNT=<ride effect id>: the offline player gets the server's
         // sequence (customization.py): the cast effect (cast_*, 2.4 s), then the
         // ride, then the cast's removal (screenshots).
@@ -176,12 +176,19 @@ fn apply_rides(
                     anim_set: t.anim_set.clone(),
                     variation,
                 };
-                crate::actors::character::reshape(&mut character, Some(look));
+                crate::actors::character::reshape(&mut commands, &mut character, Some(look));
                 commands.entity(entity).try_insert(Transformed { instance });
+                if let Some(net) = net.as_mut().filter(|n| n.local_actor == Some(holder) && !t.skills.is_empty()) {
+                    let base = net.quickbars.bars.first().cloned().unwrap_or_default();
+                    net.hidden_bar = Some(crate::network::net::hidden_bar(&base, &t.skills));
+                }
                 info!("{holder:#x} transforms ({})", def.id);
             } else if transformed.is_some_and(|t| t.instance == instance) {
-                crate::actors::character::reshape(&mut character, None);
+                crate::actors::character::reshape(&mut commands, &mut character, None);
                 commands.entity(entity).remove::<Transformed>();
+                if let Some(net) = net.as_mut().filter(|n| n.local_actor == Some(holder)) {
+                    net.hidden_bar = None;
+                }
                 info!("{holder:#x} transforms back ({})", def.id);
             }
             continue;

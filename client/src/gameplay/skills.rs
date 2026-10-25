@@ -306,6 +306,9 @@ pub struct StatusTransform {
     #[serde(default)]
     pub variation: String,
     pub anim_set: String,
+    /// Its UnlockHiddenSkills, in order (crate::network::net::hidden_bar).
+    #[serde(default)]
+    pub skills: Vec<String>,
 }
 
 impl StatusDef {

@@ -1591,9 +1591,13 @@ pub(crate) fn drive_animations(
     }
 }
 
-/// Wear a status effect's transformation (CharacterDesc::shape), or drop it:
-/// the outfit is rebuilt as for an equipment change.
-pub fn reshape(character: &mut Character, shape: Option<NpcLook>) {
+/// Wear a status effect's transformation (CharacterDesc::shape), or drop it.
+/// CONTRACT: a fresh skeleton instance (new generation): a body variation is
+///   applied only when a skeleton is adopted, and an equipment change keeps the
+///   live one.
+/// FAILURE: rebuilt as an equipment change, the Iron Dwarf kept the dwarf's
+///   size (var_irondwarf scales the rig about 2x: "il a pas la bonne taille").
+pub fn reshape(commands: &mut Commands, character: &mut Character, shape: Option<NpcLook>) {
     let same = match (&character.desc.shape, &shape) {
         (None, None) => true,
         (Some(a), Some(b)) => a.parts == b.parts && a.anim_set == b.anim_set,
@@ -1601,6 +1605,10 @@ pub fn reshape(character: &mut Character, shape: Option<NpcLook>) {
     };
     if same { return; }
     character.desc.shape = shape;
+    if let Some(skeleton) = character.skeleton.take() {
+        commands.entity(skeleton).try_despawn();
+    }
+    character.generation = character.generation.wrapping_add(1);
     character.built = false;
 }
 

@@ -68,7 +68,10 @@ pub(super) fn item<'a>(slot: &Slot, inventory: &'a InventoryState) -> Option<&'a
 }
 
 pub(super) fn slot<'a>(net: &'a crate::network::net::Net, bar: usize, index: usize) -> Option<&'a Slot> {
-    net.quickbars.bars.get(bar)?.get(index)
+    match &net.hidden_bar {
+        Some(hidden) => hidden.get(index),
+        None => net.quickbars.bars.get(bar)?.get(index),
+    }
 }
 
 /// The skill a quick slot holds, if it holds one (not an item or essence).
@@ -130,7 +133,8 @@ pub(in crate::ui) fn input(mut bar: ResMut<Hotbar>, keys: Res<ButtonInput<KeyCod
     let count = net.quickbars.bars.len();
     if count > 0 {
         bar.active = (bar.active as i32 + bar.change).rem_euclid(count as i32) as usize;
-        net.bar = net.quickbars.bars[bar.active].iter().map(|s| if s.kind == 0 { s.id.clone() } else { None }).collect();
+        let shown = net.hidden_bar.as_ref().unwrap_or(&net.quickbars.bars[bar.active]);
+        net.bar = shown.iter().map(|s| if s.kind == 0 { s.id.clone() } else { None }).collect();
     } else { bar.active = 0; }
     bar.change = 0;
     if bar.swap_essence || settings.current.pressed("essence", &keys) {

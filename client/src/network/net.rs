@@ -308,6 +308,9 @@ pub struct Net {
     pub bar: Vec<Option<String>>,
     /// Preserve all slot kinds and bars when saving an edited bar (0x51).
     pub quickbars: dsor_proto::commands::inventory::QuickSlotsInfo,
+    /// The bar a transformation's hidden skills show in place of the quick bars
+    /// (hidden_bar), while it lasts.
+    pub hidden_bar: Option<Vec<dsor_proto::commands::inventory::QuickSlot>>,
     pub inventory: crate::gameplay::inventory::InventoryState,
     pub corrections: crate::network::corrections::Corrections,
     pub skill_book: Option<dsor_proto::commands::inventory::SkillBookInfo>,
@@ -1006,6 +1009,7 @@ pub fn start_offline(world: &mut World, class: u8, gender: u8) {
         actor_effects_stamp: 0,
         ui_revision: 0,
         mount_events: Vec::new(),
+        hidden_bar: None,
         pet_events: Vec::new(),
         pet_revivals: Vec::new(),
         location_events: Vec::new(),
@@ -1309,6 +1313,7 @@ pub(crate) fn start_session(world: &mut World, config: NetConfig) {
         actor_effects_stamp: 0,
         ui_revision: 0,
         mount_events: Vec::new(),
+        hidden_bar: None,
         pet_events: Vec::new(),
         pet_revivals: Vec::new(),
         location_events: Vec::new(),
@@ -1758,7 +1763,9 @@ pub(crate) fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u3
         ServerCommand::QuickSlotsInfo(q) => {
             net.quickbars = q.clone();
             if let Some(first) = q.bars.first() {
-                net.bar = first.iter().map(|s| if s.kind == 0 { s.id.clone() } else { None }).collect();
+                if net.hidden_bar.is_none() {
+                    net.bar = first.iter().map(|s| if s.kind == 0 { s.id.clone() } else { None }).collect();
+                }
                 info!("quick slots: {:?}", net.bar.iter().flatten().collect::<Vec<_>>());
             }
         }
@@ -2873,5 +2880,49 @@ fn player_deaths(
         net.death.requested = true;
         net.death.dialog = false;
         net.death.chosen = Some((at_respawn_point, instant));
+    }
+}
+
+/// A transformation's bar (Messaging::EnableHiddenSkills, BottombarProperty
+/// 0x14013fde4 -> 0x14013f40c): its hidden skills fill the slot codes 0, 1, 3,
+/// 4... (2 is skipped and locked empty); the other codes below 10 holding a
+/// skill are locked empty (LockQuickslot 0x1403a4270), the rest keep theirs
+/// (LockInsertionOfQuickslot 0x1403a3f24). Every quick bar shows the same.
+/// ASSUMPTION: the original's SlotCode numbers are the server's quick slot
+///   indices (0 LMB, 1 RMB, 2..6 QuickSlot1..5).
+pub fn hidden_bar(base: &[dsor_proto::commands::inventory::QuickSlot], skills: &[String]) -> Vec<dsor_proto::commands::inventory::QuickSlot> {
+    use dsor_proto::commands::inventory::QuickSlot as Slot;
+    let mut bar: Vec<Slot> = (0..17).map(|i| base.get(i).cloned().unwrap_or(Slot { kind: Slot::EMPTY, id: None })).collect();
+    let mut codes = (0..10usize).filter(|c| *c != 2);
+    let mut placed = std::collections::HashSet::new();
+    for skill in skills {
+        let Some(code) = codes.next() else { break };
+        bar[code] = Slot { kind: 0, id: Some(skill.clone()) };
+        placed.insert(code);
+    }
+    for code in 0..10 {
+        if !placed.contains(&code) && (code == 2 || bar[code].kind == 0) {
+            bar[code] = Slot { kind: Slot::EMPTY, id: None };
+        }
+    }
+    bar
+}
+
+#[cfg(test)]
+mod hidden_bar_tests {
+    use dsor_proto::commands::inventory::QuickSlot as Slot;
+
+    #[test]
+    fn hidden_skills_take_codes_0_1_3_and_lock_the_other_skills() {
+        let skill = |s: &str| Slot { kind: 0, id: Some(s.into()) };
+        let mut base: Vec<Slot> = (0..17).map(|i| skill(&format!("s{i}"))).collect();
+        base[13] = Slot { kind: 1, id: Some("potion".into()) };
+        let skills = ["IronDwarfPrimarySkill", "IronDwarfMovementSkill", "IronDwarfEnd"].map(String::from);
+        let bar = super::hidden_bar(&base, &skills);
+        assert_eq!(bar[0].id.as_deref(), Some("IronDwarfPrimarySkill"));
+        assert_eq!(bar[1].id.as_deref(), Some("IronDwarfMovementSkill"));
+        assert_eq!(bar[3].id.as_deref(), Some("IronDwarfEnd"));
+        for code in [2, 4, 5, 6, 7, 8, 9] { assert_eq!(bar[code].kind, Slot::EMPTY, "{code}"); }
+        assert_eq!(bar[13].id.as_deref(), Some("potion"));
     }
 }
