@@ -194,6 +194,10 @@ pub(in crate::ui) struct Detail {
     pub result: Icon,
     /// The crafted item's template (the hover card).
     pub result_template: String,
+    /// How many the craft gives (CraftedItemId's amount times the amount
+    /// crafted): written on the result, as a stack's count.
+    /// FAILURE: "quand je brise je sais pas ca me fait combien de rune ou de dust".
+    pub result_amount: u32,
     pub ingredients: Vec<Ingredient>,
     pub price_vc: u64,
     pub price_rc: u32,
@@ -294,6 +298,7 @@ pub(super) fn workbench(sources: &Sources) -> Workbench {
             // FAILURE: the dust's result showed no icon.
             result: recipe.map(|r| sources.icon(ingredient(&r.crafted).0, None)).unwrap_or_default(),
             result_template: recipe.map(|r| ingredient(&r.crafted).0.to_owned()).unwrap_or_default(),
+            result_amount: recipe.map_or(0, |r| ingredient(&r.crafted).1 * amount),
             ingredients: recipe.map(|r| r.ingredients.iter().take(MOST_INGREDIENTS).enumerate().map(|(n, i)| {
                 let (template, need) = ingredient(i);
                 Ingredient { template: template.to_owned(), icon: sources.icon(template, None), have: carried_amount(sources, template), need: need * amount,
@@ -476,7 +481,7 @@ pub(super) fn prepare_workbench(source: &Layout, bench: &Workbench) -> Layout {
     for mut w in clone_at(source, &format!("{BENCH}/WorkbenchResultLabel/TemplateIcon"), &format!("{BENCH}/WorkbenchResultLabel/Icon"), 0.0, 0.0) {
         let layers = icon_layers(&mut w, &detail.result);
         make_button(&mut w, &format!("Sys:BenchItem:{}", usize::MAX));
-        set_text(&mut w, "");
+        set_text(&mut w, &detail.result_amount.to_string());
         layout.widgets.extend(layers);
         layout.widgets.push(w);
     }
