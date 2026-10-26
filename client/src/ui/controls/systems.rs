@@ -207,7 +207,11 @@ pub(crate) struct State {
     /// the socket's open padlock sets one (GemDeskWidget::SocketUI
     /// HandleLockUnlockButtonClick 0x140436bf0: a placed gem, state 2, is only
     /// sent to the server when locked).
-    pub gem_preview: Vec<(usize, u32)>,
+    /// By template: a locked gem's stack changes id, and several of one
+    /// stack can be placed before any is locked.
+    /// FAILURE: "je devrais pouvoir ajouter plusieurs pierres et les lock toutes
+    ///   1 par 1".
+    pub gem_preview: Vec<(usize, String)>,
     /// Set gems being unlocked (socket, template): once the server has taken
     /// one out, it is placed again, its padlock open, until it is locked
     /// again or right-clicked away.
@@ -893,15 +897,21 @@ pub(in crate::ui) fn send(
     // dropped; an unlocked gem out of the item is placed again.
     if let Some(item) = state.gem_target.and_then(|id| net.inventory.items.get(&id)).cloned() {
         let held = |s: usize| item.names.get(s).is_some_and(|g| !g.is_empty());
-        if state.gem_preview.iter().any(|(s, g)| held(*s) || !net.inventory.items.contains_key(g)) {
-            state.gem_preview.retain(|(s, g)| !held(*s) && net.inventory.items.contains_key(g));
+        // As many placed of a gem as are carried.
+        let carried = |t: &str| net.inventory.items.values().filter(|i| i.template == t
+            && matches!(net.inventory.location(i.id), Some(Place::Bag(_) | Place::Extra(_)))).map(|i| i.third.max(1) as usize).sum::<usize>();
+        let fits = |list: &[(usize, String)]| list.iter().enumerate().all(|(n, (s, t))| !held(*s) && list[..=n].iter().filter(|(_, u)| u == t).count() <= carried(t));
+        if !fits(&state.gem_preview) {
+            let mut kept: Vec<(usize, String)> = Vec::new();
+            for (s, t) in std::mem::take(&mut state.gem_preview) {
+                if !held(s) && kept.iter().filter(|(_, u)| *u == t).count() < carried(&t) { kept.push((s, t)); }
+            }
+            state.gem_preview = kept;
         }
         if state.gem_reopen.iter().any(|(s, _)| !held(*s)) {
             for (s, template) in std::mem::take(&mut state.gem_reopen) {
                 if held(s) { state.gem_reopen.push((s, template)); continue; }
-                let sources = Sources { net: &net, catalog, items: None, names: None, state: &state, class: None, talents: None, bonuses: None };
-                let free = sources.carried(&template).into_iter().find(|id| !state.gem_preview.iter().any(|(_, g)| g == id));
-                if let Some(id) = free { state.gem_preview.push((s, id)); }
+                if state.gem_preview.iter().filter(|(_, u)| *u == template).count() < carried(&template) { state.gem_preview.push((s, template)); }
             }
         }
     }
@@ -1069,8 +1079,10 @@ pub(in crate::ui) fn send(
             // The open padlock locks the placed gem in (it stays shown until the
             // item has it); the closed one unlocks it: taken out, then placed again.
             Request::Socket(socket) if state.gem_preview.iter().any(|(s, _)| *s == socket) => {
-                let gem = state.gem_preview.iter().find(|(s, _)| *s == socket).map(|(_, g)| *g).unwrap_or_default();
-                if let Some(target) = state.gem_target.filter(|id| net.inventory.items.contains_key(id)).filter(|_| net.inventory.items.contains_key(&gem)) {
+                let template = state.gem_preview.iter().find(|(s, _)| *s == socket).map(|(_, g)| g.clone()).unwrap_or_default();
+                let sources = Sources { net: &net, catalog, items: None, names: None, state: &state, class: None, talents: None, bonuses: None };
+                let gem = sources.carried(&template).first().copied();
+                if let (Some(target), Some(gem)) = (state.gem_target.filter(|id| net.inventory.items.contains_key(id)), gem) {
                     commands.push(crate::gameplay::inventory::command(gem, 0x11, vec![target as i32, socket as i32]));
                     wait = true;
                 }
@@ -1266,10 +1278,12 @@ pub(in crate::ui) fn pick(state: &mut State, desk: &str, net: &Net, item: &inven
             //   took it out again ("quand je verrouille le slot ca me la remet
             //   en inventaire").
             let target = net.inventory.items.get(&state.gem_target?)?;
-            if state.gem_preview.iter().any(|(_, gem)| *gem == item.id) { return None; }
+            let carried: u32 = net.inventory.items.values().filter(|i| i.template == item.template
+                && matches!(net.inventory.location(i.id), Some(Place::Bag(_) | Place::Extra(_)))).map(|i| i.third.max(1)).sum();
+            if state.gem_preview.iter().filter(|(_, t)| *t == item.template).count() as u32 >= carried { return None; }
             let socket = (0..target.tenth as usize).find(|n| target.names.get(*n).is_none_or(|g| g.is_empty())
                 && !state.gem_preview.iter().any(|(s, _)| s == n))?;
-            state.gem_preview.push((socket, item.id));
+            state.gem_preview.push((socket, item.template.clone()));
             None
         }
         GEMDESK if carried || worn => { state.gem_target = Some(item.id); state.gem_preview.clear(); None }

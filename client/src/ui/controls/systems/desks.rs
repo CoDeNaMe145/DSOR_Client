@@ -96,7 +96,7 @@ pub(super) fn gems(sources: &Sources) -> Gems {
         open: n < count,
         preview: sources.state.gem_preview.iter().any(|(s, _)| *s == n),
         template: item.names.get(n).filter(|g| !g.is_empty()).cloned()
-            .or_else(|| sources.state.gem_preview.iter().find(|(s, _)| *s == n).and_then(|(_, gem)| sources.net.inventory.items.get(gem)).map(|g| g.template.clone())),
+            .or_else(|| sources.state.gem_preview.iter().find(|(s, _)| *s == n).map(|(_, t)| t.clone())),
         gem: None,
         price: (n == count).then(|| sources.catalog.socket_price(n + 1, item.kind, trinket)),
     }).map(|mut s: Socket| { s.gem = s.template.as_ref().map(|g| (sources.name(g, None), sources.icon(g, None))); s }).collect();
@@ -118,7 +118,12 @@ pub(super) fn prepare_gemdesk(source: &Layout, gems: &Gems) -> Layout {
                 let socket = gems.sockets.get(n);
                 let open = socket.is_some_and(|s| s.open);
                 let preview = socket.is_some_and(|s| s.preview);
-                (id.contains("/SocketOpen") && !open) || (id.contains("/SocketClosed") && open)
+                // The ring round the gem: its claws closed on a locked gem,
+                // open on a placed one (and on an open empty socket).
+                // FAILURE: "le cadenas se ferme mais le truc autour de l'icone
+                //   devrait aussi se fermer".
+                let locked = socket.is_some_and(|s| s.gem.is_some() && !s.preview);
+                (id.contains("/SocketOpen") && (!open || locked)) || (id.contains("/SocketClosed") && open && !locked)
                     || (has_part(id, "IconClose") && preview) || (has_part(id, "IconOpen") && !preview)
                     || (id.contains("/ItemSlot") && socket.is_none_or(|s| s.gem.is_none()))
                     || (has_part(id, "Button") && socket.is_none_or(|s| s.gem.is_none()))
@@ -543,7 +548,8 @@ mod tests {
         let ids: Vec<_> = prepared.widgets.iter().map(|w| w.id.clone()).collect();
         assert_eq!(text_of(&prepared, &format!("{GEM_ITEM}/ItemNameTextLabel")), "Helmet");
         assert!(ids.contains(&format!("{GEM_ITEM}/ItemSlot/Icon/Image")) && !ids.iter().any(|id| id.ends_with("ItemDragAndDropTargetLabel")));
-        assert!(ids.contains(&format!("{SOCKETS}/Socket0/SocketOpen")) && !ids.contains(&format!("{SOCKETS}/Socket0/SocketClosed")));
+        // Socket0's gem is locked in: the ring's claws closed.
+        assert!(ids.contains(&format!("{SOCKETS}/Socket0/SocketClosed")) && !ids.contains(&format!("{SOCKETS}/Socket0/SocketOpen")));
         assert!(ids.contains(&format!("{SOCKETS}/Socket1/SocketClosed")) && !ids.contains(&format!("{SOCKETS}/Socket1/SocketOpen")));
         assert!(ids.contains(&format!("{SOCKETS}/Socket0/ItemSlot/Icon/Image")) && ids.contains(&format!("{SOCKETS}/Socket0/Button")) && !ids.contains(&format!("{SOCKETS}/Socket0/BuyButton")));
         assert!(ids.contains(&format!("{SOCKETS}/Socket1/BuyButton")) && !ids.contains(&format!("{SOCKETS}/Socket1/Button")) && !ids.contains(&format!("{SOCKETS}/Socket2/BuyButton")));
