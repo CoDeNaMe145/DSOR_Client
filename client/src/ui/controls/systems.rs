@@ -892,7 +892,12 @@ pub(in crate::ui) fn send(
     // inventory (or refuses silently; two seconds then).
     let busy = state.pending.is_some();
     let mut wait = false;
-    if (!state.gem_preview.is_empty() || !state.gem_reopen.is_empty()) && !state.opened.contains(GEMDESK) { state.gem_preview.clear(); state.gem_reopen.clear(); }
+    // Closed, the desk forgets its item too: it opens empty, as the original's.
+    // FAILURE: "quand je reouvre le work on gems and items j'ai toujours mon
+    //   ancien item dedans".
+    if (state.gem_target.is_some() || !state.gem_preview.is_empty() || !state.gem_reopen.is_empty()) && !state.opened.contains(GEMDESK) {
+        state.gem_target = None; state.gem_preview.clear(); state.gem_reopen.clear();
+    }
     // A placed gem the item now holds (locked in) or that left the bags is
     // dropped; an unlocked gem out of the item is placed again.
     if let Some(item) = state.gem_target.and_then(|id| net.inventory.items.get(&id)).cloned() {
