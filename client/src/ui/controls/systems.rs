@@ -109,6 +109,8 @@ pub(crate) enum Request {
     SocketGem(usize),
     /// A workbench ingredient (its index) or its result (usize::MAX), hovered.
     BenchItem(usize),
+    /// A socket's gem right-clicked: back to the inventory.
+    TakeGem(usize),
     /// Buy the next socket of the gem desk's item.
     BuySocket,
     RecipeCategory(String),
@@ -206,6 +208,10 @@ pub(crate) struct State {
     /// HandleLockUnlockButtonClick 0x140436bf0: a placed gem, state 2, is only
     /// sent to the server when locked).
     pub gem_preview: Vec<(usize, u32)>,
+    /// Set gems being unlocked (socket, template): once the server has taken
+    /// one out, it is placed again, its padlock open, until it is locked
+    /// again or right-clicked away.
+    pub gem_reopen: Vec<(usize, String)>,
     /// An item right-clicked while the workbench is open: its recipe opens
     /// (send resolves it against the catalog).
     pub workbench_pick: Option<String>,
@@ -639,6 +645,7 @@ pub(super) fn clicked(mut request: Request, controls: &mut WindowControls) -> Re
 pub(super) fn right_clicked(action: &Action, window: &str, spell: Option<&str>) -> Option<Request> {
     match action {
         Action::System(Request::Pick(id, _)) => Some(Request::Pick(id.clone(), true)),
+        Action::System(Request::SocketGem(n)) => Some(Request::TakeGem(*n)),
         Action::System(Request::Talent(id)) => Some(Request::TalentMore(id.clone())),
         Action::Spell if window == talents::WINDOW => spell.map(|s| Request::TalentMore(format!("skill:{s}"))),
         _ => None,
@@ -750,7 +757,8 @@ pub(super) fn tooltip(request: &Request) -> Option<(&'static str, String)> {
         Request::Salvage => ("Melt down", "Melts the items placed here into Glyphs of Power and materials.".into()),
         Request::Unpick(_) => ("Take back", String::new()),
         Request::SocketGem(_) | Request::BenchItem(_) => ("Item", String::new()),
-        Request::Socket(_) => ("Lock / unlock", "An open padlock sets the placed gem; a closed one takes the gem out.".into()),
+        Request::TakeGem(_) => ("Take out", String::new()),
+        Request::Socket(_) => ("Lock / unlock", "Locks the placed gem into the item, or unlocks it; a right click on the gem takes it out.".into()),
         Request::BuySocket => ("Unlock socket", "Unlocks the next socket for Andermant.".into()),
         Request::WorkbenchTab(_) => ("Recipes", "Shows this kind of recipes.".into()),
         Request::WorkbenchFilter(0) => ("Craftable only", "Lists the recipes your items make now.".into()),
@@ -880,7 +888,23 @@ pub(in crate::ui) fn send(
     // inventory (or refuses silently; two seconds then).
     let busy = state.pending.is_some();
     let mut wait = false;
-    if !state.gem_preview.is_empty() && !state.opened.contains(GEMDESK) { state.gem_preview.clear(); }
+    if (!state.gem_preview.is_empty() || !state.gem_reopen.is_empty()) && !state.opened.contains(GEMDESK) { state.gem_preview.clear(); state.gem_reopen.clear(); }
+    // A placed gem the item now holds (locked in) or that left the bags is
+    // dropped; an unlocked gem out of the item is placed again.
+    if let Some(item) = state.gem_target.and_then(|id| net.inventory.items.get(&id)).cloned() {
+        let held = |s: usize| item.names.get(s).is_some_and(|g| !g.is_empty());
+        if state.gem_preview.iter().any(|(s, g)| held(*s) || !net.inventory.items.contains_key(g)) {
+            state.gem_preview.retain(|(s, g)| !held(*s) && net.inventory.items.contains_key(g));
+        }
+        if state.gem_reopen.iter().any(|(s, _)| !held(*s)) {
+            for (s, template) in std::mem::take(&mut state.gem_reopen) {
+                if held(s) { state.gem_reopen.push((s, template)); continue; }
+                let sources = Sources { net: &net, catalog, items: None, names: None, state: &state, class: None, talents: None, bonuses: None };
+                let free = sources.carried(&template).into_iter().find(|id| !state.gem_preview.iter().any(|(_, g)| g == id));
+                if let Some(id) = free { state.gem_preview.push((s, id)); }
+            }
+        }
+    }
     // A right-clicked item on the workbench opens the book of a recipe it is
     // the first ingredient of: a known one first, a combination (a gem with
     // its dust to the next tier: GemCombinationCraftingCyanit_a_to_b) before
@@ -1034,17 +1058,28 @@ pub(in crate::ui) fn send(
             }
             Request::SocketGem(_) | Request::BenchItem(_) => {}
             Request::Unpick(index) => { if index < state.salvage.len() { state.salvage.remove(index); } }
+            // A placed gem right-clicked goes back; a set one is taken out.
+            Request::TakeGem(socket) if state.gem_preview.iter().any(|(s, _)| *s == socket) => state.gem_preview.retain(|(s, _)| *s != socket),
+            Request::TakeGem(socket) => {
+                if let Some(target) = state.gem_target.filter(|id| net.inventory.items.get(id).is_some_and(|i| i.names.get(socket).is_some_and(|g| !g.is_empty()))) {
+                    commands.push(crate::gameplay::inventory::command(target, 0x14, vec![socket as i32]));
+                    wait = true;
+                }
+            }
+            // The open padlock locks the placed gem in (it stays shown until the
+            // item has it); the closed one unlocks it: taken out, then placed again.
             Request::Socket(socket) if state.gem_preview.iter().any(|(s, _)| *s == socket) => {
                 let gem = state.gem_preview.iter().find(|(s, _)| *s == socket).map(|(_, g)| *g).unwrap_or_default();
-                state.gem_preview.retain(|(s, _)| *s != socket);
                 if let Some(target) = state.gem_target.filter(|id| net.inventory.items.contains_key(id)).filter(|_| net.inventory.items.contains_key(&gem)) {
                     commands.push(crate::gameplay::inventory::command(gem, 0x11, vec![target as i32, socket as i32]));
                     wait = true;
                 }
             }
             Request::Socket(socket) => {
-                if let Some(target) = state.gem_target.filter(|id| net.inventory.items.get(id).is_some_and(|i| i.names.get(socket).is_some_and(|g| !g.is_empty()))) {
+                let gem = state.gem_target.and_then(|id| net.inventory.items.get(&id)).and_then(|i| i.names.get(socket).filter(|g| !g.is_empty()).cloned());
+                if let (Some(target), Some(gem)) = (state.gem_target, gem) {
                     commands.push(crate::gameplay::inventory::command(target, 0x14, vec![socket as i32]));
+                    state.gem_reopen.push((socket, gem));
                     wait = true;
                 }
             }
