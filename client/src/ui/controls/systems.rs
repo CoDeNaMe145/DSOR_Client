@@ -214,6 +214,8 @@ pub(crate) struct State {
     /// FAILURE: the recipe took the bag's items itself ("je veux devoir placer
     ///   ma pierre et les poussieres dans les slots").
     pub workbench_placed: std::collections::BTreeSet<usize>,
+    /// The book's recipe a right-clicked item chose (desks::workbench).
+    pub workbench_recipe: Option<String>,
     /// The transmog desk's slot picked (an equipment slot), its tab (skins,
     /// dyes) and filters (owned, the shop's).
     pub skin_slot: Option<i8>,
@@ -889,7 +891,18 @@ pub(in crate::ui) fn send(
     let in_recipe = picked.as_ref().and_then(|t| views.workbench.detail.as_ref().filter(|d| state.recipe.is_some() && !d.locked)
         .and_then(|d| d.ingredients.iter().position(|i| &i.template == t)));
     if let Some(n) = in_recipe { state.workbench_placed.insert(n); }
-    if let Some(template) = picked.filter(|_| in_recipe.is_none()) {
+    // Another item of the open book: its own recipe there (any gem or rune on
+    // a dismantling book, not the one it showed).
+    // FAILURE: "je devrais pouvoir mettre les runes / gemmes que je veux pas
+    //   celle qui est deja affichee ... pour les destruction".
+    let first_is = |r: &crate::gameplay::systems::RecipeDef, t: &str| r.ingredients.first().is_some_and(|i| i.split(':').next() == Some(t));
+    let in_book = picked.as_ref().filter(|_| in_recipe.is_none()).and_then(|t| state.recipe.as_ref()
+        .and_then(|b| catalog.recipe_books.get(b)).and_then(|b| b.recipes.iter().find(|r| catalog.recipes.get(*r).is_some_and(|r| first_is(r, t)))).cloned());
+    if let Some(recipe) = &in_book {
+        state.workbench_recipe = Some(recipe.clone());
+        state.workbench_placed = std::iter::once(0).collect();
+    }
+    if let Some(template) = picked.filter(|_| in_recipe.is_none() && in_book.is_none()) {
         let known: Vec<String> = net.recipes.iter().map(|(book, _)| book.to_lowercase()).collect();
         let first_is = |r: &crate::gameplay::systems::RecipeDef| r.ingredients.first().is_some_and(|i| i.split(':').next() == Some(template.as_str()));
         let mut books: Vec<(&String, &crate::gameplay::systems::RecipeBookDef)> = catalog.recipe_books.iter()
@@ -902,8 +915,9 @@ pub(in crate::ui) fn send(
             state.recipe = Some((*id).clone());
             state.craft_amount = 1;
             state.scroll.remove(desks::LIST);
-            // The clicked item goes in its first slot.
+            // The clicked item goes in its first slot, its recipe chosen.
             state.workbench_placed = std::iter::once(0).collect();
+            state.workbench_recipe = book.recipes.iter().find(|r| catalog.recipes.get(*r).is_some_and(first_is)).cloned();
         }
     }
     for request in std::mem::take(&mut pointer.system) {
@@ -1045,7 +1059,7 @@ pub(in crate::ui) fn send(
                 state.recipe_category = if state.recipe_category.as_ref() == Some(&category) { None } else { Some(category) };
                 state.recipe = None;
             }
-            Request::Recipe(id) => { state.recipe = Some(id).filter(|id| !id.is_empty()); state.craft_amount = 1; state.workbench_placed.clear(); }
+            Request::Recipe(id) => { state.recipe = Some(id).filter(|id| !id.is_empty()); state.craft_amount = 1; state.workbench_placed.clear(); state.workbench_recipe = None; }
             Request::WorkbenchTab(tab) => {
                 state.workbench_tab = tab;
                 state.recipe_category = None;

@@ -245,7 +245,7 @@ pub(super) fn workbench(sources: &Sources) -> Workbench {
     let open_top = open.as_ref().and_then(|c| category_of(c)).map(|c| if c.parent.is_empty() { c.id.clone() } else { c.parent.clone() });
     let book_title = |id: &str, book: &crate::gameplay::systems::RecipeBookDef| {
         if !book.title.is_empty() { return book.title.clone(); }
-        book.recipes.first().and_then(|r| catalog.recipes.get(r)).map(|r| sources.name(&r.crafted, None)).unwrap_or_else(|| crate::ui::dialogue::readable(id))
+        book.recipes.first().and_then(|r| catalog.recipes.get(r)).map(|r| sources.name(ingredient(&r.crafted).0, None)).unwrap_or_else(|| crate::ui::dialogue::readable(id))
     };
     // A category's books: known, or locked ones it lists; as the filters keep.
     let books = |category: &str| -> Vec<Row> {
@@ -276,7 +276,10 @@ pub(super) fn workbench(sources: &Sources) -> Workbench {
     let detail = state.recipe.as_ref().and_then(|id| catalog.recipe_books.get(id).map(|b| (id, b))).map(|(id, book)| {
         let locked = !catalog.book_known(id, &known);
         let recipes: Vec<(&String, &crate::gameplay::systems::RecipeDef)> = book.recipes.iter().filter_map(|r| catalog.recipes.get(r).map(|d| (r, d))).collect();
-        let (recipe_id, recipe) = recipes.iter().find(|(_, r)| craftable(sources, r) > 0).or(recipes.first()).map(|(id, r)| ((*id).clone(), Some(*r))).unwrap_or_default();
+        // The recipe the player's item picked (a dismantling book has one per
+        // gem), else the first the carried items make, else its first.
+        let (recipe_id, recipe) = recipes.iter().find(|(id, _)| state.workbench_recipe.as_deref() == Some(id.as_str()))
+            .or(recipes.iter().find(|(_, r)| craftable(sources, r) > 0)).or(recipes.first()).map(|(id, r)| ((*id).clone(), Some(*r))).unwrap_or_default();
         let most = recipe.map_or(0, |r| craftable(sources, r));
         let amount = state.craft_amount.clamp(1, most.max(1));
         let title = book_title(id, book);
@@ -287,7 +290,9 @@ pub(super) fn workbench(sources: &Sources) -> Workbench {
             origin: (locked && !book.locked_icon.is_empty()).then(|| (book.locked_icon.clone(), origin_name(&book.locked_icon))),
             placeholders: if locked { Vec::new() } else { book.placeholders.iter().filter(|p| !p.icon.is_empty()).map(|p| Icon { image: texture_path(&p.icon), ..Default::default() }).collect() },
             recipe: recipe_id,
-            result: recipe.map(|r| sources.icon(&r.crafted, None)).unwrap_or_default(),
+            // CraftedItemId may carry an amount ("ingredient_gem_dust:1").
+            // FAILURE: the dust's result showed no icon.
+            result: recipe.map(|r| sources.icon(ingredient(&r.crafted).0, None)).unwrap_or_default(),
             result_template: recipe.map(|r| ingredient(&r.crafted).0.to_owned()).unwrap_or_default(),
             ingredients: recipe.map(|r| r.ingredients.iter().take(MOST_INGREDIENTS).enumerate().map(|(n, i)| {
                 let (template, need) = ingredient(i);
