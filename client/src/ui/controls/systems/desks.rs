@@ -152,6 +152,12 @@ pub(super) fn prepare_gemdesk(source: &Layout, gems: &Gems) -> Layout {
         }
     }
     layout.widgets.extend(extra);
+    // A locked gem's closed claws grip over its icon (the icons were added
+    // last, over them).
+    // FAILURE: "le z index est pas bon il devrait etre dessus".
+    let (claws, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut layout.widgets).into_iter().partition(|w| w.id.contains("/SocketClosed"));
+    layout.widgets = rest;
+    layout.widgets.extend(claws);
     for (n, socket) in gems.sockets.iter().enumerate() {
         let Some(price) = socket.price else { continue };
         for mut w in clone_rows(source, &format!("{SOCKETS}/Socket{n}/TemplateRC"), &format!("{SOCKETS}/Socket{n}/Price"), 0.0) {
