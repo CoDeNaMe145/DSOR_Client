@@ -219,10 +219,25 @@ def travel_details(loca):
             out[f"travel_rc:{map_id}"] = str(int(rc or 0))
         # The map access window's tiers (_Template_MapAccessGroup: a row per
         # difficulty of one AccessGroup) and the tiers' names.
-        for row, group, difficulty, key in db.execute("SELECT Id, AccessGroup, Difficulty, KeyId FROM _Template_MapAccessGroup"):
+        # Per row also what the window shows: the artwork, the descriptions
+        # (gui.window.dungeonaccess_<key>), the resistances, the possible rewards
+        # and the items the travel item's teleport takes (TeleportKeyId).
+        access = lambda key: en.get(f"gui.window.dungeonaccess_{key}", "") if key else ""
+        for row, group, difficulty, key, bg, desc, desc2, res, rewards, needs in db.execute(
+                "SELECT Id, AccessGroup, Difficulty, KeyId, BackgroundImage, DescriptionText, DescriptionText2, Resistances,"
+                " RewardItems, TeleportKeyId FROM _Template_MapAccessGroup"):
             out[f"access_group:{row}"] = group or ""
             out[f"access_diff:{row}"] = str(int(difficulty or 0))
             if key: out[f"access_key:{row}"] = key
+            for name, value in (("bg", bg), ("desc", access(desc)), ("desc2", access(desc2)), ("res", res), ("rewards", rewards), ("needs", needs)):
+                if value: out[f"access_{name}:{row}"] = value
+        for group, level, players in db.execute("SELECT AccessGroup, MapLevel, MaxPlayer FROM _Template_MapTemplate"):
+            out[f"access_level:{group}"] = str(int(level or 0))
+            out[f"access_players:{group}"] = str(int(players or 0))
+        for level, plus, magic, rare, epic in db.execute("SELECT Id, MonsterLevelPlus, Magic, Rare, Epic FROM _Template_MapDifficulty"):
+            out[f"difficulty_mods:{level}"] = f"{int(plus or 0)},{int(magic or 0)},{int(rare or 0)},{int(epic or 0)}"
+        for key in ("possibleRewardsAndRisks", "dungeonPrerequisites", "maxGroupSize", "enterDungeon", "difficultyModifications", "recommendedLevel"):
+            out[f"access_text:{key}"] = access(key)
         for level, name in db.execute("SELECT Id, Name FROM _Template_MapDifficulty"):
             out[f"difficulty:{level}"] = name or ""
     except sqlite3.Error as e:

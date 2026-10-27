@@ -75,6 +75,13 @@ impl MapNames {
         tiers.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
         tiers
     }
+    /// A map access row's detail (`access_<what>:<row>`, tools/export_ui.py travel_details): bg, desc, desc2, res, rewards, needs;
+    /// with a group, level and players; with a loca key, access_text.
+    pub(in crate::ui) fn access(&self, what: &str, row: &str) -> &str { self.0.get(&format!("access_{what}:{row}")).map_or("", String::as_str) }
+    /// A difficulty's MonsterLevelPlus, Magic, Rare and Epic (_Template_MapDifficulty).
+    pub(in crate::ui) fn difficulty_mods(&self, level: u32) -> Vec<i64> {
+        self.0.get(&format!("difficulty_mods:{level}")).map(|v| v.split(',').filter_map(|n| n.parse().ok()).collect()).unwrap_or_default()
+    }
     /// A difficulty's name (_Template_MapDifficulty: Normal ... Parallel World Bloodshed).
     pub(in crate::ui) fn difficulty_name(&self, level: u32) -> String { self.0.get(&format!("difficulty:{level}")).cloned().unwrap_or_else(|| format!("Difficulty {level}")) }
     /// A destination's gold price, copper (_Template_TravelCosts PriceVC).
