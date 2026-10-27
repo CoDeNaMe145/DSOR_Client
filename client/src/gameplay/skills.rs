@@ -1054,7 +1054,8 @@ fn cast_input(
     // cast once the walk brings it in reach. next_cast: when the last cast lets
     // the next one go (its SkillUnblockFrame), apart from the movement hold
     // (LocalPlayer::casting, its MotionUnblockFrame).
-    (mut queued, mut next_cast): (Local<Option<(usize, Entity)>>, Local<f64>),
+    (mut queued, mut next_cast, rivals): (Local<Option<(usize, Entity)>>, Local<f64>,
+        Query<(&GlobalTransform, &RemotePlayer, &CharacterAnim), (With<Character>, Without<crate::actors::monsters::Monster>)>),
 ) {
     let _profile = crate::diagnostics::hud::FrameSpan::new("skills::cast_input");
     let clicked_slot = ui_skills.0.take();
@@ -1104,7 +1105,9 @@ fn cast_input(
         },
     };
     // A dead or vanished monster is no target.
-    let aimed = aimed.and_then(|e| monsters.get(e).ok().filter(|(_, m, a)| m.is_alive(a)).map(|(at, m, _)| (e, at.translation(), m.actor, m.radius, m.height, m.footprint)));
+    // Or a player in open battle (actors::monsters::hover): a man-sized target.
+    let aimed = aimed.and_then(|e| monsters.get(e).ok().filter(|(_, m, a)| m.is_alive(a)).map(|(at, m, _)| (e, at.translation(), m.actor, m.radius, m.height, m.footprint))
+        .or_else(|| rivals.get(e).ok().filter(|(_, r, a)| !a.dead && net.in_pvp(Some(r.actor)) && net.in_pvp(None)).map(|(at, r, _)| (e, at.translation(), r.actor, 0.5, 2.0, None))));
     if aimed.is_none() {
         *queued = None;
     }

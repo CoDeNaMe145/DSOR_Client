@@ -792,7 +792,7 @@ fn pick(
         let (px, pz) = (ox + d.x * t, oz + d.z * t);
         let y = o.y + d.y * t - base.y;
         if px * px + pz * pz > PICK_RADIUS * PICK_RADIUS || !(-0.2..=PICK_HEIGHT).contains(&y) { continue; }
-        if best.is_none_or(|(bt, _)| t < bt) { best = Some((t, &plate.text)); }
+        if best.is_none_or(|(bt, _)| t < bt) { best = Some((t, plate.player.as_ref().map_or(&plate.text, |p| &p.0))); }
     }
     best.map(|(_, name)| name.to_owned())
 }

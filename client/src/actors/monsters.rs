@@ -1225,6 +1225,9 @@ fn hover(
     monsters: Query<(Entity, &GlobalTransform, &Monster, &CharacterAnim, &InheritedVisibility, Option<&crate::actors::picking::PickBoxes>)>,
     joints: Query<&GlobalTransform>,
     mut hovered: ResMut<Hovered>,
+    players: Query<(Entity, &GlobalTransform, &crate::network::net::RemotePlayer, &CharacterAnim, &InheritedVisibility, Option<&crate::actors::picking::PickBoxes>),
+        (With<crate::actors::character::Character>, Without<Monster>)>,
+    net: Option<NonSend<Net>>,
 ) {
     if ui.over_ui {
         if hovered.0.is_some() { hovered.0 = None; }
@@ -1274,6 +1277,28 @@ fn hover(
             if best.is_none_or(|(bt, _, _)| t < bt) {
                 best = Some((t, e, m.actor));
             }
+        }
+    }
+    // A player in open battle while we are too: a target as a monster is
+    // (DSOR_Server services/pvp_combat.py _pvp_target_is_hostile: both flagged).
+    // UNVERIFIED: the picking capsule without boxes (0.5 m, 2 m tall).
+    if let (Some(ray), Some(net)) = (ray, net.as_ref().filter(|n| n.in_pvp(None))) {
+        let (o, d) = (ray.origin, *ray.direction);
+        for (e, at, r, anim, shown, boxes) in &players {
+            if anim.dead || !shown.get() || !net.in_pvp(Some(r.actor)) { continue; }
+            let t = if let Some(boxes) = boxes.filter(|b| !b.0.is_empty()) {
+                crate::actors::picking::hit(ray, boxes, &joints)
+            } else {
+                let base = at.translation();
+                let (ox, oz) = (o.x - base.x, o.z - base.z);
+                let (a, b) = (d.x * d.x + d.z * d.z, ox * d.x + oz * d.z);
+                if a < 1e-6 { continue; }
+                let t = (-b / a).max(0.0);
+                let (px, pz) = (ox + d.x * t, oz + d.z * t);
+                let y = o.y + d.y * t - base.y;
+                (px * px + pz * pz <= 0.25 && (-0.2..=2.2).contains(&y)).then_some(t)
+            };
+            if let Some(t) = t.filter(|t| best.is_none_or(|(bt, _, _)| *t < bt)) { best = Some((t, e, r.actor)); }
         }
     }
     // DSOR_TEST_TARGET=1: the nearest live monster counts as under the cursor

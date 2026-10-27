@@ -41,6 +41,9 @@ pub struct NpcTemplate {
     pub portrait: String,
     #[serde(default)]
     pub no_talk: bool,
+    /// _Template_NPC.SwitchPVPMode: the conversation offers the PvP switch.
+    #[serde(default)]
+    pub switch_pvp: bool,
     #[serde(default)]
     pub shop: String,
     #[serde(default)]
@@ -71,6 +74,7 @@ impl NpcTemplate {
             title: pick(&self.title, &base.title),
             portrait: pick(&self.portrait, &base.portrait),
             no_talk: self.no_talk || base.no_talk,
+            switch_pvp: self.switch_pvp || base.switch_pvp,
             shop: pick(&self.shop, &base.shop),
             profession: pick(&self.profession, &base.profession),
             profession_title: pick(&self.profession_title, &base.profession_title),

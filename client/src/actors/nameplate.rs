@@ -23,15 +23,31 @@ const BOX: f32 = 400.0;
 /// height (41.26 / 768: ui/overheadtext.bxml).
 const NAME_OVER_CENTRE: f32 = 41.26 / 768.0;
 
+/// A player in open battle: `_Globals.HighlightEnemyColor` (0.8, 0, 0).
+/// UNVERIFIED: the original's overhead colour for it; the user asked for red
+///   with "(PvP)" after the name, an admin keeping orange.
+const PVP: Color = Color::srgb(0.8, 0.0, 0.0);
+
 #[derive(Component, Clone)]
 pub struct Nameplate {
     pub text: String,
     pub color: Color,
+    /// A player's own name and admin flag (`set_pvp` rebuilds text and colour).
+    pub player: Option<(String, bool)>,
+    pub pvp: bool,
 }
 
 impl Nameplate {
     pub fn player(name: String, admin: bool) -> Self {
-        Self { text: name, color: if admin { ADMIN } else { Color::WHITE } }
+        Self { text: name.clone(), color: if admin { ADMIN } else { Color::WHITE }, player: Some((name, admin)), pvp: false }
+    }
+
+    /// In open battle: "Name (PvP)", red unless an admin.
+    pub fn set_pvp(&mut self, pvp: bool) {
+        let Some((name, admin)) = &self.player else { return };
+        self.pvp = pvp;
+        self.text = if pvp { format!("{name} (PvP)") } else { name.clone() };
+        self.color = if *admin { ADMIN } else if pvp { PVP } else { Color::WHITE };
     }
 }
 

@@ -158,6 +158,9 @@ pub struct Net {
     wanted_character: Option<u32>,
     /// What to create if the server opens the character editor.
     pub local_actor: Option<u32>,
+    /// Who is in open battle (PVP::PVPFlagCommand, actor-scoped; ours as the
+    /// local actor): a red "(PvP)" name, and mutual PvP players may fight.
+    pub pvp: HashMap<u32, bool>,
     /// The map frame's centre (wire = (game - centre) * 128).
     pub centre: Option<Vec3>,
     /// (look, position, heading, name, admin).
@@ -892,8 +895,18 @@ impl Plugin for NetPlugin {
                     .in_set(NetSystems)
                     .run_if(net_exists),
             );
+        app.add_systems(Update, pvp_names.after(NetSystems).run_if(net_exists));
         #[cfg(not(target_arch = "wasm32"))]
         app.add_systems(Update, replay_equipment.before(NetSystems).run_if(net_exists));
+    }
+}
+
+/// Players' names in open battle (Net::pvp): "Name (PvP)", red unless an admin.
+fn pvp_names(net: NonSend<Net>, mut players: Query<(&mut Nameplate, Option<&LocalPlayer>, Option<&RemotePlayer>)>) {
+    for (mut plate, local, remote) in &mut players {
+        let actor = remote.map(|r| r.actor).or(local.and(net.local_actor));
+        let pvp = actor.is_some_and(|a| net.in_pvp(Some(a)));
+        if plate.pvp != pvp { plate.set_pvp(pvp); }
     }
 }
 
@@ -939,6 +952,7 @@ pub fn start_offline(world: &mut World, class: u8, gender: u8) {
         relay: None,
         wanted_character: None,
         local_actor: Some(OFFLINE_ACTOR),
+        pvp: Default::default(),
         centre: None,
         pending_local: None,
         requested: Default::default(),
@@ -1247,6 +1261,7 @@ pub(crate) fn start_session(world: &mut World, config: NetConfig) {
         relay: config.relay.clone(),
         wanted_character: config.character,
         local_actor: None,
+        pvp: Default::default(),
         centre: None,
         pending_local: None,
         requested: Default::default(),
@@ -1405,6 +1420,11 @@ impl Net {
             if e.tail.is_some() { effects.elements.insert(e.instance, e.clone()); } else { effects.elements.remove(&e.instance); }
         }
         if effects.elements.is_empty() { self.actor_effects.remove(&holder); }
+    }
+
+    /// Whether an actor is in open battle; ours when `actor` is None.
+    pub fn in_pvp(&self, actor: Option<u32>) -> bool {
+        actor.or(self.local_actor).and_then(|a| self.pvp.get(&a)).copied().unwrap_or(false)
     }
 
     /// The server's game tick now.
@@ -1772,6 +1792,11 @@ pub(crate) fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u3
             net.remote_redress.remove(&actor);
             info!("{} ({}) is here, actor {actor:#x}, {} worn slot(s)", p.name, desc.animation_set(), desc.equipment.len());
             net.remote_spawns.push((actor, desc, Vec3::from(p.position), p.heading, p.name, p.flags[2]));
+        }
+        // The server echoes our switch to us and tells everyone who sees us
+        // (DSOR_Server services/talents.py _handle_pvp_flag, presence.py).
+        ServerCommand::PvpFlag(f) => {
+            if let Some(actor) = actor.or(net.local_actor) { net.pvp.insert(actor, f.flag); }
         }
         ServerCommand::ActorStatsUpdate(v) => {
             if actor.is_some() && actor == net.local_actor {

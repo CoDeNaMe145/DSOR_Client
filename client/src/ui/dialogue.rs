@@ -79,6 +79,9 @@ pub(super) enum Action {
     /// Open one of the NPC's desks (controls::systems: the smith's salvage and
     /// workbench, the jeweller's gem desk, the tailor's transmog desk).
     Desk(&'static str),
+    /// Join (true) or leave open battle: an NPC with SwitchPVPMode
+    /// (NpcWidget's pvpFlagON / pvpFlagOFF buttons, dro_client64 strings).
+    Pvp(bool),
 }
 
 /// The desks an NPC's profession offers (the NPC data's profession ids).
@@ -199,7 +202,7 @@ fn order(shop: &str, action: &Action, net: &mut crate::network::net::Net, pendin
     }
 }
 
-fn menu(info: Option<&actors::NpcInfo>, target: &crate::gameplay::dialogue::Target, catalog: &Catalog) -> Vec<Choice> {
+fn menu(info: Option<&actors::NpcInfo>, target: &crate::gameplay::dialogue::Target, catalog: &Catalog, pvp: bool) -> Vec<Choice> {
     let mut choices = Vec::new();
     // Online, the authoritative role descriptor supplies the shop name. The
     // authored shop is also useful for the offline NPC preview.
@@ -209,6 +212,11 @@ fn menu(info: Option<&actors::NpcInfo>, target: &crate::gameplay::dialogue::Targ
     }
     for (window, label) in desks(&target.profile.profession) {
         choices.push(Choice::new(*label, "shop", Action::Desk(window)));
+    }
+    // gui.window.general_pvpFlagON / pvpFlagOFF.
+    if target.profile.switch_pvp {
+        choices.push(if pvp { Choice::new("Leave open battle (PvP off)", "talk", Action::Pvp(false)) }
+            else { Choice::new("Join open battle (PvP on)", "talk", Action::Pvp(true)) });
     }
     if let Some(info) = info {
         for entry in &info.interactions {
@@ -253,8 +261,8 @@ pub(super) fn sync(
     players: Query<&crate::actors::character::Character, With<crate::network::net::LocalPlayer>>,
     time: Res<Time>,
     mut desk_windows: Query<(&Window2018, &mut Visibility)>,
-    (quest_ui, quest_catalogs, mut audio, settings): (Option<Res<crate::gameplay::quests::QuestUi>>, Option<Res<Assets<crate::gameplay::quests::QuestCatalog>>>,
-        Option<ResMut<crate::audio::AudioRequests>>, Res<super::Settings>),
+    (quest_ui, quest_catalogs, mut audio, settings, real): (Option<Res<crate::gameplay::quests::QuestUi>>, Option<Res<Assets<crate::gameplay::quests::QuestCatalog>>>,
+        Option<ResMut<crate::audio::AudioRequests>>, Res<super::Settings>, Res<Time<Real>>),
     mut seen: Local<Option<ViewKey>>,
 ) {
     if presentation.generation != dialogue.generation {
@@ -303,12 +311,23 @@ pub(super) fn sync(
     let mut next = None;
     if let Some(target) = active {
         let info = net.as_ref().and_then(|n| n.npc_dialogue.infos.get(&target.actor));
-        let available = menu(info, &target, catalog);
+        let available = menu(info, &target, catalog, net.as_ref().is_some_and(|n| n.in_pvp(None)));
         if let Some(index) = dialogue.choice.take() {
             let action = if index == CLOSE { Some(Action::Close) }
                 else { presentation.view.as_ref().and_then(|v| v.options.get(index)).map(|c| c.action.clone()) };
             match action {
                 Some(Action::Close | Action::Leave) => dialogue.close(),
+                // HandleSetPVPFlag: the wanted flag and the tick; the server's
+                // echo sets it (Net::pvp). Offline it is set at once.
+                Some(Action::Pvp(on)) => if let Some(net) = net.as_mut() {
+                    if net.offline {
+                        if let Some(actor) = net.local_actor { net.pvp.insert(actor, on); }
+                        net.touch_ui();
+                    } else {
+                        let tick = net.server_tick(crate::network::net::now_ms(&real));
+                        net.send(&dsor_proto::commands::ClientCommand::PvpFlag(dsor_proto::commands::social::PvpFlag { flag: on, tick }));
+                    }
+                }
                 Some(Action::Desk(window)) => {
                     for (w, mut visibility) in &mut desk_windows {
                         if w.0 == window { *visibility = Visibility::Inherited; }
@@ -585,10 +604,20 @@ mod tests {
             actors::NpcInteraction { name: "bone".into(), kind: 1, ..default() },
             actors::NpcInteraction { name: "bone".into(), kind: 0, ..default() },
         ], ..default() };
-        let choices = menu(Some(&info), &target, &catalog);
+        let choices = menu(Some(&info), &target, &catalog, false);
         assert_eq!(choices.len(), 2);
         assert_eq!(choices[0].label, "View selection");
         assert_eq!(choices[1].label, "Bone Oracle (1/2)");
+    }
+    #[test]
+    fn arena_masters_switch_open_battle_both_ways() {
+        let catalog = Catalog::default();
+        let profile = crate::actors::npc::NpcTemplate { switch_pvp: true, ..default() };
+        let target = crate::gameplay::dialogue::Target { entity: Entity::PLACEHOLDER, actor: 7, template: "a0200_merchant_arena".into(), profile };
+        let off = menu(None, &target, &catalog, false);
+        assert_eq!((off[0].label.as_str(), &off[0].action), ("Join open battle (PvP on)", &Action::Pvp(true)));
+        let on = menu(None, &target, &catalog, true);
+        assert_eq!((on[0].label.as_str(), &on[0].action), ("Leave open battle (PvP off)", &Action::Pvp(false)));
     }
     #[test]
     fn long_dialogue_wraps_without_losing_unicode_words() {

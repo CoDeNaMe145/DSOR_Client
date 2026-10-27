@@ -24,11 +24,11 @@ labels = dict(re.findall(r'<item name="([^"]+)"><!\[CDATA\[(.*?)\]\]></item>', x
 titles = {name[:-5]: text for name, text in labels.items() if name.endswith("Title")}
 
 COLUMNS = ["Id", "Graphics", "CharacterSet", "AnimSet", "StartAnimationState", "LoopStartAnimation", "LocationMapIcon",
-           "Portrait", "NoTalk", "ShopId", "Profession", "OverHeadIconOffset", "ProfessionLocaId"]
+           "Portrait", "NoTalk", "ShopId", "Profession", "OverHeadIconOffset", "ProfessionLocaId", "SwitchPVPMode"]
 
 
 def look(row):
-    rid, graphics, outfit, anim_set, state, loop, map_icon, portrait, no_talk, shop, profession, offset, profession_key = row
+    rid, graphics, outfit, anim_set, state, loop, map_icon, portrait, no_talk, shop, profession, offset, profession_key, switch_pvp = row
     return {
         "graphics": graphics or "",
         "outfit": outfit or "",
@@ -39,6 +39,8 @@ def look(row):
         "map_icon": (map_icon or "").replace("\\", "/"),
         "portrait": (portrait or "").replace("\\", "/"),
         "no_talk": bool(no_talk),
+        # NpcWidget's pvpFlagON / pvpFlagOFF button (dro_client64 strings).
+        "switch_pvp": bool(switch_pvp),
         "shop": shop or "",
         "profession": profession or "",
         "profession_title": labels.get(profession_key, labels.get(rid + "Profession", "")),
