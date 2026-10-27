@@ -457,6 +457,12 @@ impl Default for CharacterAnim {
 }
 
 impl CharacterAnim {
+    /// The animation playing at full weight: its player, node and length.
+    pub(crate) fn playing(&self) -> Option<(Entity, AnimationNodeIndex, f32)> {
+        let node = self.current?;
+        Some((self.player?, node, self.durations.get(&node).copied().unwrap_or(0.0)))
+    }
+
     /// Audio follows the logical clip even on frames where pose LOD stops Bevy's
     /// player. This keeps nearby offscreen NPCs audible without evaluating bones.
     pub(crate) fn audio_clock(&self, lod: Option<&AnimLod>) -> Option<(AnimationNodeIndex, Option<f32>, u64)> {

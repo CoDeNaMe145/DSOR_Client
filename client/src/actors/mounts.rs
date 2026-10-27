@@ -285,12 +285,13 @@ fn follow_riders(
 
 /// The rider on the saddle, the mount running or standing with it.
 fn seat_riders(
-    riders: Query<(&GlobalTransform, &Character, &CharacterAnim, &Riding), Without<ModelBones>>,
+    mut riders: Query<(&GlobalTransform, &Character, &mut CharacterAnim, &Riding), Without<ModelBones>>,
     mut mounts: Query<(&ModelBones, &mut CharacterAnim), Without<Riding>>,
     globals: Query<&GlobalTransform>,
     mut transforms: Query<&mut Transform>,
+    mut players: Query<&mut AnimationPlayer>,
 ) {
-    for (root, character, anim, riding) in &riders {
+    for (root, character, mut anim, riding) in &mut riders {
         let Ok((bones, mut mount_anim)) = mounts.get_mut(riding.model) else { continue };
         let running = anim.state == AnimState::Run;
         let state = if running { AnimState::Run } else { AnimState::Idle };
@@ -301,6 +302,23 @@ fn seat_riders(
         let speed = if running && riding.run_speed > 0.0 { (RUN_SPEED + riding.bonus) / riding.run_speed } else { 1.0 };
         if (mount_anim.speed - speed).abs() > 1e-3 {
             mount_anim.speed = speed;
+        }
+        // The rider's clip is the mount's twin (mount_run_horse_01 under the
+        // rider): same rate, same phase. The rider kept its own run rate
+        // (movement speed, set only on foot) and its own start.
+        // FAILURE: "un bug de sync entre l'animation du personnage et de sa monture".
+        if (anim.speed - speed).abs() > 1e-3 {
+            anim.speed = speed;
+        }
+        if let (Some((mount_player, mount_node, mount_len)), Some((rider_player, rider_node, rider_len))) = (mount_anim.playing(), anim.playing()) {
+            let phase = players.get(mount_player).ok().and_then(|p| p.animation(mount_node)).map(|a| a.seek_time());
+            if let (Some(phase), true) = (phase, mount_len > 0.0 && rider_len > 0.0) {
+                let wanted = (phase / mount_len).fract() * rider_len;
+                if let Some(active) = players.get_mut(rider_player).ok().as_mut().and_then(|p| p.animation_mut(rider_node)) {
+                    let drift = (active.seek_time() - wanted).abs();
+                    if drift > 0.05 && drift < rider_len - 0.05 { active.seek_to(wanted); }
+                }
+            }
         }
         // Every mount skeleton has a `mount` joint (polarbear, horse, mount_tiger...);
         // only some also have a Saddle. FAILURE (2026-10-16): seated on Saddle
