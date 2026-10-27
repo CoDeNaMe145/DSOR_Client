@@ -217,6 +217,14 @@ def travel_details(loca):
         for map_id, rc, vc in db.execute("SELECT Id, PriceRC, PriceVC FROM _Template_TravelCosts"):
             out[f"travel_vc:{map_id}"] = str(int(vc or 0))
             out[f"travel_rc:{map_id}"] = str(int(rc or 0))
+        # The map access window's tiers (_Template_MapAccessGroup: a row per
+        # difficulty of one AccessGroup) and the tiers' names.
+        for row, group, difficulty, key in db.execute("SELECT Id, AccessGroup, Difficulty, KeyId FROM _Template_MapAccessGroup"):
+            out[f"access_group:{row}"] = group or ""
+            out[f"access_diff:{row}"] = str(int(difficulty or 0))
+            if key: out[f"access_key:{row}"] = key
+        for level, name in db.execute("SELECT Id, Name FROM _Template_MapDifficulty"):
+            out[f"difficulty:{level}"] = name or ""
     except sqlite3.Error as e:
         print("travel details:", e)
     return out

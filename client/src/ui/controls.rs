@@ -23,6 +23,7 @@ pub(super) mod message;
 pub(super) mod consent;
 pub(super) mod logout;
 pub(super) mod travel;
+pub(super) mod access;
 mod tooltips;
 pub(super) use tooltips::overlay as tooltips;
 
@@ -290,6 +291,8 @@ enum Action {
     LogoutAnswer(bool),
     /// travel::WINDOW's buttons: travel (true) or not.
     TravelAnswer(bool),
+    /// access::WINDOW's Enter (true) or Close.
+    AccessAnswer(bool),
     /// The travel map's destination (social::answer sends it).
     Travel(String),
     /// A systems window's request (systems::send carries it out).
@@ -353,6 +356,7 @@ fn action(window: &str, w: &Widget) -> Action {
             .map_or(Action::Unavailable, |i| Action::ChatChannel(i as u8));
     }
     if window == travel::WINDOW { return travel::action(w); }
+    if window == access::WINDOW { return access::action(w); }
     if window == logout::WINDOW {
         return match w.event.as_str() { "confirm" => Action::LogoutAnswer(true), "cancel" => Action::LogoutAnswer(false), _ => Action::Unavailable };
     }
@@ -719,6 +723,7 @@ pub(super) struct Pointer {
     logout: bool,
     logout_answer: Option<bool>,
     travel_answer: Option<bool>,
+    access_answer: Option<bool>,
     /// The travel map's destination, for social::answer.
     travel: Option<String>,
     /// The systems windows' requests, for systems::send.
@@ -1154,6 +1159,7 @@ pub(super) fn interact(
         Action::Destroy(confirm) => pointer.destroy = Some(confirm),
         Action::LogoutAnswer(answer) => pointer.logout_answer = Some(answer),
         Action::TravelAnswer(answer) => pointer.travel_answer = Some(answer),
+        Action::AccessAnswer(answer) => pointer.access_answer = Some(answer),
         Action::Close => *visibility = Visibility::Hidden,
         Action::Inventory(page) => controls.inventory = page,
         Action::Character(page) => controls.character = page,

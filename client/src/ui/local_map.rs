@@ -63,6 +63,20 @@ impl MapNames {
     /// "Wilderness": db.travelmap <map>Desc), and its travel costs (gui.window
     /// travelmap travelCostHeading / travelCostValueVC / RC) when it has any.
     /// FAILURE: the map's id was shown, with nothing else.
+    /// An access row's AccessGroup (_Template_MapAccessGroup).
+    pub(in crate::ui) fn access_group(&self, row: &str) -> String { self.0.get(&format!("access_group:{row}")).cloned().unwrap_or_default() }
+    /// The tiers of a row's access group: (row, difficulty, key), easiest first.
+    pub(in crate::ui) fn access_tiers(&self, row: &str) -> Vec<(String, u32, Option<String>)> {
+        let group = self.access_group(row);
+        if group.is_empty() { return Vec::new(); }
+        let mut tiers: Vec<_> = self.0.iter().filter_map(|(k, g)| k.strip_prefix("access_group:").filter(|_| *g == group).map(str::to_owned))
+            .map(|r| { let d = self.0.get(&format!("access_diff:{r}")).and_then(|v| v.parse().ok()).unwrap_or(0); let k = self.0.get(&format!("access_key:{r}")).cloned(); (r, d, k) })
+            .collect();
+        tiers.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
+        tiers
+    }
+    /// A difficulty's name (_Template_MapDifficulty: Normal ... Parallel World Bloodshed).
+    pub(in crate::ui) fn difficulty_name(&self, level: u32) -> String { self.0.get(&format!("difficulty:{level}")).cloned().unwrap_or_else(|| format!("Difficulty {level}")) }
     /// A destination's gold price, copper (_Template_TravelCosts PriceVC).
     pub(in crate::ui) fn travel_price(&self, map: &str) -> u64 {
         self.0.get(&format!("travel_vc:{map}")).and_then(|v| v.parse().ok()).unwrap_or(0)

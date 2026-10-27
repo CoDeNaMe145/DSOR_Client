@@ -432,6 +432,16 @@ pub struct Lookups<'w> {
     quest_ui: Option<Res<'w, crate::gameplay::quests::QuestUi>>,
     /// The NPC desks' picks (super::systems::pick); the split dialog's talent mode.
     desks: Option<ResMut<'w, super::systems::State>>,
+    /// The maps' names and access tiers (local_map::MapNames).
+    map_names: Option<Res<'w, Assets<crate::ui::local_map::MapNames>>>,
+    loaded: Option<Res<'w, crate::ui::Loaded>>,
+}
+
+impl Lookups<'_> {
+    /// Whether a travel item's destination has several difficulties.
+    fn has_tiers(&self, row: &str) -> bool {
+        self.map_names.as_ref().zip(self.loaded.as_ref()).and_then(|(n, l)| n.get(&l.map_names)).is_some_and(|n| n.access_tiers(row).len() > 1)
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -544,6 +554,9 @@ pub fn input(mut ui:ResMut<Interaction>,mut pointer:ResMut<Pointer>,mut windows:
                     // Unidentified: a right click identifies it (InventoryCommand operation
                     // 0x12; the server answers with the item, DSOR_Server services/inventory_map.py).
                     net.send(&crate::gameplay::inventory::command(id,0x12,vec![]));ui.pending=Some((net.inventory.revision,time.elapsed_secs_f64()));
+                } else if let Some(map)=travel.clone().filter(|m|carried && net.inventory.movable(id) && lookups.has_tiers(m)) {
+                    // Several difficulties: the map access window asks (controls::access).
+                    net.access_ask=Some((id,map));
                 } else if let Some(map)=travel.filter(|_|carried && net.inventory.movable(id)) {
                     // A travel item: its use (0x13) arms it on the server for 15 s, then the
                     // travel names the item's map (_Template_Item.TravelItemTarget).

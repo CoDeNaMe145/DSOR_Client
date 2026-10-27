@@ -318,6 +318,9 @@ pub struct Net {
     /// A workbench used in the world: the crafting window's tab to open
     /// ("GemTab"; "" for the window as it was).
     pub open_workbench: Option<String>,
+    /// A travel item used whose destination has several difficulties: (item,
+    /// its target row): the map access window asks (crate::ui access).
+    pub access_ask: Option<(u32, String)>,
     pub inventory: crate::gameplay::inventory::InventoryState,
     pub corrections: crate::network::corrections::Corrections,
     pub skill_book: Option<dsor_proto::commands::inventory::SkillBookInfo>,
@@ -1021,6 +1024,7 @@ pub fn start_offline(world: &mut World, class: u8, gender: u8) {
         travel_stone: None,
         travel_source: None,
         open_workbench: None,
+        access_ask: None,
         pet_events: Vec::new(),
         pet_revivals: Vec::new(),
         location_events: Vec::new(),
@@ -1328,6 +1332,7 @@ pub(crate) fn start_session(world: &mut World, config: NetConfig) {
         travel_stone: None,
         travel_source: None,
         open_workbench: None,
+        access_ask: None,
         pet_events: Vec::new(),
         pet_revivals: Vec::new(),
         location_events: Vec::new(),

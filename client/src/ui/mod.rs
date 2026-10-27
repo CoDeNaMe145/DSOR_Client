@@ -133,7 +133,7 @@ const RESPAWN_COST: u32 = 40;
 const INSTANT_RESPAWN_COST: u32 = 120;
 
 fn is_menu(name: &str) -> bool {
-    MENU_WINDOWS.iter().any(|(n, _, _)| *n == name) || NAV_WINDOWS.contains(&name) || dialogue::WINDOWS.contains(&name) || name == "unstackwindow" || name == controls::items::DESTROY_DIALOG || name == controls::logout::WINDOW || name == controls::travel::WINDOW || name == DEATH_WINDOW || name == CHAT_MENU || name == controls::settings::WINDOW
+    MENU_WINDOWS.iter().any(|(n, _, _)| *n == name) || NAV_WINDOWS.contains(&name) || dialogue::WINDOWS.contains(&name) || name == "unstackwindow" || name == controls::items::DESTROY_DIALOG || name == controls::logout::WINDOW || name == controls::travel::WINDOW || name == controls::access::WINDOW || name == DEATH_WINDOW || name == CHAT_MENU || name == controls::settings::WINDOW
         || name == controls::systems::talents::DIALOG
         || SOCIAL_WINDOWS.iter().any(|(n, _)| *n == name) || controls::systems::DESKS.iter().any(|(n, _)| *n == name)
         || name == controls::currency::BAG
@@ -644,7 +644,7 @@ impl Plugin for UiPlugin {
                 .before(bevy::sprite_render::check_entities_needing_specialization::<UiMaterial>))
             .add_systems(
                 Update,
-                ((dialogue::sync, controls::party::sync, controls::quests::sync, controls::systems::sync, controls::currency::sync_bar, controls::message::sync, spawn_windows, controls::sync_chat).chain(), controls::spells::sync, controls::items::sync, (controls::items::pins::update, controls::keyboard).chain(), controls::interact, (controls::settings::sync, controls::settings::sliders, controls::hotbar::input, controls::spells::apply_drop, controls::stickers::apply_drop).chain(), read_figures, controls::edit_text, (controls::items::input, controls::items::sell_cursor, controls::consent::sync).chain(), controls::order_windows, (update_fills, (update_values, fit_texts).chain(), update_slots, (local_map::update, local_map::update_markers, local_map::appearance).chain(), (controls::effects::fixture, controls::effects::sync, controls::effects::draw).chain()), controls::chat_rows, controls::sheet::rows, controls::paint, (controls::items::render, controls::items::destroy_dialog), (controls::spells::overlay, controls::items::overlay, controls::tooltips), show_hover_window, death_dialog, (controls::trade::sync, controls::social::column, controls::social::context_menu, controls::social::answer, controls::logout::dialog, controls::travel::dialog, controls::systems::send, controls::systems::talents::dialogs, controls::social::dialogs, controls::trade::render).chain()).chain().after(crate::actors::monsters::MonsterHoverInfo).before(crate::network::net::NetSystems).run_if(crate::screens::loading::gameplay_ready),
+                ((dialogue::sync, controls::party::sync, controls::quests::sync, controls::systems::sync, controls::currency::sync_bar, controls::message::sync, spawn_windows, controls::sync_chat).chain(), controls::spells::sync, controls::items::sync, (controls::items::pins::update, controls::keyboard).chain(), controls::interact, (controls::settings::sync, controls::settings::sliders, controls::hotbar::input, controls::spells::apply_drop, controls::stickers::apply_drop).chain(), read_figures, controls::edit_text, (controls::items::input, controls::items::sell_cursor, controls::consent::sync).chain(), controls::order_windows, (update_fills, (update_values, fit_texts).chain(), update_slots, (local_map::update, local_map::update_markers, local_map::appearance).chain(), (controls::effects::fixture, controls::effects::sync, controls::effects::draw).chain()), controls::chat_rows, controls::sheet::rows, controls::paint, (controls::items::render, controls::items::destroy_dialog), (controls::spells::overlay, controls::items::overlay, controls::tooltips), show_hover_window, death_dialog, (controls::trade::sync, controls::social::column, controls::social::context_menu, controls::social::answer, controls::logout::dialog, controls::travel::dialog, controls::access::dialog, controls::systems::send, controls::systems::talents::dialogs, controls::social::dialogs, controls::trade::render).chain()).chain().after(crate::actors::monsters::MonsterHoverInfo).before(crate::network::net::NetSystems).run_if(crate::screens::loading::gameplay_ready),
             );
         // The 3D previews: once this frame's clicks moved the pages and the
         // views were rebuilt.
@@ -694,6 +694,7 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>, mut quest_ui: ResMut<
     loaded.layouts.push((assets.load(format!("interface/{}.ui.json", controls::systems::talents::DIALOG)), 615.0, None));
     loaded.layouts.push((assets.load(format!("interface/{}.ui.json", controls::logout::WINDOW)), 612.0, None));
     loaded.layouts.push((assets.load(format!("interface/{}.ui.json", controls::travel::WINDOW)), 613.0, None));
+    loaded.layouts.push((assets.load(format!("interface/{}.ui.json", controls::access::WINDOW)), 470.0, None));
     loaded.layouts.push((assets.load("interface/settingswindow2.ui.json"), 550.0, None));
     loaded.layouts.push((assets.load(format!("interface/{CHAT_WINDOW}.ui.json")), CHAT_DEPTH, None));
     loaded.layouts.push((assets.load(format!("interface/{CHAT_MENU}.ui.json")), CHAT_DEPTH + 3.0, None));
@@ -1024,6 +1025,8 @@ fn spawn_windows(
             prepared = controls::items::prepare_confirm(layout); &prepared
         } else if layout.window == controls::social::BOOKING_DIALOG {
             prepared = controls::social::prepare_booking(layout); &prepared
+        } else if layout.window == controls::access::WINDOW {
+            prepared = controls::access::prepare(layout); &prepared
         } else if layout.window == controls::travel::WINDOW {
             prepared = controls::travel::prepare(layout); &prepared
         } else if layout.window == controls::logout::WINDOW {
