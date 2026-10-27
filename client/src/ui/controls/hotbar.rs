@@ -148,6 +148,8 @@ pub(in crate::ui) fn input(mut bar: ResMut<Hotbar>, keys: Res<ButtonInput<KeyCod
     let requested = clicks.0.or_else(|| settings.current.slot_pressed(&keys));
     if let Some(index) = requested {
         if index >= PRIMARY_ESSENCE { clicks.0 = None; return; }
+        // A shortcut used from the bar is no travel stone's.
+        if net.travel_source.is_some() { net.travel_source = None; }
         if let Some(s) = slot(&net, bar.active, index) {
             // The Universal Map's slot opens the travel map, as its right click does.
             let map = s.kind == 1 && item(s, &net.inventory).zip(catalogs.get(&data.catalog)).is_some_and(|(i, c)| items::travel_map(c, &i.template));

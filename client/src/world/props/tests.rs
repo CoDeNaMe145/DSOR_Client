@@ -19,6 +19,8 @@ fn row(key: &str, event: i32) -> Row {
         .to_cols_array(),
         state: "active".into(),
         event,
+        kind: String::new(),
+        id: String::new(),
         quest_controlled: false,
         show_always: false,
     }

@@ -56,6 +56,7 @@ fn interact(
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), (With<Camera3d>, Without<crate::rendering::highlight::HighlightCamera>)>,
     props: Query<(Entity, &Interactive, &GlobalTransform, &InheritedVisibility)>,
+    stones: Query<(Entity, &TravelStone, &GlobalTransform, &InheritedVisibility)>,
     mut players: Query<(&Transform, &mut crate::network::net::LocalPlayer)>,
     hovered: Option<Res<crate::actors::monsters::Hovered>>,
     item: Option<Res<crate::world::drops::ItemHover>>,
@@ -70,13 +71,20 @@ fn interact(
     let Some(mut net) = net else { target.pending = None; return };
     let Ok((tf, mut player)) = players.single_mut() else { target.pending = None; return };
     if let Some((entity, at, approach)) = target.pending {
-        let Ok((_, prop, _, _)) = props.get(entity) else { target.pending = None; return };
+        let prop = props.get(entity).ok().map(|(_, p, _, _)| p.clone());
+        let stone = stones.get(entity).ok().map(|(_, s, _, _)| s.0.clone());
+        if prop.is_none() && stone.is_none() { target.pending = None; return };
         if tf.translation.xz().distance(at.xz()) <= USE_DISTANCE {
             player.target = None;
-            if !net.offline {
-                net.send(&ClientCommand::PropInteraction(actors::PropInteraction { prop_id: prop.prop_id, interaction: prop.operation.clone() }));
+            if let Some(prop) = prop {
+                if !net.offline {
+                    net.send(&ClientCommand::PropInteraction(actors::PropInteraction { prop_id: prop.prop_id, interaction: prop.operation.clone() }));
+                }
+                info!("prop: used {} ({:?})", prop.prop_id, prop.operation);
+            } else if let Some(stone) = stone {
+                info!("travel stone {stone}: the travel map opens");
+                net.travel_stone = Some(stone);
             }
-            info!("prop: used {} ({:?})", prop.prop_id, prop.operation);
             target.pending = None;
         } else if player.target.is_none_or(|t| t.xz().distance(approach.xz()) > 0.5) {
             target.pending = None;
@@ -87,8 +95,9 @@ fn interact(
     let Ok(window) = windows.single() else { return };
     let ray = window.cursor_position().zip(cameras.single().ok()).and_then(|(p, (c, t))| c.viewport_to_world(t, p).ok());
     let Some(ray) = ray else { return };
-    let hit = props.iter().filter(|(_, _, _, visible)| visible.get())
-        .filter_map(|(e, _, t, _)| cylinder_hit(ray, t.translation()).map(|d| (d, e, t.translation())))
+    let hit = props.iter().filter(|(_, _, _, visible)| visible.get()).map(|(e, _, t, _)| (e, t))
+        .chain(stones.iter().filter(|(_, _, _, visible)| visible.get()).map(|(e, _, t, _)| (e, t)))
+        .filter_map(|(e, t)| cylinder_hit(ray, t.translation()).map(|d| (d, e, t.translation())))
         .min_by(|a, b| a.0.total_cmp(&b.0));
     let Some((_, entity, at)) = hit else { return };
     let approach = crate::gameplay::dialogue::approach_point(tf.translation, at);
@@ -113,6 +122,11 @@ struct Row {
     quest_controlled: bool,
     #[serde(default)]
     show_always: bool,
+    /// The table it comes from and its Id (a travel stone: _Instance_TravelPoint).
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    id: String,
 }
 
 #[derive(Asset, TypePath, Debug, Default, Deserialize)]
@@ -394,7 +408,16 @@ struct Desired {
     map_icon: String,
     /// The server's prop id and interaction, when it announced this one.
     interactive: Option<(u32, String)>,
+    /// A travel stone's TravelPoint id.
+    travel_point: Option<String>,
 }
+
+/// A travel stone (_Instance_TravelPoint): used, it opens the travel map, and
+/// the travel names it as its source (TravelCommand's first string, DSOR_Server
+/// gameplay_protocol.py MapTravelRequest.travel_point_id).
+/// FAILURE: "il y'a les travel stones ou je ne peux pas interagir avec".
+#[derive(Component, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TravelStone(pub String);
 fn desired(map: &MapProps, templates: &MapProps, net: &NetworkProps) -> Vec<Desired> {
     let by_guid: HashMap<_, _> = net
         .entries
@@ -426,6 +449,7 @@ fn desired(map: &MapProps, templates: &MapProps, net: &NetworkProps) -> Vec<Desi
             state: remote.map_or_else(|| row.state.to_lowercase(), |p| p.visual.clone()),
             map_icon: row.map_icon.clone(),
             interactive: remote.map(|p| (p.entry.prop_id, p.entry.interaction.clone())),
+            travel_point: (row.kind == "_Instance_TravelPoint" && !row.id.is_empty()).then(|| row.id.clone()),
         });
     }
     for p in net
@@ -444,6 +468,7 @@ fn desired(map: &MapProps, templates: &MapProps, net: &NetworkProps) -> Vec<Desi
             state: p.visual.clone(),
             map_icon: templates.map_icons.get(&p.entry.template).cloned().unwrap_or_default(),
             interactive: Some((p.entry.prop_id, p.entry.interaction.clone())),
+            travel_point: None,
         });
     }
     result.retain(|p| {
@@ -616,6 +641,9 @@ fn reconcile(
                 Visibility::Inherited, ChildOf(root))).id();
             if let Some((prop_id, operation)) = &wanted.interactive {
                 commands.entity(entity).insert(Interactive { prop_id: *prop_id, operation: operation.clone() });
+            }
+            if let Some(id) = &wanted.travel_point {
+                commands.entity(entity).insert(TravelStone(id.clone()));
             }
             scene.placed.insert(wanted.key.clone(), Placed { entity, desired: wanted.clone(), visual: None });
         }

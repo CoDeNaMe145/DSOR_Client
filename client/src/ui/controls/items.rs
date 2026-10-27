@@ -561,7 +561,7 @@ pub fn input(mut ui:ResMut<Interaction>,mut pointer:ResMut<Pointer>,mut windows:
                 } else if travel_map(catalog,net.inventory.items.get(&id).map_or("",|i|i.template.as_str())) {
                     // The Universal Map: "(right click to open the travel map)" (gui.window
                     // howToUseTravelMapItem); the server has no use for it.
-                    pointer.open_window=Some("travelmap");
+                    pointer.open_window=Some("travelmap"); net.travel_source=None;
                 } else if let Some(cmd)=use_consumable(&net.inventory,catalog,id) {
                     if trading { trade.add.push(id); }
                     else { net.send(&cmd);ui.pending=Some((net.inventory.revision,time.elapsed_secs_f64())); }

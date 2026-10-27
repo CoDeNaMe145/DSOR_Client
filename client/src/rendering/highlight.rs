@@ -120,7 +120,7 @@ pub(crate) fn pick(
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), (With<Camera3d>, Without<HighlightCamera>)>,
     hovered: Res<crate::actors::monsters::Hovered>,
-    actors: Query<(Entity, &GlobalTransform, &InheritedVisibility, Option<&crate::actors::picking::PickBoxes>), Or<(With<crate::actors::npc::Npc>, (With<crate::network::net::RemotePlayer>, With<crate::actors::character::Character>, Without<crate::actors::monsters::Monster>))>>,
+    actors: Query<(Entity, &GlobalTransform, &InheritedVisibility, Option<&crate::actors::picking::PickBoxes>, Option<&crate::actors::npc::Npc>), Or<(With<crate::actors::npc::Npc>, (With<crate::network::net::RemotePlayer>, With<crate::actors::character::Character>, Without<crate::actors::monsters::Monster>))>>,
     joints: Query<&GlobalTransform>,
     exits: Query<(Entity, &crate::world::exits::Exit)>,
     mut highlighted: ResMut<Highlighted>,
@@ -139,8 +139,13 @@ pub(crate) fn pick(
             .and_then(|(c, (cam, at))| cam.viewport_to_world(at, c).ok());
         ray.and_then(|ray| {
             let mut best: Option<(f32, Entity)> = None;
-            for (e, at, shown, boxes) in &actors {
+            for (e, at, shown, boxes, npc) in &actors {
                 if !shown.get() { continue; }
+                // Only the NPCs one talks to are outlined: not the town's
+                // pigeons, chickens and other decoration (NoTalk).
+                // FAILURE: "j'ai l'outline sur tous les PNJ, meme les pigeons
+                //   et les poules".
+                if npc.is_some_and(|n| n.profile.no_talk) { continue; }
                 if let Some(t) = crate::actors::picking::friendly_hit(ray, at.translation(), boxes, &joints) {
                     if best.is_none_or(|(bt, _)| t < bt) { best = Some((t, e)); }
                 }

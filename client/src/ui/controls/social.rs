@@ -594,8 +594,13 @@ pub(in crate::ui) fn answer(
     }
     for line in std::mem::take(&mut net.social_notes) { chat.push(Kind::System, line); }
     // The travel map's destination: the server moves us when the map is discovered.
+    if let Some(stone) = net.travel_stone.take() {
+        net.travel_source = Some(stone);
+        pointer.open_window = Some("travelmap");
+    }
     if let Some(map) = pointer.travel.take() {
-        net.send(&ClientCommand::Travel(dsor_proto::commands::player::Travel::to_map(&map)));
+        let source = net.travel_source.take().unwrap_or_default();
+        net.send(&ClientCommand::Travel(dsor_proto::commands::player::Travel { source, ..dsor_proto::commands::player::Travel::to_map(&map) }));
         chat.push(Kind::System, format!("Travelling to {}.", map.replace('_', " ")));
     }
     let Some(clicked) = social.clicked.take() else { return };
