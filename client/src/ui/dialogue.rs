@@ -151,6 +151,17 @@ impl Presentation {
         else { self.view.as_ref()?.options.get(index).map(|choice| choice.label.as_str()) }
     }
     pub(in crate::ui) fn catalog(&self) -> &Handle<Catalog> { &self.catalog }
+    /// A trader's item on screen (its choice): the item it sells, or the
+    /// sold stack it buys back.
+    pub(in crate::ui) fn offer_item(&self, index: usize, net: &crate::network::net::Net) -> Option<(String, Option<dsor_proto::commands::inventory::ItemInfo>, u32)> {
+        let (shop, _) = self.open_shop()?;
+        let offers = net.npc_dialogue.offers.get(shop)?;
+        match &self.view.as_ref()?.options.get(index)?.action {
+            Action::Buy(id) => offers.offers.iter().flatten().find(|o| &o.id == id).map(|o| (o.item.clone(), None, o.amount.max(1))),
+            Action::Restore(item) => offers.items.iter().find(|i| i.id == *item).map(|i| (i.template.clone(), Some(i.clone()), i.third.max(1))),
+            _ => None,
+        }
+    }
     /// The shop whose selection is on screen, and whether it buys items.
     pub(super) fn open_shop(&self) -> Option<(&str, bool)> {
         let merchant = self.view.as_ref()?.merchant.as_ref()?;

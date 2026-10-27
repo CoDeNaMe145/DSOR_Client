@@ -238,6 +238,8 @@ enum Action {
     /// A trader's item (dialogue::merchant): a right click buys it, the
     /// conversation's choice of this index; a left click does nothing.
     Offer(usize),
+    /// An item shown only (a quest's reward): hovered, its card; no click.
+    ItemCard(String, u32),
     Close,
     Window(&'static str),
     Inventory(u8),
@@ -303,6 +305,7 @@ fn action(window: &str, w: &Widget) -> Action {
     if dialogue::WINDOWS.contains(&window) {
         if let Some(index) = w.event.strip_prefix("NpcChoice:").and_then(|s| s.parse().ok()) { return Action::NpcChoice(index); }
         if let Some(index) = w.event.strip_prefix("NpcOffer:").and_then(|s| s.parse().ok()) { return Action::Offer(index); }
+        if let Some((amount, template)) = w.event.strip_prefix("ItemCard:").and_then(|s| s.split_once(':')) { return Action::ItemCard(template.to_owned(), amount.parse().unwrap_or(1)); }
     }
     let leaf = w.id.rsplit('/').next().unwrap_or("");
     if w.spell.is_some() { return Action::Spell; }
@@ -1183,7 +1186,7 @@ pub(super) fn interact(
         Action::Spell if name.0 == systems::talents::WINDOW => {
             if let Some(spell) = &controls.buttons[index].spell { pointer.system.push(systems::Request::Skill(spell.id.clone())); }
         }
-        Action::Spell | Action::Unavailable | Action::DragRotate | Action::Offer(_) => {}
+        Action::Spell | Action::Unavailable | Action::DragRotate | Action::Offer(_) | Action::ItemCard(..) => {}
         Action::Social(clicked) => social.clicked = Some(clicked),
         Action::QuestSelect(id) => quest_ui.selected = Some(id),
         Action::QuestCancel(id) => quest_ui.cancel = Some(id),

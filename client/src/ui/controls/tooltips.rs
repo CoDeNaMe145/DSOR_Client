@@ -44,8 +44,8 @@ fn repeats_label(window: &str, button: &Button, layout: Option<&Layout>) -> bool
         // The quest screen's Accept and Back are icons: their tooltips name them
         // (crate::ui::dialogue::quest).
         Action::NpcChoice(_) => window != "questscreen2",
-        // A trader's item: its card names it.
-        Action::Offer(_) => true,
+        // A trader's item: its own card (overlay).
+        Action::Offer(_) => false,
         Action::Edit(_) | Action::ChatChannel(_) => true,
         Action::Settings(event) => event.starts_with("row") || matches!(event.as_str(), "previous" | "next"),
         _ => layout.is_some_and(|layout| layout.widgets.iter().any(|w|
@@ -199,6 +199,21 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
                 Action::System(super::systems::Request::Pick(id, _)) if catalog.is_some() && views.album.sticker(id).is_some_and(|s| !s.template.is_empty()) => {
                     let template = &views.album.sticker(id).unwrap().template;
                     detail = Some(items::sticker_card(catalog.unwrap(), layouts.get(&data.tooltip), template));
+                }
+                // A quest reward: its card.
+                // FAILURE: no tooltip on the quests' rewards.
+                Action::ItemCard(template, amount) => {
+                    let Some(catalog) = catalog else { return };
+                    let item = dsor_proto::commands::inventory::ItemInfo { template: template.clone(), third: *amount, durability: net.as_deref().and_then(|n| n.level).unwrap_or(1), ..Default::default() };
+                    detail = Some(items::preview_card(catalog, layouts.get(&data.tooltip), template, Some(&item), *amount, settings.current.advanced_tooltips(&keys, pointer.focus.is_some())));
+                }
+                // A trader's item: its card, as the inventory's.
+                // FAILURE: "j'ai aucun tooltip sur les items que j'hover dans le shop".
+                Action::Offer(index) => {
+                    let (Some(catalog), Some(net)) = (catalog, net.as_deref()) else { return };
+                    let Some((template, item, amount)) = dialogue.offer_item(*index, net) else { return };
+                    let item = item.unwrap_or(dsor_proto::commands::inventory::ItemInfo { template: template.clone(), third: amount, durability: net.level.unwrap_or(1), ..Default::default() });
+                    detail = Some(items::preview_card(catalog, layouts.get(&data.tooltip), &template, Some(&item), amount, settings.current.advanced_tooltips(&keys, pointer.focus.is_some())));
                 }
                 // A travel map destination: its name, kind and travel costs.
                 Action::Travel(map) => {

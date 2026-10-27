@@ -91,6 +91,8 @@ pub(super) struct Rewards {
     pub xp: String,
     /// The items: amount, icon.
     pub items: Vec<(u32, Icon)>,
+    /// Their templates, in `items`' order (their hover cards).
+    pub templates: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -284,6 +286,7 @@ pub(super) fn quest(id: &str, field: &str, facts: &Facts, accept: Option<usize>,
             None if d.rewards.xp > 0 => fill(&screen_text(catalog, "xpstring", "XP: {0:i}"), Some(d.rewards.xp), ""),
             None => String::new(),
         };
+        rewards.templates = d.items.iter().filter(|i| i.class.is_empty() || i.class.eq_ignore_ascii_case(facts.class)).map(|i| i.item.clone()).collect();
         rewards.items = d.items.iter().filter(|i| i.class.is_empty() || i.class.eq_ignore_ascii_case(facts.class)).map(|i| {
             let (image, background, frame) = facts.items.map(|c| c.reward_icon_parts(&i.item, &i.rarity)).unwrap_or_default();
             let part = |p: Option<&str>| p.unwrap_or_default().to_owned();
@@ -461,6 +464,7 @@ pub(super) fn prepare(source: &Layout, screen: &Screen, layout: &mut Layout) {
             if w.id.ends_with("/Icon0") {
                 layout.widgets.extend(icon_layers(w, icon));
                 set_text(w, &if *amount > 1 { amount.to_string() } else { String::new() });
+                if let Some(template) = rewards.templates.get(row * SLOTS + slot) { controls::template::make_button(w, &format!("ItemCard:{amount}:{template}")); }
             }
             true
         });

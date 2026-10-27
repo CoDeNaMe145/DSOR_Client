@@ -103,6 +103,8 @@ pub(crate) struct QuestView {
     /// Experience, gold in copper, Andermant.
     pub rewards: (u32, u32, u32),
     pub items: Vec<(u32, Icon)>,
+    /// The reward items' templates, in `items`' order (their hover cards).
+    pub item_templates: Vec<String>,
 }
 
 impl QuestView {
@@ -205,6 +207,7 @@ pub(in crate::ui) fn sync(
             .map(|field| catalog.quest(id, field)).find(|t| !t.is_empty()).unwrap_or_default();
         let map = def.map_or(String::new(), |d| d.map.clone());
         let zone = if map.is_empty() { String::new() } else { names.map_or_else(|| dialogue::readable(&map), |n| n.caption(&map)) };
+        let item_templates: Vec<String> = def.map(|d| d.items.iter().filter(|i| i.class.is_empty() || i.class.eq_ignore_ascii_case(class_name)).take(4).map(|i| i.item.clone()).collect()).unwrap_or_default();
         let reward_items = def.map(|d| d.items.iter().filter(|i| i.class.is_empty() || i.class.eq_ignore_ascii_case(class_name)).take(4).map(|i| {
             let (image, background, frame) = items.map(|c| c.icon_parts(&i.item, None)).unwrap_or_default();
             (i.amount, Icon { background: background.unwrap_or_default().into(), image: image.unwrap_or_default().into(), frame: frame.unwrap_or_default().into() })
@@ -212,7 +215,7 @@ pub(in crate::ui) fn sync(
         QuestView { id: id.clone(), title: catalog.title(id), level: def.map_or(0, |d| d.level), state: entry.state,
             kind: group(def.map_or("world", |d| d.kind.as_str())).to_owned(), zone, description,
             deletable: def.is_some_and(|d| d.deletable), tasks,
-            rewards: def.map_or((0, 0, 0), |d| (d.rewards.xp, d.rewards.vc, d.rewards.rc)), items: reward_items }
+            rewards: def.map_or((0, 0, 0), |d| (d.rewards.xp, d.rewards.vc, d.rewards.rc)), items: reward_items, item_templates }
     }).collect();
     let order = |kind: &str| GROUPS.iter().position(|(k, _)| *k == kind).unwrap_or(GROUPS.len());
     list.sort_by(|a, b| order(&a.kind).cmp(&order(&b.kind)).then(a.level.cmp(&b.level)).then(a.title.cmp(&b.title)).then(a.id.cmp(&b.id)));
@@ -415,6 +418,8 @@ pub(in crate::ui) fn prepare_log(source: &Layout, quests: &Quests) -> Layout {
                 if leaf(&w.id) == "Icon0" {
                     layout.widgets.extend(icon_layers(&mut w, icon));
                     set_text(&mut w, &if *amount > 1 { amount.to_string() } else { String::new() });
+                    // Hovered, the reward's card (tooltips, Action::ItemCard).
+                    if let Some(template) = quest.item_templates.get(n) { super::template::make_button(&mut w, &format!("ItemCard:{amount}:{template}")); }
                 }
             }
             w.hidden = false;
