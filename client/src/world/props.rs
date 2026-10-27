@@ -76,10 +76,17 @@ fn interact(
         let stone = stones.get(entity).ok().map(|(_, s, _, _)| s.0.clone());
         let bench = benches.get(entity).ok().map(|(_, b, _, _)| b.0.clone());
         if prop.is_none() && stone.is_none() && bench.is_none() { target.pending = None; return };
-        let reach = if prop.is_some() { USE_DISTANCE } else { WIDE_USE_DISTANCE };
+        let reach = if prop.is_some() && bench.is_none() { USE_DISTANCE } else { WIDE_USE_DISTANCE };
         if tf.translation.xz().distance(at.xz()) <= reach {
             player.target = None;
-            if let Some(prop) = prop {
+            if let Some(operation) = bench {
+                // A workbench opens its window here, announced by the server or not.
+                info!("workbench: {operation}");
+                net.open_workbench = Some(operation.trim_start_matches("OpenCraftingWindow").to_owned());
+                if let Some(prop) = &prop {
+                    if !net.offline { net.send(&ClientCommand::PropInteraction(actors::PropInteraction { prop_id: prop.prop_id, interaction: prop.operation.clone() })); }
+                }
+            } else if let Some(prop) = prop {
                 if !net.offline {
                     net.send(&ClientCommand::PropInteraction(actors::PropInteraction { prop_id: prop.prop_id, interaction: prop.operation.clone() }));
                 }
@@ -87,9 +94,6 @@ fn interact(
             } else if let Some(stone) = stone {
                 info!("travel stone {stone}: the travel map opens");
                 net.travel_stone = Some(stone);
-            } else if let Some(operation) = bench {
-                info!("workbench: {operation}");
-                net.open_workbench = Some(operation.trim_start_matches("OpenCraftingWindow").to_owned());
             }
             target.pending = None;
         } else if player.target.is_none_or(|t| t.xz().distance(approach.xz()) > 0.5) {
@@ -108,7 +112,7 @@ fn interact(
         .min_by(|a, b| a.0.total_cmp(&b.0));
     let Some((_, entity, at)) = hit else { return };
     let approach = crate::gameplay::dialogue::approach_point(tf.translation, at);
-    let reach = if props.contains(entity) { USE_DISTANCE } else { WIDE_USE_DISTANCE };
+    let reach = if props.contains(entity) && !benches.contains(entity) { USE_DISTANCE } else { WIDE_USE_DISTANCE };
     player.target = (tf.translation.xz().distance(at.xz()) > reach).then_some(approach);
     // Holding the click must not resume ground walking (as an NPC click).
     dialogue.held = true;
@@ -667,6 +671,12 @@ fn reconcile(
                         Some((prop_id, operation)) => { commands.entity(placed.entity).insert(Interactive { prop_id: *prop_id, operation: operation.clone() }); }
                         None => { commands.entity(placed.entity).remove::<Interactive>(); }
                     }
+                }
+                if placed.desired.travel_point != wanted.travel_point {
+                    match &wanted.travel_point { Some(id) => { commands.entity(placed.entity).insert(TravelStone(id.clone())); } None => { commands.entity(placed.entity).remove::<TravelStone>(); } }
+                }
+                if placed.desired.local_use != wanted.local_use {
+                    match &wanted.local_use { Some(op) => { commands.entity(placed.entity).insert(LocalUse(op.clone())); } None => { commands.entity(placed.entity).remove::<LocalUse>(); } }
                 }
                 if placed.desired.graphics != wanted.graphics || placed.desired.state != wanted.state {
                     if let Some(visual) = placed.visual.take() { commands.entity(visual).try_despawn(); }

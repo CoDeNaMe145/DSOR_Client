@@ -196,8 +196,30 @@ def export_map_names(loca, out_dir):
     prefix = "maps.names_"
     names = {key[len(prefix):]: text for key, text in loca.get("en", {}).items()
              if key.startswith(prefix) and text.strip()}
+    names.update(travel_details(loca))
     with open(os.path.join(out_dir, "maps.names.json"), "w", encoding="utf-8") as f:
         json.dump(names, f, ensure_ascii=False, separators=(",", ":"))
+
+
+def travel_details(loca):
+    """The travel map's destinations: "travel_desc:<map>" (db.travelmap
+    <map>Desc, "Urban Area", else gui.window MapTypePvE "Wilderness" for an
+    unlocalized one), "travel_vc:<map>" / "travel_rc:<map>" (_Template_TravelCosts)."""
+    import sqlite3
+    out = {}
+    en = loca.get("en", {})
+    wilderness = en.get("gui.window_MapTypePvE") or "Wilderness"
+    try:
+        db = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+        for (map_id,) in db.execute("SELECT Id FROM _Template_TravelMap"):
+            desc = en.get(f"db.travelmap_{map_id}Desc", "")
+            out[f"travel_desc:{map_id}"] = wilderness if not desc.strip() or desc.startswith("Localize:") else desc
+        for map_id, rc, vc in db.execute("SELECT Id, PriceRC, PriceVC FROM _Template_TravelCosts"):
+            out[f"travel_vc:{map_id}"] = str(int(vc or 0))
+            out[f"travel_rc:{map_id}"] = str(int(rc or 0))
+    except sqlite3.Error as e:
+        print("travel details:", e)
+    return out
 
 
 def export(name):

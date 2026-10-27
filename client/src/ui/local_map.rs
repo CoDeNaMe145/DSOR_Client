@@ -59,6 +59,23 @@ impl MapSettings {
 pub struct MapNames(HashMap<String, String>);
 
 impl MapNames {
+    /// A travel map destination's lines: its name, its kind ("Urban Area",
+    /// "Wilderness": db.travelmap <map>Desc), and its travel costs (gui.window
+    /// travelmap travelCostHeading / travelCostValueVC / RC) when it has any.
+    /// FAILURE: the map's id was shown, with nothing else.
+    pub(in crate::ui) fn travel_tooltip(&self, map: &str) -> (String, String) {
+        let mut body = self.0.get(&format!("travel_desc:{map}")).cloned().unwrap_or_default();
+        let number = |key: &str| self.0.get(&format!("{key}:{map}")).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+        let (vc, rc) = (number("travel_vc"), number("travel_rc"));
+        if vc > 0 || rc > 0 {
+            body.push_str("\nTravel costs:");
+            if vc > 0 { body.push_str(&format!("\n{} Gold {} Silver {} Copper", vc / 10_000, vc / 100 % 100, vc % 100)); }
+            if vc > 0 && rc > 0 { body.push_str("\nor"); }
+            if rc > 0 { body.push_str(&format!("\n{rc} Andermant")); }
+        }
+        (self.caption(map), body)
+    }
+
     pub(in crate::ui) fn caption(&self, map: &str) -> String {
         self.0.get(map).filter(|name| !name.trim().is_empty()).cloned().unwrap_or_else(|| {
             // Debug/untranslated maps still get a readable caption, without

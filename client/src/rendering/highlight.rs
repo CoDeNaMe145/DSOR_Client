@@ -194,7 +194,9 @@ fn relayer(
     parents: Query<&ChildOf>,
     // Decorative billboards are not part of an object's outline. In particular,
     // outlining an exit's light column exposes the flat quad around its halo.
-    excluded: Query<(), Or<(With<NoHighlight>, With<crate::rendering::materials::FacesViewer>)>>,
+    // Particle emitters neither: a travel stone's sparks made its outline
+    // move all the time ("il devrait pas en compte le FX just le mesh").
+    excluded: Query<(), Or<(With<NoHighlight>, With<crate::rendering::materials::FacesViewer>, With<crate::rendering::particles::Emitter>)>>,
     meshes: Query<(), With<Mesh3d>>,
     on_layer: Query<Entity, With<OnHighlightLayer>>,
     mut camera: Query<&mut Camera, (With<HighlightCamera>, Without<crate::ui::PreviewCamera>)>,

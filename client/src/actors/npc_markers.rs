@@ -20,11 +20,29 @@ struct OverheadMarker(Style);
 #[derive(Component)]
 struct PendingMarker;
 
+/// A travel stone's compass rose above it (t000_general/status_travelpoint_01,
+/// the travel points' status model; its glow sits 4.5 units up in the model).
+/// FAILURE: "l'icone au dessus pour l'autel c'est la genre de rose des vents".
+#[derive(Component)]
+struct StoneMarker;
+
+fn stones(mut commands: Commands, assets: Res<AssetServer>, added: Query<Entity, Added<crate::world::props::TravelStone>>) {
+    for stone in &added {
+        commands.spawn((
+            Name::new("travel stone overhead"),
+            OverheadMarker(Style { model: "status_travelpoint_01", color: [255; 3] }), PendingMarker, StoneMarker,
+            WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset("t000_general/status_travelpoint_01.glb"))),
+            Transform::IDENTITY, Visibility::Hidden, ChildOf(stone),
+            Pickable::IGNORE, crate::rendering::highlight::NoHighlight,
+        ));
+    }
+}
+
 pub(super) struct NpcMarkersPlugin;
 
 impl Plugin for NpcMarkersPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (sync, prepare).chain().after(NpcVisualSystems));
+        app.add_systems(Update, (sync, stones, prepare).chain().after(NpcVisualSystems));
     }
 }
 
@@ -91,7 +109,7 @@ fn style(npc: &Npc, state: &MapMarkers) -> Option<Style> {
 fn sync(
     mut commands: Commands,
     npcs: Query<(Entity, &Npc, Has<NpcVisualPending>)>,
-    mut markers: Query<(Entity, &ChildOf, &OverheadMarker, &mut Transform)>,
+    mut markers: Query<(Entity, &ChildOf, &OverheadMarker, &mut Transform), Without<StoneMarker>>,
     net: Option<NonSend<crate::network::net::Net>>,
     assets: Res<AssetServer>,
 ) {

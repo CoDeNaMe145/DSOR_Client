@@ -649,8 +649,15 @@ impl WindowControls {
         self.section_visible(gate.section) && gate.button.is_none_or(|(index, state)| self.state(index) == state)
     }
 
+    /// The button under the point: of overlapping ones, the smallest (the last
+    /// of equal ones). The travel map's destinations overlap: Pastures' wide
+    /// area covers Grimford's top.
+    /// FAILURE: "si j'hover grimford il pense que j'hover pasture pve".
     fn hit(&self, point: Vec2, width: f32) -> Option<usize> {
-        self.buttons.iter().enumerate().rev().find(|(_, b)| self.section_visible(b.section) && contains(b.k, b.rect, point, width)).map(|(i, _)| i)
+        let area = |r: [f32; 4]| (r[2] - r[0]) * (r[3] - r[1]);
+        self.buttons.iter().enumerate().rev().filter(|(_, b)| self.section_visible(b.section) && contains(b.k, b.rect, point, width))
+            .fold(None::<(usize, f32)>, |best, (i, b)| match best { Some((_, a)) if a <= area(b.rect) => best, _ => Some((i, area(b.rect))) })
+            .map(|(i, _)| i)
     }
 
     fn covers(&self, point: Vec2, width: f32) -> bool {
