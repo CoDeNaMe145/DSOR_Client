@@ -12,9 +12,15 @@
 //! the items its teleport takes (TeleportKeyId) and the group size
 //! (_Template_MapTemplate.MaxPlayer) fill the panes.
 //! FAILURE: "j'ai ni les boutons ni l'image du bon boss ni le texte".
-//! UNVERIFIED: the difficulty modifications list the _Template_MapDifficulty
-//!   values and the row's Resistances as text (the retail icons are not
-//!   known); the leaderboards tab is left out; the items are not checked.
+//! The difficulty modifications: for a Parallel World difficulty the icon
+//! lines of MapAccessWidget::SetDifficultyInfoText (dro_client64 strings:
+//! icons/difficulties_damage ... _items_epic; values _Template_DifficultyFactors,
+//! matching the retail Grimmag Bloodshed screenshot: 1100%, 2500%, 5 - 6, 45,
+//! 1100%, 0/14/54/10%, 600%), else the text list (retail Heredur screenshot).
+//! UNVERIFIED: the rule choosing the icon pane (a Parallel World difficulty)
+//!   and hiding the recommended level with it is inferred from two
+//!   screenshots; the key order (KeyId first) likewise; no tooltips; the
+//!   leaderboards tab is left out.
 use super::*;
 use dsor_proto::commands::ClientCommand;
 
@@ -30,7 +36,7 @@ const TRACK: [f32; 4] = [327.69, 379.86, 692.5, 409.95];
 pub(in crate::ui) fn prepare(layout: &Layout) -> Layout {
     let mut out = layout.clone();
     out.widgets.retain(|w| !w.id.contains("/TabButton") && !w.id.contains("/BottomLeaderboardsinfo") && !w.id.contains("/DifficultySnapLine")
-        && !w.id.contains("/slider/Thumb") && !w.id.contains("/SmallMeanie") && !w.id.contains("/FatMeanie") && !w.id.contains("/TextList/Scroll")
+        && !w.id.contains("/slider/Thumb") && !w.id.contains("/TextList/Scroll")
         && !w.id.contains("/DifficultyModificationsRight/TemplateListEntry") && !w.id.contains("/DifficultyModificationsRight/ScrollButton")
         && !w.id.contains("/ExtraModificationsHeader") && !w.id.contains("/ItemsTop3/Item3") && !w.id.ends_with("/DeniedGroupMapInfo")
         && !w.id.ends_with("/ResistancesInfo"));
@@ -65,7 +71,7 @@ pub(in crate::ui) fn dialog(
     (elements, players): (Query<(&Element, &MeshMaterial2d<UiMaterial>)>, Query<&crate::actors::character::Character, With<crate::network::net::LocalPlayer>>),
     primary: Query<&Window, With<bevy::window::PrimaryWindow>>,
     old: Query<Entity, With<AccessText>>,
-    (mut asked, mut shown, mut art): (Local<Option<Asked>>, Local<Option<(usize, usize, u32, u32, bool)>>, Local<Option<Handle<Image>>>),
+    (mut asked, mut shown, mut art): (Local<Option<Asked>>, Local<Option<(usize, usize, u32, u32, bool, u64)>>, Local<Option<Handle<Image>>>),
 ) {
     let Some(mut net) = net else { return };
     let names = names.get(&loaded.map_names);
@@ -122,7 +128,7 @@ pub(in crate::ui) fn dialog(
         *art = Some(want);
     }
     let catalog = catalogs.get(&data.catalog);
-    let key = asked.as_ref().map(|a| (a.tiers.len(), a.picked, screen.width.to_bits(), screen.scale.to_bits(), catalog.is_some()));
+    let key = asked.as_ref().map(|a| (a.tiers.len(), a.picked, screen.width.to_bits(), screen.scale.to_bits(), catalog.is_some(), net.inventory.revision));
     if *shown == key { return; }
     *shown = key;
     for e in &old { commands.entity(e).despawn(); }
@@ -146,14 +152,23 @@ pub(in crate::ui) fn dialog(
     let mods = names.map(|n| n.difficulty_mods(difficulty)).unwrap_or_default();
     let m = |i: usize| mods.get(i).copied().unwrap_or(0);
     if let Some([l, t, r, b]) = rect("/Headline/WindowTitle") { put(&mut commands, title, Vec2::new((l + r) * 0.5, (t + b) * 0.5), r - l, 12.0, gold, true); }
-    // The description: the row's text, its boss note and the level.
+    let pw = names.is_some_and(|n| n.difficulty_name(difficulty).starts_with("Parallel World"));
+    // The description: the row's text, its boss note and, off the Parallel
+    // Worlds, the level; the loca's colour tags (<cRRGGBBAA>...</>) kept.
     if let Some([l, t, r, _]) = rect(&format!("{ART}/TextList")) {
-        let mut body = super::tooltips::card::plain(&text("desc", &row));
-        let note = super::tooltips::card::plain(&text("desc2", &row));
+        let mut body = text("desc", &row);
+        let note = text("desc2", &row);
         if !note.is_empty() { body.push_str(&format!("\n\n{note}")); }
         let level = text("level", &group_id).parse::<i64>().unwrap_or(0) + m(0);
-        if level > 0 { body.push_str(&format!("\n\n{}: {level}", text("text", "recommendedLevel"))); }
-        put(&mut commands, body, Vec2::new(l, t), r - l - 16.0, 10.0, pale, false);
+        if level > 0 && !pw { body.push_str(&format!("\n\n{}: {level}", text("text", "recommendedLevel"))); }
+        let spans = colored(&body, pale);
+        let first = spans.first().cloned().unwrap_or_default();
+        commands.spawn((Text2d::new(first.0), font(11.0), TextColor(first.1), bevy::text::TextLayout::justify(bevy::text::Justify::Left), Anchor::TOP_LEFT,
+            bevy::text::TextBounds::new_horizontal((r - l - 16.0) * screen.scale),
+            Transform::from_translation(screen.world(0.5, l, t).extend(0.5)).with_scale(Vec3::splat(1.0 / screen.scale)),
+            RenderLayers::layer(LAYER), ChildOf(group))).with_children(|text| {
+            for (part, color) in spans.into_iter().skip(1) { text.spawn((bevy::text::TextSpan::new(part), font(11.0), TextColor(color))); }
+        });
     }
     let tier_name = names.map(|n| n.difficulty_name(difficulty)).unwrap_or_default();
     if let Some([l, t, r, b]) = rect("/DifficultyInfo/background2/TextLabel") { put(&mut commands, tier_name, Vec2::new((l + r) * 0.5, (t + b) * 0.5), r - l + 80.0, 11.0, gold, true); }
@@ -170,15 +185,28 @@ pub(in crate::ui) fn dialog(
             put(&mut commands, "|".into(), Vec2::new(x, y), 20.0, 11.0, Color::srgb(0.75, 0.68, 0.55), true);
         }
     }
-    // The difficulty modifications, two columns of five lines.
-    let mut lines = vec![format!("Monster Level +{}", m(0)), format!("Magic items: {} %", m(1)), format!("Rare items: {} %", m(2)), format!("Epic items: {} %", m(3))];
-    for part in text("res", &row).split(',') {
-        let Some((element, value)) = part.split_once(':') else { continue };
-        match value.trim().parse::<i32>().unwrap_or(0) { v if v > 0 => lines.push(format!("{element}: resistant")), v if v < 0 => lines.push(format!("{element}: vulnerable")), _ => {} }
-    }
-    for (i, line) in lines.into_iter().take(10).enumerate() {
-        let (Some([l, _, _, _]), Some([_, t, r, b])) = (rect(&format!("/DifficultyModificationsIcons/Icon{i}")), rect(&format!("/DifficultyModificationsIcons/TextLabel{i}"))) else { continue };
-        put(&mut commands, line, Vec2::new(l, t + (b - t) * 0.5 - 7.0), r - l, 9.5, pale, false);
+    // The difficulty modifications: icon lines (Icon0-4 left, 5-9 right), or
+    // the text list.
+    let lines: Vec<(Option<&str>, String)> = if pw {
+        let f = names.map(|n| n.difficulty_factors(difficulty)).unwrap_or_default();
+        let f = |i: usize| f.get(i).copied().unwrap_or(0.0);
+        let pct = |v: f32| format!("{}%", (v * 100.0).round() as i64);
+        vec![(Some("damage"), pct(f(0))), (Some("healthbonus"), pct(f(1))), (Some("champ_enchantments"), format!("{} - {}", f(2) as i64, f(3) as i64)),
+            (Some("strength"), m(0).to_string()), (Some("xpbonus"), pct(f(4))), (Some("items_common"), format!("{}%", m(4))), (Some("items_magic"), format!("{}%", m(1))),
+            (Some("items_rare"), format!("{}%", m(2))), (Some("items_epic"), format!("{}%", m(3))), (Some("stacksizebonus"), pct(f(5)))]
+    } else {
+        vec![(None, format!("Monster Level +{}", m(0))), (None, format!("Magic items: {} %", m(1))), (None, format!("Rare items: {} %", m(2))), (None, format!("Epic items: {} %", m(3)))]
+    };
+    for (i, (icon, line)) in lines.into_iter().enumerate() {
+        let (Some([il, it, ir, ib]), Some([_, t, r, b])) = (rect(&format!("/DifficultyModificationsIcons/Icon{i}")), rect(&format!("/DifficultyModificationsIcons/TextLabel{i}"))) else { continue };
+        match icon {
+            Some(icon) => {
+                commands.spawn((Sprite { image: assets.load(format!("textures/icons/difficulties_{icon}.png")), custom_size: Some(Vec2::new(ir - il, ib - it)), ..default() },
+                    Anchor::TOP_LEFT, Transform::from_translation(screen.world(0.5, il, it).extend(0.4)), RenderLayers::layer(LAYER), ChildOf(group)));
+                put(&mut commands, line, Vec2::new(ir + 5.0, t + (b - t) * 0.5 - 8.0), r - ir, 11.0, pale, false);
+            }
+            None => put(&mut commands, line, Vec2::new(il, t + (b - t) * 0.5 - 7.0), r - il, 10.0, pale, false),
+        }
     }
     if let Some([l, t, r, _]) = rect("/EntryRequirements/GroupsizeText") {
         let players = text("players", &group_id);
@@ -197,12 +225,47 @@ pub(in crate::ui) fn dialog(
         let Some(slot) = widget(&format!("/PossibleRewardsIcons/Item{i}")) else { continue };
         social::item_icon(&mut commands, &assets, &screen, group, catalog, template, rarity(template), slot.k, slot.rect, None);
     }
-    // What the teleport takes ("item:count;item:count").
-    for (i, need) in text("needs", &row).split(';').filter(|n| !n.is_empty()).take(3).enumerate() {
+    // What the teleport takes ("item:count;item:count"), the KeyId items first:
+    // the count asked on the icon, the count carried under it.
+    let mut needs: Vec<(String, u32)> = Vec::new();
+    for need in text("key", &row).split(';').chain(text("needs", &row).split(';')).filter(|n| !n.is_empty()) {
         let (template, count) = need.split_once(':').unwrap_or((need, "1"));
+        if !needs.iter().any(|(t, _)| t == template) { needs.push((template.to_owned(), count.parse().unwrap_or(1))); }
+    }
+    for (i, (template, count)) in needs.iter().take(3).enumerate() {
         let Some(slot) = widget(&format!("/ItemsTop3/Item{i}/Icon0")) else { continue };
         let [l, t, r, b] = slot.rect;
         social::item_icon(&mut commands, &assets, &screen, group, catalog, template, rarity(template), slot.k, [l - 2.5, t - 2.5, r + 2.5, b + 2.5], None);
-        if let Some([l, t, r, b]) = rect(&format!("/ItemsTop3/Item{i}/ItemCount")) { put(&mut commands, count.to_owned(), Vec2::new((l + r) * 0.5, (t + b) * 0.5), r - l, 9.5, Color::WHITE, true); }
+        if *count > 1 {
+            commands.spawn((Text2d::new(count.to_string()), font(13.0), TextColor(Color::WHITE), bevy::text::TextLayout::justify(bevy::text::Justify::Right), Anchor::BOTTOM_RIGHT,
+                Transform::from_translation(screen.world(0.5, r - 2.0, b).extend(0.7)).with_scale(Vec3::splat(1.0 / screen.scale)), RenderLayers::layer(LAYER), ChildOf(group)));
+        }
+        let owned: u32 = net.inventory.items.values().filter(|x| &x.template == template).map(|x| x.third.max(1)).sum();
+        let owned = if owned > 999 { "999+".to_owned() } else { owned.to_string() };
+        if let Some([l, t, r, b]) = rect(&format!("/ItemsTop3/Item{i}/ItemCount")) { put(&mut commands, owned, Vec2::new((l + r) * 0.5, (t + b) * 0.5), r - l, 10.0, Color::WHITE, true); }
     }
+}
+
+/// The loca's colour tags: "<cRRGGBBAA>" opens a colour, "</>" closes the last
+/// tag, "<i>" (italic) keeps the colour.
+fn colored(raw: &str, base: Color) -> Vec<(String, Color)> {
+    let mut stack = vec![base];
+    let mut out: Vec<(String, Color)> = vec![(String::new(), base)];
+    let mut rest = raw;
+    while let Some(at) = rest.find('<') {
+        out.last_mut().unwrap().0.push_str(&rest[..at]);
+        let Some(end) = rest[at..].find('>') else { rest = &rest[at..]; break };
+        let tag = &rest[at + 1..at + end];
+        rest = &rest[at + end + 1..];
+        if tag.starts_with('/') { if stack.len() > 1 { stack.pop(); } }
+        else {
+            let color = tag.strip_prefix('c').filter(|h| h.len() == 8).and_then(|h| u32::from_str_radix(h, 16).ok())
+                .map(|v| Color::srgba_u8((v >> 24) as u8, (v >> 16) as u8, (v >> 8) as u8, v as u8)).unwrap_or(*stack.last().unwrap());
+            stack.push(color);
+        }
+        out.push((String::new(), *stack.last().unwrap()));
+    }
+    out.last_mut().unwrap().0.push_str(rest);
+    out.retain(|(s, _)| !s.is_empty());
+    out
 }

@@ -75,6 +75,10 @@ impl MapNames {
         tiers.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
         tiers
     }
+    /// A difficulty's MonsterDMG, MonsterHP, RMESecondaryMin/Max, XPGain and VCStackSize (_Template_DifficultyFactors).
+    pub(in crate::ui) fn difficulty_factors(&self, level: u32) -> Vec<f32> {
+        self.0.get(&format!("difficulty_factors:{level}")).map(|v| v.split(',').filter_map(|n| n.parse().ok()).collect()).unwrap_or_default()
+    }
     /// A map access row's detail (`access_<what>:<row>`, tools/export_ui.py travel_details): bg, desc, desc2, res, rewards, needs;
     /// with a group, level and players; with a loca key, access_text.
     pub(in crate::ui) fn access(&self, what: &str, row: &str) -> &str { self.0.get(&format!("access_{what}:{row}")).map_or("", String::as_str) }

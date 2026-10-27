@@ -234,8 +234,11 @@ def travel_details(loca):
         for group, level, players in db.execute("SELECT AccessGroup, MapLevel, MaxPlayer FROM _Template_MapTemplate"):
             out[f"access_level:{group}"] = str(int(level or 0))
             out[f"access_players:{group}"] = str(int(players or 0))
-        for level, plus, magic, rare, epic in db.execute("SELECT Id, MonsterLevelPlus, Magic, Rare, Epic FROM _Template_MapDifficulty"):
-            out[f"difficulty_mods:{level}"] = f"{int(plus or 0)},{int(magic or 0)},{int(rare or 0)},{int(epic or 0)}"
+        for level, plus, magic, rare, epic, uncommon in db.execute("SELECT Id, MonsterLevelPlus, Magic, Rare, Epic, Uncommon FROM _Template_MapDifficulty"):
+            out[f"difficulty_mods:{level}"] = f"{int(plus or 0)},{int(magic or 0)},{int(rare or 0)},{int(epic or 0)},{int(uncommon or 0)}"
+        # MapAccessWidget::SetDifficultyInfoText's icon lines (_Template_DifficultyFactors).
+        for row in db.execute("SELECT Id, MonsterDMG, MonsterHP, RMESecondaryMin, RMESecondaryMax, XPGain, VCStackSize FROM _Template_DifficultyFactors"):
+            out[f"difficulty_factors:{row[0]}"] = ",".join(repr(float(v or 0)) for v in row[1:])
         for key in ("possibleRewardsAndRisks", "dungeonPrerequisites", "maxGroupSize", "enterDungeon", "difficultyModifications", "recommendedLevel"):
             out[f"access_text:{key}"] = access(key)
         for level, name in db.execute("SELECT Id, Name FROM _Template_MapDifficulty"):
