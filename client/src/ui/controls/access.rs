@@ -39,13 +39,24 @@ pub(in crate::ui) fn prepare(layout: &Layout) -> Layout {
         && !w.id.contains("/slider/Thumb") && !w.id.contains("/TextList/Scroll")
         && !w.id.contains("/DifficultyModificationsRight/TemplateListEntry") && !w.id.contains("/DifficultyModificationsRight/ScrollButton")
         && !w.id.contains("/ExtraModificationsHeader") && !w.id.contains("/ItemsTop3/Item3") && !w.id.ends_with("/DeniedGroupMapInfo")
-        && !w.id.ends_with("/ResistancesInfo"));
+        && !w.id.contains("/ResistancesInfo"));
     for w in &mut out.widgets {
         if w.id.contains("/ButtonBuyEnter") { w.hidden = false; }
+        // Drawn by `dialog` where used: the slot frames, the filled part of the
+        // track (DifficultySlider/progress).
+        if is_slot(&w.id) || w.id.ends_with("/DifficultySlider/progress") { w.art = None; }
         let filled = ["/Headline/WindowTitle", "/TextList/TextLabel", "/DifficultyInfo/background2/TextLabel", "/GroupsizeText", "/ItemCount"];
         if filled.iter().any(|f| w.id.ends_with(f)) || w.id.contains("/DifficultyModificationsIcons/TextLabel") { w.text = None; }
     }
     out
+}
+
+/// A reward or entry item slot's frame (PossibleRewardsIcons/Item<i>,
+/// ItemsTop3/Item<i> and its count plate Label<n>): retail draws only the used ones.
+fn is_slot(id: &str) -> bool {
+    let last = id.rsplit('/').next().unwrap_or("");
+    let parent = id.rsplit('/').nth(1).unwrap_or("");
+    (last.starts_with("Item") && (parent == "PossibleRewardsIcons" || parent == "ItemsTop3")) || (last.starts_with("Label") && parent.starts_with("Item") && id.contains("/ItemsTop3/"))
 }
 
 pub(in crate::ui) fn action(w: &Widget) -> Action {
@@ -67,7 +78,7 @@ pub(in crate::ui) fn dialog(
     mut pointer: ResMut<Pointer>,
     (layouts, loaded, names): (Res<Assets<Layout>>, Res<crate::ui::Loaded>, Res<Assets<crate::ui::local_map::MapNames>>),
     (assets, screen, mouse): (Res<AssetServer>, Res<Screen>, Res<ButtonInput<MouseButton>>),
-    (data, catalogs, mut materials): (Res<items::Data>, Res<Assets<items::Catalog>>, ResMut<Assets<UiMaterial>>),
+    (data, catalogs, mut materials, mut meshes): (Res<items::Data>, Res<Assets<items::Catalog>>, ResMut<Assets<UiMaterial>>, ResMut<Assets<Mesh>>),
     (elements, players): (Query<(&Element, &MeshMaterial2d<UiMaterial>)>, Query<&crate::actors::character::Character, With<crate::network::net::LocalPlayer>>),
     primary: Query<&Window, With<bevy::window::PrimaryWindow>>,
     old: Query<Entity, With<AccessText>>,
@@ -144,6 +155,24 @@ pub(in crate::ui) fn dialog(
     };
     let widget = |id: &str| layout.widgets.iter().find(|w| w.id.ends_with(id));
     let rect = |id: &str| widget(id).map(|w| w.rect);
+    // A layout artwork, moved `dx` and cut at `upto` (x, reference pixels),
+    // under an artwork parent as spawn_windows makes them (y flipped).
+    let art_parent = commands.spawn((Follows { k: 0.5, flip: true }, follow_transform(&screen, 0.5, true), Visibility::Inherited, ChildOf(group))).id();
+    let mut draw = |commands: &mut Commands, w: &Widget, dx: f32, upto: Option<(f32, f32)>, z: f32| {
+        let Some(mut art) = w.art.clone() else { return };
+        for x in art.pos.iter_mut().step_by(2) { *x += dx; }
+        if let Some((left, right)) = upto {
+            let cut = |x: f32| x.min(right);
+            for i in 0..art.pos.len() / 2 {
+                let x = art.pos[2 * i];
+                if x > right { art.pos[2 * i] = cut(x); if let Some(u) = art.uv.get_mut(2 * i) { *u = ((right - left) / (x - left)).clamp(0.0, 1.0) * *u; } }
+            }
+        }
+        let mut run = Run { k: w.k, ..default() };
+        run.push(&art, 0.0);
+        let image = art.tex.as_ref().map(|t| assets.load(t.clone()));
+        commands.spawn((Mesh2d(meshes.add(run.mesh())), MeshMaterial2d(materials.add(material(image))), Transform::from_xyz(0.0, 0.0, z), RenderLayers::layer(LAYER), ChildOf(art_parent)));
+    };
     let (gold, pale) = (Color::srgb(1.0, 0.87, 0.6), Color::srgb(0.92, 0.87, 0.76));
     let (_, difficulty, _) = a.tiers.get(a.picked).cloned().unwrap_or_default();
     let text = |what: &str, row: &str| names.map(|n| n.access(what, row).to_owned()).unwrap_or_default();
@@ -174,24 +203,19 @@ pub(in crate::ui) fn dialog(
     if let Some([l, t, r, b]) = rect("/DifficultyInfo/background2/TextLabel") { put(&mut commands, tier_name, Vec2::new((l + r) * 0.5, (t + b) * 0.5), r - l + 80.0, 11.0, gold, true); }
     // The snap marks and the thumb.
     let n = a.tiers.len().max(1);
-    for i in 0..a.tiers.len() {
-        let x = if n > 1 { TRACK[0] + (TRACK[2] - TRACK[0]) * i as f32 / (n - 1) as f32 } else { (TRACK[0] + TRACK[2]) * 0.5 };
-        let y = (TRACK[1] + TRACK[3]) * 0.5;
-        if i == a.picked {
-            // The layout's thumb (slider/Thumb, mapaccess_sliderhandle) on the picked tier.
-            commands.spawn((Sprite { image: assets.load("textures/ui/mapaccess_sliderhandle_crunch.png"), custom_size: Some(Vec2::new(14.0, 26.0)), ..default() },
-                Anchor::CENTER, Transform::from_translation(screen.world(0.5, x, y).extend(0.6)), RenderLayers::layer(LAYER), ChildOf(group)));
-        } else {
-            put(&mut commands, "|".into(), Vec2::new(x, y), 20.0, 11.0, Color::srgb(0.75, 0.68, 0.55), true);
-        }
-    }
+    let at = |i: usize| if n > 1 { TRACK[0] + (TRACK[2] - TRACK[0]) * i as f32 / (n - 1) as f32 } else { (TRACK[0] + TRACK[2]) * 0.5 };
+    let y = (TRACK[1] + TRACK[3]) * 0.5;
+    if let Some(w) = widget("/DifficultySlider/progress") { let [l, _, _, _] = w.rect; draw(&mut commands, w, 0.0, Some((l, at(a.picked))), 0.3); }
+    for i in (0..a.tiers.len()).filter(|i| *i != a.picked) { put(&mut commands, "|".into(), Vec2::new(at(i), y), 20.0, 11.0, Color::srgb(0.75, 0.68, 0.55), true); }
+    // The layout's thumb (slider/Thumb/normal/Handle) on the picked tier.
+    if let Some(w) = widget("/slider/Thumb/normal/Handle") { let [l, _, r, _] = w.rect; draw(&mut commands, w, at(a.picked) - (l + r) * 0.5, None, 0.6); }
     // The difficulty modifications: icon lines (Icon0-4 left, 5-9 right), or
     // the text list.
     let lines: Vec<(Option<&str>, String)> = if pw {
         let f = names.map(|n| n.difficulty_factors(difficulty)).unwrap_or_default();
         let f = |i: usize| f.get(i).copied().unwrap_or(0.0);
         let pct = |v: f32| format!("{}%", (v * 100.0).round() as i64);
-        vec![(Some("damage"), pct(f(0))), (Some("healthbonus"), pct(f(1))), (Some("champ_enchantments"), format!("{} - {}", f(2) as i64, f(3) as i64)),
+        vec![(Some("damage"), pct(f(0))), (Some("healthbonus"), pct(f(1))), (Some("champ_enchantments"), if f(2) == f(3) { (f(2) as i64).to_string() } else { format!("{} - {}", f(2) as i64, f(3) as i64) }),
             (Some("strength"), m(0).to_string()), (Some("xpbonus"), pct(f(4))), (Some("items_common"), format!("{}%", m(4))), (Some("items_magic"), format!("{}%", m(1))),
             (Some("items_rare"), format!("{}%", m(2))), (Some("items_epic"), format!("{}%", m(3))), (Some("stacksizebonus"), pct(f(5)))]
     } else {
@@ -210,7 +234,7 @@ pub(in crate::ui) fn dialog(
     }
     if let Some([l, t, r, _]) = rect("/EntryRequirements/GroupsizeText") {
         let players = text("players", &group_id);
-        if !players.is_empty() { put(&mut commands, text("text", "maxGroupSize").replace("{0:i}", &players), Vec2::new(l + 16.0, t + 18.0), r - l - 16.0, 10.0, pale, false); }
+        if !players.is_empty() { put(&mut commands, text("text", "maxGroupSize").replace("{0:i}", &players), Vec2::new((l + r) * 0.5, t + 32.0), r - l, 12.0, pale, true); }
     }
     let Some(catalog) = catalog else { return };
     let rarity = |template: &str| catalog.items.get(template).and_then(|d| RARITIES.iter().position(|r| r.eq_ignore_ascii_case(&d.rarity))).unwrap_or(0) as u8;
@@ -223,6 +247,7 @@ pub(in crate::ui) fn dialog(
     }).collect();
     for (i, template) in rewards.iter().take(12).enumerate() {
         let Some(slot) = widget(&format!("/PossibleRewardsIcons/Item{i}")) else { continue };
+        draw(&mut commands, slot, 0.0, None, 0.1);
         social::item_icon(&mut commands, &assets, &screen, group, catalog, template, rarity(template), slot.k, slot.rect, None);
     }
     // What the teleport takes ("item:count;item:count"), the KeyId items first:
@@ -233,6 +258,9 @@ pub(in crate::ui) fn dialog(
         if !needs.iter().any(|(t, _)| t == template) { needs.push((template.to_owned(), count.parse().unwrap_or(1))); }
     }
     for (i, (template, count)) in needs.iter().take(3).enumerate() {
+        for w in layout.widgets.iter().filter(|w| is_slot(&w.id) && (w.id.ends_with(&format!("/ItemsTop3/Item{i}")) || w.id.contains(&format!("/ItemsTop3/Item{i}/")))) {
+            draw(&mut commands, w, 0.0, None, 0.1);
+        }
         let Some(slot) = widget(&format!("/ItemsTop3/Item{i}/Icon0")) else { continue };
         let [l, t, r, b] = slot.rect;
         social::item_icon(&mut commands, &assets, &screen, group, catalog, template, rarity(template), slot.k, [l - 2.5, t - 2.5, r + 2.5, b + 2.5], None);
@@ -242,7 +270,7 @@ pub(in crate::ui) fn dialog(
         }
         let owned: u32 = net.inventory.items.values().filter(|x| &x.template == template).map(|x| x.third.max(1)).sum();
         let owned = if owned > 999 { "999+".to_owned() } else { owned.to_string() };
-        if let Some([l, t, r, b]) = rect(&format!("/ItemsTop3/Item{i}/ItemCount")) { put(&mut commands, owned, Vec2::new((l + r) * 0.5, (t + b) * 0.5), r - l, 10.0, Color::WHITE, true); }
+        if let Some([l, t, r, b]) = rect(&format!("/ItemsTop3/Item{i}/ItemCount")) { put(&mut commands, owned, Vec2::new((l + r) * 0.5, (t + b) * 0.5), r - l, 12.0, Color::WHITE, true); }
     }
 }
 
