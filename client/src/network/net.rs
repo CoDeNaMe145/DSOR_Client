@@ -315,6 +315,9 @@ pub struct Net {
     /// the travel map; travel_source is the stone the next travel names.
     pub travel_stone: Option<String>,
     pub travel_source: Option<String>,
+    /// A workbench used in the world: the crafting window's tab to open
+    /// ("GemTab"; "" for the window as it was).
+    pub open_workbench: Option<String>,
     pub inventory: crate::gameplay::inventory::InventoryState,
     pub corrections: crate::network::corrections::Corrections,
     pub skill_book: Option<dsor_proto::commands::inventory::SkillBookInfo>,
@@ -1017,6 +1020,7 @@ pub fn start_offline(world: &mut World, class: u8, gender: u8) {
         hidden_bar: None,
         travel_stone: None,
         travel_source: None,
+        open_workbench: None,
         pet_events: Vec::new(),
         pet_revivals: Vec::new(),
         location_events: Vec::new(),
@@ -1323,6 +1327,7 @@ pub(crate) fn start_session(world: &mut World, config: NetConfig) {
         hidden_bar: None,
         travel_stone: None,
         travel_source: None,
+        open_workbench: None,
         pet_events: Vec::new(),
         pet_revivals: Vec::new(),
         location_events: Vec::new(),

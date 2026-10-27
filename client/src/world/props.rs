@@ -57,6 +57,7 @@ fn interact(
     cameras: Query<(&Camera, &GlobalTransform), (With<Camera3d>, Without<crate::rendering::highlight::HighlightCamera>)>,
     props: Query<(Entity, &Interactive, &GlobalTransform, &InheritedVisibility)>,
     stones: Query<(Entity, &TravelStone, &GlobalTransform, &InheritedVisibility)>,
+    benches: Query<(Entity, &LocalUse, &GlobalTransform, &InheritedVisibility)>,
     mut players: Query<(&Transform, &mut crate::network::net::LocalPlayer)>,
     hovered: Option<Res<crate::actors::monsters::Hovered>>,
     item: Option<Res<crate::world::drops::ItemHover>>,
@@ -73,8 +74,10 @@ fn interact(
     if let Some((entity, at, approach)) = target.pending {
         let prop = props.get(entity).ok().map(|(_, p, _, _)| p.clone());
         let stone = stones.get(entity).ok().map(|(_, s, _, _)| s.0.clone());
-        if prop.is_none() && stone.is_none() { target.pending = None; return };
-        if tf.translation.xz().distance(at.xz()) <= USE_DISTANCE {
+        let bench = benches.get(entity).ok().map(|(_, b, _, _)| b.0.clone());
+        if prop.is_none() && stone.is_none() && bench.is_none() { target.pending = None; return };
+        let reach = if prop.is_some() { USE_DISTANCE } else { WIDE_USE_DISTANCE };
+        if tf.translation.xz().distance(at.xz()) <= reach {
             player.target = None;
             if let Some(prop) = prop {
                 if !net.offline {
@@ -84,6 +87,9 @@ fn interact(
             } else if let Some(stone) = stone {
                 info!("travel stone {stone}: the travel map opens");
                 net.travel_stone = Some(stone);
+            } else if let Some(operation) = bench {
+                info!("workbench: {operation}");
+                net.open_workbench = Some(operation.trim_start_matches("OpenCraftingWindow").to_owned());
             }
             target.pending = None;
         } else if player.target.is_none_or(|t| t.xz().distance(approach.xz()) > 0.5) {
@@ -95,13 +101,15 @@ fn interact(
     let Ok(window) = windows.single() else { return };
     let ray = window.cursor_position().zip(cameras.single().ok()).and_then(|(p, (c, t))| c.viewport_to_world(t, p).ok());
     let Some(ray) = ray else { return };
-    let hit = props.iter().filter(|(_, _, _, visible)| visible.get()).map(|(e, _, t, _)| (e, t))
-        .chain(stones.iter().filter(|(_, _, _, visible)| visible.get()).map(|(e, _, t, _)| (e, t)))
-        .filter_map(|(e, t)| cylinder_hit(ray, t.translation()).map(|d| (d, e, t.translation())))
+    let hit = props.iter().filter(|(_, _, _, visible)| visible.get()).map(|(e, _, t, _)| (e, t, false))
+        .chain(stones.iter().filter(|(_, _, _, visible)| visible.get()).map(|(e, _, t, _)| (e, t, true)))
+        .chain(benches.iter().filter(|(_, _, _, visible)| visible.get()).map(|(e, _, t, _)| (e, t, true)))
+        .filter_map(|(e, t, wide)| use_hit(ray, t.translation(), wide).map(|d| (d, e, t.translation())))
         .min_by(|a, b| a.0.total_cmp(&b.0));
     let Some((_, entity, at)) = hit else { return };
     let approach = crate::gameplay::dialogue::approach_point(tf.translation, at);
-    player.target = (tf.translation.xz().distance(at.xz()) > USE_DISTANCE).then_some(approach);
+    let reach = if props.contains(entity) { USE_DISTANCE } else { WIDE_USE_DISTANCE };
+    player.target = (tf.translation.xz().distance(at.xz()) > reach).then_some(approach);
     // Holding the click must not resume ground walking (as an NPC click).
     dialogue.held = true;
     target.pending = Some((entity, at, approach));
@@ -127,6 +135,9 @@ struct Row {
     kind: String,
     #[serde(default)]
     id: String,
+    /// Its InteractOperation (OpenCraftingWindowGemTab...).
+    #[serde(default)]
+    operation: String,
 }
 
 #[derive(Asset, TypePath, Debug, Default, Deserialize)]
@@ -410,6 +421,31 @@ struct Desired {
     interactive: Option<(u32, String)>,
     /// A travel stone's TravelPoint id.
     travel_point: Option<String>,
+    /// A workbench's InteractOperation, used on the client (LocalUse).
+    local_use: Option<String>,
+}
+
+/// A workbench in the world: used, it opens the crafting window on the tab its
+/// InteractOperation names (OpenCraftingWindowGemTab -> GemTab); the server is
+/// not asked.
+/// FAILURE: "je peux pas cliquer sur les workbenchs".
+#[derive(Component, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LocalUse(pub String);
+
+/// The wider pick of travel stones and workbenches (a prop's is a lever's).
+const WIDE_PICK_RADIUS: f32 = 1.8;
+const WIDE_USE_DISTANCE: f32 = 3.0;
+
+/// Whether a ray hits a usable thing standing at `base`, and how far.
+pub(crate) fn use_hit(ray: Ray3d, base: Vec3, wide: bool) -> Option<f32> {
+    let radius = if wide { WIDE_PICK_RADIUS } else { PICK_RADIUS };
+    let o = ray.origin - base;
+    let d = *ray.direction;
+    let a = d.x * d.x + d.z * d.z;
+    if a < 1e-6 { return None; }
+    let t = (-(o.x * d.x + o.z * d.z) / a).max(0.0);
+    let p = o + d * t;
+    (p.x * p.x + p.z * p.z <= radius * radius && (-0.5..=3.0).contains(&p.y)).then_some(t)
 }
 
 /// A travel stone (_Instance_TravelPoint): used, it opens the travel map, and
@@ -450,6 +486,7 @@ fn desired(map: &MapProps, templates: &MapProps, net: &NetworkProps) -> Vec<Desi
             map_icon: row.map_icon.clone(),
             interactive: remote.map(|p| (p.entry.prop_id, p.entry.interaction.clone())),
             travel_point: (row.kind == "_Instance_TravelPoint" && !row.id.is_empty()).then(|| row.id.clone()),
+            local_use: row.operation.starts_with("OpenCraftingWindow").then(|| row.operation.clone()),
         });
     }
     for p in net
@@ -469,6 +506,7 @@ fn desired(map: &MapProps, templates: &MapProps, net: &NetworkProps) -> Vec<Desi
             map_icon: templates.map_icons.get(&p.entry.template).cloned().unwrap_or_default(),
             interactive: Some((p.entry.prop_id, p.entry.interaction.clone())),
             travel_point: None,
+            local_use: None,
         });
     }
     result.retain(|p| {
@@ -644,6 +682,9 @@ fn reconcile(
             }
             if let Some(id) = &wanted.travel_point {
                 commands.entity(entity).insert(TravelStone(id.clone()));
+            }
+            if let Some(operation) = &wanted.local_use {
+                commands.entity(entity).insert(LocalUse(operation.clone()));
             }
             scene.placed.insert(wanted.key.clone(), Placed { entity, desired: wanted.clone(), visual: None });
         }

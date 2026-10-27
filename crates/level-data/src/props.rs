@@ -29,7 +29,9 @@ pub fn document(records: &Value) -> Result<Value> {
                 "map_icon":text(&row["LocationMapIcon"]).replace('\\', "/"),
                 "state":if text(&row["State"]).is_empty(){"active"}else{text(&row["State"])},
                 "event":number(&row["EventSetRow"],-1.) as i32,
-                "quest_controlled":flag(&row["QuestControlled"]), "show_always":flag(&row["ShowAlways"])
+                "quest_controlled":flag(&row["QuestControlled"]), "show_always":flag(&row["ShowAlways"]),
+                // What using it does (OpenCraftingWindowGemTab...) and from how far.
+                "operation":text(&row["InteractOperation"]), "range":number(&row["PickingRange"],0.)
             }));
         }
     }

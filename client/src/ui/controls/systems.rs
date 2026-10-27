@@ -892,6 +892,11 @@ pub(in crate::ui) fn send(
     // inventory (or refuses silently; two seconds then).
     let busy = state.pending.is_some();
     let mut wait = false;
+    // A workbench used in the world: the crafting window, on its tab.
+    if let Some(tab) = net.open_workbench.take() {
+        if let Some(n) = catalog.workbench_tabs.iter().position(|t| t.id == tab) { state.workbench_tab = n; state.recipe_category = None; state.recipe = None; }
+        pointer.open_window = Some(WORKBENCH);
+    }
     // Closed, the desk forgets its item too: it opens empty, as the original's.
     // FAILURE: "quand je reouvre le work on gems and items j'ai toujours mon
     //   ancien item dedans".

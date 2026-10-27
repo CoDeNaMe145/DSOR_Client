@@ -21,6 +21,7 @@ fn row(key: &str, event: i32) -> Row {
         event,
         kind: String::new(),
         id: String::new(),
+        operation: String::new(),
         quest_controlled: false,
         show_always: false,
     }

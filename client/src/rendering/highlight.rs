@@ -123,6 +123,8 @@ pub(crate) fn pick(
     actors: Query<(Entity, &GlobalTransform, &InheritedVisibility, Option<&crate::actors::picking::PickBoxes>, Option<&crate::actors::npc::Npc>), Or<(With<crate::actors::npc::Npc>, (With<crate::network::net::RemotePlayer>, With<crate::actors::character::Character>, Without<crate::actors::monsters::Monster>))>>,
     joints: Query<&GlobalTransform>,
     exits: Query<(Entity, &crate::world::exits::Exit)>,
+    usables: Query<(Entity, &GlobalTransform, &InheritedVisibility, Has<crate::world::props::Interactive>),
+        Or<(With<crate::world::props::Interactive>, With<crate::world::props::TravelStone>, With<crate::world::props::LocalUse>)>>,
     mut highlighted: ResMut<Highlighted>,
 ) {
     let colour = |c: Vec4| [c.x.to_bits(), c.y.to_bits(), c.z.to_bits(), c.w.to_bits()];
@@ -147,6 +149,14 @@ pub(crate) fn pick(
                 //   et les poules".
                 if npc.is_some_and(|n| n.profile.no_talk) { continue; }
                 if let Some(t) = crate::actors::picking::friendly_hit(ray, at.translation(), boxes, &joints) {
+                    if best.is_none_or(|(bt, _)| t < bt) { best = Some((t, e)); }
+                }
+            }
+            // Usable things (props, travel stones, workbenches), as their click picks them.
+            // FAILURE: "j'ai pas l'outline" on the travel stones.
+            for (e, at, shown, prop) in &usables {
+                if !shown.get() { continue; }
+                if let Some(t) = crate::world::props::use_hit(ray, at.translation(), !prop) {
                     if best.is_none_or(|(bt, _)| t < bt) { best = Some((t, e)); }
                 }
             }
