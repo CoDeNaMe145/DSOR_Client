@@ -87,7 +87,7 @@ const COMPACT_TEXT: f32 = 0.62;
 pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018, &WindowControls, &Visibility, &Transform), Without<Tooltip>>,
     primary: Query<&Window, With<PrimaryWindow>>, screen: Res<Screen>, settings: Res<settings::Settings>,
     (pointer,keys,figures,shown,views,real):(Res<Pointer>,Res<ButtonInput<KeyCode>>,Res<Figures>,Res<currency::Shown>,Res<systems::Views>,Res<Time<Real>>),
-    net: Option<NonSend<crate::network::net::Net>>, hotbar: Res<hotbar::Hotbar>,
+    (net, social_ui): (Option<NonSend<crate::network::net::Net>>, Res<social::SocialUi>), hotbar: Res<hotbar::Hotbar>,
     (data, catalogs, dialogue): (Res<items::Data>, Res<Assets<items::Catalog>>, Res<dialogue::Presentation>), layouts: Res<Assets<Layout>>, loaded: Res<Loaded>,
     (skill_tables, status_bar, status_catalogs, status_slots): (Res<Assets<crate::gameplay::skills::SkillTable>>,
         Res<effects::StatusBar>, Res<Assets<effects::Catalog>>, Query<&effects::EffectSlot>), assets: Res<AssetServer>,
@@ -199,6 +199,12 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
                 Action::System(super::systems::Request::Pick(id, _)) if catalog.is_some() && views.album.sticker(id).is_some_and(|s| !s.template.is_empty()) => {
                     let template = &views.album.sticker(id).unwrap().template;
                     detail = Some(items::sticker_card(catalog.unwrap(), layouts.get(&data.tooltip), template));
+                }
+                // A booking's credited item: its card.
+                Action::Social(social::Social::BookingItem(n)) if catalog.is_some() => {
+                    let Some((template, amount)) = social::booking_item(&social_ui, *n) else { return };
+                    let item = dsor_proto::commands::inventory::ItemInfo { template: template.clone(), third: amount, durability: 1, ..Default::default() };
+                    detail = Some(items::preview_card(catalog.unwrap(), layouts.get(&data.tooltip), &template, Some(&item), amount, settings.current.advanced_tooltips(&keys, pointer.focus.is_some())));
                 }
                 // A gem desk socket's gem: its item card.
                 Action::System(super::systems::Request::SocketGem(n)) if catalog.is_some() && views.gems.sockets.get(*n).is_some_and(|s| s.template.is_some()) => {

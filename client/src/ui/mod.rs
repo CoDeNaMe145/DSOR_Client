@@ -1021,6 +1021,8 @@ fn spawn_windows(
             prepared = controls::effects::prepare_target(layout); &prepared
         } else if layout.window == controls::items::DESTROY_DIALOG {
             prepared = controls::items::prepare_confirm(layout); &prepared
+        } else if layout.window == controls::social::BOOKING_DIALOG {
+            prepared = controls::social::prepare_booking(layout); &prepared
         } else if layout.window == controls::logout::WINDOW {
             prepared = controls::logout::prepare(layout); &prepared
         } else if layout.window == "inventory" {

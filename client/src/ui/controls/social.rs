@@ -80,7 +80,9 @@ const MENU_ROW: f32 = 22.5;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Social { Confirm, Cancel, Whisper, Befriend, InviteToParty, Ignore, Trade, TradeMine(usize), TradeReady,
     /// The social window's group and guild buttons.
-    LeaveGroup, FoundGroup, LeaveGuild, FoundGuild }
+    LeaveGroup, FoundGroup, LeaveGuild, FoundGuild,
+    /// A booking's credited item, hovered (its card).
+    BookingItem(usize) }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Motion { Waiting, Moving, Placed }
@@ -151,6 +153,27 @@ fn dialog(kind: u8) -> Option<&'static str> {
     else { None }
 }
 
+/// The booking receipt as drawn: its wide Confirm shown (hidden in the layout,
+/// the original shows it where the booking cannot be declined), its item
+/// slots hovered for the items' cards.
+/// The open booking's credited item `n`: its template and amount.
+pub(in crate::ui) fn booking_item(social: &SocialUi, n: usize) -> Option<(String, u32)> {
+    let p = params(social.open.as_ref()?);
+    let template = split(&p, "templates").get(n)?.clone();
+    Some((template, split(&p, "amounts").get(n).and_then(|a| a.parse().ok()).unwrap_or(1)))
+}
+
+pub(in crate::ui) fn prepare_booking(source: &Layout) -> Layout {
+    let mut layout = source.clone();
+    for w in &mut layout.widgets {
+        if w.id.contains("/ConfirmLabel/") || w.id.ends_with("/ConfirmLabel") { w.hidden = false; }
+        if let Some(n) = w.id.rsplit('/').next().and_then(|l| l.strip_prefix("Icon")).and_then(|n| n.parse::<usize>().ok()) {
+            if w.id.contains(&format!("/ItemSlot{n}/")) { super::template::make_button(w, &format!("bookingItem:{n}")); }
+        }
+    }
+    layout
+}
+
 pub(super) fn section(window: &str, parts: &[&str]) -> Option<Section> {
     let leaf = *parts.last()?;
     match window {
@@ -162,8 +185,12 @@ pub(super) fn section(window: &str, parts: &[&str]) -> Option<Section> {
             // (its text is written by `dialogs`).
             if parts.iter().any(|p| matches!(*p, "ArtworkCharStyleEdit" | "ArtworkCinema" | "ArtworkOneTimeNotification"
                 | "ConfirmCharStyleEditLabel" | "ConfirmCinemaLabel" | "TextList")) { return Some(Section::Hidden); }
-            // Decline only where the booking allows it (playerCanRejectItem).
-            if parts.contains(&"Deny") { return Some(Section::Page("booking_reject", 0b10)); }
+            // A booking one may decline: Confirm and Deny (ConfirmLabel2); else
+            // the one wide Confirm (ConfirmLabel), as the original's.
+            // FAILURE: an empty square beside a small Confirm ("je dois avoir
+            //   le grand valider").
+            if parts.contains(&"ConfirmLabel2") { return Some(Section::Page("booking_reject", 0b10)); }
+            if parts.contains(&"ConfirmLabel") { return Some(Section::Page("booking_reject", 0b01)); }
             // A slot per item credited.
             let slot = parts.iter().find_map(|p| p.strip_prefix("ItemSlot").and_then(|n| n.parse::<u32>().ok()))?;
             Some(Section::Page("booking_items", !((2u32 << slot) - 1)))
@@ -185,6 +212,7 @@ pub(super) fn section(window: &str, parts: &[&str]) -> Option<Section> {
 pub(super) fn action(window: &str, w: &Widget) -> Option<Action> {
     let social = match (window, w.event.as_str()) {
         (GROUP_DIALOG | BOOKING_DIALOG | LOGIN_DIALOG, "confirm") => Social::Confirm,
+        (BOOKING_DIALOG, item) if item.starts_with("bookingItem:") => Social::BookingItem(item["bookingItem:".len()..].parse().ok()?),
         (GROUP_DIALOG, "cancel") | (BOOKING_DIALOG, "deny") => Social::Cancel,
         (CONTEXT_MENU, "ButtonWhisper") => Social::Whisper,
         (CONTEXT_MENU, "ButtonBefriend") => Social::Befriend,
@@ -470,13 +498,11 @@ pub(in crate::ui) fn dialogs(
     }
     // gui.window.booking: a moderator's credit or a shop order, then the items.
     let cms = note.guid.starts_with(CMS_GUID);
+    // The items are shown by their icons (amount on them, card on hover),
+    // not listed: gui.window.booking's lines, as the original's.
     let mut text = String::from(if cms { "A moderator has credited a pack to your account." } else { "We received an order." });
-    text.push_str("\n\n");
+    text.push_str("\nThe following objects were added to your inventory:");
     let (templates, amounts, rarities) = (split(&p, "templates"), split(&p, "amounts"), split(&p, "rarities"));
-    for (i, template) in templates.iter().enumerate() {
-        let name = catalog.and_then(|c| c.items.get(template)).map_or(template.as_str(), |d| d.name.as_str());
-        text.push_str(&format!("{} x {}\n", amounts.get(i).map_or("1", String::as_str), name));
-    }
     if let Some(w) = widget("/ContentLabel/TextList") {
         let [l, t, r, _] = w.rect;
         label(&mut commands, &assets, &screen, group, text, screen.world(w.k, l, t + 4.0).extend(0.1), 12.0, Color::srgb(0.92, 0.87, 0.76), r - l - 20.0, Justify::Left);
@@ -486,7 +512,8 @@ pub(in crate::ui) fn dialogs(
     for (i, template) in templates.iter().take(15).enumerate() {
         let Some(slot) = widget(&format!("/ContentLabel/ItemSlot{i}")) else { continue };
         let rarity = rarities.get(i).and_then(|r| RARITIES.iter().position(|n| n.eq_ignore_ascii_case(r))).unwrap_or(0);
-        item_icon(&mut commands, &assets, &screen, group, catalog, template, rarity as u8, slot.k, slot.rect, None);
+        let amount = amounts.get(i).and_then(|a| a.parse::<u32>().ok());
+        item_icon(&mut commands, &assets, &screen, group, catalog, template, rarity as u8, slot.k, slot.rect, amount);
     }
 }
 
@@ -606,6 +633,7 @@ pub(in crate::ui) fn answer(
     let Some(clicked) = social.clicked.take() else { return };
     let me = net.local_name.clone().unwrap_or_default();
     match clicked {
+        Social::BookingItem(_) => {}
         Social::TradeMine(n) => trade.remove = Some(n),
         Social::TradeReady => trade.ready = true,
         Social::Confirm | Social::Cancel => {
