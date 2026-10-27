@@ -12,7 +12,7 @@
 //! the items its teleport takes (TeleportKeyId) and the group size
 //! (_Template_MapTemplate.MaxPlayer) fill the panes.
 //! FAILURE: "j'ai ni les boutons ni l'image du bon boss ni le texte".
-//! The difficulty modifications: for a Parallel World difficulty the icon
+//! The difficulty modifications, for every map: the icon
 //! lines of MapAccessWidget::SetDifficultyInfoText (dro_client64 strings:
 //! icons/difficulties_damage ... _items_epic; values _Template_DifficultyFactors,
 //! matching the retail Grimmag Bloodshed screenshot: 1100%, 2500%, 5 - 6, 45,
@@ -211,15 +211,13 @@ pub(in crate::ui) fn dialog(
     if let Some(w) = widget("/slider/Thumb/normal/Handle") { let [l, _, r, _] = w.rect; draw(&mut commands, w, at(a.picked) - (l + r) * 0.5, None, 0.6); }
     // The difficulty modifications: icon lines (Icon0-4 left, 5-9 right), or
     // the text list.
-    let lines: Vec<(Option<&str>, String)> = if pw {
+    let lines: Vec<(Option<&str>, String)> = {
         let f = names.map(|n| n.difficulty_factors(difficulty)).unwrap_or_default();
         let f = |i: usize| f.get(i).copied().unwrap_or(0.0);
         let pct = |v: f32| format!("{}%", (v * 100.0).round() as i64);
         vec![(Some("damage"), pct(f(0))), (Some("healthbonus"), pct(f(1))), (Some("champ_enchantments"), if f(2) == f(3) { (f(2) as i64).to_string() } else { format!("{} - {}", f(2) as i64, f(3) as i64) }),
             (Some("strength"), m(0).to_string()), (Some("xpbonus"), pct(f(4))), (Some("items_common"), format!("{}%", m(4))), (Some("items_magic"), format!("{}%", m(1))),
             (Some("items_rare"), format!("{}%", m(2))), (Some("items_epic"), format!("{}%", m(3))), (Some("stacksizebonus"), pct(f(5)))]
-    } else {
-        vec![(None, format!("Monster Level +{}", m(0))), (None, format!("Magic items: {} %", m(1))), (None, format!("Rare items: {} %", m(2))), (None, format!("Epic items: {} %", m(3)))]
     };
     for (i, (icon, line)) in lines.into_iter().enumerate() {
         let (Some([il, it, ir, ib]), Some([_, t, r, b])) = (rect(&format!("/DifficultyModificationsIcons/Icon{i}")), rect(&format!("/DifficultyModificationsIcons/TextLabel{i}"))) else { continue };
@@ -234,7 +232,7 @@ pub(in crate::ui) fn dialog(
     }
     if let Some([l, t, r, _]) = rect("/EntryRequirements/GroupsizeText") {
         let players = text("players", &group_id);
-        if !players.is_empty() { put(&mut commands, text("text", "maxGroupSize").replace("{0:i}", &players), Vec2::new((l + r) * 0.5, t + 32.0), r - l, 12.0, pale, true); }
+        if !players.is_empty() && players != "0" { put(&mut commands, text("text", "maxGroupSize").replace("{0:i}", &players), Vec2::new((l + r) * 0.5, t + 32.0), r - l, 12.0, pale, true); }
     }
     let Some(catalog) = catalog else { return };
     let rarity = |template: &str| catalog.items.get(template).and_then(|d| RARITIES.iter().position(|r| r.eq_ignore_ascii_case(&d.rarity))).unwrap_or(0) as u8;
@@ -279,7 +277,9 @@ pub(in crate::ui) fn dialog(
 fn colored(raw: &str, base: Color) -> Vec<(String, Color)> {
     let mut stack = vec![base];
     let mut out: Vec<(String, Color)> = vec![(String::new(), base)];
-    let mut rest = raw;
+    // Some descriptions carry the escape itself ("\\n" in the loca).
+    let raw = raw.replace("\\n", "\n");
+    let mut rest = raw.as_str();
     while let Some(at) = rest.find('<') {
         out.last_mut().unwrap().0.push_str(&rest[..at]);
         let Some(end) = rest[at..].find('>') else { rest = &rest[at..]; break };

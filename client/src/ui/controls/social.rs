@@ -517,6 +517,12 @@ pub(in crate::ui) fn dialogs(
     }
 }
 
+/// A drawn item icon (`item_icon`): hovered, it shows the item's card
+/// (tooltips::overlay), wherever it is drawn.
+/// FAILURE: "a chaque fois que tu mets un items je devrais avoir le tooltip".
+#[derive(Component)]
+pub(in crate::ui) struct ItemHover { pub template: String, pub rarity: u8, pub amount: u32, pub size: Vec2 }
+
 /// An item's background, icon and frame in a slot rectangle, and its amount.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn item_icon(commands: &mut Commands, assets: &AssetServer, screen: &Screen, parent: Entity, catalog: &items::Catalog,
@@ -530,6 +536,8 @@ pub(super) fn item_icon(commands: &mut Commands, assets: &AssetServer, screen: &
         commands.spawn((Sprite { image: assets.load(image.to_owned()), custom_size: Some(size), ..default() }, Anchor::TOP_LEFT,
             Transform::from_translation(at.extend(z)), RenderLayers::layer(LAYER), ChildOf(parent)));
     }
+    commands.spawn((ItemHover { template: template.to_owned(), rarity, amount: amount.unwrap_or(1).max(1), size }, Transform::from_translation(at.extend(0.0)),
+        Visibility::Inherited, ChildOf(parent)));
     if let Some(n) = amount.filter(|n| *n > 1) {
         label(commands, assets, screen, parent, n.to_string(), screen.world(k, l, b - 16.0).extend(0.5), 10.0, Color::WHITE, r - l - 6.0, Justify::Right);
     }

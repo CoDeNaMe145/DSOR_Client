@@ -91,7 +91,8 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
     (data, catalogs, dialogue): (Res<items::Data>, Res<Assets<items::Catalog>>, Res<dialogue::Presentation>), layouts: Res<Assets<Layout>>, loaded: Res<Loaded>,
     (skill_tables, status_bar, status_catalogs, status_slots): (Res<Assets<crate::gameplay::skills::SkillTable>>,
         Res<effects::StatusBar>, Res<Assets<effects::Catalog>>, Query<&effects::EffectSlot>), assets: Res<AssetServer>,
-    (old, mut transforms): (Query<Entity, With<Tooltip>>, Query<&mut Transform, With<Tooltip>>),
+    (old, mut transforms, item_hovers): (Query<Entity, With<Tooltip>>, Query<&mut Transform, With<Tooltip>>,
+        Query<(&social::ItemHover, &GlobalTransform, &InheritedVisibility)>),
     (mut meshes, mut materials): (ResMut<Assets<Mesh>>, ResMut<Assets<UiMaterial>>),
     mut last: Local<Option<(Card, u32, bool)>>) {
     let point = primary.single().ok().filter(|w| w.focused).and_then(|w| w.cursor_position().map(|p| p*(BASE_H/w.height().max(1.0))));
@@ -301,6 +302,21 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
             }
             if !heading.is_empty() { content = Some((heading,body.trim().to_owned(),icon)); }
         } else if let Some(p) = point {
+            // A drawn item icon (social::item_icon): its card. World and
+            // reference pixels: Screen::world with k 0.
+            let world = Vec2::new(p.x - screen.width * 0.5, BASE_H * 0.5 - p.y);
+            let item = item_hovers.iter().filter(|(_, _, v)| v.get()).find(|(h, g, _)| {
+                let at = g.translation().truncate();
+                (at.x..=at.x + h.size.x).contains(&world.x) && (at.y - h.size.y..=at.y).contains(&world.y)
+            });
+            if let (Some((h, g, _)), Some(catalog)) = (item, catalog) {
+                let at = g.translation().truncate();
+                let (l, t) = (at.x + screen.width * 0.5, BASE_H * 0.5 - at.y);
+                anchor = Some([l, t, l + h.size.x, t + h.size.y]);
+                let info = dsor_proto::commands::inventory::ItemInfo { template: h.template.clone(), kind: h.rarity, third: h.amount,
+                    durability: net.as_deref().and_then(|n| n.level).unwrap_or(1), ..Default::default() };
+                detail = Some(items::preview_card(catalog, template, &h.template, Some(&info), h.amount, settings.current.advanced_tooltips(&keys, pointer.focus.is_some())));
+            } else {
             // The status effects (above the action bar, under a monster's panel):
             // click-through, so not buttons, but each explains itself.
             let offset_of = |row: usize| { let name = if row == effects::TARGET { HOVER_WINDOW } else { "bottombar" };
@@ -352,6 +368,7 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
                         }
                     }
                 }
+            }
             }
         }
     }
