@@ -22,6 +22,7 @@ pub(super) mod currency;
 pub(super) mod message;
 pub(super) mod consent;
 pub(super) mod logout;
+pub(super) mod travel;
 mod tooltips;
 pub(super) use tooltips::overlay as tooltips;
 
@@ -155,6 +156,7 @@ fn section(window: &str, id: &str) -> Section {
     let parts: Vec<_> = id.split('/').collect();
     // The confirmation dialog's two questions (items::prepare_confirm): an item
     // to destroy, a large Andermant purchase (consent).
+    if window == travel::WINDOW { if let Some(s) = travel::section(&parts) { return s; } }
     if window == items::DESTROY_DIALOG {
         if parts.contains(&"DeleteItem") { return Section::Page(consent::PAGES, 1u32 << consent::DESTROY); }
         if parts.contains(&"DefaultDoNotShowAgain") { return Section::Page(consent::PAGES, 1u32 << consent::SPEND); }
@@ -286,6 +288,8 @@ enum Action {
     Logout,
     /// logout::WINDOW's buttons: confirm (true) or cancel.
     LogoutAnswer(bool),
+    /// travel::WINDOW's buttons: travel (true) or not.
+    TravelAnswer(bool),
     /// The travel map's destination (social::answer sends it).
     Travel(String),
     /// A systems window's request (systems::send carries it out).
@@ -348,6 +352,7 @@ fn action(window: &str, w: &Widget) -> Action {
             .position(|c| w.event.strip_prefix("SelectChannel") == Some(c))
             .map_or(Action::Unavailable, |i| Action::ChatChannel(i as u8));
     }
+    if window == travel::WINDOW { return travel::action(w); }
     if window == logout::WINDOW {
         return match w.event.as_str() { "confirm" => Action::LogoutAnswer(true), "cancel" => Action::LogoutAnswer(false), _ => Action::Unavailable };
     }
@@ -713,6 +718,7 @@ pub(super) struct Pointer {
     /// The game menu's logout, and its dialog's answer, for logout::dialog.
     logout: bool,
     logout_answer: Option<bool>,
+    travel_answer: Option<bool>,
     /// The travel map's destination, for social::answer.
     travel: Option<String>,
     /// The systems windows' requests, for systems::send.
@@ -1147,6 +1153,7 @@ pub(super) fn interact(
         Action::Destroy(confirm) if controls.page(consent::PAGES) == consent::SPEND => pointer.consent = Some(confirm),
         Action::Destroy(confirm) => pointer.destroy = Some(confirm),
         Action::LogoutAnswer(answer) => pointer.logout_answer = Some(answer),
+        Action::TravelAnswer(answer) => pointer.travel_answer = Some(answer),
         Action::Close => *visibility = Visibility::Hidden,
         Action::Inventory(page) => controls.inventory = page,
         Action::Character(page) => controls.character = page,

@@ -625,11 +625,7 @@ pub(in crate::ui) fn answer(
         net.travel_source = Some(stone);
         pointer.open_window = Some("travelmap");
     }
-    if let Some(map) = pointer.travel.take() {
-        let source = net.travel_source.take().unwrap_or_default();
-        net.send(&ClientCommand::Travel(dsor_proto::commands::player::Travel { source, ..dsor_proto::commands::player::Travel::to_map(&map) }));
-        chat.push(Kind::System, format!("Travelling to {}.", map.replace('_', " ")));
-    }
+    // The destination picked asks first (travel::dialog).
     let Some(clicked) = social.clicked.take() else { return };
     let me = net.local_name.clone().unwrap_or_default();
     match clicked {
