@@ -169,6 +169,8 @@ fn use_consumable(state: &InventoryState, catalog: &Catalog, id: u32) -> Option<
     // server summons or wears one and sends it away again (equip_toggle).
     if item.third == 0 || !state.movable(id) || !matches!(state.location(id), Some(Place::Bag(_) | Place::Extra(_)))
         || !matches!(meta.item_category.as_str(), "Consumable" | "InstantConsumable" | "SkinConsumable" | "RecipeConsumable" | "ConsumablePaymentItem"
+            // Deluxe (1 day) and the like: DSOR_Server services/membership_items.py.
+            | "PaymentItem"
             | "Mount" | "Pet" | "Mercenary" | "Switchable" | "Costume" | "TempCostume"
             // Chests, lottery tickets, currency items and season pass items: the
             // server opens or credits them on the same use (DSOR_Server
