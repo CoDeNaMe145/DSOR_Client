@@ -298,7 +298,12 @@ impl Creation {
             KeyCode::Backspace => { self.name.replace_range(left..self.caret, ""); self.caret = left; }
             KeyCode::Delete => self.name.replace_range(self.caret..right, ""),
             _ => if let Some(text) = text {
-                let room = data.name[1].max(1).saturating_sub(self.name.chars().count());
+                // An export without the creation data (name [0, 0]) takes
+                // _Globals.CharacterNameMaxLength, 16.
+                // FAILURE: "can't write more than 1 word ... pour le pseudo"
+                //   (a characters/selection.json from before creation_data).
+                let most = if data.name[1] == 0 { 16 } else { data.name[1] };
+                let room = most.saturating_sub(self.name.chars().count());
                 let text: String = text.chars().filter(|c| name_character(*c)).take(room).collect();
                 self.name.insert_str(self.caret, &text);
                 self.caret += text.len();
@@ -930,6 +935,13 @@ mod tests {
         assert_eq!(state.notice.text(Some(&data())), "The selected name already exists!");
     }
 
+    #[test]
+    fn a_name_types_past_one_letter_without_the_creation_data() {
+        let mut c = Creation::default();
+        let empty = CreationData::default();
+        for ch in "Thorgal".chars() { c.edit(KeyCode::KeyA, Some(&ch.to_string()), &empty); }
+        assert_eq!(c.name, "Thorgal");
+    }
     fn data() -> CreationData {
         let look = |hair: Vec<u8>, beard: Vec<u8>| CreationLook { hair, beard, start: "start".into(), idle: "idle".into() };
         CreationData { name: [3, 16], most: 5, classes: (0..4).map(|_| CreationClass { items: vec!["CharCreation_x".into()], armament: 5,
