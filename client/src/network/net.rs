@@ -2260,6 +2260,14 @@ fn apply_remotes(
             }
         }
         let at = mesh.and_then(|m| m.nearest(at, 4.0)).unwrap_or(at);
+        // A player spawned again (back in sight, a new snapshot) is a new
+        // body: what they wear (a costume, a mount) is put on again from their
+        // live effects (actors::mounts reads mount_events).
+        // FAILURE: "les costumes ne sont pas repliques".
+        if let Some(effects) = net.actor_effects.get(&actor) {
+            let live: Vec<_> = effects.elements.values().map(|e| (actor, e.index, e.instance, true)).collect();
+            net.mount_events.extend(live);
+        }
         let e = spawn_character(&mut commands, desc, Transform::from_translation(at).with_rotation(Quat::from_rotation_y(heading)));
         commands.entity(e).insert((
             Nameplate::player(name, admin),

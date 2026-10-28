@@ -305,15 +305,24 @@ fn equip_toggle(state:&InventoryState, catalog:&Catalog, id:u32, level:u32, clas
         return state.drop_on(id,free,meta.max_stack);
     }
     // Unidentified equipment is not worn until identified (a right click).
-    if item.flag_0 || meta.slots.is_empty() || meta.required_level>level || !(meta.class_name.is_empty() || meta.class_name=="any" || meta.class_name==class) {return None;}
+    if item.flag_0 || meta.slots.is_empty() || meta.required_level>level || above_level(item, level) || !(meta.class_name.is_empty() || meta.class_name=="any" || meta.class_name==class) {return None;}
     let slot=meta.slots.iter().copied().find(|s|state.at(Place::Equipment(*s)).is_none()).unwrap_or(meta.slots[0]);
     state.drop_on(id,Place::Equipment(slot),meta.max_stack)
 }
 
+/// `_Globals.EquipItemLevelOffset` (static.db4: 45): a character wears items
+/// up to its level plus this; a level 100 wears its level 145 gear.
+const EQUIP_ITEM_LEVEL_OFFSET: u32 = 45;
+
+/// An item too high for us (its level, ItemInfo's item level, above ours plus
+/// EQUIP_ITEM_LEVEL_OFFSET; DSOR_Server player_combat_stats ignores it worn).
+/// FAILURE: a level 7 in level 145 gear struck a level 100 for 196328.
+fn above_level(item: &ItemInfo, level: u32) -> bool { item.durability > level + EQUIP_ITEM_LEVEL_OFFSET }
+
 /// Whether an item may be worn in equipment `slot`: one of its slots, identified,
 /// its level reached, its class ours (or any).
 fn wearable(item:Option<&ItemInfo>, meta:Option<&Definition>, slot:i8, level:u32, class:u8)->bool {
-    !item.is_some_and(|i|i.flag_0) && meta.is_some_and(|m|m.slots.contains(&slot) && m.required_level<=level
+    !item.is_some_and(|i|i.flag_0 || above_level(i, level)) && meta.is_some_and(|m|m.slots.contains(&slot) && m.required_level<=level
         && (m.class_name.is_empty() || m.class_name=="any" || m.class_name==["warrior","mage","ranger","dwarf"][class.min(3) as usize]))
 }
 
