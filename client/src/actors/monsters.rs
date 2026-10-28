@@ -1282,7 +1282,7 @@ fn hover(
     // A player in open battle while we are too: a target as a monster is
     // (DSOR_Server services/pvp_combat.py _pvp_target_is_hostile: both flagged).
     // UNVERIFIED: the picking capsule without boxes (0.5 m, 2 m tall).
-    if let (Some(ray), Some(net)) = (ray, net.as_ref().filter(|n| n.in_pvp(None))) {
+    if let (Some(ray), Some(net)) = (ray, net.as_ref().filter(|n| n.pvp_allowed())) {
         let (o, d) = (ray.origin, *ray.direction);
         for (e, at, r, anim, shown, boxes) in &players {
             if anim.dead || !shown.get() || !net.in_pvp(Some(r.actor)) { continue; }

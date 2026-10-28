@@ -164,6 +164,9 @@ pub struct Net {
     /// Other players' name, level, health and maximum (NewRemotePlayer,
     /// ActorStatsUpdate): the hover panel over a player in open battle.
     pub remote_info: HashMap<u32, (String, u32, u32, u32)>,
+    /// The map's rule set (0x86 map assignment): 5 a town (_Template_MapTemplate
+    /// AreaType Hub, DSOR_Server static_game_database.gameplay_map_ruleset).
+    pub rule_set: u32,
     /// The map frame's centre (wire = (game - centre) * 128).
     pub centre: Option<Vec3>,
     /// (look, position, heading, name, admin).
@@ -957,6 +960,7 @@ pub fn start_offline(world: &mut World, class: u8, gender: u8) {
         local_actor: Some(OFFLINE_ACTOR),
         pvp: Default::default(),
         remote_info: Default::default(),
+        rule_set: 0,
         centre: None,
         pending_local: None,
         requested: Default::default(),
@@ -1267,6 +1271,7 @@ pub(crate) fn start_session(world: &mut World, config: NetConfig) {
         local_actor: None,
         pvp: Default::default(),
         remote_info: Default::default(),
+        rule_set: 0,
         centre: None,
         pending_local: None,
         requested: Default::default(),
@@ -1426,6 +1431,10 @@ impl Net {
         }
         if effects.elements.is_empty() { self.actor_effects.remove(&holder); }
     }
+
+    /// Whether two flagged players may fight here: not in a town (rule set 5),
+    /// where DSOR_Server refuses PvP damage.
+    pub fn pvp_allowed(&self) -> bool { self.rule_set != 5 && self.in_pvp(None) }
 
     /// Whether an actor is in open battle; ours when `actor` is None.
     pub fn in_pvp(&self, actor: Option<u32>) -> bool {
@@ -1588,6 +1597,7 @@ fn pump(
                 net.corrections = default();
                 loading.map(name.clone());
                 info!("map {name} (rule set {rule_set})");
+                net.rule_set = rule_set;
                 if current.as_ref().is_some_and(|c| c.name == name) {
                     continue;
                 }
@@ -2040,6 +2050,10 @@ pub(crate) fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u3
             if let Some(a) = actor {
                 if h.victim_max_health > 0 {
                     net.remember_monster_health(a, h.victim_health.max(0) as u32, h.victim_max_health as u32);
+                    // Another player struck (PvP): the hover panel's health.
+                    if let Some(info) = net.remote_info.get_mut(&a) {
+                        (info.2, info.3) = (h.victim_health.min(u32::MAX as u64) as u32, h.victim_max_health.min(u32::MAX as u64) as u32);
+                    }
                 }
                 // A skill's blow (not healing, poison ticking, immunity): the
                 // attacker's bullet in flight ends on its victim.

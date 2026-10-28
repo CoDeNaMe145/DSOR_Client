@@ -1107,7 +1107,7 @@ fn cast_input(
     // A dead or vanished monster is no target.
     // Or a player in open battle (actors::monsters::hover): a man-sized target.
     let aimed = aimed.and_then(|e| monsters.get(e).ok().filter(|(_, m, a)| m.is_alive(a)).map(|(at, m, _)| (e, at.translation(), m.actor, m.radius, m.height, m.footprint))
-        .or_else(|| rivals.get(e).ok().filter(|(_, r, a)| !a.dead && net.in_pvp(Some(r.actor)) && net.in_pvp(None)).map(|(at, r, _)| (e, at.translation(), r.actor, 0.5, 2.0, None))));
+        .or_else(|| rivals.get(e).ok().filter(|(_, r, a)| !a.dead && net.in_pvp(Some(r.actor)) && net.pvp_allowed()).map(|(at, r, _)| (e, at.translation(), r.actor, 0.5, 2.0, None))));
     if aimed.is_none() {
         *queued = None;
     }
