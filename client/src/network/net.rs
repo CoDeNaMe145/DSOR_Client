@@ -341,6 +341,8 @@ pub struct Net {
     /// Full modifier parameters must survive consumption of the visual events.
     pub stat_effects: HashMap<u32, dsor_proto::commands::combat::StatusEffectElement>,
     pub stat_revision: u64,
+    /// The server tick when the commands now being read arrived (set by pump).
+    pub arrival_tick: u32,
     /// The effects running on other actors in view (StatusEffectCommand on
     /// them), for the hovered monster's effect row (crate::ui::controls::effects).
     pub actor_effects: HashMap<u32, ActorEffects>,
@@ -1038,6 +1040,7 @@ pub fn start_offline(world: &mut World, class: u8, gender: u8) {
         status_events: Vec::new(),
         stat_effects: HashMap::new(),
         stat_revision: 0,
+        arrival_tick: 0,
         actor_effects: HashMap::new(),
         actor_effects_stamp: 0,
         ui_revision: 0,
@@ -1349,6 +1352,7 @@ pub(crate) fn start_session(world: &mut World, config: NetConfig) {
         status_events: Vec::new(),
         stat_effects: HashMap::new(),
         stat_revision: 0,
+        arrival_tick: 0,
         actor_effects: HashMap::new(),
         actor_effects_stamp: 0,
         ui_revision: 0,
@@ -1441,6 +1445,18 @@ impl Net {
         actor.or(self.local_actor).and_then(|a| self.pvp.get(&a)).copied().unwrap_or(false)
     }
 
+    /// Let our timed effects run out at their end tick, as the native client
+    /// does: the server removes only the counted ones (rage stacks), so a
+    /// timed buff such as Furious Battle Cry's speed otherwise stayed in the
+    /// statistics until the next map.
+    fn expire_stat_effects(&mut self, now: u64) {
+        if self.clock_offset.is_none() { return; }
+        let tick = self.server_tick(now);
+        if expire_effects(&mut self.stat_effects, tick) {
+            self.stat_revision = self.stat_revision.wrapping_add(1);
+        }
+    }
+
     /// The server's game tick now.
     pub fn server_tick(&self, now: u64) -> u32 {
         let local = self.session.local_tick(now) as i64;
@@ -1517,6 +1533,7 @@ fn pump(
     let now = now_ms(&time);
     let mut changed_map = false;
     let net = &mut *net;
+    net.expire_stat_effects(now);
     for request in std::mem::take(&mut selection.requests) {
         use crate::screens::selection::Request;
         match request {
@@ -1641,6 +1658,7 @@ fn pump(
                 // What a chain held before a command we cannot read still counts
                 // (the player initialization batch starts with NewPlayer).
                 let (list, error) = dsor_proto::commands::decode_message_partial(&data, bits);
+                net.arrival_tick = net.server_tick(now);
                 for (command, actor) in list {
                     on_command(net, command, actor);
                 }
@@ -1840,8 +1858,9 @@ pub(crate) fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u3
         ServerCommand::StatusEffect(c) => {
             if actor.is_some() && actor == net.local_actor {
                 if c.header { net.stat_effects.clear(); }
+                let tick = net.arrival_tick;
                 for effect in &c.elements {
-                    if effect.tail.is_some() { net.stat_effects.insert(effect.instance, effect.clone()); }
+                    if effect.tail.is_some() { net.stat_effects.insert(effect.instance, timed_from(effect, tick)); }
                     else { net.stat_effects.remove(&effect.instance); }
                 }
                 net.stat_revision = net.stat_revision.wrapping_add(1);
@@ -2992,6 +3011,57 @@ pub fn hidden_bar(base: &[dsor_proto::commands::inventory::QuickSlot], skills: &
         }
     }
     bar
+}
+
+/// One of our effects, timed from its arrival (`now`) for its own duration.
+/// The server dates it from the last tick it learned from us (a move's or a
+/// cast's), which can be seconds old: Battle Anger (5 s) then showed no
+/// countdown, and would have run out on arrival. End 0 stays permanent.
+fn timed_from(effect: &dsor_proto::commands::combat::StatusEffectElement, now: u32) -> dsor_proto::commands::combat::StatusEffectElement {
+    let mut effect = effect.clone();
+    if effect.end != 0 && effect.duration > 0 {
+        effect.start = now;
+        effect.end = now.wrapping_add(effect.duration);
+    }
+    effect
+}
+
+/// Drop the effects whose end tick has been reached (end 0: permanent);
+/// whether any went.
+fn expire_effects(effects: &mut HashMap<u32, dsor_proto::commands::combat::StatusEffectElement>, now: u32) -> bool {
+    let before = effects.len();
+    effects.retain(|_, e| e.end == 0 || (now.wrapping_sub(e.end) as i32) < 0);
+    effects.len() != before
+}
+
+#[cfg(test)]
+mod effect_expiry_tests {
+    use dsor_proto::commands::combat::StatusEffectElement;
+    use std::collections::HashMap;
+
+    #[test]
+    fn timed_effects_run_out_at_their_end_and_permanent_ones_stay() {
+        // Furious Battle Cry's speed buff: 10 s from tick 1000; the server
+        // never sends its removal.
+        let buff = StatusEffectElement { index: 5176, instance: 1, start: 1000, end: 1250, duration: 250, tail: Some(Default::default()), ..Default::default() };
+        let mount = StatusEffectElement { index: 1, instance: 2, end: 0, tail: Some(Default::default()), ..Default::default() };
+        let mut effects: HashMap<u32, StatusEffectElement> = [(1, buff), (2, mount)].into();
+        assert!(!super::expire_effects(&mut effects, 1249));
+        assert_eq!(effects.len(), 2);
+        assert!(super::expire_effects(&mut effects, 1250));
+        assert_eq!(effects.keys().copied().collect::<Vec<_>>(), [2]);
+        assert!(!super::expire_effects(&mut effects, u32::MAX));
+    }
+
+    #[test]
+    fn an_effect_dated_in_the_past_still_lasts_its_duration_from_arrival() {
+        // Stamped at the last move's tick, 6 s before it arrived at 1150.
+        let anger = StatusEffectElement { index: 5670, instance: 3, start: 1000, end: 1125, duration: 125, tail: Some(Default::default()), ..Default::default() };
+        let timed = super::timed_from(&anger, 1150);
+        assert_eq!((timed.start, timed.end), (1150, 1275));
+        let permanent = StatusEffectElement { end: 0, duration: 0, ..anger };
+        assert_eq!(super::timed_from(&permanent, 1150).end, 0);
+    }
 }
 
 #[cfg(test)]
