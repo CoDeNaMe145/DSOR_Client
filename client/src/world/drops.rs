@@ -123,9 +123,9 @@ const PICKUP_REACH: f32 = 2.5;
 const PICK_HEIGHT: f32 = 0.3;
 const PICK_RADIUS: f32 = 0.6;
 
-/// Its model, until its clip is started.
+/// Its model, and the animation player its clip was started on.
 #[derive(Component)]
-struct ItemModel(Handle<Gltf>);
+struct ItemModel(Handle<Gltf>, Option<Entity>);
 
 /// The Ctrl label of an item.
 #[derive(Component)]
@@ -204,7 +204,7 @@ fn spawn_drops(
         let e = commands
             .spawn((
                 Name::new(format!("item {}", item.template)),
-                ItemModel(gltf),
+                ItemModel(gltf, None),
                 Transform::from_translation(at),
                 Visibility::default(),
             ))
@@ -231,15 +231,25 @@ fn spawn_drops(
 /// Each model plays its own looping clip once its scene is in (its turn).
 fn animate_drops(
     mut commands: Commands,
-    drops: Query<(Entity, &ItemModel)>,
+    mut drops: Query<(Entity, &mut ItemModel)>,
     children: Query<&Children>,
     players: Query<(), With<AnimationPlayer>>,
+    playing: Query<&AnimationPlayer>,
     gltfs: Res<Assets<Gltf>>,
     assets: Res<AssetServer>,
     mut graphs: ResMut<Assets<AnimationGraph>>,
     mut clips: ResMut<Assets<AnimationClip>>,
+    targets: Query<(), With<bevy::animation::AnimationTargetId>>,
+    nodes: Query<(&bevy::animation::AnimationTargetId, &bevy::gltf::GltfExtras)>,
 ) {
-    for (entity, model) in &drops {
+    for (entity, mut model) in &mut drops {
+        // Started, and its player still plays. A scene built again under it (its
+        // model loaded again after the last item of it went) has a fresh player
+        // with nothing playing: its clip starts again there, as an effect's does
+        // (crate::skills::start_fx_animations).
+        if model.1.is_some_and(|p| playing.get(p).is_ok_and(|a| a.playing_animations().next().is_some())) {
+            continue;
+        }
         if assets.load_state(&model.0).is_failed() {
             commands.entity(entity).remove::<ItemModel>();
             continue;
@@ -250,10 +260,13 @@ fn animate_drops(
             continue;
         };
         let Some(player) = children.iter_descendants(entity).find(|e| players.contains(*e)) else { continue };
-        commands.entity(entity).remove::<ItemModel>();
+        model.1 = Some(player);
         let mut anim = AnimationPlayer::default();
-        let graph = crate::skills::looping_graph(clip, &mut clips, &mut anim, 1.0);
+        let loops = crate::skills::clip_loops(entity, &children, &nodes);
+        let graph = crate::skills::clip_graph(clip, &mut clips, &mut anim, 1.0, &loops)
+            .unwrap_or_else(|| crate::skills::looping_graph(clip, &mut clips, &mut anim, 1.0));
         commands.entity(player).try_insert((AnimationGraphHandle(graphs.add(graph)), anim));
+        crate::skills::hook_targets(&mut commands, entity, player, &children, &targets);
     }
 }
 

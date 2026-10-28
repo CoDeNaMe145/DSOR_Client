@@ -546,6 +546,8 @@ pub(crate) struct FxModel {
     ///   sequence rate (not traced); the alternative would end FX tracks on
     ///   unscaled time.
     speed: f32,
+    /// The animation player its clip was started on (start_fx_animations).
+    player: Option<Entity>,
 }
 
 /// An effect whose track ended: its surfaces and lights go, its emitters stop and
@@ -2021,7 +2023,7 @@ pub(crate) fn play_sequences(
                         }
                         let mut fx = commands.spawn((
                             WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(path.clone()))),
-                            FxModel { gltf: assets.load(path), started: false, looping: p.looping, speed: p.rate.max(0.01) },
+                            FxModel { gltf: assets.load(path), started: false, looping: p.looping, speed: p.rate.max(0.01), player: None },
                             place,
                             // Shown by start_fx_animations once its model, textures
                             // included, is in and its clip plays (see there).
@@ -2172,6 +2174,97 @@ pub(crate) fn play_sequences(
 ///   de texture", "certains chargent pas en entier tout de suite"), and for a
 ///   frame at its rest pose before its clip took over ("une frame au debut ou le
 ///   sort est lance et il se reaffiche apres").
+/// Hook every animated node of a scene to the player `root`'s clips go through.
+/// FAILURE (2026-10-25): an effect scene spawned visible kept the AnimatedBy its
+///   nodes came with, naming another (stale, later despawned) entity: only an
+///   instance that started hidden, whose nodes crate::rendering::anim_cull parked
+///   and hooked again, animated. Every Manticore summon after the first stood
+///   still at its rest pose, full size, no spin ("it looks exactly like
+///   before"). crate::actors::monsters::setup_models hooks its bones the same way.
+pub(crate) fn hook_targets(
+    commands: &mut Commands,
+    root: Entity,
+    player: Entity,
+    children: &Query<&Children>,
+    targets: &Query<(), With<bevy::animation::AnimationTargetId>>,
+) {
+    for d in children.iter_descendants(root) {
+        if targets.contains(d) {
+            commands.entity(d).try_insert(bevy::animation::AnimatedBy(player));
+        }
+    }
+}
+
+/// How a node's clip runs past its end, from the original's nax3 (glTF extras
+/// "dsor_clip", tools/embed_animators.py transform_clips): (period, cycles).
+pub(crate) type ClipLoops = HashMap<bevy::animation::AnimationTargetId, (f32, bool)>;
+
+/// The clip loops of an effect scene's animated nodes; empty for a model
+/// converted before they were recorded.
+pub(crate) fn clip_loops(
+    root: Entity,
+    children: &Query<&Children>,
+    nodes: &Query<(&bevy::animation::AnimationTargetId, &bevy::gltf::GltfExtras)>,
+) -> ClipLoops {
+    let mut out = ClipLoops::new();
+    for e in children.iter_descendants(root) {
+        let Ok((id, extras)) = nodes.get(e) else { continue };
+        if !extras.value.contains("dsor_clip") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&extras.value) else { continue };
+        let Some(c) = v.get("dsor_clip") else { continue };
+        let period = c.get("period").and_then(|p| p.as_f64()).unwrap_or(0.0) as f32;
+        out.insert(*id, (period, c.get("cycle").and_then(|x| x.as_bool()).unwrap_or(false)));
+    }
+    out
+}
+
+/// An effect's clip played as the original plays each node's own clip: a
+/// cycling one over and over on its period, the others once, holding their
+/// last key, whether or not the sequence loops.
+/// EVIDENCE: the nax3 clips' post-infinity (0 constant, 1 cycle), see
+///   tools/embed_animators.py transform_clips. mount_manticore_summon_01: null1
+///   spins (20 keys x 40 ms, cycles) while the helices grow over 2-4 s (hold).
+/// FAILURE (2026-10-25): played once whole, the Manticore's summon vortex
+///   stopped spinning after 0.76 s and stood still as a fixed ring ("it looks
+///   exactly like before").
+/// None when the model has no clip loops recorded (the older rules apply).
+pub(crate) fn clip_graph(clip: &Handle<AnimationClip>, clips: &mut Assets<AnimationClip>, anim: &mut AnimationPlayer, speed: f32, loops: &ClipLoops) -> Option<AnimationGraph> {
+    if loops.is_empty() {
+        return None;
+    }
+    let c = clips.get(clip)?;
+    let mut once = AnimationClip::default();
+    let mut cycles: Vec<(f32, AnimationClip)> = Vec::new();
+    for (target, curves) in c.curves() {
+        for curve in curves {
+            match loops.get(target) {
+                Some(&(period, true)) if period > 0.0 => {
+                    let i = match cycles.iter().position(|(p, _)| (p - period).abs() < 1.0e-3) {
+                        Some(i) => i,
+                        None => {
+                            cycles.push((period, AnimationClip::default()));
+                            cycles.len() - 1
+                        }
+                    };
+                    cycles[i].1.add_variable_curve_to_target(*target, curve.clone());
+                }
+                _ => once.add_variable_curve_to_target(*target, curve.clone()),
+            }
+        }
+    }
+    let mut graph = AnimationGraph::new();
+    let a = graph.add_clip(clips.add(once), 1.0, graph.root);
+    anim.play(a).set_speed(speed);
+    for (period, mut c) in cycles {
+        c.set_duration(period);
+        let b = graph.add_clip(clips.add(c), 1.0, graph.root);
+        anim.play(b).set_speed(speed).repeat();
+    }
+    Some(graph)
+}
+
 /// A looping clip, played as the game plays it: the curves that end before the
 /// clip does (an appearance -- a dropped item's pop out of the ground, its glow
 /// growing in) once, holding their last key; the others over and over.
@@ -2225,13 +2318,28 @@ fn start_fx_animations(
     gltfs: Res<Assets<Gltf>>,
     children: Query<&Children>,
     players: Query<(), With<AnimationPlayer>>,
+    playing: Query<&AnimationPlayer>,
     mut graphs: ResMut<Assets<AnimationGraph>>,
     mut clips: ResMut<Assets<AnimationClip>>,
+    nodes: Query<(&bevy::animation::AnimationTargetId, &bevy::gltf::GltfExtras)>,
+    targets: Query<(), With<bevy::animation::AnimationTargetId>>,
 ) {
     let _profile = crate::diagnostics::hud::FrameSpan::new("skills::start_fx_animations");
     for (e, mut m) in &mut fx {
         if m.started {
-            continue;
+            // Its scene was built again under it: the player its clip went on is
+            // gone, or a fresh one with nothing playing stands in its place. The
+            // clip starts again on the new one.
+            // FAILURE (2026-10-28): the last Manticore summon had let its model
+            //   go, so the next one loaded it again and bevy rebuilt the scene a
+            //   frame after the clip had started: the shown copy never played, a
+            //   full-size ring that did not spin ("it looks exactly like before").
+            //   Only the first summon after loading the map animated.
+            let lost = m.player.is_some_and(|p| playing.get(p).map_or(true, |a| a.playing_animations().next().is_none()));
+            if !lost {
+                continue;
+            }
+            m.started = false;
         }
         if std::env::var("DSOR_FX_DEBUG").is_ok() {
             info!("fx {:?} pending, loaded: {}", m.gltf.path(), gltfs.get(&m.gltf).is_some());
@@ -2256,7 +2364,10 @@ fn start_fx_animations(
         let Some(player) = children.iter_descendants(e).find(|c| players.contains(*c)) else { continue };
         debug!("fx {:?}: playing {} clip(s)", m.gltf.path(), gltf.animations.len());
         let mut anim = AnimationPlayer::default();
-        let graph = if m.looping {
+        let loops = clip_loops(e, &children, &nodes);
+        let graph = if let Some(graph) = clip_graph(&gltf.animations[0], &mut clips, &mut anim, m.speed, &loops) {
+            graph
+        } else if m.looping {
             looping_graph(&gltf.animations[0], &mut clips, &mut anim, m.speed)
         } else {
             let (graph, node) = AnimationGraph::from_clip(gltf.animations[0].clone());
@@ -2264,8 +2375,10 @@ fn start_fx_animations(
             graph
         };
         commands.entity(player).try_insert((AnimationGraphHandle(graphs.add(graph)), anim));
+        hook_targets(&mut commands, e, player, &children, &targets);
         commands.entity(e).try_insert(Visibility::Inherited);
         m.started = true;
+        m.player = Some(player);
     }
 }
 
