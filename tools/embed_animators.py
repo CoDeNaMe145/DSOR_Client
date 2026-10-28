@@ -469,6 +469,34 @@ for root, _dirs, files in os.walk(models):
             if m.get("doubleSided", False) == single:
                 m["doubleSided"] = not single
                 stats["single-sided" if single else "double-sided"] = stats.get("single-sided" if single else "double-sided", 0) + 1
+        # What hangs under a sprite turned fully to the viewer (client FacesViewer)
+        # is drawn from both sides: turned that way, its planes show the camera
+        # their back, and their single-sided materials culled them.
+        # EVIDENCE: of the 1214 single-sided sprite surfaces in the release261
+        #   models, 1193 faced away from the camera as the client turns them and
+        #   16 towards it. dropitems/glow_magic blue_pPlane2 (the big blue glow
+        #   over a magic drop in the original) never showed; drawn from both
+        #   sides it is the original's glow.
+        # UNVERIFIED: why the original shows their front (its sprite turn is
+        #   likely mirrored from the client's); a mirror would also swap which of
+        #   two stacked planes is nearer.
+        def sprite_meshes(i):
+            nd = nodes[i]
+            if "mesh" in nd and "dsor_emitter" not in nd.get("extras", {}):
+                yield nd["mesh"]
+            for c in nd.get("children", []):
+                yield from sprite_meshes(c)
+        for i, nd in enumerate(nodes):
+            ex = nd.get("extras", {})
+            if not ex.get("dsor_sprite") or ex.get("dsor_sprite_upright"):
+                continue
+            for mesh in set(sprite_meshes(i)):
+                for prim in doc["meshes"][mesh].get("primitives", []):
+                    m = doc["materials"][prim["material"]] if "material" in prim else None
+                    if m is not None and not m.get("doubleSided", False):
+                        m["doubleSided"] = True
+                        stats["sprite sides"] = stats.get("sprite sides", 0) + 1
+                        shaded += 1
         for name, vecs in vectors:
             for nd in nodes:
                 if nd.get("name") == name and any(any(v) for v in vecs.values()):

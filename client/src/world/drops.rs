@@ -112,7 +112,8 @@ pub struct GroundItem {
 }
 
 /// The ground item under the cursor: (its entity, its model's scene root). It
-/// shows its name; no outline (the game draws none: "y'a pas d'aura blanche").
+/// shows its name, and its model is outlined in lime (crate::rendering::highlight).
+/// A white outline was wrong ("y'a pas d'aura blanche"); the original's is lime.
 #[derive(Resource, Default)]
 pub struct ItemHover(pub Option<(Entity, Entity)>);
 
@@ -126,6 +127,9 @@ const PICKUP_REACH: f32 = 2.5;
 /// The pickable sphere around an item: its centre this high over the ground.
 const PICK_HEIGHT: f32 = 0.4;
 const PICK_RADIUS: f32 = 1.0;
+
+/// Where a hovered item's name starts, from the cursor's tip (logical pixels).
+const CURSOR_LABEL: Vec2 = Vec2::new(15.0, 34.0);
 
 /// Its model, and the animation player its clip was started on.
 #[derive(Component)]
@@ -235,7 +239,7 @@ fn spawn_drops(
 /// Each model plays its own looping clip once its scene is in (its turn).
 fn animate_drops(
     mut commands: Commands,
-    mut drops: Query<(Entity, &mut ItemModel)>,
+    mut drops: Query<(Entity, &mut ItemModel, &GroundItem)>,
     children: Query<&Children>,
     players: Query<(), With<AnimationPlayer>>,
     playing: Query<&AnimationPlayer>,
@@ -246,7 +250,7 @@ fn animate_drops(
     targets: Query<(), With<bevy::animation::AnimationTargetId>>,
     nodes: Query<(&bevy::animation::AnimationTargetId, &bevy::gltf::GltfExtras)>,
 ) {
-    for (entity, mut model) in &mut drops {
+    for (entity, mut model, item) in &mut drops {
         // Started, and its player still plays. A scene built again under it (its
         // model loaded again after the last item of it went) has a fresh player
         // with nothing playing: its clip starts again there, as an effect's does
@@ -263,14 +267,20 @@ fn animate_drops(
             commands.entity(entity).remove::<ItemModel>();
             continue;
         };
-        let Some(player) = children.iter_descendants(entity).find(|e| players.contains(*e)) else { continue };
+        // Within its model's scene only: its glow (a sequence's effect, also
+        // under the item) has a player of its own.
+        // FAILURE (2026-10-28): when the glow's scene came in first, the item's
+        //   clip went on the glow's player and the two clips took turns on it:
+        //   a Chainmail Shirt lay still and without its glow (the user's clip
+        //   20261028-1812-11), the Leather Gauntlets beside it turned and glowed.
+        let Some(player) = children.iter_descendants(item.model).find(|e| players.contains(*e)) else { continue };
         model.1 = Some(player);
         let mut anim = AnimationPlayer::default();
-        let loops = crate::skills::clip_loops(entity, &children, &nodes);
+        let loops = crate::skills::clip_loops(item.model, &children, &nodes);
         let graph = crate::skills::clip_graph(clip, &mut clips, &mut anim, 1.0, &loops)
             .unwrap_or_else(|| crate::skills::looping_graph(clip, &mut clips, &mut anim, 1.0));
         commands.entity(player).try_insert((AnimationGraphHandle(graphs.add(graph)), anim));
-        crate::skills::hook_targets(&mut commands, entity, player, &children, &targets);
+        crate::skills::hook_targets(&mut commands, item.model, player, &children, &targets);
     }
 }
 
@@ -313,11 +323,17 @@ fn hover_items(
             }
             let centre = at.translation() + Vec3::Y * PICK_HEIGHT;
             let t = (centre - ray.origin).dot(*ray.direction);
-            if t <= 0.0 || ray.get_point(t).distance(centre) > PICK_RADIUS {
+            let off = ray.get_point(t).distance(centre);
+            if t <= 0.0 || off > PICK_RADIUS {
                 continue;
             }
-            if best.is_none_or(|(bt, _, _)| t < bt) {
-                best = Some((t, e, item.model));
+            // The item nearest the cursor, not the camera: in a pile their
+            // pick spheres overlap.
+            // FAILURE (2026-10-28): after a boss, the cursor on a Sledgehammer
+            //   outlined and named a healing sphere beside it (clip
+            //   20261028-1832-42).
+            if best.is_none_or(|(bo, _, _)| off < bo) {
+                best = Some((off, e, item.model));
             }
         }
         best.map(|(_, e, m)| (e, m))
@@ -368,6 +384,7 @@ fn labels(
     items: Query<(Entity, &GroundItem, &GlobalTransform, &InheritedVisibility)>,
     mut labels: Query<(Entity, &ItemLabel, &mut Node, &mut Visibility, &ComputedNode)>,
     cameras: Query<(&Camera, &GlobalTransform), (With<Camera3d>, Without<crate::highlight::HighlightCamera>)>,
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
 ) {
     let held = !ui.typing && (keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight));
     let mut labelled: HashMap<Entity, Entity> = HashMap::new();
@@ -391,7 +408,7 @@ fn labels(
                     },
                     Text::new(item.name.clone()),
                     TextShadow { offset: Vec2::splat(1.0), color: Color::BLACK },
-                    TextFont { font: assets.load("fonts/tahoma.ttf").into(), font_size: bevy::text::FontSize::Px(14.0), ..default() },
+                    TextFont { font: assets.load("fonts/tahoma.ttf").into(), font_size: bevy::text::FontSize::Px(22.0), ..default() },
                     TextColor(RARITY_TEXT[item.rarity.min(RARITY_TEXT.len() - 1)]),
                     Pickable::IGNORE,
                     Visibility::Hidden,
@@ -400,7 +417,26 @@ fn labels(
         }
     }
     let cam = cameras.single().ok();
+    let cursor = windows.single().ok().and_then(|w| w.cursor_position());
     for (_, of, mut node, mut visibility, size) in &mut labels {
+        // The hovered item's name (Ctrl not held) beside the cursor, below and to
+        // its right, as a tooltip: it no longer covers the item and its glow.
+        // EVIDENCE: the user's original-game clip (release261_192, crypt,
+        //   2026-10-23 22:16 UTC): "Scut cavaleresc" and "Sabie de bastard" start
+        //   just past the arrow's tip, a line below it.
+        // MEASURED: the user's clip 20261028-1812-11 (original, crypt, 3830 px
+        //   wide at 150 %): "Bronze Ring" starts 23 px right of the arrow's tip
+        //   and 52 px below it, capitals 22 px tall (ours 14 at 14 px).
+        if !held && hovered == Some(of.0) {
+            if let Some(c) = cursor.filter(|_| items.get(of.0).is_ok_and(|(_, _, _, shown)| shown.get())) {
+                node.left = Val::Px(c.x + CURSOR_LABEL.x);
+                node.top = Val::Px(c.y + CURSOR_LABEL.y);
+                if *visibility != Visibility::Inherited {
+                    *visibility = Visibility::Inherited;
+                }
+                continue;
+            }
+        }
         let screen = items.get(of.0).ok().filter(|(e, _, _, shown)| (held || hovered == Some(*e)) && shown.get()).and_then(|(_, _, at, _)| {
             cam.and_then(|(c, ct)| c.world_to_viewport(ct, at.translation() + Vec3::Y * LABEL_HEIGHT).ok())
         });
