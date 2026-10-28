@@ -2174,6 +2174,7 @@ pub(crate) fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u3
             if let Some(a) = actor {
                 let equipment = appearance::normalize(p.equipment);
                 let armament = appearance::remote_armament(&equipment, &p.animation_set);
+                info!("{a:#x} redressed: {} worn slot(s) {:?}", equipment.len(), equipment.iter().map(|e| e.skin_parts.first().cloned().unwrap_or_default()).collect::<Vec<_>>());
                 net.remote_redress.insert(a, (equipment, armament));
             }
         }
