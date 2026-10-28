@@ -1437,7 +1437,10 @@ fn hover_info(
     let now = hovered.0.and_then(|(e, _)| monsters.get(e).ok()).filter(|(m, a)| m.is_alive(a)).map(|(m, _)| {
         let title = templates.get(&data.templates).and_then(|t| t.0.get(&m.template)).map(|t| t.title.clone()).unwrap_or_default();
         (title, m.level, m.health, m.max_health)
-    });
+    // A player in open battle (hover): their name, level and health.
+    // FAILURE: "j'ai pas le tooltip en haut avec son nom, son niveau sa vie".
+    }).or_else(|| hovered.0.filter(|(e, _)| !monsters.contains(*e))
+        .and_then(|(_, actor)| net.as_ref()?.remote_info.get(&actor).cloned()));
     if info.0 != now {
         info.0 = now;
     }

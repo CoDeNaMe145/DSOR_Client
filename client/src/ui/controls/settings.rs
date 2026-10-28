@@ -52,7 +52,11 @@ pub(crate) struct Preferences {
 /// 1 (2026-10-21): Quests on Q, the top-left consumable on U (was U and Q).
 /// 2 (2026-10-21): Events on E (the bottom-left consumable moves to G), the
 /// rankings on L, the battlegrounds on J.
-const KEYMAP: u8 = 2;
+/// 3 (2026-10-28): Tab swaps the right button's skill with the bar's TAB slot
+/// (the one beside it); the map overlay moves to N.
+/// FAILURE: "pour ouvrir la map c tab sauf que tab c'est pour switch le sort
+///   du bas entre mon clic droit et celui de la case a cote".
+const KEYMAP: u8 = 3;
 
 /// The game bar's buttons a setting hides: each its own page group (shown on
 /// page 0), named as the button (crate::ui::controls::section).
@@ -85,7 +89,8 @@ pub(super) fn shortcuts() -> Vec<(String, String, &'static str)> {
     for (id, label, key) in [
         ("inventory", "Inventory", "KeyI"), ("charactersheet", "Character", "KeyC"),
         ("skilltalentswindow", "Skills", "KeyS"), ("collectorsalbum", "Collector's album", "KeyW"),
-        ("questlog", "Quests", "KeyQ"), ("locationmap", "Map overlay", "Tab"),
+        ("questlog", "Quests", "KeyQ"), ("locationmap", "Map overlay", "KeyN"),
+        ("swap_attack", "Swap secondary and alternate attack", "Tab"),
         ("travelmap", "World map", "KeyM"), ("socialscreen", "Social", "KeyF"),
         ("eventwindow", "Events", "KeyE"), ("leaderboards", "Rankings", "KeyL"),
         ("matchmakingwindow", "Battlegrounds", "KeyJ"),
@@ -178,6 +183,17 @@ impl Preferences {
                 if self.bindings.contains_key(id) { continue; }
                 let key = if taken(self, key) { "" } else { key };
                 self.bindings.insert(id.into(), key.into());
+            }
+        }
+        if self.keymap < 3 {
+            let taken = |p: &Self, key: &str| p.bindings.values().any(|k| k == key);
+            if was(self, "locationmap", "Tab") {
+                let key = if taken(self, "KeyN") { "" } else { "KeyN" };
+                self.bindings.insert("locationmap".into(), key.into());
+            }
+            if !self.bindings.contains_key("swap_attack") {
+                let key = if taken(self, "Tab") { "" } else { "Tab" };
+                self.bindings.insert("swap_attack".into(), key.into());
             }
         }
         self.keymap = KEYMAP;
@@ -750,6 +766,15 @@ mod tests {
         let again = parse(&serde_json::to_string(&again).unwrap());
         assert_eq!((again.label("questlog"), again.label("slot13")), ("U".into(), "Q".into()));
         assert_eq!(Preferences::default().keymap, KEYMAP);
+    }
+    #[test]
+    fn tab_swaps_the_attacks_and_the_map_overlay_moves_to_n() {
+        let parse = |raw: &str| { let mut p: Preferences = serde_json::from_str(raw).unwrap(); p.migrate(); p };
+        let old = parse(r#"{"keymap":2,"bindings":{"locationmap":"Tab"}}"#);
+        assert_eq!((old.label("locationmap"), old.label("swap_attack")), ("N".into(), "Tab".into()));
+        // A map overlay the player moved elsewhere stays there.
+        let mine = parse(r#"{"keymap":2,"bindings":{"locationmap":"KeyB"}}"#);
+        assert_eq!((mine.label("locationmap"), mine.label("swap_attack")), ("B".into(), "Tab".into()));
     }
     #[test]
     fn events_rankings_and_battlegrounds_take_e_l_and_j_once() {

@@ -1454,8 +1454,8 @@ mod tests {
             press(&mut app, KeyCode::Escape);
             assert_eq!(*app.world().get::<Visibility>(roots[name]).unwrap(), Visibility::Hidden);
         }
-        // The map overlay is Tab's: Escape leaves it open.
-        press(&mut app, KeyCode::Tab);
+        // The map overlay is N's: Escape leaves it open.
+        press(&mut app, KeyCode::KeyN);
         assert_eq!(*app.world().get::<Visibility>(roots["locationmap"]).unwrap(), Visibility::Inherited);
         press(&mut app, KeyCode::Escape);
         assert_eq!(*app.world().get::<Visibility>(roots["locationmap"]).unwrap(), Visibility::Inherited);
@@ -1784,7 +1784,7 @@ mod tests {
         };
         for _ in 0..2 {
             for mode in [local_map::MapMode::Compact, local_map::MapMode::Expanded] {
-                press(&mut app, KeyCode::Tab);
+                press(&mut app, KeyCode::KeyN);
                 assert_eq!(*app.world().get::<Visibility>(root).unwrap(), Visibility::Inherited);
                 let controls = app.world().get::<WindowControls>(root).unwrap();
                 assert_eq!(controls.map_mode, mode);
@@ -1800,19 +1800,19 @@ mod tests {
                     app.world_mut().resource_mut::<ButtonInput<MouseButton>>().reset(MouseButton::Left);
                 }
             }
-            press(&mut app, KeyCode::Tab);
+            press(&mut app, KeyCode::KeyN);
             assert_eq!(*app.world().get::<Visibility>(root).unwrap(), Visibility::Hidden);
         }
         // Escape opens/closes the game menu without dismissing the map.
-        press(&mut app, KeyCode::Tab);
-        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::KeyN);
+        press(&mut app, KeyCode::KeyN);
         press(&mut app, KeyCode::Escape);
         assert_eq!(*app.world().get::<Visibility>(root).unwrap(), Visibility::Inherited);
         assert_eq!(app.world().get::<WindowControls>(root).unwrap().map_mode, local_map::MapMode::Expanded);
         press(&mut app, KeyCode::Escape);
-        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::KeyN);
         assert_eq!(*app.world().get::<Visibility>(root).unwrap(), Visibility::Hidden);
-        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::KeyN);
         assert_eq!(app.world().get::<WindowControls>(root).unwrap().map_mode, local_map::MapMode::Compact);
     }
 
@@ -1928,9 +1928,9 @@ mod tests {
             if window == "locationmap" {
                 assert!(panel.drag_handle.is_none());
                 for _ in 0..2 {
-                    app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::Tab);
+                    app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::KeyN);
                     app.update();
-                    app.world_mut().resource_mut::<ButtonInput<KeyCode>>().reset(KeyCode::Tab);
+                    app.world_mut().resource_mut::<ButtonInput<KeyCode>>().reset(KeyCode::KeyN);
                 }
             } else {
                 assert!(panel.drag_handle.is_some(), "{window} must be draggable");

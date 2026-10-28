@@ -93,6 +93,10 @@ impl MapMarkers {
         if let Some((priority, kind)) = quest {
             let icon = if priority == 1 { "ui/icon_map_exclamationmark" } else { "ui/icon_map_questionmark" };
             let color = match kind {
+                // PvP and repeatable PvP (Game::QuestInfo::Type 9, 3):
+                // _Globals.QuestTypeColorPvP (0.76, 0.07, 0).
+                // FAILURE: "je les vois en vert au lieu de rouge les quetes".
+                3 | 9 => [194, 18, 0],
                 0..=4 | 11..=13 => [40, 205, 255],
                 7 => [200, 115, 255],
                 8 => [255, 150, 45],
@@ -322,14 +326,18 @@ pub(in crate::ui) fn update(
     let scale = screen.as_ref().map_or(1.0, |s| s.scale);
     // Rasterize at the actual screen resolution. The map art uses reference
     // units, which otherwise magnify a small glyph atlas on large windows.
+    let Ok((parent, child)) = layers.single() else { return };
+    let Ok(map) = geometry.get(child.parent()) else { return };
+    // The icons shrink with the compact map (230 of the expanded 520
+    // reference pixels high), as its art does; their captions keep their size.
+    // FAILURE: "quand la map est en petit les icones sont trop gros".
+    let shrink = (map.view.size.y / 520.0).clamp(0.55, 1.0);
     for (mut font, mut transform) in &mut captions {
         let size = bevy::text::FontSize::Px(9.0 * scale);
         if font.font_size != size { font.font_size = size; }
-        let inverse = Vec3::new(1.0, -1.0, 1.0) / scale;
+        let inverse = Vec3::new(1.0, -1.0, 1.0) / (scale * shrink);
         if transform.scale != inverse { transform.scale = inverse; }
     }
-    let Ok((parent, child)) = layers.single() else { return };
-    let Ok(map) = geometry.get(child.parent()) else { return };
     let empty = MapMarkers::default();
     let state = net.as_ref().map(|n| &n.map_markers).unwrap_or(&empty);
     let mut wanted = HashMap::new();
@@ -342,7 +350,7 @@ pub(in crate::ui) fn update(
         else { icon.and_then(|i| Style::authored(&i.0)) };
         if let Some(style) = style {
             let position = map.project(at.translation());
-            if position.is_finite() { wanted.insert(entity, (style, Transform::from_translation(position.extend(if local { 3.0 } else { 2.0 })))); }
+            if position.is_finite() { wanted.insert(entity, (style, Transform::from_translation(position.extend(if local { 3.0 } else { 2.0 })).with_scale(Vec3::splat(shrink)))); }
         }
     }
     order_markers(&mut wanted);

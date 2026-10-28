@@ -137,6 +137,16 @@ pub(in crate::ui) fn input(mut bar: ResMut<Hotbar>, keys: Res<ButtonInput<KeyCod
         net.bar = shown.iter().map(|s| if s.kind == 0 { s.id.clone() } else { None }).collect();
     } else { bar.active = 0; }
     bar.change = 0;
+    // The right button's skill and the TAB slot's change places (both kept by
+    // the server: QuickSlotsCommand).
+    if settings.current.pressed("swap_attack", &keys) && net.hidden_bar.is_none() {
+        if let Some(mut slots) = net.quickbars.bars.get(bar.active).filter(|b| b.len() > 7).cloned() {
+            slots.swap(1, 7);
+            net.bar = slots.iter().map(|s| if s.kind == 0 { s.id.clone() } else { None }).collect();
+            net.quickbars.bars[bar.active] = slots.clone();
+            net.send(&ClientCommand::QuickSlots(dsor_proto::commands::inventory::QuickSlots { slots, bar: bar.active as u32 }));
+        }
+    }
     if bar.swap_essence || settings.current.pressed("essence", &keys) {
         if let Some(backup) = essence(&net.inventory, BACKUP_ESSENCE) {
             // Inventory's normal equipment move swaps the occupied primary slot.

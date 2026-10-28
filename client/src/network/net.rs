@@ -161,6 +161,9 @@ pub struct Net {
     /// Who is in open battle (PVP::PVPFlagCommand, actor-scoped; ours as the
     /// local actor): a red "(PvP)" name, and mutual PvP players may fight.
     pub pvp: HashMap<u32, bool>,
+    /// Other players' name, level, health and maximum (NewRemotePlayer,
+    /// ActorStatsUpdate): the hover panel over a player in open battle.
+    pub remote_info: HashMap<u32, (String, u32, u32, u32)>,
     /// The map frame's centre (wire = (game - centre) * 128).
     pub centre: Option<Vec3>,
     /// (look, position, heading, name, admin).
@@ -953,6 +956,7 @@ pub fn start_offline(world: &mut World, class: u8, gender: u8) {
         wanted_character: None,
         local_actor: Some(OFFLINE_ACTOR),
         pvp: Default::default(),
+        remote_info: Default::default(),
         centre: None,
         pending_local: None,
         requested: Default::default(),
@@ -1262,6 +1266,7 @@ pub(crate) fn start_session(world: &mut World, config: NetConfig) {
         wanted_character: config.character,
         local_actor: None,
         pvp: Default::default(),
+        remote_info: Default::default(),
         centre: None,
         pending_local: None,
         requested: Default::default(),
@@ -1791,6 +1796,8 @@ pub(crate) fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u3
             // A spawn is a newer complete snapshot than any pending update.
             net.remote_redress.remove(&actor);
             info!("{} ({}) is here, actor {actor:#x}, {} worn slot(s)", p.name, desc.animation_set(), desc.equipment.len());
+            let health = net.remote_info.get(&actor).map_or(p.max_health, |i| i.2.min(p.max_health));
+            net.remote_info.insert(actor, (p.name.clone(), p.level, health, p.max_health));
             net.remote_spawns.push((actor, desc, Vec3::from(p.position), p.heading, p.name, p.flags[2]));
         }
         // The server echoes our switch to us and tells everyone who sees us
@@ -1802,6 +1809,8 @@ pub(crate) fn on_command(net: &mut Net, command: ServerCommand, actor: Option<u3
             if actor.is_some() && actor == net.local_actor {
                 net.resource = Some(v.resource);
                 net.health = Some(v.health as f32);
+            } else if let Some(info) = actor.and_then(|a| net.remote_info.get_mut(&a)) {
+                info.2 = v.health.min(u32::MAX as u64) as u32;
             }
         }
         ServerCommand::QuickSlotsInfo(q) => {
