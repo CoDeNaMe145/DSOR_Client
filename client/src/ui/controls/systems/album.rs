@@ -54,7 +54,6 @@ pub(in crate::ui) const TURNING: &str = "Canvas/Collectorsalbum/BackGroundLabel/
 const FRONT_BOOK: &str = "sb_frontpage";
 const FAVOURITE: &str = "textures/ui/sticker_favorite.png";
 const PREMIUM_ORIGIN: &str = "ui/icon_origin_premium";
-const FADED: f32 = 0.35;
 const MOST_NEW: usize = 4;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -262,7 +261,9 @@ fn grid(source: &Layout, layout: &mut Layout, page: &str, stickers: &[Sticker], 
             if w.id == replacement { make_button(&mut w, &format!("Sys:Pick:{}", sticker.id)); }
             if name == "Icon" {
                 let mut layers = icon_layers(&mut w, &sticker.icon);
-                if !sticker.owned { for l in &mut layers { dim(l, FADED); } }
+                // Not owned: greyscale at full strength, as the original's (was
+                // faded to 35 %, which read as a dark, empty slot).
+                if !sticker.owned { for a in layers.iter_mut().filter_map(|l| l.art.as_mut()) { a.saturation = 0.0; } }
                 set_text(&mut w, "");
                 layout.widgets.extend(layers);
             }
@@ -448,7 +449,8 @@ mod tests {
         assert!(ids.contains(&format!("{PAGE}/Sticker0/Icon/highlight")) && !ids.contains(&format!("{PAGE}/Sticker1/Icon/highlight")));
         assert_eq!(find(&prepared, &format!("{PAGE}/Sticker0/Slot/FlagLabel/FlagButtonFav")).art.as_ref().unwrap().tex.as_deref(), Some(FAVOURITE));
         assert_eq!(find(&prepared, &format!("{PAGE}/Sticker1/Slot/FlagLabel/FlagButtonAdd")).event, "Sys:Add:s2");
-        assert_eq!(find(&prepared, &format!("{PAGE}/Sticker1/Icon/Image")).art.as_ref().unwrap().color[3], FADED);
+        let unowned = find(&prepared, &format!("{PAGE}/Sticker1/Icon/Image")).art.as_ref().unwrap();
+        assert_eq!((unowned.saturation, unowned.color[3]), (0.0, 1.0), "not owned: grey, not faded");
         // No empty backing over a sticker, none past a book's stickers.
         assert!(!ids.iter().any(|id| id.ends_with("/EmptyBackground")));
         // The preview: the sticker's name, origin, icon, favourite flag; no offer for an owned one.
