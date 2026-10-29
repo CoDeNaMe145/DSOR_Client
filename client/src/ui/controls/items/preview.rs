@@ -25,7 +25,14 @@ fn readable(id: &str) -> String {
 }
 
 /// The sticker card's text against an item card's (Card::scale_text).
-const STICKER_TEXT: f32 = 0.55;
+const STICKER_TEXT: f32 = 0.48;
+/// The sticker card's width (reference pixels): the original's is wide, its lines
+/// short (2026-10-29: 795 screen pixels to our 465 against the same sticker cells,
+/// the user's shots of the Gray's card, original and ours).
+/// FAILURE (2026-10-29): our text 15 % wider than the original's ("Use, is not
+///   depleted when used" 298 pixels to 258) in a card 0.58 of its width.
+/// UNVERIFIED: both measured from screenshots.
+const STICKER_WIDTH: f32 = 488.0;
 
 /// A Collector's Bag sticker's card, as the original's (the user's release261_192
 /// shots of the Manticore and the armoured war horse): its name and kind in its
@@ -34,7 +41,7 @@ const STICKER_TEXT: f32 = 0.55;
 /// FAILURE (2026-10-24): a bare "Sticker / Shows it in the preview" line.
 pub(super) fn sticker(catalog: &Catalog, layout: Option<&Layout>, template: &str) -> Card {
     let meta = catalog.items.get(template);
-    let mut card = Card::new(285.0, layout);
+    let mut card = Card::new(STICKER_WIDTH, layout);
     // The original writes it in a small hand, its name no larger than the rest.
     // FAILURE (2026-10-25): about 1.8 times the original's (the user's shots of the
     //   Battle-boar's card, measured against the sticker icon).
