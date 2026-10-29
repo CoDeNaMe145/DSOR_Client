@@ -1062,10 +1062,18 @@ fn cast_input(
     // cast once the walk brings it in reach. next_cast: when the last cast lets
     // the next one go (its SkillUnblockFrame), apart from the movement hold
     // (LocalPlayer::casting, its MotionUnblockFrame).
-    (mut queued, mut next_cast, rivals): (Local<Option<(usize, Entity)>>, Local<f64>,
-        Query<(&GlobalTransform, &RemotePlayer, &CharacterAnim), (With<Character>, Without<crate::actors::monsters::Monster>)>),
+    // left_on_monster: the left button's press went down on a monster.
+    (mut queued, mut next_cast, rivals, mut left_on_monster): (Local<Option<(usize, Entity)>>, Local<f64>,
+        Query<(&GlobalTransform, &RemotePlayer, &CharacterAnim), (With<Character>, Without<crate::actors::monsters::Monster>)>, Local<bool>),
 ) {
     let _profile = crate::diagnostics::hud::FrameSpan::new("skills::cast_input");
+    // The left button attacks the monster it went down on; a press on the
+    // ground is a walk, and held, it attacks none the cursor passes over (as
+    // net::click_to_move keeps walking).
+    // FAILURE (2026-10-29): walking with the left button held, each monster that
+    // came under the cursor got the left skill at once ("if I already have my
+    // left click pressed to move, why does my skill cast anyway").
+    if buttons.just_pressed(MouseButton::Left) { *left_on_monster = hovered.0.is_some(); }
     let clicked_slot = ui_skills.0.take();
     if ui.free_look { *queued = None; return; }
     if ui.typing { return; }
@@ -1090,7 +1098,7 @@ fn cast_input(
     //   attacking"), and with the right button held a key did nothing ("I cannot
     //   even press right click and press 2 to hit").
     let key = settings.current.slot_pressed(&keys).or_else(|| settings.current.slot_held(&keys));
-    let left = key.is_none() && !ui.blocks(MouseButton::Left) && (shift || (settings.current.attack_hovered && hovered.0.is_some())) && buttons.pressed(MouseButton::Left);
+    let left = key.is_none() && !ui.blocks(MouseButton::Left) && (shift || (settings.current.attack_hovered && hovered.0.is_some() && *left_on_monster)) && buttons.pressed(MouseButton::Left);
     let right = key.is_none() && !ui.blocks(MouseButton::Right) && buttons.pressed(MouseButton::Right);
     let slot = if left {
         Some(0)

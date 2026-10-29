@@ -661,6 +661,51 @@ mod pointer_tests {
         app.update();
         assert!(app.world().get::<LocalPlayer>(player).unwrap().target.is_some(), "hidden menus must not intercept input");
     }
+
+    #[test]
+    fn a_walk_held_over_a_monster_goes_on_and_a_press_on_one_is_no_walk() {
+        let mut app = App::new();
+        app.add_plugins(UiInputPlugin)
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<Assets<NavMesh>>()
+            .init_resource::<Time>()
+            .init_resource::<crate::actors::monsters::Hovered>()
+            .add_systems(Update, click_to_move);
+        let mut window = Window { resolution: (1024, 768).into(), ..default() };
+        window.set_cursor_position(Some(Vec2::new(400.0, 400.0)));
+        app.world_mut().spawn((window, PrimaryWindow));
+        app.world_mut().spawn((Camera3d::default(), Camera {
+            computed: ComputedCameraValues {
+                clip_from_view: Mat4::perspective_infinite_reverse_rh(1.0, 1024.0 / 768.0, 0.1),
+                target_info: Some(RenderTargetInfo { physical_size: UVec2::new(1024, 768), scale_factor: 1.0 }),
+                ..default()
+            },
+            ..default()
+        }, GlobalTransform::from(Transform::from_xyz(0.0, 10.0, 10.0).looking_at(Vec3::ZERO, Vec3::Y))));
+        let player = app.world_mut().spawn((Transform::default(), LocalPlayer {
+            actor: 1, target: None, facing: 0.0, last_sent_tick: 0, snapped: true, casting: 0.0,
+        })).id();
+        let monster = app.world_mut().spawn_empty().id();
+        let target = |app: &App| app.world().get::<LocalPlayer>(player).unwrap().target;
+        // Pressed on the ground, then the cursor crosses a monster: still a walk.
+        app.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(MouseButton::Left);
+        app.update();
+        assert!(target(&app).is_some());
+        app.world_mut().get_mut::<LocalPlayer>(player).unwrap().target = None;
+        app.world_mut().resource_mut::<crate::actors::monsters::Hovered>().0 = Some((monster, 7));
+        app.world_mut().resource_mut::<ButtonInput<MouseButton>>().clear();
+        app.update();
+        assert!(target(&app).is_some(), "a held walk stopped over a monster");
+        // A fresh press on the monster attacks it: no walk.
+        app.world_mut().get_mut::<LocalPlayer>(player).unwrap().target = None;
+        let mut buttons = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+        buttons.release(MouseButton::Left);
+        buttons.clear();
+        buttons.press(MouseButton::Left);
+        app.update();
+        assert!(target(&app).is_none(), "a press on a monster walked");
+    }
 }
 
 #[cfg(test)]
@@ -2508,7 +2553,10 @@ fn click_to_move(
     time: Res<Time>,
     dialogue: Option<Res<crate::gameplay::dialogue::Dialogue>>,
     item: Option<Res<crate::world::drops::ItemHover>>,
+    // The left button's press went down off any monster: a walk to the end.
+    mut on_ground: Local<bool>,
 ) {
+    if buttons.just_pressed(MouseButton::Left) { *on_ground = !hovered.as_ref().is_some_and(|h| h.0.is_some()); }
     if dialogue.is_some_and(|d| d.held) { return; }
     // An item (or its name) under the cursor: crate::world::drops walks to it.
     if item.is_some_and(|i| i.0.is_some()) { return; }
@@ -2526,8 +2574,9 @@ fn click_to_move(
     if net.as_ref().is_some_and(|n| n.death.dead || time.elapsed_secs() < n.death.held_until) {
         return;
     }
-    // A monster under the cursor: the click attacks it (crate::gameplay::skills), it is no walk.
-    if hovered.is_some_and(|h| h.0.is_some()) {
+    // A monster under the cursor: the click attacks it (crate::gameplay::skills),
+    // it is no walk; a walk already held goes on over it.
+    if hovered.is_some_and(|h| h.0.is_some()) && !*on_ground {
         return;
     }
     let Ok(window) = windows.single() else { return };
