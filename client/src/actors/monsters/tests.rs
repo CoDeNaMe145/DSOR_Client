@@ -430,3 +430,19 @@ fn a_kill_with_the_despawn_bit_plays_the_despawn_instead_of_the_death() {
     for _ in 0..14 { app.update(); }
     assert!(app.world().get_entity(root).is_err(), "gone after its DespawnDuration");
 }
+
+#[test]
+fn a_model_whose_player_went_with_a_rebuilt_scene_is_set_up_again() {
+    let mut world = World::new();
+    let player = world.spawn(AnimationPlayer::default()).id();
+    let source = ModelSetup { dye: [[1.0; 4]; 2], gltf: default(), sets: default(), set: "s".into(), anim_set: "a".into(), again: true };
+    let mut anim = CharacterAnim::default();
+    anim.bind_model(player, default());
+    let model = world.spawn((anim, ModelSource(source))).id();
+    world.run_system_once(rebind_lost_models).unwrap();
+    assert!(world.get::<ModelSetup>(model).is_none(), "its player is still there");
+    world.despawn(player);
+    world.run_system_once(rebind_lost_models).unwrap();
+    let setup = world.get::<ModelSetup>(model).expect("set up again");
+    assert!(setup.again, "the body is not scaled a second time");
+}

@@ -300,6 +300,7 @@ pub(crate) fn spawn_model(commands: &mut Commands, assets: &AssetServer, graphic
                 sets: assets.load(format!("{graphics}.sets.json")),
                 set: set.to_owned(),
                 anim_set: anim_set.to_owned(),
+                again: false,
             },
         ))
         .id();
@@ -318,14 +319,21 @@ pub(crate) fn spawn_model(commands: &mut Commands, assets: &AssetServer, graphic
 #[derive(Component)]
 pub(crate) struct ModelScene;
 
-#[derive(Component)]
+#[derive(Component, Clone)]
 struct ModelSetup {
     dye: [[f32; 4]; 2],
     gltf: Handle<Gltf>,
     sets: Handle<ModelSets>,
     set: String,
     anim_set: String,
+    /// Set up before, on a scene since rebuilt (rebind_lost_models): the body
+    /// is already the set's size.
+    again: bool,
 }
+
+/// What a model was set up from, kept to set it up again on a rebuilt scene.
+#[derive(Component)]
+struct ModelSource(ModelSetup);
 
 /// Offline (map viewer): DSOR_TEST_MONSTER=<blueprint>[,x,y,z] places a monster;
 /// DSOR_TEST_HIT=<seconds>[,critical] hits it every that many seconds with each
@@ -404,7 +412,7 @@ impl Plugin for MonstersPlugin {
             .add_systems(PostUpdate, (own_player_materials, apply_shader_colors).chain())
             .add_systems(PreUpdate, hover.after(crate::ui::input::CaptureUiInput))
             .add_systems(Startup, load)
-            .add_systems(Update, (spawn_monsters, setup_models, monster_health, hits_and_kills, start_deaths, despawn_summons)
+            .add_systems(Update, (spawn_monsters, rebind_lost_models, setup_models, monster_health, hits_and_kills, start_deaths, despawn_summons)
                 .chain().in_set(MonsterSystems).before(crate::network::net::NetSystems))
             // Animation completion is known in PostUpdate, but lighting and
             // visibility still queue commands for the corpse's attached effects
@@ -544,6 +552,7 @@ fn spawn_monsters(
                         sets: assets.load(format!("{}.sets.json", t.graphics)),
                         set: t.set.clone(),
                         anim_set: t.anim_set.clone(),
+                        again: false,
                     },
                 ))
                 .id();
@@ -731,7 +740,7 @@ fn setup_models(
             }
         }
         if let Some(root) = set.and_then(|s| s.variation.iter().find(|j| j.bone == "Skeleton_Root")) {
-            if let Some(monster) = monster.as_mut() {
+            if let Some(monster) = monster.as_mut().filter(|_| !setup.again) {
                 let scale = root.s[0].max(root.s[2]);
                 monster.radius *= scale;
                 monster.height *= root.s[1];
@@ -781,7 +790,26 @@ fn setup_models(
         // the next monster of its kind loaded it again, the reload replaced its
         // scene (AssetEvent::Modified), and bevy spawned every instance of it
         // anew, without its hidden skins.
-        commands.entity(e).try_insert((ModelBones(bones), crate::rendering::model_variant::ResidentModel(setup.gltf.clone()))).remove::<ModelSetup>();
+        commands.entity(e).try_insert((ModelBones(bones), crate::rendering::model_variant::ResidentModel(setup.gltf.clone()),
+            ModelSource(ModelSetup { again: true, ..setup.clone() }))).remove::<ModelSetup>();
+    }
+}
+
+/// A model whose animation player is gone is set up again on its new scene.
+/// FAILURE (2026-10-29): leaving the crypt for Heredur's room and back within
+///   6 s, the crypt's monster models were freed and loaded again; bevy rebuilt
+///   the scenes of the monsters already placed after setup_models had bound
+///   their players, and the new copies stood in their bind pose, sliding as
+///   they walked (as the effects did: crate::gameplay::skills FxModel).
+fn rebind_lost_models(
+    mut commands: Commands,
+    models: Query<(Entity, &ModelSource, &CharacterAnim), Without<ModelSetup>>,
+    players: Query<(), With<AnimationPlayer>>,
+) {
+    for (e, source, anim) in &models {
+        if anim.bound_player().is_some_and(|p| !players.contains(p)) {
+            commands.entity(e).try_insert(source.0.clone());
+        }
     }
 }
 

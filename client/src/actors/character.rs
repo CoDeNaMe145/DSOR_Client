@@ -511,8 +511,14 @@ impl CharacterAnim {
 
     /// Drive a whole model's own animation player (monsters, crate::actors::monsters):
     /// `nodes` are its graph's clips by state row, with whether each loops.
+    /// The animation player it drives (a whole model's, bound by bind_model).
+    pub fn bound_player(&self) -> Option<Entity> { self.player }
+
     pub fn bind_model(&mut self, player: Entity, nodes: HashMap<String, (AnimationNodeIndex, bool)>) {
         self.player = Some(player);
+        // A rebound model's old targets went with its old scene.
+        self.parked.clear();
+        self.parking = false;
         self.nodes = nodes;
         self.current = None;
         self.fading.clear();
