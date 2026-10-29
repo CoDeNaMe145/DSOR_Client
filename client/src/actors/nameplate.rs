@@ -22,6 +22,14 @@ const HEAD: f32 = 2.25;
 ///   all on the white tiger (its shots).
 /// UNVERIFIED: the seated height, matched by eye to those two shots.
 const SEATED_HEAD: f32 = 1.7;
+/// The name's height over the hips: a body lifted off its feet (a leap's clip
+/// raises the Hips up to 5.6 m) takes its name up with it, when that is higher
+/// than HEAD.
+/// FAILURE (2026-10-29): the name stayed over the ground during Rage Jump while
+///   the warrior flew high above it ("if I jump, it follows me, it feels
+///   quite wrong"); the original's rises with him.
+/// UNVERIFIED: the distance (HEAD over hips standing about 1 m high).
+const OVER_HIPS: f32 = 1.25;
 /// Beyond this from the camera, names are not drawn.
 const MAX_DISTANCE: f32 = 45.0;
 /// Width of the box a name is centred in, pixels.
@@ -81,6 +89,7 @@ fn place(
     mut font: Local<Option<Handle<Font>>>,
     settings: Res<crate::ui::Settings>,
     local: Query<(), With<crate::network::net::LocalPlayer>>,
+    (characters, bones): (Query<&crate::actors::character::Character>, Query<&GlobalTransform>),
 ) {
     // EVIDENCE: ui/overheadtext.bxml NameLabel: font "tahoma"; drawn thin by the
     // 2018 client (recorded), so Wine's regular Tahoma (assets/fonts/tahoma.ttf,
@@ -115,7 +124,9 @@ fn place(
             continue;
         };
         let Ok((_, mut style, mut vis, mut color, mut text)) = labels.get_mut(*node) else { continue };
-        let head = at.translation() + Vec3::Y * riding.map_or(HEAD, |r| HEAD.max(r.lift + SEATED_HEAD));
+        let hips = characters.get(entity).ok().and_then(|c| c.bone("Hips")).and_then(|h| bones.get(h).ok())
+            .map_or(0.0, |h| h.translation().y - at.translation().y);
+        let head = at.translation() + Vec3::Y * riding.map_or(HEAD.max(hips + OVER_HIPS), |r| HEAD.max(r.lift + SEATED_HEAD));
         let shown = (if local.contains(entity) { settings.current.own_name } else { settings.current.other_names })
             && visible.get()
             && head.distance(cam_at.translation()) < MAX_DISTANCE
