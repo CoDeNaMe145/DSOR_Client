@@ -373,6 +373,10 @@ fn unit_art(w:&Widget)->Option<(Mesh,Option<String>)> {
 ///   4.8 reference pixels) in from the Slot's top right corner, its top left
 ///   for 5 and 7-10 and 12 (mask 0x17a0: the left column); the text "%d".
 ///   Its one caller always passes Green: the Red "outdated" face is unused.
+/// EVIDENCE (the user's release261_192 shot, 2026-10-29): the belt shows its
+///   level too, top left like the left column: the slot type numbers above are
+///   the exe's, not our cells' (FAILURE: no belt level, "this belt doesn't show
+///   its lvl").
 /// UNVERIFIED: the original shows the sum of two GameItem fields (+0x40,
 ///   +0x48); the server sends one level, ItemInfo.durability (the tooltip's).
 /// NOT DONE: its tooltip and left click ("Left-click to upgrade the item.",
@@ -385,7 +389,7 @@ const LEVEL_OUTLINE: f32 = 1.7;
 /// Where an equipped item's level is centred over its Slot `rect`; None for
 /// the slots that show none.
 fn level_centre(slot:i8, rect:[f32;4])->Option<Vec2> {
-    let left=match slot { 0..=4|6=>false, 5|7..=10|12=>true, _=>return None };
+    let left=match slot { 0..=4|6=>false, 5|7..=12=>true, _=>return None };
     let [l,t,r,_]=rect;
     Some(Vec2::new(if left {l+LEVEL_INSET.x} else {r-LEVEL_INSET.x}, t+LEVEL_INSET.y))
 }
@@ -1179,10 +1183,10 @@ mod tests {
         let near = |slot: i8, at: Vec2| level_centre(slot, rect).is_some_and(|c| c.distance(at) < 1e-4);
         // The right column (helmet to boots, the off hand): top right.
         for slot in [0, 1, 2, 3, 4, 6] { assert!(near(slot, Vec2::new(143.6, 204.8)), "slot {slot}"); }
-        // The left column (weapon, cloak, rings, amulet, weapon mod): top left.
-        for slot in [5, 7, 8, 9, 10, 12] { assert!(near(slot, Vec2::new(106.4, 204.8)), "slot {slot}"); }
-        // No belt, trinkets, mercenary pieces or essences.
-        for slot in [11, 13, 20, 24, 25, 27, 34, 35] { assert_eq!(level_centre(slot, rect), None, "slot {slot}"); }
+        // The left column (weapon, cloak, rings, amulet, belt, weapon mod): top left.
+        for slot in [5, 7, 8, 9, 10, 11, 12] { assert!(near(slot, Vec2::new(106.4, 204.8)), "slot {slot}"); }
+        // No trinkets, mercenary pieces or essences.
+        for slot in [13, 20, 24, 25, 27, 34, 35] { assert_eq!(level_centre(slot, rect), None, "slot {slot}"); }
         // The face: the Green template's normal state, at its size, with its font size.
         let id = "Canvas/UpgradeButtonLabel/UpgradeButtonLabel/UpgradeButtonTemplate_Green/normal";
         let mut layout = crate::ui::controls::template::fixture::layout("inventory",
