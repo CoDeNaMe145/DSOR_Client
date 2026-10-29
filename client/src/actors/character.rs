@@ -448,6 +448,9 @@ pub struct CharacterAnim {
     /// Killed (KillCommand): the death animation keeps its last pose; no sequence
     /// or movement brings the actor back to Idle.
     pub dead: bool,
+    /// The next transition's fade, in seconds: a skill sequence's own fade-in
+    /// (BLEND otherwise).
+    pub fade_in: Option<f32>,
 }
 
 impl Default for CharacterAnim {
@@ -455,7 +458,7 @@ impl Default for CharacterAnim {
         Self { audio_epoch: 0, state: AnimState::Idle, speed: 1.0, applied: None, player: None, nodes: HashMap::new(), current: None,
             fading: Vec::new(), fade_elapsed: 0.0, fade_duration: BLEND.as_secs_f32(), clip_nodes: HashMap::new(),
             durations: HashMap::new(), twins: HashMap::new(), set: None, set_changed: false, combat_remaining: 0.0,
-            parked: Vec::new(), parking: false, dead: false }
+            parked: Vec::new(), parking: false, dead: false, fade_in: None }
     }
 }
 
@@ -582,7 +585,7 @@ impl CharacterAnim {
                 .map(|(n, a)| (*n, a.weight() / total.max(f32::EPSILON))).collect();
             let outgoing: f32 = self.fading.iter().map(|(_, w)| *w).sum();
             self.fade_elapsed = 0.0;
-            self.fade_duration = if self.set_changed { EQUIPMENT_BLEND } else { BLEND }.as_secs_f32();
+            self.fade_duration = if self.set_changed { EQUIPMENT_BLEND.as_secs_f32() } else { self.fade_in.unwrap_or(BLEND.as_secs_f32()) };
             player.play(node).set_weight((1.0 - outgoing).clamp(0.0, 1.0));
         }
         let active = player.play(node);
@@ -596,6 +599,7 @@ impl CharacterAnim {
         self.current = Some(node);
         self.applied = Some((self.state.clone(), self.speed));
         self.set_changed = false;
+        self.fade_in = None;
     }
 }
 

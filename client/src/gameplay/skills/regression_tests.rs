@@ -17,11 +17,11 @@ fn cast_sequence(app: &mut App, actor: Entity) -> Entity {
     let sequence = Sequence {
         length: 25, repeat: false,
         tracks: vec![
-            Track::Anim { name: "Cast".into(), speed: 1.0, start: 0, end: 25 },
+            Track::Anim { name: "Cast".into(), speed: 1.0, start: 0, end: 25, fadein: 0.0 },
             Track::Fx { graphics: "tests/cast_effect".into(), joint: String::new(),
                 at: [0., 0., -2., 0., 0., 0., 1., 1., 1.], start: 0, end: 25, curves: default() },
             // A later animation must not reclaim the actor after movement starts.
-            Track::Anim { name: "FollowThrough".into(), speed: 1.0, start: 15, end: 25 },
+            Track::Anim { name: "FollowThrough".into(), speed: 1.0, start: 15, end: 25, fadein: 0.0 },
         ],
     };
     app.world_mut().run_system_once(move |mut commands: Commands|

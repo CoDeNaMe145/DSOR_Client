@@ -216,7 +216,7 @@ fn death_waits_for_delayed_sequence_animation_and_cleans_sequence() {
         r#"{"test":{"graphics":"","set":"","anim_set":"","state":"","loop":false,"death":"delayed"}}"#).unwrap());
     app.world_mut().resource_mut::<MonsterData>().templates = templates;
     let sequences = app.world_mut().resource_mut::<Assets<SequenceTable>>().add(SequenceTable([("delayed".into(), Sequence {
-        length: 200, repeat: false, tracks: vec![Track::Anim { name: "Death".into(), speed: 0.5, start: 25, end: 200 }],
+        length: 200, repeat: false, tracks: vec![Track::Anim { name: "Death".into(), speed: 0.5, start: 25, end: 200, fadein: 0.0 }],
     })].into_iter().collect()));
     app.insert_resource(SkillData::for_test(sequences));
     let root = spawn(&mut app, 41);
@@ -295,7 +295,7 @@ fn soul_assets(app: &mut App) {
         r#"{"soul":{"graphics":"characters/test","set":"","anim_set":"","state":"Spawn;Idle","loop":true,"minion":true,
             "summon":"soul_spawn","death":"soul_death","despawn":"soul_despawn","despawn_s":1.2,"spawn_s":0.4}}"#).unwrap());
     app.world_mut().resource_mut::<MonsterData>().templates = templates;
-    let sequence = |name: &str| Sequence { length: 40, repeat: false, tracks: vec![Track::Anim { name: name.into(), speed: 1.0, start: 0, end: 10 }] };
+    let sequence = |name: &str| Sequence { length: 40, repeat: false, tracks: vec![Track::Anim { name: name.into(), speed: 1.0, start: 0, end: 10, fadein: 0.0 }] };
     let sequences = app.world_mut().resource_mut::<Assets<SequenceTable>>().add(SequenceTable([
         ("soul_spawn".to_owned(), sequence("Spawn")), ("soul_despawn".to_owned(), sequence("Death")),
     ].into_iter().collect()));

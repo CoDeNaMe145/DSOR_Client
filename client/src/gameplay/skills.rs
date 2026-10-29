@@ -174,7 +174,12 @@ pub struct SkillTable(pub HashMap<u32, SkillDef>);
 #[derive(Deserialize, Debug, Clone)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Track {
-    Anim { name: String, speed: f32, start: i32, end: i32 },
+    Anim {
+        name: String, speed: f32, start: i32, end: i32,
+        /// Frames the animation fades in over (at the sequence's rate).
+        #[serde(default)]
+        fadein: f32,
+    },
     Fx {
         graphics: String,
         #[serde(default)]
@@ -1987,7 +1992,7 @@ pub(crate) fn play_sequences(
             if !p.started[i] && frame >= start as f32 && !ending {
                 p.started[i] = true;
                 match &track {
-                    Track::Anim { name, speed, .. } if !p.superseded => {
+                    Track::Anim { name, speed, fadein, .. } if !p.superseded => {
                         // A dead actor's pose belongs to its death: the killing blow's
                         // "Hit" (started the frame before the Kill) stood a dead
                         // gremlin back up ("les gremlin goon une fois morts restent
@@ -1995,6 +2000,9 @@ pub(crate) fn play_sequences(
                         if let Some(Ok(mut a)) = p.actor.map(|a| anims.get_mut(a)).filter(|a| a.as_ref().is_ok_and(|a| !a.dead || p.on_death)) {
                             a.state = AnimState::Named(name.clone());
                             a.speed = *speed * p.rate;
+                            // Its own fade-in: at high attack speed a fixed blend
+                            // overlapped most of the next swing and damped it.
+                            a.fade_in = (*fadein > 0.0).then(|| *fadein / FPS / p.rate.max(0.01));
                             // The same skill again restarts its animation.
                             a.replay();
                         }

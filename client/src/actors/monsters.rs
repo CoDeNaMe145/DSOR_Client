@@ -608,7 +608,7 @@ fn spawn_monsters(
         let sequences = skill_data.as_ref().and_then(|d| seqs.get(d.sequences()));
         let rise = (t.spawn_s > 0.0).then(|| {
             let end = (t.spawn_s * 25.0).ceil() as i32;
-            (crate::gameplay::skills::Track::Anim { name: "Spawn".into(), speed: 1.0, start: 0, end }, end as u32)
+            (crate::gameplay::skills::Track::Anim { name: "Spawn".into(), speed: 1.0, start: 0, end, fadein: 0.0 }, end as u32)
         });
         let summon = sequences.and_then(|s| s.0.get(&t.summon));
         let summoned = if matches!(spawn.category, 1 | 2) {
