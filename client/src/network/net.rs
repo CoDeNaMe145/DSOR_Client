@@ -35,6 +35,12 @@ mod remote_tests;
 
 /// How far up or down one step may go (stairs, slopes).
 const MAX_STEP: f32 = 1.2;
+/// The left button held past its press on the ground: the walk follows the
+/// cursor straight, as the original steers (click_to_move); a click alone
+/// walks its route round walls (walk_local).
+#[derive(Resource, Default)]
+pub struct HeldWalk(pub bool);
+
 /// A walk's route is found again when its target moves this far, or moves at
 /// all after this many seconds (the button held, following the cursor).
 const ROUTE_SLACK: f32 = 1.0;
@@ -741,6 +747,17 @@ mod walk_route_tests {
         }
         let p = app.world().get::<Transform>(player).unwrap().translation;
         assert!(p.xz().distance(target.xz()) < 0.1, "stopped at {p}, short of {target}");
+        // The button held, the walk steers straight and stops at the hole's edge.
+        app.insert_resource(HeldWalk(true));
+        app.world_mut().get_mut::<Transform>(player).unwrap().translation = Vec3::new(0.5, 0.0, 0.5);
+        app.world_mut().get_mut::<LocalPlayer>(player).unwrap().target = Some(target);
+        for _ in 0..200 {
+            app.world_mut().resource_mut::<Time>().advance_by(std::time::Duration::from_millis(20));
+            app.update();
+            if app.world().get::<LocalPlayer>(player).unwrap().target.is_none() { break; }
+        }
+        let p = app.world().get::<Transform>(player).unwrap().translation;
+        assert!(p.x < 1.01 && p.z < 1.0, "a held walk went round to {p}");
     }
 }
 
@@ -968,7 +985,7 @@ impl Plugin for NetPlugin {
         app.init_resource::<RespawnChoice>().init_resource::<crate::gameplay::dialogue::Dialogue>();
         // DSOR_ZOOM=<height>: start at another zoom (debugging screenshots).
         let zoom = std::env::var("DSOR_ZOOM").ok().and_then(|z| z.parse().ok()).unwrap_or(CAM_HEIGHT_DEFAULT);
-        app.insert_resource(CameraZoom::new(zoom))
+        app.insert_resource(CameraZoom::new(zoom)).init_resource::<HeldWalk>()
             .add_systems(Startup, connect.run_if(resource_exists::<NetConfig>))
             .add_systems(PreUpdate, finish_login.run_if(resource_exists::<LoggingIn>))
             .add_systems(
@@ -2591,8 +2608,11 @@ fn click_to_move(
     item: Option<Res<crate::world::drops::ItemHover>>,
     // The left button's press went down off any monster: a walk to the end.
     mut on_ground: Local<bool>,
+    held: Option<ResMut<HeldWalk>>,
 ) {
     if buttons.just_pressed(MouseButton::Left) { *on_ground = !hovered.as_ref().is_some_and(|h| h.0.is_some()); }
+    let holding = buttons.pressed(MouseButton::Left) && !buttons.just_pressed(MouseButton::Left) && *on_ground;
+    if let Some(mut held) = held { if held.0 != holding { held.0 = holding; } }
     if dialogue.is_some_and(|d| d.held) { return; }
     // An item (or its name) under the cursor: crate::world::drops walks to it.
     if item.is_some_and(|i| i.0.is_some()) { return; }
@@ -2645,6 +2665,7 @@ fn walk_local(
     // The walk's route on the navigation mesh: (the target it leads to, its
     // waypoints, when it was found).
     mut route: Local<Option<(Vec3, Vec<Vec3>, f32)>>,
+    held: Option<Res<HeldWalk>>,
 ) {
     let _profile = crate::diagnostics::hud::FrameSpan::new("net::walk_local");
     let mesh = nav.as_ref().and_then(|n| meshes.get(&n.0));
@@ -2674,7 +2695,10 @@ fn walk_local(
             continue;
         }
         let mut moving = false;
-        if player.target.is_none() { *route = None; }
+        // Held, the walk steers straight at the cursor and stops at a wall.
+        // FAILURE (2026-10-29): routed while held, at a landing's corner the
+        //   cursor over the stairs below sent the warrior down them on his own.
+        if player.target.is_none() || held.as_ref().is_some_and(|h| h.0) { *route = None; }
         if let Some(target) = player.target {
             let here = tf.translation;
             // Round walls and obstacles along the navigation mesh, to the walkable
@@ -2683,13 +2707,19 @@ fn walk_local(
             // FAILURE (2026-10-29): a click behind a wall walked straight into it
             //   and stopped there.
             let now = time.elapsed_secs();
-            if let Some(m) = mesh {
+            if let (Some(m), false) = (mesh, held.as_ref().is_some_and(|h| h.0)) {
                 let stale = route.as_ref().is_none_or(|(at, _, when)| {
                     let moved = at.xz().distance(target.xz());
                     moved > ROUTE_SLACK || (moved > 0.01 && now - when > ROUTE_REFRESH)
                 });
                 if stale {
-                    let goal = m.nearest(target, 4.0).unwrap_or(target);
+                    // Off the ground (a chest, a wall): the walkable point
+                    // before it on the straight line, not the nearest anywhere
+                    // round it (a detour to the chest's far side).
+                    let goal = m.nearest(target, 0.3)
+                        .or_else(|| m.reachable_along(here, target))
+                        .or_else(|| m.nearest(target, 4.0))
+                        .unwrap_or(target);
                     *route = m.path(here, goal).map(|points| (target, points, now));
                 }
             }
