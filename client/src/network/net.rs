@@ -35,6 +35,10 @@ mod remote_tests;
 
 /// How far up or down one step may go (stairs, slopes).
 const MAX_STEP: f32 = 1.2;
+/// A walk's route is found again when its target moves this far, or moves at
+/// all after this many seconds (the button held, following the cursor).
+const ROUTE_SLACK: f32 = 1.0;
+const ROUTE_REFRESH: f32 = 0.25;
 /// Seconds ANOTHER player keeps running after they last moved: just over the 40 ms
 /// between two of their records. SEE: move_remotes. The player's own run stops the
 /// moment they stop ("elle devrait s'arreter quand j'arrete de marcher").
@@ -705,6 +709,38 @@ mod pointer_tests {
         buttons.press(MouseButton::Left);
         app.update();
         assert!(target(&app).is_none(), "a press on a monster walked");
+    }
+}
+
+#[cfg(test)]
+mod walk_route_tests {
+    use super::*;
+
+    #[test]
+    fn a_click_behind_a_hole_walks_round_it() {
+        // A U of 1 m cells: a hole at x 1..2, z 0..2 between the start and the click.
+        let cells = [(0, 0), (0, 1), (0, 2), (1, 2), (2, 2), (2, 1), (2, 0)];
+        let v = |x: i32, z: i32| Vec3::new(x as f32, 0.0, z as f32);
+        let triangles = cells.iter().flat_map(|&(x, z)| [[v(x, z), v(x + 1, z), v(x + 1, z + 1)], [v(x, z), v(x + 1, z + 1), v(x, z + 1)]]).collect();
+        let mut app = App::new();
+        app.init_resource::<Assets<NavMesh>>()
+            .insert_resource(Time::<()>::default())
+            .add_systems(Update, walk_local);
+        let mesh = app.world_mut().resource_mut::<Assets<NavMesh>>().add(NavMesh::new(triangles));
+        app.insert_resource(CurrentNav(mesh));
+        let target = Vec3::new(2.5, 0.0, 0.5);
+        let player = app.world_mut().spawn((Transform::from_xyz(0.5, 0.0, 0.5), CharacterAnim::default(), LocalPlayer {
+            actor: 1, target: Some(target), facing: 0.0, last_sent_tick: 0, snapped: true, casting: 0.0,
+        })).id();
+        for _ in 0..200 {
+            app.world_mut().resource_mut::<Time>().advance_by(std::time::Duration::from_millis(20));
+            app.update();
+            let p = app.world().get::<Transform>(player).unwrap().translation;
+            assert!(!(p.x > 1.02 && p.x < 1.98 && p.z < 1.98), "walked into the hole at {p}");
+            if app.world().get::<LocalPlayer>(player).unwrap().target.is_none() { break; }
+        }
+        let p = app.world().get::<Transform>(player).unwrap().translation;
+        assert!(p.xz().distance(target.xz()) < 0.1, "stopped at {p}, short of {target}");
     }
 }
 
@@ -2606,6 +2642,9 @@ fn walk_local(
     mut players: Query<(&mut Transform, &mut LocalPlayer, &mut CharacterAnim, Option<&crate::actors::mounts::Riding>)>,
     mut autowalked: Local<bool>,
     stats: Option<Res<crate::gameplay::stats::CharacterStats>>,
+    // The walk's route on the navigation mesh: (the target it leads to, its
+    // waypoints, when it was found).
+    mut route: Local<Option<(Vec3, Vec<Vec3>, f32)>>,
 ) {
     let _profile = crate::diagnostics::hud::FrameSpan::new("net::walk_local");
     let mesh = nav.as_ref().and_then(|n| meshes.get(&n.0));
@@ -2635,8 +2674,34 @@ fn walk_local(
             continue;
         }
         let mut moving = false;
+        if player.target.is_none() { *route = None; }
         if let Some(target) = player.target {
             let here = tf.translation;
+            // Round walls and obstacles along the navigation mesh, to the walkable
+            // point nearest the click, as the original walks; a straight line
+            // where there is no route (another floor, no mesh yet).
+            // FAILURE (2026-10-29): a click behind a wall walked straight into it
+            //   and stopped there.
+            let now = time.elapsed_secs();
+            if let Some(m) = mesh {
+                let stale = route.as_ref().is_none_or(|(at, _, when)| {
+                    let moved = at.xz().distance(target.xz());
+                    moved > ROUTE_SLACK || (moved > 0.01 && now - when > ROUTE_REFRESH)
+                });
+                if stale {
+                    let goal = m.nearest(target, 4.0).unwrap_or(target);
+                    *route = m.path(here, goal).map(|points| (target, points, now));
+                }
+            }
+            let waypoints = route.as_mut().map(|(_, points, _)| {
+                while points.len() > 1 && points[0].xz().distance(here.xz()) < 0.05 { points.remove(0); }
+                (points.first().copied(), points.last().copied())
+            });
+            let (aim, end) = match waypoints {
+                Some((Some(aim), Some(end))) => (aim, end),
+                _ => (target, target),
+            };
+            let target = aim;
             let mut to = target - here;
             to.y = 0.0;
             let speed = stats.as_ref().and_then(|s| s.movement_speed())
@@ -2660,7 +2725,7 @@ fn walk_local(
                         player.facing = dir.x.atan2(dir.z);
                     }
                     moving = true;
-                    if Vec2::new(target.x - p.x, target.z - p.z).length() < 0.05 {
+                    if Vec2::new(end.x - p.x, end.z - p.z).length() < 0.05 {
                         player.target = None;
                     }
                 }
