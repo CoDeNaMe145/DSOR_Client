@@ -48,7 +48,10 @@ pub struct TalentBonuses(pub HashMap<String, u32>);
 impl CharacterStats {
     pub fn value(&self, key: &str) -> Option<f32> { self.0.get(key).map(|v| *v as f32) }
     pub fn animation_speed(&self) -> f32 {
-        let raw = self.0.get("SkillExecutionSpeed").copied().unwrap_or(1.0).max(0.01);
+        // SkillExecutionSpeed stops at its 4.0 limit (_Template_ActorAttributes):
+        // past it the original attacks no faster, the 6-frame rate 4.1667,
+        // whatever the sheet adds up to (the server caps it the same way).
+        let raw = self.0.get("SkillExecutionSpeed").copied().unwrap_or(1.0).clamp(0.01, 4.0);
         if raw < 1.0 { return raw as f32; }
         // Server local_combat_state.effective_attack_speed: discrete sequence
         // breakpoints, distinct from the raw speed printed on the sheet.
