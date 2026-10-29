@@ -768,6 +768,7 @@ fn setup_models(
         let mut graph = AnimationGraph::new();
         let mut nodes = HashMap::new();
         let mut sound_clips = HashMap::new();
+        let mut twins = Vec::new();
         if let Some(rows) = table.0.get(&setup.anim_set) {
             for (state, clip) in rows {
                 let looped = format!("{clip}-loop");
@@ -775,6 +776,11 @@ fn setup_models(
                 if let Some((handle, looping)) = found {
                     let node = graph.add_clip(handle.clone(), 1.0, graph.root);
                     sound_clips.insert(node, clip.trim_end_matches("-loop").to_owned());
+                    if !looping {
+                        let twin = graph.add_clip(handle.clone(), 1.0, graph.root);
+                        sound_clips.insert(twin, clip.trim_end_matches("-loop").to_owned());
+                        twins.push((node, twin));
+                    }
                     nodes.insert(state.clone(), (node, looping));
                 }
             }
@@ -786,6 +792,7 @@ fn setup_models(
             .insert((AnimationGraphHandle(graphs.add(graph)), crate::rendering::anim_cull::ManagedAnimation,
                 crate::audio::AnimationAudio::new(e, &setup.gltf.path().unwrap().path().to_string_lossy(), &setup.set, sound_clips)));
         anim.bind_model(player, nodes);
+        anim.set_twins(twins);
         // The file stays loaded while the monster stands: dropped with ModelSetup,
         // the next monster of its kind loaded it again, the reload replaced its
         // scene (AssetEvent::Modified), and bevy spawned every instance of it

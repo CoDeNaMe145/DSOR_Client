@@ -51,7 +51,10 @@ impl CharacterStats {
         // SkillExecutionSpeed stops at its 4.0 limit (_Template_ActorAttributes):
         // past it the original attacks no faster, the 6-frame rate 4.1667,
         // whatever the sheet adds up to (the server caps it the same way).
-        let raw = self.0.get("SkillExecutionSpeed").copied().unwrap_or(1.0).clamp(0.01, 4.0);
+        // Offline: DSOR_TEST_ATTACK_SPEED=<sheet value> stands in for the sheet's.
+        static TEST: std::sync::OnceLock<Option<f64>> = std::sync::OnceLock::new();
+        let test = *TEST.get_or_init(|| std::env::var("DSOR_TEST_ATTACK_SPEED").ok().and_then(|v| v.parse().ok()));
+        let raw = test.or_else(|| self.0.get("SkillExecutionSpeed").copied()).unwrap_or(1.0).clamp(0.01, 4.0);
         if raw < 1.0 { return raw as f32; }
         // Server local_combat_state.effective_attack_speed: discrete sequence
         // breakpoints, distinct from the raw speed printed on the sheet.
