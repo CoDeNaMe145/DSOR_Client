@@ -85,14 +85,17 @@ pub(in crate::ui) fn dialog(
     (layouts, loaded): (Res<Assets<Layout>>, Res<crate::ui::Loaded>),
     (assets, screen, time): (Res<AssetServer>, Res<Screen>, Res<Time<Real>>),
     old: Query<Entity, With<LogoutText>>,
-    current: Option<Res<crate::world::map::CurrentMap>>,
-    (mut state, mut shown, mut map): (Local<Stage>, Local<Option<(String, u32, u32)>>, Local<String>),
+    (mut state, mut shown, mut entries): (Local<Stage>, Local<Option<(String, u32, u32)>>, Local<u32>),
 ) {
     let Some(mut net) = net else { return };
     let now = time.elapsed_secs_f64();
-    // A new map (the switch went through, or a map exit): nothing is pending.
-    if let Some(name) = current.as_ref().map(|c| c.name.as_str()).filter(|n| *n != map.as_str()) {
-        *map = name.to_owned();
+    // A map entered (the switch went through, or a map exit): nothing is
+    // pending. Counted, not by name: the character picked again may stand on
+    // the same map.
+    // FAILURE (2026-10-30): switching to a character in the same town left the
+    //   dialog on the screen (the user's shot).
+    if net.map_entries != *entries {
+        *entries = net.map_entries;
         *state = Stage::Closed;
     }
     if std::mem::take(&mut pointer.logout) && *state == Stage::Closed { *state = Stage::Asking; }

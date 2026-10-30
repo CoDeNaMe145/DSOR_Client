@@ -237,6 +237,9 @@ pub struct Net {
     /// The switch of characters is confirmed and counting down: the player
     /// cannot walk (click_to_move), as in the original.
     pub logout_pending: bool,
+    /// Maps entered so far (each MapChange, the same map again too: a switch of
+    /// characters back to one on the same map).
+    pub map_entries: u32,
     /// Our group as the server last described it (GroupStatus 151); None ungrouped.
     pub group: Option<dsor_proto::commands::social::GroupStatus>,
     /// Our guild (GuildStatus 167); None when in none.
@@ -1101,6 +1104,7 @@ pub fn start_offline(world: &mut World, class: u8, gender: u8) {
         social_notes: Vec::new(),
         logout_info: Vec::new(),
         logout_pending: false,
+        map_entries: 0,
         group: None,
         guild: None,
         player_query: None,
@@ -1414,6 +1418,7 @@ pub(crate) fn start_session(world: &mut World, config: NetConfig) {
         social_notes: Vec::new(),
         logout_info: Vec::new(),
         logout_pending: false,
+        map_entries: 0,
         group: None,
         guild: None,
         player_query: None,
@@ -1751,6 +1756,7 @@ fn pump(
                 commands.remove_resource::<CurrentNav>();
                 net.centre = None;
                 changed_map = true;
+                net.map_entries += 1;
                 commands.insert_resource(CurrentMap::new(name.clone(), assets.load(format!("maps/{name}.map.json"))));
             }
             SessionEvent::Clock(tick) => {
