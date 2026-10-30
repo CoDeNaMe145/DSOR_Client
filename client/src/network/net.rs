@@ -234,6 +234,9 @@ pub struct Net {
     /// PlayerLogoutInfo's seconds as they come (0: called off), for the
     /// switch-characters dialog (ui::controls::logout).
     pub logout_info: Vec<u32>,
+    /// The switch of characters is confirmed and counting down: the player
+    /// cannot walk (click_to_move), as in the original.
+    pub logout_pending: bool,
     /// Our group as the server last described it (GroupStatus 151); None ungrouped.
     pub group: Option<dsor_proto::commands::social::GroupStatus>,
     /// Our guild (GuildStatus 167); None when in none.
@@ -1097,6 +1100,7 @@ pub fn start_offline(world: &mut World, class: u8, gender: u8) {
         guild_answers: Vec::new(),
         social_notes: Vec::new(),
         logout_info: Vec::new(),
+        logout_pending: false,
         group: None,
         guild: None,
         player_query: None,
@@ -1409,6 +1413,7 @@ pub(crate) fn start_session(world: &mut World, config: NetConfig) {
         guild_answers: Vec::new(),
         social_notes: Vec::new(),
         logout_info: Vec::new(),
+        logout_pending: false,
         group: None,
         guild: None,
         player_query: None,
@@ -2614,6 +2619,12 @@ fn click_to_move(
     let holding = buttons.pressed(MouseButton::Left) && !buttons.just_pressed(MouseButton::Left) && *on_ground;
     if let Some(mut held) = held { if held.0 != holding { held.0 = holding; } }
     if dialogue.is_some_and(|d| d.held) { return; }
+    // Switching characters: the original holds the player in place until the
+    // countdown ends or its Cancel is pressed.
+    if net.as_ref().is_some_and(|n| n.logout_pending) {
+        for (_, mut player) in &mut players { if player.target.is_some() { player.target = None; } }
+        return;
+    }
     // An item (or its name) under the cursor: crate::world::drops walks to it.
     if item.is_some_and(|i| i.0.is_some()) { return; }
     if ui.blocks(MouseButton::Left) || !buttons.pressed(MouseButton::Left) || keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) {
