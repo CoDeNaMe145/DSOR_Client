@@ -246,8 +246,9 @@ pub(crate) struct State {
     /// list and the page keeps the last book opened.
     pub album_open: Option<String>,
     pub album_sticker: Option<String>,
-    /// The sticker just used and its countdown (album::Sticker::countdown).
-    pub album_used: Option<(String, u32)>,
+    /// The item cooldowns running (hotbar::ItemCooldowns::running): what the
+    /// album's stickers of their category count down (album::Sticker::countdown).
+    pub album_cooling: Vec<(String, u32, u8)>,
     pub album_banner: usize,
     pub rank_start: u32,
     /// The grids' pages, by window.
@@ -850,8 +851,6 @@ pub(in crate::ui) fn send(
     primary: Query<&Window, With<bevy::window::PrimaryWindow>>,
     quests: Res<super::quests::Quests>,
     (mut item_cooldowns, items_data, items_catalogs): (ResMut<super::hotbar::ItemCooldowns>, Res<items::Data>, Res<Assets<items::Catalog>>),
-    // The sticker used last: its id, its item, when its glow ends.
-    mut used: Local<Option<(String, String, Option<f64>)>>,
 ) {
     let Some(mut net) = net else { return };
     let fallback = SystemsCatalog::default();
@@ -1051,9 +1050,7 @@ pub(in crate::ui) fn send(
                     if let Some(command) = use_sticker(&views.album, &id) {
                         let allowed = match &command {
                             ClientCommand::UseStickerBookItem(u) => {
-                                let started = item_cooldowns.start(items_catalogs.get(&items_data.catalog), &u.template, time.elapsed_secs_f64());
-                                if started { *used = Some((id.clone(), u.template.clone(), None)); }
-                                started
+                                item_cooldowns.start(items_catalogs.get(&items_data.catalog), &u.template, time.elapsed_secs_f64())
                             }
                             _ => true,
                         };
@@ -1266,16 +1263,11 @@ pub(in crate::ui) fn send(
             }
         }
     }
-    // The used sticker counts its cooldown down, then glows (album::ANIM_USE);
-    // State changes only when the tenths shown do.
-    let now = time.elapsed_secs_f64();
-    let shown = used.as_mut().and_then(|(id, template, glow)| {
-        let tenths = crate::gameplay::skills::cooldown_tenths(item_cooldowns.remaining(items_catalogs.get(&items_data.catalog), template, now).1);
-        if tenths > 0 { return Some((id.clone(), tenths)); }
-        (now < *glow.get_or_insert(now + album::USE_FLASH)).then(|| (id.clone(), 0))
-    });
-    if shown.is_none() { *used = None; }
-    if state.album_used != shown { state.album_used = shown; }
+    // The stickers of a cooldown running count it down (album::grid), however
+    // it started (the album, the bag, a quick slot); State changes only when
+    // what they show does.
+    let cooling = item_cooldowns.running(time.elapsed_secs_f64(), album::SWEEP_STEPS);
+    if state.album_cooling != cooling { state.album_cooling = cooling; }
     if net.offline || commands.is_empty() { return; }
     for command in &commands { net.send(command); }
     if wait { state.pending = Some((net.inventory.revision, time.elapsed_secs_f64())); }

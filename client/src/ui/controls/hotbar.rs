@@ -11,8 +11,9 @@ pub(super) const BACKUP_ESSENCE: usize = 18;
 /// CoolDownCategory: every mount VanityItem 0.5 s, pets 2-5 s, Shadow Souls 30
 /// s): (start, ready) on Time<Real>, by category, else by template. A use while
 /// one runs is refused, and the quick slots draw it as a skill's.
-/// EVIDENCE: static.db4 _Template_Item; the original greys a used sticker and
-///   counts "0.4 s" .. "0.1 s" (the user's release261_192 recording).
+/// EVIDENCE: static.db4 _Template_Item; the original sweeps and counts "0.4 s"
+///   .. "0.0 s" over every sticker of the category (the user's recording
+///   2026-10-30, album::grid).
 /// FAILURE (2026-10-24): no cooldown at all on mounts and pets.
 #[derive(Resource, Default)]
 pub(in crate::ui) struct ItemCooldowns(std::collections::HashMap<String, (f64, f64)>);
@@ -28,6 +29,19 @@ impl ItemCooldowns {
         if self.0.get(&key).is_some_and(|&(_, ready)| now < ready) { return false; }
         self.0.insert(key, (now, now + seconds));
         true
+    }
+    /// The cooldown key `template` shares (its category, else itself).
+    pub(in crate::ui) fn key_of(catalog: Option<&items::Catalog>, template: &str) -> Option<String> {
+        catalog.and_then(|c| Self::key(c, template)).map(|(key, _)| key)
+    }
+    /// The cooldowns running: key, tenths of a second left, part left in `steps`.
+    pub(in crate::ui) fn running(&self, now: f64, steps: u8) -> Vec<(String, u32, u8)> {
+        let mut out: Vec<_> = self.0.iter().filter(|(_, &(_, ready))| now < ready).map(|(key, &(start, ready))| {
+            let left = ((ready - now) / (ready - start).max(1e-6)).clamp(0.0, 1.0);
+            (key.clone(), crate::gameplay::skills::cooldown_tenths(ready - now), (left * steps as f64).ceil() as u8)
+        }).collect();
+        out.sort();
+        out
     }
     /// The part of `template`'s cooldown left (1 just used, 0 ready) and its seconds.
     pub(in crate::ui) fn remaining(&self, catalog: Option<&items::Catalog>, template: &str, now: f64) -> (f32, f64) {

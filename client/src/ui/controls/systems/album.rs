@@ -32,20 +32,22 @@ const PREVIEW: &str = "Canvas/Collectorsalbum/BackGroundLabel/Inlay/Categorypage
 const BAR: &str = "Canvas/Collectorsalbum/BackGroundLabel/Inlay/Categorypage/ProgressLabel/ProgressBarLabel/ProgressBarLabel2/ProgressBar";
 const REWARD: &str = "Canvas/Collectorsalbum/BackGroundLabel/Inlay/Categorypage/ProgressLabel/ItemTemplates/ItemTemplate";
 const ENTRY: &str = "Canvas/Collectorsalbum/BackGroundLabel/Inlay/TemplateListEntry";
-/// A used sticker's countdown over its icon ("0.4 s", slot_anim's text) and the
-/// glow it flashes when its cooldown is over: the layout's own widgets, drawn at
-/// the first cell's place.
-/// EVIDENCE: the user's release261_192 recording (2026-10-23): a right-click use
-///   counts "0.4 s", "0.2 s", "0.1 s" over the sticker, its colours unchanged
-///   (its blue backing measured (48, 71, 94) before, (45, 68, 91) at "0.2 s"),
-///   then it flashes.
-/// FAILURE (2026-10-24): no countdown, no flash (the layout's AnimUse and
-///   AnimIconGlow were left out).
-/// UNVERIFIED: the glow's length (USE_FLASH); only the sticker used shows it,
-///   not the others of its cooldown category.
-const ANIM_USE: &str = "Canvas/Collectorsalbum/BackGroundLabel/Inlay/AnimUse";
-const ANIM_GLOW: &str = "Canvas/Collectorsalbum/BackGroundLabel/Inlay/AnimIconGlow";
-pub(super) const USE_FLASH: f64 = 0.3;
+/// A sticker cooling down: a dark sweep from 12 o'clock, shrinking clockwise,
+/// and the seconds left ("0.4 s" .. "0.0 s") big in the middle, on EVERY owned
+/// sticker of the used one's cooldown category (all mounts and pets after a
+/// mount), as the quick slots draw it; no glow after. The text is the layout's
+/// AnimUse/slot_anim (its colour and outline), centred.
+/// EVIDENCE: the user's original recording 2026-10-30 (20261030-1640-20, 11.3 s
+///   on, frame by frame): the sweep darkens to 0.58 (black at 0.42), the
+///   digits are about 15 units high-em in the 53-unit icon.
+/// FAILURE (2026-10-30): only the used sticker, its colours dimmed, the text
+///   small in its corner (slot_anim's align 2 is our right/bottom), then a
+///   green glow the original has not.
+const ANIM_USE_TEXT: &str = "Canvas/Collectorsalbum/BackGroundLabel/Inlay/AnimUse/slot_anim";
+const SWEEP_ALPHA: f32 = 0.42;
+const COUNT_SIZE: f32 = 15.0;
+/// The sweep redraws in this many steps (the album rebuilds on each).
+pub(super) const SWEEP_STEPS: u8 = 16;
 /// A sticker cell spans 214..286 by 202..271.
 const CELL: (f32, f32) = (72.0, 69.0);
 const CELL_ORIGIN: (f32, f32) = (214.0, 202.0);
@@ -91,8 +93,9 @@ pub(in crate::ui) struct Sticker {
     pub origin: String,
     pub background: String,
     pub offer: String,
-    /// Just used: its cooldown's tenths of a second left, 0 while it flashes.
-    pub countdown: Option<u32>,
+    /// Its category's cooldown running: tenths of a second left, part left in
+    /// SWEEP_STEPS.
+    pub countdown: Option<(u32, u8)>,
 }
 
 impl Album {
@@ -179,7 +182,11 @@ pub(super) fn album(sources: &Sources) -> Album {
             // Not at its last tier.
             upgradable: owned && templates(def).last().is_some_and(|last| tier != Some(last)) && !def.upgrades.is_empty(),
             origin: def.origin.clone(), background: def.background.clone(), offer: def.offer.clone(),
-            countdown: state.album_used.as_ref().filter(|(used, _)| used == id).map(|(_, tenths)| *tenths),
+            countdown: owned.then(|| tier.or(def.items.first().map(String::as_str)))
+                .flatten()
+                .and_then(|t| super::super::hotbar::ItemCooldowns::key_of(sources.items, t))
+                .and_then(|key| state.album_cooling.iter().find(|(k, ..)| *k == key))
+                .map(|&(_, tenths, step)| (tenths, step)),
         }
     };
     // The list: each category's top book; the open one's books under it.
@@ -290,11 +297,19 @@ fn grid(source: &Layout, layout: &mut Layout, page: &str, stickers: &[Sticker], 
             if w.id.contains("/Slot/FlagLabel") { flags.push(w); } else { layout.widgets.push(w); }
         }
         layout.widgets.extend(flags);
-        match sticker.countdown {
-            Some(0) => layout.widgets.extend(clone_at(source, ANIM_GLOW, &format!("{page}/Glow{i}"), dx, dy).map(|mut w| { w.hidden = false; w })),
-            Some(tenths) => layout.widgets.extend(clone_at(source, ANIM_USE, &format!("{page}/Use{i}"), dx, dy)
-                .map(|mut w| { set_text(&mut w, &crate::gameplay::skills::cooldown_text(tenths)); w })),
-            None => {}
+        if let Some((tenths, step)) = sticker.countdown {
+            for mut w in clone_at(source, ANIM_USE_TEXT, &format!("{page}/Use{i}"), dx, dy) {
+                let mut sweep = w.clone();
+                sweep.id = format!("{}/Sweep", w.id);
+                sweep.kind = "Label".into();
+                sweep.text = None;
+                sweep.art = Some(crate::ui::sweep_art(w.rect, step as f32 / SWEEP_STEPS as f32, SWEEP_ALPHA));
+                layout.widgets.push(sweep);
+                set_text(&mut w, &crate::gameplay::skills::cooldown_text(tenths));
+                if let Some(label) = &mut w.text { label.align = [1, 1]; label.size = COUNT_SIZE; }
+                w.hidden = false;
+                layout.widgets.push(w);
+            }
         }
     }
     for i in stickers.len()..cells {
@@ -439,8 +454,7 @@ mod tests {
             (ENTRY.into(), "Label", false), (format!("{ENTRY}/TemplateSlot/FlagLabel/FlagButtonFav"), "Button", false), (format!("{ENTRY}/TemplateSlot/FlagLabel/FlagButtonAdd"), "Button", false),
             (format!("{ENTRY}/TemplateSlot/FlagLabel/UpgradeButton"), "Button", false), (format!("{ENTRY}/TemplateIcon"), "Icon", true), (format!("{ENTRY}/TemplateIcon/highlight"), "Label", false),
             (format!("{ENTRY}/EmptyBackground"), "Slot", false),
-            (ANIM_USE.into(), "Label", false), (format!("{ANIM_USE}/slot_anim"), "TextLabel", true),
-            (ANIM_GLOW.into(), "Label", false), (format!("{ANIM_GLOW}/Glow"), "Label", false), (format!("{ANIM_GLOW}/Glow/IconHighlight1"), "Label", false),
+            (ANIM_USE_TEXT.into(), "TextLabel", true),
             (format!("{PAGE}/background_info/TextLabel_fav"), "TextLabel", true), (format!("{PAGE}/background_info/TextLabel_info"), "TextLabel", true),
             (format!("{PAGE}/pages/PageNumText"), "TextLabel", true), (format!("{PAGE}/pages/NextPageBtn"), "Button", false),
             (image.clone(), "Label", false), (format!("{image}/background_headline/TextLabel"), "TextLabel", true), (format!("{image}/FlagButtonFav"), "Button", false), (format!("{image}/OriginIconLabel"), "Label", false),
@@ -479,15 +493,16 @@ mod tests {
         assert_eq!(find(&prepared, &format!("{PAGE}/Sticker1/Slot/FlagLabel/FlagButtonAdd")).event, "Sys:Add:s2");
         let unowned = find(&prepared, &format!("{PAGE}/Sticker1/Icon/Image")).art.as_ref().unwrap();
         assert_eq!((unowned.saturation, unowned.color[3]), (0.0, 1.0), "not owned: grey, not faded");
-        // Just used: drawn as it is, its countdown over it; then its glow.
-        let counting = prepare_album(&album_source(), &Album { stickers: vec![Sticker { countdown: Some(4), ..owned.clone() }], ..album.clone() });
+        // Its category cooling down: drawn as it is, a sweep and the seconds
+        // centred over it.
+        let counting = prepare_album(&album_source(), &Album { stickers: vec![Sticker { countdown: Some((4, 8)), ..owned.clone() }], ..album.clone() });
         let used = find(&counting, &format!("{PAGE}/Sticker0/Icon/Image")).art.as_ref().unwrap();
         let plain = find(&prepared, &format!("{PAGE}/Sticker0/Icon/Image")).art.as_ref().unwrap();
         assert_eq!((used.saturation, &used.color), (plain.saturation, &plain.color));
-        assert_eq!(text_of(&counting, &format!("{PAGE}/Use0/slot_anim")), "0.4 s");
-        let glowing = prepare_album(&album_source(), &Album { stickers: vec![Sticker { countdown: Some(0), ..owned.clone() }], ..album.clone() });
-        assert!(!find(&glowing, &format!("{PAGE}/Glow0/Glow/IconHighlight1")).hidden);
-        assert!(!glowing.widgets.iter().any(|w| w.id.contains("/Use0")) && !ids.iter().any(|id| id.contains("/Use0") || id.contains("/Glow0")));
+        assert_eq!(text_of(&counting, &format!("{PAGE}/Use0")), "0.4 s");
+        assert_eq!(find(&counting, &format!("{PAGE}/Use0")).text.as_ref().unwrap().align, [1, 1]);
+        assert_eq!(find(&counting, &format!("{PAGE}/Use0/Sweep")).art.as_ref().unwrap().color[3], SWEEP_ALPHA);
+        assert!(!ids.iter().any(|id| id.contains("/Use0")));
         // No empty backing over a sticker, none past a book's stickers.
         assert!(!ids.iter().any(|id| id.ends_with("/EmptyBackground")));
         // The preview: the sticker's name, origin, icon, favourite flag; no offer for an owned one.
