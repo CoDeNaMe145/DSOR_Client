@@ -32,11 +32,16 @@ fn readable(id: &str) -> String {
 ///   way round, so the text was made smaller (0.55 -> 0.48) and the card wider.
 /// UNVERIFIED: measured from screenshots.
 const STICKER_TEXT: f32 = 0.62;
-/// The widest a sticker card grows (reference pixels) before its lines wrap.
-/// The original sizes the card to its text: the White Tiger's about 3.6 cells,
-/// the Armored Skeleton Costume's about 4 (a cell is about 52 reference pixels).
-/// UNVERIFIED: the cap; no original card long enough to wrap was seen.
-const STICKER_MAX_WIDTH: f32 = 360.0;
+/// The widest a sticker card grows (reference pixels) before its lines wrap,
+/// its heading's size and its lines' height (in text sizes).
+/// EVIDENCE: the user's recording 2026-10-30 (20261030-1640-20: ours at 2.0 s,
+///   the original's Manticore card at 11.0 s, same video scale): the body lines
+///   as wide as ours, but the original's heading 0.79 of ours, its lines 23
+///   video pixels apart (ours 27), and its description wraps at 760 pixels
+///   (278 reference pixels; card 301), where ours ran on to the 360 cap.
+const STICKER_MAX_WIDTH: f32 = 312.0;
+const STICKER_TITLE: f32 = 0.79;
+const STICKER_LEADING: f32 = 1.1;
 
 /// A Collector's Bag sticker's card, as the original's (the user's release261_192
 /// shots of the Manticore and the armoured war horse): its name and kind in its
@@ -50,6 +55,8 @@ pub(super) fn sticker(catalog: &Catalog, layout: Option<&Layout>, template: &str
     // FAILURE (2026-10-25): about 1.8 times the original's (the user's shots of the
     //   Battle-boar's card, measured against the sticker icon).
     card.scale_text(STICKER_TEXT);
+    card.scale_title(STICKER_TITLE);
+    card.set_leading(STICKER_LEADING);
     card.background = Color::srgba(0.01, 0.01, 0.005, 0.985);
     let (rarity, tint) = rarity(catalog, template, None);
     // A template has no instance colour; the original writes a Mythic one red.
@@ -69,11 +76,14 @@ pub(super) fn sticker(catalog: &Catalog, layout: Option<&Layout>, template: &str
     let body = [kind.as_deref(), Some(used), description.as_deref(), Some("Not for sale"), Some(how)];
     let widest = body.into_iter().flatten().map(|t| longest(t, size)).fold(longest(&name, card.title_size()), f32::max);
     card.width = (widest.ceil() + 36.0).clamp(120.0, STICKER_MAX_WIDTH);
+    // A little room before the description and more before "Not for sale"
+    // (the original: 29 and 38 video pixels where its lines are 23 apart).
     card.heading(&name, tint);
     if let Some(kind) = &kind { card.text(kind, tint); }
     card.text(used, MUTED);
+    card.gap(2.0);
     if let Some(description) = &description { card.text(description, WHITE); }
-    card.gap(4.0);
+    card.gap(5.0);
     card.text("Not for sale", WHITE);
     card.text(how, Color::srgb(0.95, 0.85, 0.2));
     card

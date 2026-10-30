@@ -83,6 +83,8 @@ fn talent_card(tip: &systems::talents::Tip, template: Option<&Layout>) -> (Card,
 /// at 0.62 of the card's text size: measured on the user's release261_192 shot
 /// beside ours (against the bar's width), 2026-10-24 ("its so big").
 const COMPACT_TEXT: f32 = 0.62;
+/// How far under the cursor tip a sticker card opens (reference pixels).
+const STICKER_BELOW: f32 = 15.0;
 
 pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018, &WindowControls, &Visibility, &Transform), Without<Tooltip>>,
     primary: Query<&Window, With<PrimaryWindow>>, screen: Res<Screen>, settings: Res<settings::Settings>,
@@ -94,7 +96,7 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
     (old, mut transforms, item_hovers): (Query<Entity, With<Tooltip>>, Query<&mut Transform, With<Tooltip>>,
         Query<(&social::ItemHover, &GlobalTransform, &InheritedVisibility)>),
     (mut meshes, mut materials): (ResMut<Assets<Mesh>>, ResMut<Assets<UiMaterial>>),
-    mut last: Local<Option<(Card, u32, bool)>>) {
+    (mut last, mut opened_at): (Local<Option<(Card, u32, bool)>>, Local<Option<Vec2>>)) {
     let point = primary.single().ok().filter(|w| w.focused).and_then(|w| w.cursor_position().map(|p| p*(BASE_H/w.height().max(1.0))));
     let enabled = settings.current.tooltips && pointer.down.is_none() && pointer.drag.is_none() && pointer.spell_drag.is_none();
     let catalog = catalogs.get(&data.catalog);
@@ -104,6 +106,8 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
     // Cards over status effects open above or below them, clear of their bar
     // (the placement's vertical-first order).
     let mut above = false;
+    // A sticker's card opens under the cursor (where it was when it opened).
+    let mut under_cursor = false;
     // A talents window card shown as a compact hint (a title alone).
     let mut hint = false;
     let template = layouts.get(&data.tooltip);
@@ -200,10 +204,13 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
                 Action::System(super::systems::Request::Pick(id, _)) if catalog.is_some() && views.album.sticker(id).is_some_and(|s| !s.template.is_empty()) => {
                     let template = &views.album.sticker(id).unwrap().template;
                     detail = Some(items::sticker_card(catalog.unwrap(), layouts.get(&data.tooltip), template));
-                    // Centred under the sticker (over it low on the screen), as the
-                    // original's (the user's clip, 2026-10-30).
-                    // FAILURE (2026-10-30): beside it, to the right.
-                    above = true;
+                    // Centred on the mouse cursor, just under its tip, as the
+                    // original's (the user's recording 2026-10-30, 11.0 s: the
+                    // card's top 41 video pixels, 15 reference pixels, below
+                    // the tip, its middle at the tip's x).
+                    // FAILURE (2026-10-30): beside it, to the right; then
+                    //   centred over the sticker, off to the left.
+                    under_cursor = true;
                 }
                 // A quest reward: its card.
                 // FAILURE: no tooltip on the quests' rewards.
@@ -398,7 +405,13 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
         card
     }));
     let key = card.as_ref().map(|c| (c.clone(), screen.scale.to_bits(), template.is_some()));
-    let at = card.as_ref().zip(anchor).map(|(c,a)| card::placement(a,Vec2::new(c.width,c.height()),Vec2::new(screen.width,BASE_H),compact || above));
+    // The cursor where the card opened: it stays put while the cursor moves.
+    if card.is_none() || !under_cursor { *opened_at = None; }
+    else if opened_at.is_none() || card.as_ref().zip(last.as_ref()).is_none_or(|(c, l)| *c != l.0) { *opened_at = point; }
+    let at = card.as_ref().zip(anchor).map(|(c,a)| match opened_at.filter(|_| under_cursor) {
+        Some(p) => card::at_cursor(p, Vec2::new(c.width,c.height()), Vec2::new(screen.width,BASE_H), STICKER_BELOW),
+        None => card::placement(a,Vec2::new(c.width,c.height()),Vec2::new(screen.width,BASE_H),compact || above),
+    });
     if *last == key {
         if let Some((at,scale))=at { for mut tf in &mut transforms { tf.translation=screen.world(0.0,at.x,at.y).extend(850.0); tf.scale=Vec3::splat(scale); } }
         return;

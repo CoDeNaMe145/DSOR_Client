@@ -23,6 +23,8 @@ pub(in crate::ui) struct Card {
     size: f32,
     small: f32,
     title: f32,
+    /// A line's height in text sizes.
+    leading: f32,
     parts: Vec<Part>,
 }
 
@@ -37,8 +39,14 @@ impl Card {
         let font = |name: &str, fallback| layout.and_then(|l| l.widgets.iter().find(|w| w.id.ends_with(name)))
             .and_then(|w| w.text.as_ref()).map_or(fallback, |t| t.size * FONT_SCALE);
         Self { width, y: 16.0, background: Color::srgba(0.015, 0.015, 0.01, 0.94), size: font("/TextLabelDefaultTemplate", 12.0),
-            small: font("/TextLabelSmallTemplate", 10.8), title: font("/TextLabelHeadlineTemplate", 14.4), parts: vec![] }
+            small: font("/TextLabelSmallTemplate", 10.8), title: font("/TextLabelHeadlineTemplate", 14.4), leading: 1.3, parts: vec![] }
     }
+
+    /// Lines closer together (a sticker's card, items::preview::sticker).
+    pub fn set_leading(&mut self, leading: f32) { self.leading = leading; }
+
+    /// The heading alone times `k`.
+    pub fn scale_title(&mut self, k: f32) { self.title *= k; }
 
     pub fn height(&self) -> f32 { self.y + 16.0 }
 
@@ -194,7 +202,7 @@ impl Card {
             self.parts.push(Part::Text { value, at: Vec2::new(x, self.y), size, color, italic, bold });
             x += advance;
         }
-        self.y += size * 1.3;
+        self.y += size * self.leading;
     }
 
     pub fn draw(&self, commands: &mut Commands, assets: &AssetServer, screen: &Screen,
@@ -250,6 +258,17 @@ pub(in crate::ui::controls) fn background(commands: &mut Commands, root: Entity,
 
 /// The layout owns the anchor, never the cursor. Flip to a free side before
 /// clamping; exceptionally tall cards scale as a unit so no rows are discarded.
+/// A card under the mouse cursor, centred on it, `below` under its tip (above
+/// the cursor where it does not fit below), kept on the screen.
+pub(in crate::ui::controls) fn at_cursor(point: Vec2, size: Vec2, viewport: Vec2, below: f32) -> (Vec2, f32) {
+    let margin = 8.0;
+    let scale = ((viewport.x - 2.0*margin).max(1.0) / size.x).min((viewport.y - 2.0*margin).max(1.0) / size.y).min(1.0);
+    let size = size * scale;
+    let y = if point.y + below + size.y + margin <= viewport.y { point.y + below } else { point.y - size.y - margin };
+    let at = Vec2::new(point.x - size.x * 0.5, y).clamp(Vec2::splat(margin), (viewport - size - Vec2::splat(margin)).max(Vec2::splat(margin)));
+    (at, scale)
+}
+
 pub(in crate::ui::controls) fn placement(anchor: [f32; 4], size: Vec2, viewport: Vec2, compact: bool) -> (Vec2, f32) {
     let margin = 8.0;
     let scale = ((viewport.x - 2.0*margin).max(1.0) / size.x)
