@@ -45,7 +45,9 @@ const ENTRY: &str = "Canvas/Collectorsalbum/BackGroundLabel/Inlay/TemplateListEn
 ///   green glow the original has not.
 const ANIM_USE_TEXT: &str = "Canvas/Collectorsalbum/BackGroundLabel/Inlay/AnimUse/slot_anim";
 const SWEEP_ALPHA: f32 = 0.42;
-const COUNT_SIZE: f32 = 15.0;
+/// The digits' size: the original's "4 s" is 0.17 of the sticker's height, ours
+/// at 15 was 0.28 (the user's recording 20261030-1714-37: "double the size").
+const COUNT_SIZE: f32 = 9.3;
 /// The sweep redraws in this many steps (the album rebuilds on each).
 pub(super) const SWEEP_STEPS: u8 = 16;
 /// A sticker cell spans 214..286 by 202..271.

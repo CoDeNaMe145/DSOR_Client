@@ -84,7 +84,9 @@ fn talent_card(tip: &systems::talents::Tip, template: Option<&Layout>) -> (Card,
 /// beside ours (against the bar's width), 2026-10-24 ("its so big").
 const COMPACT_TEXT: f32 = 0.62;
 /// How far under the cursor tip a sticker card opens (reference pixels).
-const STICKER_BELOW: f32 = 15.0;
+/// EVIDENCE: the original's cards in the user's recording 20261030-1714-37,
+///   centred on the cursor, their top about 60 video pixels under its tip.
+const STICKER_BELOW: f32 = 21.0;
 
 pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018, &WindowControls, &Visibility, &Transform), Without<Tooltip>>,
     primary: Query<&Window, With<PrimaryWindow>>, screen: Res<Screen>, settings: Res<settings::Settings>,
@@ -405,10 +407,11 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
         card
     }));
     let key = card.as_ref().map(|c| (c.clone(), screen.scale.to_bits(), template.is_some()));
-    // The cursor where the card opened: it stays put while the cursor moves.
-    if card.is_none() || !under_cursor { *opened_at = None; }
-    else if opened_at.is_none() || card.as_ref().zip(last.as_ref()).is_none_or(|(c, l)| *c != l.0) { *opened_at = point; }
-    let at = card.as_ref().zip(anchor).map(|(c,a)| match opened_at.filter(|_| under_cursor) {
+    // Under the cursor, wherever it is over the sticker.
+    // FAILURE (2026-10-30): placed where the cursor first came onto the
+    //   sticker and left there ("just set below whatever I look").
+    *opened_at = point.filter(|_| card.is_some() && under_cursor);
+    let at = card.as_ref().zip(anchor).map(|(c,a)| match *opened_at {
         Some(p) => card::at_cursor(p, Vec2::new(c.width,c.height()), Vec2::new(screen.width,BASE_H), STICKER_BELOW),
         None => card::placement(a,Vec2::new(c.width,c.height()),Vec2::new(screen.width,BASE_H),compact || above),
     });
