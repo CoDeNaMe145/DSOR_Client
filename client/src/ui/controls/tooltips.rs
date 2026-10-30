@@ -200,6 +200,10 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
                 Action::System(super::systems::Request::Pick(id, _)) if catalog.is_some() && views.album.sticker(id).is_some_and(|s| !s.template.is_empty()) => {
                     let template = &views.album.sticker(id).unwrap().template;
                     detail = Some(items::sticker_card(catalog.unwrap(), layouts.get(&data.tooltip), template));
+                    // Centred under the sticker (over it low on the screen), as the
+                    // original's (the user's clip, 2026-10-30).
+                    // FAILURE (2026-10-30): beside it, to the right.
+                    above = true;
                 }
                 // A quest reward: its card.
                 // FAILURE: no tooltip on the quests' rewards.

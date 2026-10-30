@@ -36,7 +36,7 @@ const ENTRY: &str = "Canvas/Collectorsalbum/BackGroundLabel/Inlay/TemplateListEn
 /// glow it flashes when its cooldown is over: the layout's own widgets, drawn at
 /// the first cell's place.
 /// EVIDENCE: the user's release261_192 recording (2026-10-23): a right-click use
-///   greys the sticker and counts "0.4 s", "0.2 s", "0.1 s", then it flashes.
+///   dims the sticker a little and counts "0.4 s", "0.2 s", "0.1 s", then it flashes.
 /// FAILURE (2026-10-24): no countdown, no flash (the layout's AnimUse and
 ///   AnimIconGlow were left out).
 /// UNVERIFIED: the glow's length (USE_FLASH); only the sticker used shows it,
@@ -44,6 +44,11 @@ const ENTRY: &str = "Canvas/Collectorsalbum/BackGroundLabel/Inlay/TemplateListEn
 const ANIM_USE: &str = "Canvas/Collectorsalbum/BackGroundLabel/Inlay/AnimUse";
 const ANIM_GLOW: &str = "Canvas/Collectorsalbum/BackGroundLabel/Inlay/AnimIconGlow";
 pub(super) const USE_FLASH: f64 = 0.3;
+/// A counting-down sticker's colour (brightness, saturation): a little dimmed,
+/// still in colour, unlike a sticker not owned.
+/// FAILURE (2026-10-30): fully grey, which read as "not owned" (the user).
+/// UNVERIFIED: both factors, matched by eye on the 2026-10-23 recording.
+const COUNTING: (f32, f32) = (0.7, 0.6);
 /// A sticker cell spans 214..286 by 202..271.
 const CELL: (f32, f32) = (72.0, 69.0);
 const CELL_ORIGIN: (f32, f32) = (214.0, 202.0);
@@ -278,8 +283,15 @@ fn grid(source: &Layout, layout: &mut Layout, page: &str, stickers: &[Sticker], 
                 let mut layers = icon_layers(&mut w, &sticker.icon);
                 // Not owned: greyscale at full strength, as the original's (was
                 // faded to 35 %, which read as a dark, empty slot).
-                // Counting down after a use: grey too.
-                if !sticker.owned || sticker.countdown.is_some_and(|t| t > 0) { for a in layers.iter_mut().filter_map(|l| l.art.as_mut()) { a.saturation = 0.0; } }
+                // Counting down after a use: only dimmed.
+                for a in layers.iter_mut().filter_map(|l| l.art.as_mut()) {
+                    if !sticker.owned { a.saturation = 0.0; }
+                    else if sticker.countdown.is_some_and(|t| t > 0) {
+                        let (light, saturation) = COUNTING;
+                        for v in a.color.chunks_exact_mut(4) { for c in &mut v[..3] { *c *= light; } }
+                        a.saturation = saturation;
+                    }
+                }
                 set_text(&mut w, "");
                 layout.widgets.extend(layers);
             }
@@ -475,9 +487,12 @@ mod tests {
         assert_eq!(find(&prepared, &format!("{PAGE}/Sticker1/Slot/FlagLabel/FlagButtonAdd")).event, "Sys:Add:s2");
         let unowned = find(&prepared, &format!("{PAGE}/Sticker1/Icon/Image")).art.as_ref().unwrap();
         assert_eq!((unowned.saturation, unowned.color[3]), (0.0, 1.0), "not owned: grey, not faded");
-        // Just used: grey, its countdown over it; then its glow.
+        // Just used: dimmed (still in colour), its countdown over it; then its glow.
         let counting = prepare_album(&album_source(), &Album { stickers: vec![Sticker { countdown: Some(4), ..owned.clone() }], ..album.clone() });
-        assert_eq!(find(&counting, &format!("{PAGE}/Sticker0/Icon/Image")).art.as_ref().unwrap().saturation, 0.0);
+        let dimmed = find(&counting, &format!("{PAGE}/Sticker0/Icon/Image")).art.as_ref().unwrap();
+        let plain = find(&prepared, &format!("{PAGE}/Sticker0/Icon/Image")).art.as_ref().unwrap();
+        assert_eq!(dimmed.saturation, COUNTING.1);
+        assert!(dimmed.saturation > 0.0 && dimmed.color[0] < plain.color[0] && dimmed.color[3] == plain.color[3]);
         assert_eq!(text_of(&counting, &format!("{PAGE}/Use0/slot_anim")), "0.4 s");
         let glowing = prepare_album(&album_source(), &Album { stickers: vec![Sticker { countdown: Some(0), ..owned.clone() }], ..album.clone() });
         assert!(!find(&glowing, &format!("{PAGE}/Glow0/Glow/IconHighlight1")).hidden);

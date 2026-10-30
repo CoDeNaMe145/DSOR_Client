@@ -1,7 +1,7 @@
 //! Item sections follow tooltip.bxml's text, gem, separator and currency
 //! templates. Only fields whose wire meaning is known are shown as values.
 use super::*;
-use crate::ui::controls::tooltips::card::{Card, WHITE, MUTED, BLUE, GOLD, GREEN};
+use crate::ui::controls::tooltips::card::{Card, WHITE, MUTED, BLUE, GOLD, GREEN, plain};
 
 fn number(value: f32, advanced: bool) -> String {
     let s = if advanced || value.abs()<1.0 { format!("{value:.3}") } else { format!("{value:.0}") };
@@ -24,15 +24,19 @@ fn readable(id: &str) -> String {
     result.trim().to_owned()
 }
 
-/// The sticker card's text against an item card's (Card::scale_text).
-const STICKER_TEXT: f32 = 0.48;
-/// The sticker card's width (reference pixels): the original's is wide, its lines
-/// short (2026-10-29: 795 screen pixels to our 465 against the same sticker cells,
-/// the user's shots of the Gray's card, original and ours).
-/// FAILURE (2026-10-29): our text 15 % wider than the original's ("Use, is not
-///   depleted when used" 298 pixels to 258) in a card 0.58 of its width.
-/// UNVERIFIED: both measured from screenshots.
-const STICKER_WIDTH: f32 = 488.0;
+/// The sticker card's text against an item card's (Card::scale_text): the
+/// original's "Use, is not depleted when used" is 2.04 sticker cells long, ours
+/// was 1.57 at 0.48 (the user's clip of the original's White Tiger card and their
+/// shot of our Battle-boar's, 2026-10-30).
+/// FAILURE (2026-10-29): the two shots of the Gray's card were taken the wrong
+///   way round, so the text was made smaller (0.55 -> 0.48) and the card wider.
+/// UNVERIFIED: measured from screenshots.
+const STICKER_TEXT: f32 = 0.62;
+/// The widest a sticker card grows (reference pixels) before its lines wrap.
+/// The original sizes the card to its text: the White Tiger's about 3.6 cells,
+/// the Armored Skeleton Costume's about 4 (a cell is about 52 reference pixels).
+/// UNVERIFIED: the cap; no original card long enough to wrap was seen.
+const STICKER_MAX_WIDTH: f32 = 360.0;
 
 /// A Collector's Bag sticker's card, as the original's (the user's release261_192
 /// shots of the Manticore and the armoured war horse): its name and kind in its
@@ -41,28 +45,37 @@ const STICKER_WIDTH: f32 = 488.0;
 /// FAILURE (2026-10-24): a bare "Sticker / Shows it in the preview" line.
 pub(super) fn sticker(catalog: &Catalog, layout: Option<&Layout>, template: &str) -> Card {
     let meta = catalog.items.get(template);
-    let mut card = Card::new(STICKER_WIDTH, layout);
+    let mut card = Card::new(STICKER_MAX_WIDTH, layout);
     // The original writes it in a small hand, its name no larger than the rest.
     // FAILURE (2026-10-25): about 1.8 times the original's (the user's shots of the
     //   Battle-boar's card, measured against the sticker icon).
-    // UNVERIFIED: the factor, measured from screenshots.
     card.scale_text(STICKER_TEXT);
     card.background = Color::srgba(0.01, 0.01, 0.005, 0.985);
     let (rarity, tint) = rarity(catalog, template, None);
     // A template has no instance colour; the original writes a Mythic one red.
     // UNVERIFIED: the exact red, matched by eye on the user's Manticore shot.
     let tint = if rarity == "Mythic" { Color::srgb(0.86, 0.12, 0.08) } else { tint };
-    card.heading(&format!("<i>{}</>", catalog.name(template, None)), tint);
-    if let Some(m) = meta.filter(|m| !m.category.is_empty()) { card.text(&format!("<i>{}</>", m.category), tint); }
-    card.text("<i>Use, is not depleted when used</>", MUTED);
-    if let Some(m) = meta.filter(|m| !m.description.is_empty()) {
-        let text = if m.description.contains('<') { m.description.clone() } else { format!("<i>{}</>", m.description) };
-        card.text(&text, WHITE);
-    }
+    let name = format!("<i>{}</>", catalog.name(template, None));
+    let kind = meta.filter(|m| !m.category.is_empty()).map(|m| format!("<i>{}</>", m.category));
+    let description = meta.filter(|m| !m.description.is_empty())
+        .map(|m| if m.description.contains('<') { m.description.clone() } else { format!("<i>{}</>", m.description) });
+    let pet = meta.is_some_and(|m| matches!(m.item_category.as_str(), "Pet" | "Mercenary"));
+    let how = if pet { "(Right click to call your Companion over)" } else { "(Right click to mount or equip)" };
+    let used = "<i>Use, is not depleted when used</>";
+    // As wide as its longest line, as the original's.
+    // FAILURE (2026-10-30): a fixed wide card, its right half empty.
+    let longest = |text: &str, size: f32| plain(text).lines().map(|l| crate::network::chat::text_width(l, size)).fold(0.0, f32::max);
+    let size = card.text_size();
+    let body = [kind.as_deref(), Some(used), description.as_deref(), Some("Not for sale"), Some(how)];
+    let widest = body.into_iter().flatten().map(|t| longest(t, size)).fold(longest(&name, card.title_size()), f32::max);
+    card.width = (widest.ceil() + 36.0).clamp(120.0, STICKER_MAX_WIDTH);
+    card.heading(&name, tint);
+    if let Some(kind) = &kind { card.text(kind, tint); }
+    card.text(used, MUTED);
+    if let Some(description) = &description { card.text(description, WHITE); }
     card.gap(4.0);
     card.text("Not for sale", WHITE);
-    let pet = meta.is_some_and(|m| matches!(m.item_category.as_str(), "Pet" | "Mercenary"));
-    card.text(if pet { "(Right click to call your Companion over)" } else { "(Right click to mount or equip)" }, Color::srgb(0.95, 0.85, 0.2));
+    card.text(how, Color::srgb(0.95, 0.85, 0.2));
     card
 }
 

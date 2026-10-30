@@ -53,6 +53,9 @@ impl Card {
     /// The body text size (reference pixels), for a card sized to its text.
     pub fn text_size(&self) -> f32 { self.size }
 
+    /// The heading's text size (reference pixels), for a card sized to its text.
+    pub fn title_size(&self) -> f32 { self.title }
+
     /// Every text size times `k` (the one-line tooltips, controls::tooltips).
     pub fn shrink(&mut self, k: f32) {
         self.size *= k;
