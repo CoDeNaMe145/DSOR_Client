@@ -31,7 +31,7 @@ fn readable(id: &str) -> String {
 /// FAILURE (2026-10-29): the two shots of the Gray's card were taken the wrong
 ///   way round, so the text was made smaller (0.55 -> 0.48) and the card wider.
 /// UNVERIFIED: measured from screenshots.
-const STICKER_TEXT: f32 = 0.62;
+const STICKER_TEXT: f32 = 0.565;
 /// The widest a sticker card grows (reference pixels) before its lines wrap,
 /// its heading's size and its lines' height (in text sizes).
 /// EVIDENCE: the user's recording 2026-10-30 (20261030-1640-20: ours at 2.0 s,
@@ -40,15 +40,23 @@ const STICKER_TEXT: f32 = 0.62;
 ///   video pixels apart (ours 27), and its description wraps at 760 pixels
 ///   (278 reference pixels; card 301), where ours ran on to the 360 cap.
 const STICKER_MAX_WIDTH: f32 = 312.0;
-const STICKER_TITLE: f32 = 0.79;
-const STICKER_LEADING: f32 = 1.1;
+const STICKER_TITLE: f32 = 0.87;
+const STICKER_LEADING: f32 = 1.24;
+/// Its spaces twice a Tahoma space: the original's words stand apart, its
+/// letters a little smaller (0.91 of ours), so its lines are as wide as ours were.
+/// EVIDENCE: the original's Cute Doggy card (recording 20261030-1714-37):
+///   "(Right click to call your Companion over)" glyphs Tahoma at 18.5 video px,
+///   line 286 px = 257 natural + 5 spaces x 5.8 px; lines 23 px apart.
+/// FAILURE (2026-10-30): our lines tight, the letters bigger ("the writing is
+///   a different style").
+const STICKER_WORD_SPACE: f32 = 0.31;
 
 /// A Collector's Bag sticker's card, as the original's (the user's release261_192
 /// shots of the Manticore and the armoured war horse): its name and kind in its
 /// rarity's colour, then gui.window consumableUnderTitleInfinite, its description,
 /// noSale and howToUseMount / howToUsePet.
 /// FAILURE (2026-10-24): a bare "Sticker / Shows it in the preview" line.
-pub(super) fn sticker(catalog: &Catalog, layout: Option<&Layout>, template: &str, title: &str, status: Option<&super::super::effects::Catalog>, bag: &HashMap<String, f32>) -> Card {
+pub(super) fn sticker(catalog: &Catalog, layout: Option<&Layout>, template: &str, title: &str, status: Option<&super::super::effects::Catalog>, bag: &HashMap<String, f32>, class: &str) -> Card {
     let meta = catalog.items.get(template);
     let mut card = Card::new(STICKER_MAX_WIDTH, layout);
     // The original writes it in a small hand, its name no larger than the rest.
@@ -57,6 +65,7 @@ pub(super) fn sticker(catalog: &Catalog, layout: Option<&Layout>, template: &str
     card.scale_text(STICKER_TEXT);
     card.scale_title(STICKER_TITLE);
     card.set_leading(STICKER_LEADING);
+    card.set_word_space(STICKER_WORD_SPACE);
     card.background = Color::srgba(0.01, 0.01, 0.005, 0.985);
     let (rarity, tint) = rarity(catalog, template, None);
     // A template has no instance colour; the original writes a Mythic one red.
@@ -73,10 +82,15 @@ pub(super) fn sticker(catalog: &Catalog, layout: Option<&Layout>, template: &str
     let used = "<i>Use, is not depleted when used</>";
     // As wide as its longest line, as the original's.
     // FAILURE (2026-10-30): a fixed wide card, its right half empty.
-    let longest = |text: &str, size: f32| plain(text).lines().map(|l| crate::network::chat::text_width(l, size)).fold(0.0, f32::max);
+    // Its spaces widened (STICKER_WORD_SPACE); the Effect lines count too.
+    let effect = meta.filter(|m| !m.status.is_empty()).zip(status)
+        .map(|(m, s)| super::super::effects::card_lines(s, &m.status, &m.status_values, bag, class)).unwrap_or_default();
+    let longest = |text: &str, size: f32| plain(text).lines()
+        .map(|l| crate::network::chat::text_width(l, size) + l.matches(' ').count() as f32 * STICKER_WORD_SPACE * size).fold(0.0, f32::max);
     let size = card.text_size();
     let body = [kind.as_deref(), Some(used), description.as_deref(), Some("Not for sale"), Some(how)];
-    let widest = body.into_iter().flatten().map(|t| longest(t, size)).fold(longest(&name, card.title_size()), f32::max);
+    let widest = body.into_iter().flatten().chain(effect.iter().map(|(t, _)| t.as_str())).map(|t| longest(t, size))
+        .fold(longest(&name, card.title_size()), f32::max);
     card.width = (widest.ceil() + 36.0).clamp(120.0, STICKER_MAX_WIDTH);
     // A little room before the description and more before "Not for sale"
     // (the original: 29 and 38 video pixels where its lines are 23 apart).
@@ -88,8 +102,6 @@ pub(super) fn sticker(catalog: &Catalog, layout: Option<&Layout>, template: &str
     // A pet's Effect section: its own bonus (by the tier owned) and the
     // Collector's Bag bonuses its owner has earned, as the original's card.
     // FAILURE (2026-10-30): no Effect section ("the pets look wrong").
-    let effect = meta.filter(|m| !m.status.is_empty()).zip(status)
-        .map(|(m, s)| super::super::effects::card_lines(s, &m.status, &m.status_values, bag)).unwrap_or_default();
     if !effect.is_empty() {
         card.gap(2.0);
         card.rule();

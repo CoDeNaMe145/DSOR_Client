@@ -25,6 +25,8 @@ pub(in crate::ui) struct Card {
     title: f32,
     /// A line's height in text sizes.
     leading: f32,
+    /// Extra room after each space, in text sizes (a sticker's card).
+    word_space: f32,
     parts: Vec<Part>,
 }
 
@@ -39,11 +41,19 @@ impl Card {
         let font = |name: &str, fallback| layout.and_then(|l| l.widgets.iter().find(|w| w.id.ends_with(name)))
             .and_then(|w| w.text.as_ref()).map_or(fallback, |t| t.size * FONT_SCALE);
         Self { width, y: 16.0, background: Color::srgba(0.015, 0.015, 0.01, 0.94), size: font("/TextLabelDefaultTemplate", 12.0),
-            small: font("/TextLabelSmallTemplate", 10.8), title: font("/TextLabelHeadlineTemplate", 14.4), leading: 1.3, parts: vec![] }
+            small: font("/TextLabelSmallTemplate", 10.8), title: font("/TextLabelHeadlineTemplate", 14.4), leading: 1.3, word_space: 0.0, parts: vec![] }
     }
 
     /// Lines closer together (a sticker's card, items::preview::sticker).
     pub fn set_leading(&mut self, leading: f32) { self.leading = leading; }
+
+    /// Wider spaces between words (a sticker's card).
+    pub fn set_word_space(&mut self, extra: f32) { self.word_space = extra; }
+
+    /// A glyph's advance with the card's word spacing.
+    fn advance(&self, c: char, size: f32) -> f32 {
+        measure(&c.to_string(), size) + if c == ' ' { self.word_space * size } else { 0.0 }
+    }
 
     /// The heading alone times `k`.
     pub fn scale_title(&mut self, k: f32) { self.title *= k; }
@@ -171,14 +181,14 @@ impl Card {
             if glyphs[i].0.is_whitespace() { i += 1; }
             else { while i < glyphs.len() && !glyphs[i].0.is_whitespace() { i += 1; } }
             let word = &glyphs[start..i];
-            let word_width: f32 = word.iter().map(|g| measure(&g.0.to_string(), size)).sum();
+            let word_width: f32 = word.iter().map(|g| self.advance(g.0, size)).sum();
             if used > 0.0 && used + word_width > width {
                 self.line(&line, size, left, width, center, bold);
                 line.clear(); used = 0.0;
             }
             for &g in word {
                 if line.is_empty() && g.0.is_whitespace() { continue; }
-                let advance = measure(&g.0.to_string(), size);
+                let advance = self.advance(g.0, size);
                 if used > 0.0 && used + advance > width {
                     self.line(&line, size, left, width, center, bold);
                     line.clear(); used = 0.0;
@@ -191,16 +201,27 @@ impl Card {
 
     fn line(&mut self, line: &[(char, Color, bool)], size: f32, left: f32, width: f32, center: bool, bold: bool) {
         let value: String = line.iter().map(|g| g.0).collect();
-        let mut x = left + if center { (width - measure(value.trim_end(), size)).max(0.0) / 2.0 } else { 0.0 };
+        let shown: f32 = value.trim_end().chars().map(|c| self.advance(c, size)).sum();
+        let mut x = left + if center { (width - shown).max(0.0) / 2.0 } else { 0.0 };
         let mut i = 0;
         while i < line.len() {
             let start = i;
             let (_, color, italic) = line[i];
             while i < line.len() && line[i].1 == color && line[i].2 == italic { i += 1; }
             let value: String = line[start..i].iter().map(|g| g.0).collect();
-            let advance = measure(&value, size);
-            self.parts.push(Part::Text { value, at: Vec2::new(x, self.y), size, color, italic, bold });
-            x += advance;
+            if self.word_space == 0.0 {
+                let advance = measure(&value, size);
+                self.parts.push(Part::Text { value, at: Vec2::new(x, self.y), size, color, italic, bold });
+                x += advance;
+                continue;
+            }
+            // Word by word, each space widened.
+            for (n, word) in value.split(' ').enumerate() {
+                if n > 0 { x += self.advance(' ', size); }
+                if word.is_empty() { continue; }
+                self.parts.push(Part::Text { value: word.to_owned(), at: Vec2::new(x, self.y), size, color, italic, bold });
+                x += measure(word, size);
+            }
         }
         self.y += size * self.leading;
     }
@@ -258,14 +279,16 @@ pub(in crate::ui::controls) fn background(commands: &mut Commands, root: Entity,
 
 /// The layout owns the anchor, never the cursor. Flip to a free side before
 /// clamping; exceptionally tall cards scale as a unit so no rows are discarded.
-/// A card under the mouse cursor, centred on it, `below` under its tip (above
-/// the cursor where it does not fit below), kept on the screen.
-pub(in crate::ui::controls) fn at_cursor(point: Vec2, size: Vec2, viewport: Vec2, below: f32) -> (Vec2, f32) {
+/// A card fixed under its control (`anchor`, l t r b), centred on it, `gap`
+/// below its bottom edge, or above its top where it does not fit below; kept on
+/// the screen.
+pub(in crate::ui::controls) fn under(anchor: [f32; 4], size: Vec2, viewport: Vec2, gap: f32) -> (Vec2, f32) {
     let margin = 8.0;
     let scale = ((viewport.x - 2.0*margin).max(1.0) / size.x).min((viewport.y - 2.0*margin).max(1.0) / size.y).min(1.0);
     let size = size * scale;
-    let y = if point.y + below + size.y + margin <= viewport.y { point.y + below } else { point.y - size.y - margin };
-    let at = Vec2::new(point.x - size.x * 0.5, y).clamp(Vec2::splat(margin), (viewport - size - Vec2::splat(margin)).max(Vec2::splat(margin)));
+    let [l, t, r, b] = anchor;
+    let y = if b + gap + size.y + margin <= viewport.y { b + gap } else { t - gap - size.y };
+    let at = Vec2::new((l + r - size.x) * 0.5, y).clamp(Vec2::splat(margin), (viewport - size - Vec2::splat(margin)).max(Vec2::splat(margin)));
     (at, scale)
 }
 

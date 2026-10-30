@@ -141,6 +141,16 @@ def lines(raw, local, variables, item_name, tick=False):
         relative = (len(args) > 1 and args[1].lower() == "relative") or "forceShowAsPercentage" in args
         scaled = "LevelModifier" in args
         value = _number(args[0], relative, variables, scaled) if args and args[0] else None
+        # The class's resource (Rage, Mana, Concentration, Steam): one text per
+        # class, the warrior's as the default (the Mortis Doll's pet effect).
+        if kind == "MaxSkillResource" and not key and value is not None:
+            mode = "Relative" if relative else "Absolut"
+            classes = {c.lower(): local(f"gui.statuseffects.modifier_maxSkillResource{mode}Plus{c}")
+                       for c in ("Warrior", "Mage", "Ranger", "Dwarf")}
+            minus = local(f"gui.statuseffects.modifier_maxSkillResource{mode}MinusWarrior")
+            if classes["warrior"]:
+                out.append(dict(text=classes["warrior"], minus=minus, args=[value], classes=classes))
+            continue
         generic = _generic(kind, args, local, item_name)
         if key:
             text = local("gui.statuseffects.modifier_" + key)

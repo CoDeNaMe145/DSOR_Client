@@ -157,6 +157,8 @@ pub(in crate::ui) struct Album {
     ///   all resistance values", 3 damage = "+ 6.00% damage", 1 block = 2.00%.
     /// UNVERIFIED: that the server applies them (ours does not track them yet).
     pub bag: std::collections::BTreeMap<String, u32>,
+    /// Our class ("warrior"...): a pet card's resource line (Rage, Mana...).
+    pub class: String,
 }
 
 impl Album {
@@ -277,6 +279,7 @@ pub(super) fn album(sources: &Sources) -> Album {
         banner: catalog.album_banners.get(banner_index).cloned().unwrap_or_default(), banner_index, banners, new,
         scroll: state.scroll.get(LIST).copied().unwrap_or(0),
         bag,
+        class: sources.class_name().to_owned(),
     }
 }
 

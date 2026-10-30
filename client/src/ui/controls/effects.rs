@@ -78,6 +78,9 @@ struct Line {
     text: String,
     #[serde(default)]
     minus: String,
+    /// The text by class ("warrior", "mage"...), for a class's own resource.
+    #[serde(default)]
+    classes: HashMap<String, String>,
     #[serde(default)]
     args: Vec<Arg>,
 }
@@ -359,7 +362,18 @@ fn fill(text: &str, args: &[Option<String>]) -> String {
 ///   20261030-1714-37): "Pet Effect:" and "Collector's Bag Effect:" white, the
 ///   lines blue, figures with two decimals ("20.00%", "+ 33.00% Health
 ///   Points"), the resistances' three ("+ 15.000% all resistance values").
-pub(in crate::ui) fn card_lines(catalog: &Catalog, status: &str, params: &[f32], vars: &HashMap<String, f32>) -> Vec<(String, bool)> {
+pub(in crate::ui) fn card_lines(catalog: &Catalog, status: &str, params: &[f32], vars: &HashMap<String, f32>, class: &str) -> Vec<(String, bool)> {
+    // Markup off ("<GemBlueStart>Rage</>"): the card colours the line itself.
+    let plain = |text: &str| {
+        let mut out = String::new();
+        let mut rest = text;
+        while let Some(open) = rest.find('<') {
+            out.push_str(&rest[..open]);
+            match rest[open..].find('>') { Some(close) => rest = &rest[open + close + 1..], None => { rest = ""; } }
+        }
+        out.push_str(rest);
+        out
+    };
     let Some(effect) = catalog.effects.values().find(|e| e.id == status) else { return Vec::new() };
     let mut out = Vec::new();
     for line in &effect.lines {
@@ -385,8 +399,8 @@ pub(in crate::ui) fn card_lines(catalog: &Catalog, status: &str, params: &[f32],
             Some(Some(x)) => x < 0.0,
             _ => false,
         };
-        let text = if negative && !line.minus.is_empty() { &line.minus } else { &line.text };
-        out.push((fill(text, &args), false));
+        let text = if negative && !line.minus.is_empty() { &line.minus } else { line.classes.get(class).unwrap_or(&line.text) };
+        out.push((plain(&fill(text, &args)), false));
     }
     out
 }
@@ -616,7 +630,7 @@ mod tests {
                 {"text": "+ {1:s}% Andermant drop stack size while accompanied by a pet", "args": ["Andermant", {"var": "pet_andermant_01", "scale": 100.0}]}]}}
         })).unwrap();
         let bag = HashMap::from([("pet_hitpoint_01".to_owned(), 0.33), ("pet_resistance_01".to_owned(), 0.15)]);
-        let lines = card_lines(&catalog, "pet_dog_01", &[0.2], &bag);
+        let lines = card_lines(&catalog, "pet_dog_01", &[0.2], &bag, "warrior");
         assert_eq!(lines, vec![
             ("Pet Effect:".to_owned(), true),
             ("Selling price of items increased by 20.00%".to_owned(), false),
@@ -624,7 +638,7 @@ mod tests {
             ("+ 33.00% Health Points".to_owned(), false),
             ("+ 15.000% all resistance values".to_owned(), false),
         ], "no Andermant earned: no Andermant line");
-        assert!(card_lines(&catalog, "pet_cat_01", &[], &bag).is_empty());
+        assert!(card_lines(&catalog, "pet_cat_01", &[], &bag, "warrior").is_empty());
     }
 
     fn catalog() -> Catalog {

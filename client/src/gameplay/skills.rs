@@ -600,7 +600,7 @@ impl Plugin for SkillsPlugin {
             .add_systems(Startup, load)
             .add_systems(
                 Update,
-                (index_skills, cast_input.run_if(crate::screens::loading::gameplay_ready), remote_skills, status_visuals, trap_visuals, hold_for_status, test_cast, run_pending, carry_casters, fly_bullets, play_sequences, start_fx_animations, fx_particle_speed, retire_effects, shake_camera, test_shot, test_view, debug_fx_positions)
+                (index_skills, cast_input.run_if(crate::screens::loading::gameplay_ready), remote_skills, status_visuals, trap_visuals, hold_for_status, test_cast, test_monster_cast, run_pending, carry_casters, fly_bullets, play_sequences, start_fx_animations, fx_particle_speed, retire_effects, shake_camera, test_shot, test_view, debug_fx_positions)
                     .chain()
                     .after(crate::network::net::NetSystems).after(crate::actors::npc::NpcVisualSystems)
                     .before(crate::actors::character::drive_animations),
@@ -2517,6 +2517,35 @@ fn test_cast(
         offline_landing(&mut net, &mut debug_monsters, skill, tf.translation, facing, point, None);
     }
     perform(&mut commands, skill, sequences, e, Some(character), tf.translation, facing, point, me, None, None, 1.0);
+}
+
+/// Offline: DSOR_TEST_MONSTER_CAST=<skill id>,<every seconds> has the test
+/// monster (crate::actors::monsters DSOR_TEST_MONSTER) cast that skill, as a
+/// server's monster attack plays (remote_skills): with DSOR_TEST_HIT, a monster
+/// that attacks while it is hit.
+fn test_monster_cast(
+    mut commands: Commands,
+    data: Res<SkillData>,
+    tables: Res<Assets<SkillTable>>,
+    seqs: Res<Assets<SequenceTable>>,
+    time: Res<Time>,
+    monsters: Query<(Entity, &Transform, &CharacterAnim, &crate::actors::monsters::Monster)>,
+    mut next: Local<f32>,
+) {
+    let Ok(spec) = std::env::var("DSOR_TEST_MONSTER_CAST") else { return };
+    let mut parts = spec.split(',');
+    let name = parts.next().unwrap_or_default();
+    let every: f32 = parts.next().and_then(|v| v.parse().ok()).unwrap_or(1.5);
+    let (Some(table), Some(sequences)) = (tables.get(&data.skills), seqs.get(&data.sequences)) else { return };
+    let Some(skill) = data.by_id.get(name).and_then(|w| table.0.get(w)) else { return };
+    let Some((e, tf, anim, m)) = monsters.iter().find(|(_, _, _, m)| m.actor == 0x6000_0000) else { return };
+    if !anim.is_ready() || anim.dead { return; }
+    *next -= time.delta_secs();
+    if *next > 0.0 { return; }
+    *next = every;
+    let facing = tf.rotation.to_euler(EulerRot::YXZ).0;
+    let point = tf.translation + Quat::from_rotation_y(facing) * Vec3::Z * skill.range.min(15.0);
+    perform(&mut commands, skill, sequences, e, None, tf.translation, facing, point, Some(m.actor), None, None, 1.0);
 }
 
 /// When test_cast cast (DSOR_TEST_FACING), for test_shot.
