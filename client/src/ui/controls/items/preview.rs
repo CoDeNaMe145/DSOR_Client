@@ -48,7 +48,7 @@ const STICKER_LEADING: f32 = 1.1;
 /// rarity's colour, then gui.window consumableUnderTitleInfinite, its description,
 /// noSale and howToUseMount / howToUsePet.
 /// FAILURE (2026-10-24): a bare "Sticker / Shows it in the preview" line.
-pub(super) fn sticker(catalog: &Catalog, layout: Option<&Layout>, template: &str) -> Card {
+pub(super) fn sticker(catalog: &Catalog, layout: Option<&Layout>, template: &str, title: &str, status: Option<&super::super::effects::Catalog>, bag: &HashMap<String, f32>) -> Card {
     let meta = catalog.items.get(template);
     let mut card = Card::new(STICKER_MAX_WIDTH, layout);
     // The original writes it in a small hand, its name no larger than the rest.
@@ -62,7 +62,9 @@ pub(super) fn sticker(catalog: &Catalog, layout: Option<&Layout>, template: &str
     // A template has no instance colour; the original writes a Mythic one red.
     // UNVERIFIED: the exact red, matched by eye on the user's Manticore shot.
     let tint = if rarity == "Mythic" { Color::srgb(0.86, 0.12, 0.08) } else { tint };
-    let name = format!("<i>{}</>", catalog.name(template, None));
+    // The sticker's own name ("Cute Doggy"), not its item's ("Cute Doggy (Pet)").
+    // FAILURE (2026-10-30): "Hoppy Bunny (Pet)" beside the original's card.
+    let name = format!("<i>{}</>", if title.is_empty() { catalog.name(template, None) } else { title });
     let kind = meta.filter(|m| !m.category.is_empty()).map(|m| format!("<i>{}</>", m.category));
     let description = meta.filter(|m| !m.description.is_empty())
         .map(|m| if m.description.contains('<') { m.description.clone() } else { format!("<i>{}</>", m.description) });
@@ -83,6 +85,17 @@ pub(super) fn sticker(catalog: &Catalog, layout: Option<&Layout>, template: &str
     card.text(used, MUTED);
     card.gap(2.0);
     if let Some(description) = &description { card.text(description, WHITE); }
+    // A pet's Effect section: its own bonus (by the tier owned) and the
+    // Collector's Bag bonuses its owner has earned, as the original's card.
+    // FAILURE (2026-10-30): no Effect section ("the pets look wrong").
+    let effect = meta.filter(|m| !m.status.is_empty()).zip(status)
+        .map(|(m, s)| super::super::effects::card_lines(s, &m.status, &m.status_values, bag)).unwrap_or_default();
+    if !effect.is_empty() {
+        card.gap(2.0);
+        card.rule();
+        card.centered("Effect", MUTED, false);
+        for (text, header) in &effect { card.text(text, if *header { WHITE } else { BLUE }); }
+    }
     card.gap(5.0);
     card.text("Not for sale", WHITE);
     card.text(how, Color::srgb(0.95, 0.85, 0.2));
@@ -93,8 +106,12 @@ pub(super) fn sticker(catalog: &Catalog, layout: Option<&Layout>, template: &str
 pub(super) fn rarity<'a>(catalog: &'a Catalog, template: &str, item: Option<&ItemInfo>) -> (&'a str, Color) {
     let rarity = item.map(|i| ["Common", "Improved", "Magic", "Extraordinary", "Legendary", "Unique", "Set", "Mythic"].get(i.kind as usize).copied().unwrap_or("Item"))
         .unwrap_or_else(||catalog.items.get(template).map_or("Item",|m|m.rarity.as_str()));
+    // A template's rarity is the catalog's name for it (items::RARITIES: Rare,
+    // Epic), an instance's the game's (Extraordinary, Legendary).
+    // FAILURE (2026-10-30): an Epic pet's name white where the original's
+    //   Cute Doggy (Epic) is orange.
     let tint = match rarity { "Unique" => Color::srgb(1.0,0.9,0.0), "Set" => GREEN, "Magic" => BLUE,
-        "Extraordinary" => Color::srgb(0.75,0.4,1.0), "Legendary" => Color::srgb(1.0,0.65,0.15), _ => color(catalog,item) };
+        "Extraordinary" | "Rare" => Color::srgb(0.75,0.4,1.0), "Legendary" | "Epic" => Color::srgb(1.0,0.65,0.15), _ => color(catalog,item) };
     (rarity, tint)
 }
 

@@ -204,8 +204,9 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
                 Action::QuestTrack(delta) => heading = if *delta < 0 { "Previous quest" } else { "Next quest" }.into(),
                 // A sticker: its item's card, as the original's.
                 Action::System(super::systems::Request::Pick(id, _)) if catalog.is_some() && views.album.sticker(id).is_some_and(|s| !s.template.is_empty()) => {
-                    let template = &views.album.sticker(id).unwrap().template;
-                    detail = Some(items::sticker_card(catalog.unwrap(), layouts.get(&data.tooltip), template));
+                    let sticker = views.album.sticker(id).unwrap();
+                    detail = Some(items::sticker_card(catalog.unwrap(), layouts.get(&data.tooltip), &sticker.template, &sticker.name,
+                        status_catalogs.get(&status_bar.catalog), &views.album.bag_values()));
                     // Centred on the mouse cursor, just under its tip, as the
                     // original's (the user's recording 2026-10-30, 11.0 s: the
                     // card's top 41 video pixels, 15 reference pixels, below

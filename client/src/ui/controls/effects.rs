@@ -93,6 +93,9 @@ enum Arg {
         p: Option<usize>,
         #[serde(default)]
         v: Option<f32>,
+        /// A mutable actor variable the client may know (card_lines).
+        #[serde(default)]
+        var: Option<String>,
         #[serde(default = "one")]
         scale: f32,
     },
@@ -347,6 +350,47 @@ fn fill(text: &str, args: &[Option<String>]) -> String {
     out
 }
 
+/// A status effect's lines on an item's card (a pet's Effect section,
+/// items::preview::sticker): (text, a header). `params` are the item's values
+/// ($0..), `vars` the actor variables known (the pets' Collector's Bag bonuses,
+/// systems::album). A line whose value is zero is left out (the original's
+/// card had no Andermant line, a bonus its owner had not earned).
+/// EVIDENCE: the original's Cute Doggy card (the user's recording
+///   20261030-1714-37): "Pet Effect:" and "Collector's Bag Effect:" white, the
+///   lines blue, figures with two decimals ("20.00%", "+ 33.00% Health
+///   Points"), the resistances' three ("+ 15.000% all resistance values").
+pub(in crate::ui) fn card_lines(catalog: &Catalog, status: &str, params: &[f32], vars: &HashMap<String, f32>) -> Vec<(String, bool)> {
+    let Some(effect) = catalog.effects.values().find(|e| e.id == status) else { return Vec::new() };
+    let mut out = Vec::new();
+    for line in &effect.lines {
+        if line.args.is_empty() {
+            let text = line.text.replace("<WhiteStart>", "").replace("</>", "");
+            out.push((text, true));
+            continue;
+        }
+        let decimals = if line.args.iter().any(|a| matches!(a, Arg::Text(t) if t.contains("resistance"))) { 3 } else { 2 };
+        let mut first = None;
+        let args: Vec<Option<String>> = line.args.iter().map(|arg| match arg {
+            Arg::Text(text) => Some(text.clone()),
+            Arg::Number { p, v, var, scale } => {
+                let value = p.map(|i| params.get(i).copied().unwrap_or(0.0)).or(*v)
+                    .or_else(|| var.as_ref().map(|name| vars.get(name).copied().unwrap_or(0.0)))
+                    .map(|x| x * scale);
+                first.get_or_insert(value);
+                value.map(|x| format!("{:.*}", decimals, x.abs()))
+            }
+        }).collect();
+        let negative = match first {
+            Some(Some(x)) if x.abs() < 1e-6 => continue,
+            Some(Some(x)) => x < 0.0,
+            _ => false,
+        };
+        let text = if negative && !line.minus.is_empty() { &line.minus } else { &line.text };
+        out.push((fill(text, &args), false));
+    }
+    out
+}
+
 /// A figure as the modifier texts print it: at most two decimals.
 fn number(value: f32) -> String {
     let text = format!("{value:.2}");
@@ -361,7 +405,7 @@ fn line(line: &Line, params: &[f32], stacks: u32, debuff: bool) -> Option<String
     let mut first: Option<Option<f32>> = None;
     let args: Vec<Option<String>> = line.args.iter().map(|arg| match arg {
         Arg::Text(text) => Some(text.clone()),
-        Arg::Number { p, v, scale } => {
+        Arg::Number { p, v, scale, .. } => {
             let value = p.map_or(*v, |i| params.get(i).copied()).map(|x| x * scale * stacks as f32);
             first.get_or_insert(value);
             value.map(|x| number(x.abs()))
@@ -558,6 +602,30 @@ pub(in crate::ui) fn fixture(net: Option<NonSendMut<Net>>, bar: Res<StatusBar>, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pet_card_shows_its_own_bonus_and_the_collectors_bag_bonuses_earned() {
+        let catalog: Catalog = serde_json::from_value(serde_json::json!({
+            "units": ["{0:s} s", "{0:i} m", "{0:i} hr", "{0:i} d"], "configs": {},
+            "effects": {"494": {"id": "pet_dog_01", "debuff": false, "icon": "i.png", "name": "Cute Doggy (Pet)", "stacks": 1, "lines": [
+                {"text": "<WhiteStart>Pet Effect:</>", "args": []},
+                {"text": "Selling price of items increased by {0:s}%", "minus": "", "args": [{"p": 0, "scale": 100.0}]},
+                {"text": "<WhiteStart>Collector's Bag Effect:</>", "args": []},
+                {"text": "+ {0:s}% Health Points", "args": [{"var": "pet_hitpoint_01", "scale": 100.0}]},
+                {"text": "+ {1:s}% {0:s}", "args": ["all resistance values", {"var": "pet_resistance_01", "scale": 100.0}]},
+                {"text": "+ {1:s}% Andermant drop stack size while accompanied by a pet", "args": ["Andermant", {"var": "pet_andermant_01", "scale": 100.0}]}]}}
+        })).unwrap();
+        let bag = HashMap::from([("pet_hitpoint_01".to_owned(), 0.33), ("pet_resistance_01".to_owned(), 0.15)]);
+        let lines = card_lines(&catalog, "pet_dog_01", &[0.2], &bag);
+        assert_eq!(lines, vec![
+            ("Pet Effect:".to_owned(), true),
+            ("Selling price of items increased by 20.00%".to_owned(), false),
+            ("Collector's Bag Effect:".to_owned(), true),
+            ("+ 33.00% Health Points".to_owned(), false),
+            ("+ 15.000% all resistance values".to_owned(), false),
+        ], "no Andermant earned: no Andermant line");
+        assert!(card_lines(&catalog, "pet_cat_01", &[], &bag).is_empty());
+    }
 
     fn catalog() -> Catalog {
         serde_json::from_value(serde_json::json!({

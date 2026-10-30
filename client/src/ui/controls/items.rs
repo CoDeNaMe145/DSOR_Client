@@ -15,6 +15,10 @@ pub struct Definition {
     /// (_Template_Item.CoolDown / CoolDownCategory; hotbar::ItemCooldowns).
     #[serde(default)] pub cooldown: f32,
     #[serde(default)] pub cooldown_category: String,
+    /// A pet's status effect and its values by rarity ($0..: its Pet Effect;
+    /// tools/inventory_catalog.py pet_status).
+    #[serde(default)] pub status: String,
+    #[serde(default)] pub status_values: Vec<f32>,
     #[serde(default)] pub unique_values: Vec<String>,
     #[serde(default)] pub unique_effects: Vec<String>,
 }
@@ -36,7 +40,14 @@ pub struct Catalog { pub items: HashMap<String, Definition>, pub ingredients: Ve
     #[serde(default)] pub appearances: HashMap<String, Appearance>, #[serde(default)] pub icon_configs: HashMap<String, IconConfig>,
     #[serde(default)] pub rarity_backgrounds: Vec<String>,
     #[serde(default)] pub enchantments: HashMap<String, Enchantment>,
-    #[serde(default)] pub values: values::Data }
+    #[serde(default)] pub values: values::Data,
+    /// A book reward raising an actor variable: status effect -> (variable,
+    /// amount) (sb_pets_increased_hitpoints_01: pet_hitpoint_01 + 0.03); and the
+    /// variables' upper limits.
+    #[serde(default)] pub raises: HashMap<String, (String, f32)>,
+    /// Such a reward's icon on its book's bar.
+    #[serde(default)] pub reward_icons: HashMap<String, String>,
+    #[serde(default)] pub variables: HashMap<String, f32> }
 impl Catalog {
     /// What a cell shows: the rolled appearance's icon (a generated item's look;
     /// its template's icon is the base model's, the same for every roll), else the
@@ -834,8 +845,8 @@ pub(in crate::ui) mod pins;
 #[cfg(test)]
 mod interaction_tests;
 
-pub(super) fn sticker_card(catalog:&Catalog, layout:Option<&Layout>, template:&str)->tooltips::card::Card {
-    preview::sticker(catalog,layout,template)
+pub(super) fn sticker_card(catalog:&Catalog, layout:Option<&Layout>, template:&str, title:&str, status:Option<&effects::Catalog>, bag:&HashMap<String,f32>)->tooltips::card::Card {
+    preview::sticker(catalog,layout,template,title,status,bag)
 }
 
 pub(super) fn preview_card(catalog:&Catalog, layout:Option<&Layout>, template:&str, item:Option<&ItemInfo>, amount:u32, advanced:bool)->tooltips::card::Card {

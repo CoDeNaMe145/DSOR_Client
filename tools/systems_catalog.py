@@ -140,9 +140,11 @@ def export_systems(database, root, godot, assets):
     def book_rewards(value):
         out = []
         for entry in str(value or "").split(";"):
-            m = re.match(r"(\d+):(.+):(\d+)$", entry.strip())
+            # "count:item:amount", or "count:status effect" (the pet books'
+            # Collector's Bag bonuses: "3:sb_pets_increased_hitpoints_01").
+            m = re.match(r"(\d+):([^:]+)(?::(\d+))?$", entry.strip())
             if m:
-                out.append(dict(at=int(m.group(1)), item=m.group(2), amount=int(m.group(3))))
+                out.append(dict(at=int(m.group(1)), item=m.group(2), amount=int(m.group(3) or 1)))
         return out
     books = [dict(id=r["Id"], category=int(r["StickerbookCategoryId"]), subcategory=int(r["StickerbookSubcategoryId"]),
                   priority=int(r["StickerbookPriority"] or 0), title=text(f"db.stickerbookcategory.table_{r['Id']}Title", r["Id"]),

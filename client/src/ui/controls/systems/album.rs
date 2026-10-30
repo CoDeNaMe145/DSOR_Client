@@ -45,6 +45,10 @@ const ENTRY: &str = "Canvas/Collectorsalbum/BackGroundLabel/Inlay/TemplateListEn
 ///   green glow the original has not.
 const ANIM_USE_TEXT: &str = "Canvas/Collectorsalbum/BackGroundLabel/Inlay/AnimUse/slot_anim";
 const SWEEP_ALPHA: f32 = 0.42;
+/// The front page's text, gui.window favoritesDesc (the layout's own text is
+/// an older one: "Here you will find all your favourite items...").
+/// EVIDENCE: the user's release261_1024 recording 20261030-1714-37.
+const FAVOURITES_TEXT: &str = "Select up to thirty of your favorite items to be shown here for quick access to your most frequently used items.";
 /// The digits' size: the original's "4 s" is 0.17 of the sticker's height, ours
 /// at 15 was 0.28 (the user's recording 20261030-1714-37: "double the size").
 const COUNT_SIZE: f32 = 9.3;
@@ -145,6 +149,21 @@ pub(in crate::ui) struct Album {
     pub banners: usize,
     pub new: Vec<Sticker>,
     pub scroll: usize,
+    /// The Collector's Bag bonuses earned (actor variable -> millionths): each
+    /// book's rewards reached by its owned stickers, as the variables they
+    /// raise (sb_pets_increased_hitpoints_01: pet_hitpoint_01 + 0.03), up to
+    /// their limits. A pet's card shows them (items::preview::sticker).
+    /// EVIDENCE: the user's original account: 5 resistance rewards = "+ 15.000%
+    ///   all resistance values", 3 damage = "+ 6.00% damage", 1 block = 2.00%.
+    /// UNVERIFIED: that the server applies them (ours does not track them yet).
+    pub bag: std::collections::BTreeMap<String, u32>,
+}
+
+impl Album {
+    /// The bonuses earned, as values (bag).
+    pub(in crate::ui) fn bag_values(&self) -> std::collections::HashMap<String, f32> {
+        self.bag.iter().map(|(k, v)| (k.clone(), *v as f32 / 1e6)).collect()
+    }
 }
 
 /// A sticker's owned entry: the server keys them by resource id (the sticker's
@@ -198,7 +217,11 @@ pub(super) fn album(sources: &Sources) -> Album {
     tops.sort_by_key(|b| (b.category, b.priority));
     let mut books = Vec::new();
     for top in &tops {
-        let title = if top.id == FRONT_BOOK { "Favorites".to_owned() } else { top.title.clone() };
+        // The front page's row is its book's own title ("Frontpage"); its page
+        // reads "Favorites" (FAVOURITES_TEXT).
+        // FAILURE (2026-10-30): the row read "Favorites" (the user's recording
+        //   beside the original's "Frontpage").
+        let title = top.title.clone();
         let open = state.album_open.as_deref() == Some(top.id.as_str());
         books.push(Book { id: top.id.clone(), title, sub: false, selected: open || top.id == chosen });
         if !open || top.id == FRONT_BOOK { continue; }
@@ -224,8 +247,25 @@ pub(super) fn album(sources: &Sources) -> Album {
     let book = book_of(&chosen);
     let progress = (stickers.iter().filter(|s| s.owned).count() as u32, stickers.len() as u32);
     let rewards = if top || front { Vec::new() } else {
-        book.map(|b| b.rewards.iter().map(|r| (r.at, sources.icon(&r.item, None))).collect()).unwrap_or_default()
+        // A reward that is a Collector's Bag bonus (a status effect) shows its
+        // own icon (items::Catalog reward_icons).
+        book.map(|b| b.rewards.iter().map(|r| (r.at, sources.items.and_then(|i| i.reward_icons.get(&r.item))
+            .map_or_else(|| sources.icon(&r.item, None), |image| Icon { image: image.clone(), ..Default::default() }))).collect()).unwrap_or_default()
     };
+    let mut earned: std::collections::HashMap<&str, f32> = std::collections::HashMap::new();
+    if let Some(items) = sources.items {
+        for book in catalog.stickerbooks.iter().filter(|b| !b.rewards.is_empty()) {
+            let owned = catalog.stickers.iter().filter(|(id, def)| def.book == book.id
+                && owned_entry(&net.stickerbook, id, def).is_some_and(|e| e.state >= StickerbookEntry::OWNED)).count() as u32;
+            for (variable, amount) in book.rewards.iter().filter(|r| r.at <= owned).filter_map(|r| items.raises.get(&r.item)) {
+                *earned.entry(variable.as_str()).or_insert(0.0) += amount;
+            }
+        }
+        for (variable, value) in earned.iter_mut() {
+            if let Some(limit) = items.variables.get(*variable) { *value = value.min(*limit); }
+        }
+    }
+    let bag = earned.into_iter().map(|(k, v)| (k.to_owned(), (v * 1e6).round() as u32)).collect();
     let banners = catalog.album_banners.len();
     let banner_index = if banners == 0 { 0 } else { state.album_banner % banners };
     let new = all.iter().filter(|(_, def)| def.new).take(MOST_NEW).map(|(id, def)| sticker(id, def)).collect();
@@ -236,6 +276,7 @@ pub(super) fn album(sources: &Sources) -> Album {
         stickers, page, pages, preview, progress, rewards,
         banner: catalog.album_banners.get(banner_index).cloned().unwrap_or_default(), banner_index, banners, new,
         scroll: state.scroll.get(LIST).copied().unwrap_or(0),
+        bag,
     }
 }
 
@@ -355,6 +396,7 @@ pub(super) fn prepare_album(source: &Layout, album: &Album) -> Layout {
         match leaf(&id) {
             "TextLabel_fav" => set_text(w, &album.title),
             "TextLabel_info" if !album.front => set_text(w, &album.description),
+            "TextLabel_info" => set_text(w, FAVOURITES_TEXT),
             "PageNumText" => set_text(w, &format!("{} / {}", album.page + 1, album.pages)),
             // The bar's caption (its points label is authored transparent).
             "ProgressBarTextLabel" => set_text(w, &format!("{} / {}", album.progress.0, album.progress.1)),

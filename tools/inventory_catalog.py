@@ -31,6 +31,17 @@ def export_inventory(db, textures, loca, assets):
     def cooldown(r):
         seconds = float(r.get('CoolDown') or 0)
         return dict(cooldown=seconds, cooldown_category=r.get('CoolDownCategory') or '') if seconds > 0 else {}
+
+    # A pet's status effect and its values ($0..$4: the pet's own bonus by
+    # rarity), for its card's Effect section (crate::ui::controls::items).
+    def pet_status(r):
+        sid = r.get('StatusEffectId') or ''
+        if not sid or r.get('ItemCategory') not in ('Pet', 'Mercenary'):
+            return {}
+        values = [round(float(r.get(f'StatusEffectValue{i}') or 0), 6) for i in range(5)]
+        while values and values[-1] == 0:
+            values.pop()
+        return dict(status=sid, status_values=values)
     result = dict(items={}, ingredients=[], colors={}, appearances={}, icon_configs={}, rarity_backgrounds=[], enchantments={})
     cursor = db.execute('SELECT * FROM _Template_Item')
     columns = [c[0] for c in cursor.description]
@@ -60,6 +71,7 @@ def export_inventory(db, textures, loca, assets):
             item_category=r.get('ItemCategory') or '',
             # Its use cooldown, shared by its category (every mount VanityItem).
             **cooldown(r),
+            **pet_status(r),
             unique_effects=unique_effects(r.get('UniqueModifier'), local))
     for eid, name, base in db.execute('SELECT Id, Name, BaseEnchantment FROM _Template_Enchantment'):
         result['enchantments'][eid] = dict(name=(name or eid).removeprefix('Base Enchantment ').removeprefix('Item Enchantment '), base=bool(base))
@@ -91,6 +103,20 @@ def export_inventory(db, textures, loca, assets):
         rgba = list(struct.unpack('<4f', color)) if isinstance(color, bytes) and len(color)==16 else [1,1,1,1]
         rgba[3] = 1.0
         result['colors'][str(color_id)] = rgba
+    # A book reward that raises an actor variable is a status effect
+    # (sb_pets_increased_hitpoints_01: pet_hitpoint_01 + 0.03): the pets'
+    # Collector's Bag bonuses (crate::ui::controls::systems::album).
+    # Its icon on the book's progress bar (IconBrush: icons/sb_pets_increased_
+    # hitpoints_01_color), as an item's.
+    result['raises'], result['reward_icons'] = {}, {}
+    for sid, modifiers, brush in db.execute('SELECT Id, StartModifiers, IconBrush FROM _Template_StatusEffect'):
+        raised = re.search(r'ActorVariable:([-0-9.]+),absolute,(\w+)', modifiers or '')
+        if raised:
+            result['raises'][sid] = [raised.group(2), round(float(raised.group(1)), 6)]
+            if texture(brush):
+                result['reward_icons'][sid] = texture(brush)
+    # The actor variables' upper limits (pet_hitpoint_01 10, pet_andermant_01 0.15).
+    result['variables'] = {v: round(float(hi), 6) for v, hi in db.execute('SELECT Id, UpperLimit FROM _Template_ActorVariables')}
     path = os.path.join(assets, 'interface', 'inventory.items.json')
     result['values'] = export_values(db, local)
     with open(path, 'w', encoding='utf-8') as f:

@@ -47,11 +47,15 @@ GENERIC = {
                         "damageFactorPvEAbsolutPlus", "damageFactorPvEAbsolutMinus"),
     "DamagePermeabilityPvP": ("damagePermeabilityPvPRelativePlus", "damagePermeabilityPvPRelativeMinus",
                               "damagePermeabilityPvPAbsolutPlus", "damagePermeabilityPvPAbsolutMinus"),
+    # The Cute Doggy's pet effect: "Selling price of items increased by 20.00%".
+    "VCSellPrice": ("vcSellPriceRelativePlus", "vcSellPriceRelativeMinus", "vcSellPriceAbsolutPlus", "vcSellPriceAbsolutMinus"),
 }
 
 
 def _number(token, relative, variables, scaled):
-    """A modifier's value: {"p": n} a wire parameter, {"v": x} a known value, {} unknown."""
+    """A modifier's value: {"p": n} a wire parameter, {"v": x} a known value,
+    {"var": name} a mutable actor variable (the client may know it: the pets'
+    Collector's Bag bonuses, crate::ui::controls::systems::album), {} unknown."""
     scale = {"scale": 100.0} if relative else {}
     token = (token or "").strip()
     if scaled:
@@ -61,7 +65,7 @@ def _number(token, relative, variables, scaled):
         if name.isdigit():
             return {"p": int(name), **scale}
         value = variables.get(name)
-        return {"v": round(value, 6), **scale} if value is not None else scale
+        return {"v": round(value, 6), **scale} if value is not None else {"var": name, **scale}
     try:
         values = [float(v) for v in token.split("|")]
     except ValueError:
