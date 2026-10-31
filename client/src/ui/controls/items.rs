@@ -15,6 +15,8 @@ pub struct Definition {
     /// (_Template_Item.CoolDown / CoolDownCategory; hotbar::ItemCooldowns).
     #[serde(default)] pub cooldown: f32,
     #[serde(default)] pub cooldown_category: String,
+    /// Seconds it lasts once received (ItemLifeTime), 0 for ever.
+    #[serde(default)] pub lifetime: u32,
     /// A pet's status effect and its values by rarity ($0..: its Pet Effect;
     /// tools/inventory_catalog.py pet_status).
     #[serde(default)] pub status: String,
@@ -27,7 +29,9 @@ pub struct Definition {
 pub struct Appearance { pub icon: String, pub config: String, #[serde(default)] pub name: String }
 /// _Template_IconConfig: the background follows the item's rarity, or is fixed.
 #[derive(Deserialize)]
-pub struct IconConfig { pub rarity: bool, pub background: String, #[serde(default)] pub frame: String }
+pub struct IconConfig { pub rarity: bool, pub background: String, #[serde(default)] pub frame: String,
+    /// Drawn over the frame: a time-limited item's hourglass (InfoTexture).
+    #[serde(default)] pub info: String }
 /// The rarities in ItemInfo.kind's order, as the catalog names them
 /// (rarity_backgrounds follows it).
 const RARITIES: [&str; 8] = ["Common", "Uncommon", "Magic", "Rare", "Epic", "Unique", "Set", "Mythic"];
@@ -107,6 +111,13 @@ impl Catalog {
         } else { Some(c.background.as_str()) }).filter(|b| !b.is_empty());
         let frame = config.map(|c| c.frame.as_str()).filter(|f| !f.is_empty());
         (icon, background, frame)
+    }
+    /// The layer over an item's frame (IconConfig::info): a time-limited item's
+    /// hourglass, as the original's Premium reward shows it.
+    pub fn icon_info(&self, template: &str, item: Option<&ItemInfo>) -> Option<&str> {
+        let look = item.and_then(|i| self.appearances.get(if i.fourth_name.is_empty() { &i.appearance } else { &i.fourth_name }));
+        let config = look.map(|a| a.config.as_str()).filter(|c| !c.is_empty()).or_else(|| self.items.get(template).map(|d| d.icon_config.as_str()));
+        config.and_then(|c| self.icon_configs.get(c)).map(|c| c.info.as_str()).filter(|i| !i.is_empty())
     }
 }
 #[derive(Default, TypePath)]
@@ -731,7 +742,7 @@ pub(super) fn text(commands:&mut Commands,assets:&AssetServer,screen:&Screen,par
 #[allow(clippy::too_many_arguments)]
 fn sprites(commands:&mut Commands,assets:&AssetServer,catalog:&Catalog,template:&str,item:Option<&ItemInfo>,at:Vec3,size:Vec2,tint:Color,parent:Entity)->bool {
     let (icon,background,frame)=catalog.icon_parts(template,item);
-    for (z,image) in [(0.0,background),(0.05,icon),(0.1,frame)] {
+    for (z,image) in [(0.0,background),(0.05,icon),(0.1,frame),(0.15,catalog.icon_info(template,item))] {
         let Some(image)=image else{continue};
         commands.spawn((Sprite{image:assets.load(image.to_owned()),custom_size:Some(size),color:tint,..default()},Anchor::TOP_LEFT,
             Transform::from_translation(at+Vec3::Z*z),RenderLayers::layer(LAYER),ChildOf(parent)));

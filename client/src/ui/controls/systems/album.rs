@@ -149,8 +149,8 @@ pub(in crate::ui) struct Album {
     /// The stickers collected of the book's, its rewards (count, icon).
     pub progress: (u32, u32),
     pub rewards: Vec<(u32, Icon)>,
-    /// Each reward's hover card (title, lines, "Reward for 3 x Pets").
-    pub reward_cards: Vec<(String, Vec<String>, String)>,
+    /// Each reward's hover card.
+    pub reward_cards: Vec<RewardView>,
     /// The front page's banner, of how many, and the new stickers.
     pub banner: String,
     pub banner_index: usize,
@@ -200,6 +200,30 @@ fn next(def: &crate::gameplay::systems::StickerDef, tier: Option<&str>) -> Optio
     let at = tier.and_then(|t| templates(def).position(|x| x == t)).unwrap_or(0);
     let above = at.saturating_sub(def.items.len().saturating_sub(1));
     def.upgrades.get(above).and_then(|u| u.rsplit_once(':')).map(|(t, cost)| (t.to_owned(), cost.parse().unwrap_or(0)))
+}
+
+/// A book reward's hover card, and the amount on its icon.
+/// EVIDENCE: the original's Tamed Foes bar (the user's recording
+///   20261031-1601-00 and screenshot): a bonus centred, "Triad of Life
+///   (Permanent)" / its bonus green / "Reward for 3 x Pets" yellow; an item left
+///   aligned under its centred name, "Gilded Clover" / "Consumed when used" /
+///   its description yellow ("Right click to add the currency to your Currency
+///   Bag.") / "Reward for 12 x Pets", its icon marked "100".
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(in crate::ui) struct RewardView {
+    pub title: String,
+    /// A bonus's lines (green), or None for an item.
+    pub bonus: Option<Vec<String>>,
+    /// An item's description lines.
+    pub description: Vec<String>,
+    pub footer: String,
+    pub amount: u32,
+    /// An item's lifetime, seconds ("Duration: 7d 0h 0m 0s", red).
+    pub lifetime: u32,
+    /// Its description is the currencies' hint, written in the hint's colour
+    /// (db.itemcurrency rightClickForCurrencyBag: "<cE0C884FF>Right click to add
+    /// the currency to your Currency Bag.</>"; the export drops the markup).
+    pub hint: bool,
 }
 
 pub(super) fn album(sources: &Sources) -> Album {
@@ -288,7 +312,13 @@ pub(super) fn album(sources: &Sources) -> Album {
         book.map(|b| b.rewards.iter().map(|r| {
             let card = sources.items.and_then(|i| i.reward_cards.get(&r.item));
             let title = card.map(|c| c.title.clone()).or_else(|| sources.items.map(|i| i.name(&r.item, None).trim().to_owned())).unwrap_or_else(|| r.item.clone());
-            (title, card.map(|c| c.lines.clone()).unwrap_or_default(), format!("Reward for {} x {kind}", r.at))
+            // The data writes its line breaks as "\n" (two characters).
+            let description = sources.items.and_then(|i| i.items.get(&r.item)).map(|d| d.description.replace("\\n", "\n"))
+                .map(|d| d.split('\n').map(str::to_owned).collect()).unwrap_or_default();
+            let def = sources.items.and_then(|i| i.items.get(&r.item));
+            let lifetime = def.map_or(0, |d| d.lifetime);
+            let hint = def.is_some_and(|d| matches!(d.item_category.as_str(), "ItemCurrency" | "NoAutoUseCurrency"));
+            RewardView { title, bonus: card.map(|c| c.lines.clone()), description, footer: format!("Reward for {} x {kind}", r.at), amount: r.amount, lifetime, hint }
         }).collect()).unwrap_or_default()
     };
     let mut earned: std::collections::HashMap<&str, f32> = std::collections::HashMap::new();
@@ -523,7 +553,9 @@ pub(super) fn prepare_album(source: &Layout, album: &Album) -> Layout {
                 let x = bar.rect[0] + (bar.rect[2] - bar.rect[0]) * (*at as f32 / total).min(1.0);
                 for mut w in clone_at(source, REWARD, &format!("{INLAY}/Categorypage/ProgressLabel/Reward{n}"), x - (root.rect[0] + root.rect[2]) / 2.0, 0.0) {
                     if w.id.ends_with("/IconHighlight") && *at > album.progress.0 { continue; }
-                    if leaf(&w.id) == "Icon" { layout.widgets.extend(icon_layers(&mut w, icon)); set_text(&mut w, ""); }
+                    // An item's amount on its icon ("100" Gilded Clovers).
+                    let amount = album.reward_cards.get(n).map_or(1, |r| r.amount);
+                    if leaf(&w.id) == "Icon" { layout.widgets.extend(icon_layers(&mut w, icon)); set_text(&mut w, &if amount > 1 { amount.to_string() } else { String::new() }); }
                     // Hovered, it shows its card (tooltips): its slot (the root is an
                     // 11 x 10 label at the stem's top).
                     if w.id.ends_with(&format!("/Reward{n}/Linie/ItemSlot")) { make_button(&mut w, &format!("Sys:Reward:{n}")); }

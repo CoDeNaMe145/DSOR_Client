@@ -105,6 +105,9 @@ def export_inventory(db, textures, loca, assets):
             # that replaces its rarity glow, if any.
             graphics=r.get('Graphics') or '', drop_sequence=r.get('DropSequenceOverride') or '',
             icon_config=r.get('IconConfiguration') or '',
+            # Seconds it lasts once received (ItemLifeTime: Premium (2 weeks)
+            # "Duration: 7d 0h 0m 0s").
+            **({'lifetime': int(r['ItemLifeTime'])} if r.get('ItemLifeTime') else {}),
             # The raw category (the localized one is `category`): Mount items are
             # used, not equipped (crate::ui::controls::items).
             item_category=r.get('ItemCategory') or '',
@@ -126,8 +129,10 @@ def export_inventory(db, textures, loca, assets):
     for app_id, brush, config in db.execute('SELECT Id, Icon, IconConfiguration FROM _Template_ItemAppearance'):
         result['appearances'][app_id] = dict(icon=texture(brush), config=config or '',
             name=local('db.itemappearance.table_' + app_id + 'Title'))
-    for cid, rarity, background, frame in db.execute('SELECT Id, RarityControlled, BackgroundTexture, FrameTexture FROM _Template_IconConfig'):
-        result['icon_configs'][cid] = dict(rarity=bool(rarity), background=texture(background), frame=texture(frame))
+    # `info`: drawn over the frame (InfoTexture: the time-limited items'
+    # hourglass, icons_toolkit/frame_icon_time).
+    for cid, rarity, background, frame, info in db.execute('SELECT Id, RarityControlled, BackgroundTexture, FrameTexture, InfoTexture FROM _Template_IconConfig'):
+        result['icon_configs'][cid] = dict(rarity=bool(rarity), background=texture(background), frame=texture(frame), info=texture(info))
     # RarityControlled configurations take the background of the item's rarity
     # (ItemInfo.kind: Common .. Mythic, icons_toolkit/bg_rarity_<name>).
     result['rarity_backgrounds'] = [texture('icons_toolkit/bg_rarity_' + r) for r in

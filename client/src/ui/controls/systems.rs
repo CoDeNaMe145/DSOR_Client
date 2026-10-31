@@ -327,7 +327,8 @@ impl Sources<'_> {
     pub fn icon(&self, template: &str, item: Option<&inventory::ItemInfo>) -> Icon {
         let Some(items) = self.items else { return Icon::default() };
         let (image, background, frame) = items.icon_parts(template, item);
-        Icon { background: background.unwrap_or_default().to_owned(), image: image.unwrap_or_default().to_owned(), frame: frame.unwrap_or_default().to_owned() }
+        Icon { background: background.unwrap_or_default().to_owned(), image: image.unwrap_or_default().to_owned(), frame: frame.unwrap_or_default().to_owned(),
+            info: items.icon_info(template, item).unwrap_or_default().to_owned() }
     }
     pub fn name(&self, template: &str, item: Option<&inventory::ItemInfo>) -> String {
         self.items.map(|i| i.name(template, item).to_owned()).filter(|n| !n.is_empty()).unwrap_or_else(|| crate::ui::dialogue::readable(template))

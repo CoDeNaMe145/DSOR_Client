@@ -216,14 +216,32 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
                 // A book reward on the album's bar: its card, as the original's
                 // (title white, its bonus green, "Reward for ..." yellow, centred).
                 Action::System(super::systems::Request::Reward(n)) if views.album.reward_cards.get(*n).is_some() => {
-                    let (title, lines, footer) = &views.album.reward_cards[*n];
+                    let reward = &views.album.reward_cards[*n];
+                    let yellow = Color::srgb(0.95, 0.85, 0.2);
                     let mut card = items::small_card(layouts.get(&data.tooltip));
-                    let title = format!("<i>{title}</>");
-                    let footer = format!("<i>{footer}</>");
+                    let title = format!("<i>{}</>", reward.title);
+                    let footer = format!("<i>{}</>", reward.footer);
+                    let italic = |t: &String| if t.is_empty() { String::new() } else { format!("<i>{t}</>") };
+                    let lines: Vec<String> = match &reward.bonus { Some(bonus) => bonus.clone(),
+                        None => std::iter::once("Consumed when used".to_owned()).chain(reward.description.iter().cloned()).map(|t| italic(&t)).collect() };
                     items::fit_small(&mut card, std::iter::once(title.as_str()).chain(lines.iter().map(String::as_str)).chain(std::iter::once(footer.as_str())));
                     card.centered(&title, card::WHITE, false);
-                    for line in lines { card.centered(line, card::GREEN, false); }
-                    card.centered(&footer, Color::srgb(0.95, 0.85, 0.2), false);
+                    if reward.bonus.is_some() {
+                        for line in &lines { card.centered(line, card::GREEN, false); }
+                        card.centered(&footer, yellow, false);
+                    } else {
+                        // gui.window.tooltip consumableUnderTitle, then the description.
+                        for (i, line) in lines.iter().enumerate() {
+                            let colour = if i > 0 && reward.hint { Color::srgb(0.88, 0.78, 0.52) } else { card::WHITE };
+                            if line.is_empty() { card.gap(6.0); } else { card.text(line, colour); }
+                        }
+                        // gui.window.tooltip statusEffectDuration, red (the original's Premium).
+                        if reward.lifetime > 0 {
+                            let s = reward.lifetime;
+                            card.text(&format!("Duration: {}d {}h {}m {}s", s / 86400, s / 3600 % 24, s / 60 % 60, s % 60), Color::srgb(0.9, 0.12, 0.1));
+                        }
+                        card.text(&footer, yellow);
+                    }
                     detail = Some(card);
                     under_sticker = true;
                 }
