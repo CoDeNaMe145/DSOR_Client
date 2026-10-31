@@ -21,6 +21,7 @@ pub(super) mod effects;
 pub(super) mod currency;
 pub(super) mod message;
 pub(super) mod consent;
+pub(super) mod upgrade;
 pub(super) mod logout;
 pub(super) mod travel;
 pub(super) mod access;
@@ -161,6 +162,7 @@ fn section(window: &str, id: &str) -> Section {
     if window == items::DESTROY_DIALOG {
         if parts.contains(&"DeleteItem") { return Section::Page(consent::PAGES, 1u32 << consent::DESTROY); }
         if parts.contains(&"DefaultDoNotShowAgain") { return Section::Page(consent::PAGES, 1u32 << consent::SPEND); }
+        if parts.contains(&"Default") { return Section::Page(consent::PAGES, 1u32 << upgrade::UPGRADE); }
     }
     // The hovered monster's ornament -- its top and bottom flourishes -- only
     // on a boss (ui show_hover_window); the frame (gothic_panel) and the level
@@ -718,6 +720,10 @@ pub(super) struct Pointer {
     destroy: Option<bool>,
     /// The large Andermant purchase's answer, for consent::sync.
     consent: Option<bool>,
+    /// A sticker tier to buy once confirmed, and the dialog's answer, for
+    /// upgrade::sync.
+    pub(in crate::ui) upgrade_ask: Option<upgrade::Ask>,
+    upgrade_answer: Option<bool>,
     slider: Option<settings::SliderDrag>,
     /// The game menu's logout, and its dialog's answer, for logout::dialog.
     logout: bool,
@@ -1156,6 +1162,7 @@ pub(super) fn interact(
         // The confirmation dialog asks about an item to destroy or a large
         // Andermant purchase (its page, consent::PAGES).
         Action::Destroy(confirm) if controls.page(consent::PAGES) == consent::SPEND => pointer.consent = Some(confirm),
+        Action::Destroy(confirm) if controls.page(consent::PAGES) == upgrade::UPGRADE => pointer.upgrade_answer = Some(confirm),
         Action::Destroy(confirm) => pointer.destroy = Some(confirm),
         Action::LogoutAnswer(answer) => pointer.logout_answer = Some(answer),
         Action::TravelAnswer(answer) => pointer.travel_answer = Some(answer),

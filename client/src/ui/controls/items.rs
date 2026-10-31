@@ -256,7 +256,7 @@ pub(in crate::ui) fn prepare_confirm(layout:&Layout)->Layout {
     out.widgets.retain(|w|!w.id.starts_with("Canvas/DialogBottom"));
     for w in &mut out.widgets {
         let Some(rest)=w.id.strip_prefix("Canvas/DialogCenter/Content/") else{continue};
-        let layer=["DeleteItem","DefaultDoNotShowAgain"].iter().any(|l|rest==*l || rest.starts_with(&format!("{l}/")));
+        let layer=["DeleteItem","DefaultDoNotShowAgain","Default"].iter().any(|l|rest==*l || rest.starts_with(&format!("{l}/")));
         w.hidden=!layer || rest.ends_with("/Question");
     }
     out

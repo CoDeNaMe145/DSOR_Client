@@ -1087,10 +1087,13 @@ pub(in crate::ui) fn send(
             // (its item); not owned, or too few Altered Crescerite: nothing.
             // FAILURE (2026-10-31): sent the sticker's id, which the server
             //   (services/customization.py) does not own under.
+            // Asked first, as the original (upgrade::sync sends it on Confirm).
             Request::Upgrade(id) => {
                 let have = net.game_currencies.get(UPGRADE_CURRENCY).copied().unwrap_or(0);
                 if let Some(sticker) = views.album.sticker(&id).filter(|s| s.owned && s.next.as_ref().is_some_and(|(_, cost)| have >= u64::from(*cost))) {
-                    commands.push(ClientCommand::UpgradeStickerbookItem(proto::UpgradeStickerbookItem { id: sticker.server_key().to_owned() }));
+                    let (next, cost) = sticker.next.clone().unwrap_or_default();
+                    let name = items_catalogs.get(&items_data.catalog).map(|c| c.name(&next, None).trim().to_owned()).unwrap_or_else(|| next.clone());
+                    pointer.upgrade_ask = Some(super::upgrade::Ask { key: sticker.server_key().to_owned(), name, cost });
                 }
             }
             Request::AddSticker(id) => {
