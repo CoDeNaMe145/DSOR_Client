@@ -211,6 +211,8 @@ fn next(def: &crate::gameplay::systems::StickerDef, tier: Option<&str>) -> Optio
 ///   Bag.") / "Reward for 12 x Pets", its icon marked "100".
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(in crate::ui) struct RewardView {
+    /// The reward: a status effect (a bonus) or an item template.
+    pub item: String,
     pub title: String,
     /// A bonus's lines (green), or None for an item.
     pub bonus: Option<Vec<String>>,
@@ -318,7 +320,7 @@ pub(super) fn album(sources: &Sources) -> Album {
             let def = sources.items.and_then(|i| i.items.get(&r.item));
             let lifetime = def.map_or(0, |d| d.lifetime);
             let hint = def.is_some_and(|d| matches!(d.item_category.as_str(), "ItemCurrency" | "NoAutoUseCurrency"));
-            RewardView { title, bonus: card.map(|c| c.lines.clone()), description, footer: format!("Reward for {} x {kind}", r.at), amount: r.amount, lifetime, hint }
+            RewardView { item: r.item.clone(), title, bonus: card.map(|c| c.lines.clone()), description, footer: format!("Reward for {} x {kind}", r.at), amount: r.amount, lifetime, hint }
         }).collect()).unwrap_or_default()
     };
     let mut earned: std::collections::HashMap<&str, f32> = std::collections::HashMap::new();

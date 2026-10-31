@@ -221,29 +221,21 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
                     let mut card = items::small_card(layouts.get(&data.tooltip));
                     let title = format!("<i>{}</>", reward.title);
                     let footer = format!("<i>{}</>", reward.footer);
-                    let italic = |t: &String| if t.is_empty() { String::new() } else { format!("<i>{t}</>") };
-                    let lines: Vec<String> = match &reward.bonus { Some(bonus) => bonus.clone(),
-                        None => std::iter::once("Consumed when used".to_owned()).chain(reward.description.iter().cloned()).map(|t| italic(&t)).collect() };
-                    items::fit_small(&mut card, std::iter::once(title.as_str()).chain(lines.iter().map(String::as_str)).chain(std::iter::once(footer.as_str())));
-                    card.centered(&title, card::WHITE, false);
-                    if reward.bonus.is_some() {
+                    if reward.bonus.is_none() {
+                        // An item: its own card (a pet's whole card), "Reward for ..." under it.
+                        let Some(catalog) = catalog else { return };
+                        detail = Some(items::reward_item_card(catalog, layouts.get(&data.tooltip), &reward.item, &reward.footer, reward.lifetime,
+                            status_catalogs.get(&status_bar.catalog), &views.album.bag_values(), &views.album.class));
+                        under_sticker = true;
+                    } else {
+                        let lines = reward.bonus.clone().unwrap_or_default();
+                        items::fit_small(&mut card, std::iter::once(title.as_str()).chain(lines.iter().map(String::as_str)).chain(std::iter::once(footer.as_str())));
+                        card.centered(&title, card::WHITE, false);
                         for line in &lines { card.centered(line, card::GREEN, false); }
                         card.centered(&footer, yellow, false);
-                    } else {
-                        // gui.window.tooltip consumableUnderTitle, then the description.
-                        for (i, line) in lines.iter().enumerate() {
-                            let colour = if i > 0 && reward.hint { Color::srgb(0.88, 0.78, 0.52) } else { card::WHITE };
-                            if line.is_empty() { card.gap(6.0); } else { card.text(line, colour); }
-                        }
-                        // gui.window.tooltip statusEffectDuration, red (the original's Premium).
-                        if reward.lifetime > 0 {
-                            let s = reward.lifetime;
-                            card.text(&format!("Duration: {}d {}h {}m {}s", s / 86400, s / 3600 % 24, s / 60 % 60, s % 60), Color::srgb(0.9, 0.12, 0.1));
-                        }
-                        card.text(&footer, yellow);
+                        detail = Some(card);
+                        under_sticker = true;
                     }
-                    detail = Some(card);
-                    under_sticker = true;
                 }
                 // A sticker's arrow: its next tier's card and price.
                 Action::System(super::systems::Request::Upgrade(id)) if catalog.is_some() && views.album.sticker(id).is_some_and(|s| s.next.is_some()) => {

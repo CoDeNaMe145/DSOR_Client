@@ -863,7 +863,11 @@ pub(in crate::ui) mod pins;
 mod interaction_tests;
 
 pub(super) fn sticker_card(catalog:&Catalog, layout:Option<&Layout>, template:&str, title:&str, status:Option<&effects::Catalog>, bag:&HashMap<String,f32>, class:&str, upgrade:Option<(u64,u32)>)->tooltips::card::Card {
-    preview::sticker(catalog,layout,template,title,status,bag,class,upgrade)
+    preview::sticker(catalog,layout,template,title,status,bag,class,upgrade,None)
+}
+#[allow(clippy::too_many_arguments)]
+pub(super) fn reward_item_card(catalog:&Catalog, layout:Option<&Layout>, template:&str, footer:&str, lifetime:u32, status:Option<&effects::Catalog>, bag:&HashMap<String,f32>, class:&str)->tooltips::card::Card {
+    preview::reward_item(catalog,layout,template,footer,lifetime,status,bag,class)
 }
 
 pub(in crate::ui) fn small_card(layout:Option<&Layout>)->tooltips::card::Card { preview::small_card(layout) }

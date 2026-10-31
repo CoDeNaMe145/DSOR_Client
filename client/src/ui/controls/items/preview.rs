@@ -83,7 +83,10 @@ pub(super) fn fit_small<'a>(card: &mut Card, lines: impl Iterator<Item = &'a str
 ///   "Update to" / "Karabossa Doll" in the tier's blue / Pet / Use, is not
 ///   depleted when used / Effect (the tier's values) / "Upgrade costs" /
 ///   "Altered Crescerite: 0/5"; no description, no hints.
-pub(super) fn sticker(catalog: &Catalog, layout: Option<&Layout>, template: &str, title: &str, status: Option<&super::super::effects::Catalog>, bag: &HashMap<String, f32>, class: &str, upgrade: Option<(u64, u32)>) -> Card {
+/// With `reward` (a book reward's "Reward for 9 x Pets") that line ends it in
+/// place of "Not for sale" and the hint.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn sticker(catalog: &Catalog, layout: Option<&Layout>, template: &str, title: &str, status: Option<&super::super::effects::Catalog>, bag: &HashMap<String, f32>, class: &str, upgrade: Option<(u64, u32)>, reward: Option<&str>) -> Card {
     let meta = catalog.items.get(template);
     let mut card = Card::new(STICKER_MAX_WIDTH, layout);
     // The original writes it in a small hand, its name no larger than the rest.
@@ -122,7 +125,8 @@ pub(super) fn sticker(catalog: &Catalog, layout: Option<&Layout>, template: &str
     // What is owned counts up to the price ("5/5" with more in the wallet), as
     // the original's.
     let price = upgrade.map(|(have, cost)| format!("Altered Crescerite: {}/{cost}", have.min(u64::from(cost))));
-    let body = [kind.as_deref(), Some(used), description.as_deref(), Some("Not for sale"), Some(how), price.as_deref()];
+    let ending = if reward.is_some() { [reward, None] } else { [Some("Not for sale"), Some(how)] };
+    let body = [kind.as_deref(), Some(used), description.as_deref(), ending[0], ending[1], price.as_deref()];
     let widest = body.into_iter().flatten().chain(effect.iter().map(|(t, _)| t.as_str())).map(|t| longest(t, size))
         .fold(longest(&name, card.title_size()), f32::max);
     card.width = (widest.ceil() + 36.0).clamp(120.0, STICKER_MAX_WIDTH);
@@ -150,9 +154,68 @@ pub(super) fn sticker(catalog: &Catalog, layout: Option<&Layout>, template: &str
         card.text(price, WHITE);
         return card;
     }
+    if let Some(reward) = reward {
+        card.gap(2.5);
+        card.text(reward, Color::srgb(0.95, 0.85, 0.2));
+        return card;
+    }
     card.gap(5.0);
     card.text("Not for sale", WHITE);
     card.text(how, Color::srgb(0.95, 0.85, 0.2));
+    card
+}
+
+/// The colour an item template's name is written in (rarity).
+pub(super) fn rarity_tint(catalog: &Catalog, template: &str) -> Color { rarity(catalog, template, None).1 }
+
+/// A Collector's Bag item reward's card: a pet's own card, else the item's name
+/// in its rarity's colour, "Consumed when used" for what is used up, its
+/// description and lifetime; then "Reward for n x <category>".
+/// EVIDENCE: the original's Enigmatic Hatchlings bar (the user's recording
+///   20261031-1621-02) and Draken/Premium cards: "Legendary Equipment" orange /
+///   Consumed when used / Contains a Legendary piece of equipment for your
+///   level. / Reward for 2 x Pets; lines 30 px apart where the icon is 120
+///   (the small hand's 24), 7 more before "Reward for"; a pet ("Spiky...") its
+///   whole pet card, then "Reward for 9 x Pets".
+pub(super) fn reward_item(catalog: &Catalog, layout: Option<&Layout>, template: &str, footer: &str, lifetime: u32,
+    status: Option<&super::super::effects::Catalog>, bag: &HashMap<String, f32>, class: &str) -> Card {
+    let meta = catalog.items.get(template);
+    let yellow = Color::srgb(0.95, 0.85, 0.2);
+    let footer = format!("<i>{footer}</>");
+    if meta.is_some_and(|m| matches!(m.item_category.as_str(), "Pet" | "Mercenary")) {
+        return sticker(catalog, layout, template, "", status, bag, class, None, Some(&footer));
+    }
+
+    // Larger than the sticker cards' hand: the original's "Right click to add the
+    // currency to your Currency Bag." is 4.85 icon widths long where ours was 4.06,
+    // its lines 0.27 of the icon apart where ours were 0.19 (the user's Draken and
+    // Community Coin shots, 2026-10-31).
+    let mut card = small_card(layout);
+    card.scale_text(1.19);
+    card.set_leading(STICKER_LEADING * 1.19);
+    let title = format!("<i>{}</>", catalog.name(template, None).trim());
+    let consumed = meta.is_some_and(|m| matches!(m.item_category.as_str(), "ItemCurrency" | "NoAutoUseCurrency" | "Consumable"
+        | "ConsumablePaymentItem" | "LootGenItem" | "InstantConsumable" | "Key" | "TravelMapItem"));
+    // The currencies' description is their hint, in its own tan (db.itemcurrency
+    // rightClickForCurrencyBag "<cE0C884FF>...</>"; the export drops the markup).
+    let hint = meta.is_some_and(|m| matches!(m.item_category.as_str(), "ItemCurrency" | "NoAutoUseCurrency"));
+    // The essences' text is a "Localize:" placeholder in the game files (the
+    // original builds it from their values): left out.
+    // UNVERIFIED/TODO: the original's "Increases attack power. Used up after
+    //   each attack. / 300.00% increased damage / No effect in official arenas."
+    let description: Vec<String> = meta.filter(|m| !m.description.starts_with("Localize:")).map(|m| m.description.replace("\\n", "\n")).unwrap_or_default()
+        .split('\n').map(|l| if l.is_empty() { String::new() } else { format!("<i>{l}</>") }).collect();
+    let duration = (lifetime > 0).then(|| format!("Duration: {}d {}h {}m {}s", lifetime / 86400, lifetime / 3600 % 24, lifetime / 60 % 60, lifetime % 60));
+    fit_small(&mut card, std::iter::once(title.as_str()).chain(std::iter::once("<i>Consumed when used</>"))
+        .chain(description.iter().map(String::as_str)).chain(duration.as_deref()).chain(std::iter::once(footer.as_str())));
+    card.centered(&title, rarity_tint(catalog, template), false);
+    if consumed { card.text("<i>Consumed when used</>", WHITE); }
+    for line in description.iter().skip_while(|l| l.is_empty() && !consumed) {
+        if line.is_empty() { card.gap(8.0); } else { card.text(line, if hint { Color::srgb(0.88, 0.78, 0.52) } else { WHITE }); }
+    }
+    if let Some(duration) = &duration { card.text(duration, Color::srgb(0.9, 0.12, 0.1)); }
+    card.gap(2.5);
+    card.text(&footer, yellow);
     card
 }
 
