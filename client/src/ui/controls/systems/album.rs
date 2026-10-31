@@ -94,7 +94,11 @@ pub(in crate::ui) struct Sticker {
     pub key: String,
     pub favourite: bool,
     pub addable: bool,
+    /// Has a next rarity tier: its arrow shows, owned or not, as the original's.
     pub upgradable: bool,
+    /// That next tier's item and its price in Altered Crescerite (the tier
+    /// owned, else the sticker's own item, is the one it follows).
+    pub next: Option<(String, u32)>,
     /// Its origin's icon, its preview background (textures), its offer.
     pub origin: String,
     pub background: String,
@@ -186,6 +190,14 @@ pub(super) fn templates(def: &crate::gameplay::systems::StickerDef) -> impl Iter
     def.items.iter().map(String::as_str).chain(def.upgrades.iter().map(|u| u.rsplit_once(':').map_or(u.as_str(), |(t, _)| t)))
 }
 
+/// The tier above the one owned (or above the sticker's own item): its item and
+/// price ("pet_karabossa_magic:5").
+fn next(def: &crate::gameplay::systems::StickerDef, tier: Option<&str>) -> Option<(String, u32)> {
+    let at = tier.and_then(|t| templates(def).position(|x| x == t)).unwrap_or(0);
+    let above = at.saturating_sub(def.items.len().saturating_sub(1));
+    def.upgrades.get(above).and_then(|u| u.rsplit_once(':')).map(|(t, cost)| (t.to_owned(), cost.parse().unwrap_or(0)))
+}
+
 pub(super) fn album(sources: &Sources) -> Album {
     let catalog = sources.catalog;
     let state = sources.state;
@@ -202,8 +214,11 @@ pub(super) fn album(sources: &Sources) -> Album {
             template: tier.or(def.items.first().map(String::as_str)).unwrap_or_default().to_owned(),
             owned, favourite: entry.is_some_and(|e| e.state == StickerbookEntry::FAVOURITE),
             addable: !owned && templates(def).any(|t| !sources.carried(t).is_empty()),
-            // Not at its last tier.
-            upgradable: owned && templates(def).last().is_some_and(|last| tier != Some(last)) && !def.upgrades.is_empty(),
+            // The original draws the arrow on every sticker with a tier above
+            // the one shown, owned or not (the user's recording 20261031-1414-12:
+            //   arrows over a whole Tamed Foes page owned 0 of 33).
+            upgradable: next(def, tier).is_some(),
+            next: next(def, tier),
             origin: def.origin.clone(), background: def.background.clone(), offer: def.offer.clone(),
             countdown: owned.then(|| tier.or(def.items.first().map(String::as_str)))
                 .flatten()
@@ -620,6 +635,21 @@ mod tests {
         let s = Sticker { id: id.into(), key: "mythical_mount_manticore_01".into(), ..Default::default() };
         assert_eq!(s.server_key(), "mythical_mount_manticore_01");
         assert_eq!(Sticker { id: id.into(), ..Default::default() }.server_key(), id);
+    }
+
+    #[test]
+    fn a_sticker_s_arrow_offers_the_tier_above_the_one_owned() {
+        let def: crate::gameplay::systems::StickerDef = serde_json::from_value(serde_json::json!({
+            "name": "Mortis Doll", "book": "sb_pets_tamed_enemies", "items": ["pet_mortis_phase2_uncommon"],
+            "upgrades": ["pet_mortis_phase2_magic:5", "pet_mortis_phase2_rare:25", "pet_mortis_phase2_epic:50"] })).unwrap();
+        // Not owned, as owned at its own item: the first tier above.
+        assert_eq!(next(&def, None), Some(("pet_mortis_phase2_magic".into(), 5)));
+        assert_eq!(next(&def, Some("pet_mortis_phase2_uncommon")), Some(("pet_mortis_phase2_magic".into(), 5)));
+        assert_eq!(next(&def, Some("pet_mortis_phase2_rare")), Some(("pet_mortis_phase2_epic".into(), 50)));
+        // The last tier, or a sticker without tiers: no arrow.
+        assert_eq!(next(&def, Some("pet_mortis_phase2_epic")), None);
+        let plain: crate::gameplay::systems::StickerDef = serde_json::from_value(serde_json::json!({ "name": "Nian", "items": ["pet_nian"] })).unwrap();
+        assert_eq!(next(&plain, None), None);
     }
 
     #[test]

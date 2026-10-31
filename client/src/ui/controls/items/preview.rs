@@ -56,7 +56,13 @@ const STICKER_WORD_SPACE: f32 = 0.31;
 /// rarity's colour, then gui.window consumableUnderTitleInfinite, its description,
 /// noSale and howToUseMount / howToUsePet.
 /// FAILURE (2026-10-24): a bare "Sticker / Shows it in the preview" line.
-pub(super) fn sticker(catalog: &Catalog, layout: Option<&Layout>, template: &str, title: &str, status: Option<&super::super::effects::Catalog>, bag: &HashMap<String, f32>, class: &str) -> Card {
+/// A sticker's card; with `upgrade` (Altered Crescerite owned, price) the card of
+/// its arrow: the next tier's, headed "Update to", its price at the bottom.
+/// EVIDENCE: the original's arrow card (the user's recording 20261031-1414-12):
+///   "Update to" / "Karabossa Doll" in the tier's blue / Pet / Use, is not
+///   depleted when used / Effect (the tier's values) / "Upgrade costs" /
+///   "Altered Crescerite: 0/5"; no description, no hints.
+pub(super) fn sticker(catalog: &Catalog, layout: Option<&Layout>, template: &str, title: &str, status: Option<&super::super::effects::Catalog>, bag: &HashMap<String, f32>, class: &str, upgrade: Option<(u64, u32)>) -> Card {
     let meta = catalog.items.get(template);
     let mut card = Card::new(STICKER_MAX_WIDTH, layout);
     // The original writes it in a small hand, its name no larger than the rest.
@@ -79,7 +85,7 @@ pub(super) fn sticker(catalog: &Catalog, layout: Option<&Layout>, template: &str
     let item_name = catalog.name(template, None).trim();
     let name = format!("<i>{}</>", if item_name.is_empty() || item_name == template { title } else { item_name });
     let kind = meta.filter(|m| !m.category.is_empty()).map(|m| format!("<i>{}</>", m.category));
-    let description = meta.filter(|m| !m.description.is_empty())
+    let description = meta.filter(|m| !m.description.is_empty() && upgrade.is_none())
         .map(|m| if m.description.contains('<') { m.description.clone() } else { format!("<i>{}</>", m.description) });
     let pet = meta.is_some_and(|m| matches!(m.item_category.as_str(), "Pet" | "Mercenary"));
     let how = if pet { "(Right click to call your Companion over)" } else { "(Right click to mount or equip)" };
@@ -92,12 +98,14 @@ pub(super) fn sticker(catalog: &Catalog, layout: Option<&Layout>, template: &str
     let longest = |text: &str, size: f32| plain(text).lines()
         .map(|l| crate::network::chat::text_width(l, size) + l.matches(' ').count() as f32 * STICKER_WORD_SPACE * size).fold(0.0, f32::max);
     let size = card.text_size();
-    let body = [kind.as_deref(), Some(used), description.as_deref(), Some("Not for sale"), Some(how)];
+    let price = upgrade.map(|(have, cost)| format!("Altered Crescerite: {have}/{cost}"));
+    let body = [kind.as_deref(), Some(used), description.as_deref(), Some("Not for sale"), Some(how), price.as_deref()];
     let widest = body.into_iter().flatten().chain(effect.iter().map(|(t, _)| t.as_str())).map(|t| longest(t, size))
         .fold(longest(&name, card.title_size()), f32::max);
     card.width = (widest.ceil() + 36.0).clamp(120.0, STICKER_MAX_WIDTH);
     // A little room before the description and more before "Not for sale"
     // (the original: 29 and 38 video pixels where its lines are 23 apart).
+    if upgrade.is_some() { card.centered("Update to", WHITE, false); }
     card.heading(&name, tint);
     if let Some(kind) = &kind { card.text(kind, tint); }
     card.text(used, MUTED);
@@ -111,6 +119,13 @@ pub(super) fn sticker(catalog: &Catalog, layout: Option<&Layout>, template: &str
         card.rule();
         card.centered("Effect", MUTED, false);
         for (text, header) in &effect { card.text(text, if *header { WHITE } else { BLUE }); }
+    }
+    if let Some(price) = &price {
+        card.gap(2.0);
+        card.rule();
+        card.centered("Upgrade costs", MUTED, false);
+        card.text(price, WHITE);
+        return card;
     }
     card.gap(5.0);
     card.text("Not for sale", WHITE);

@@ -845,8 +845,8 @@ pub(in crate::ui) mod pins;
 #[cfg(test)]
 mod interaction_tests;
 
-pub(super) fn sticker_card(catalog:&Catalog, layout:Option<&Layout>, template:&str, title:&str, status:Option<&effects::Catalog>, bag:&HashMap<String,f32>, class:&str)->tooltips::card::Card {
-    preview::sticker(catalog,layout,template,title,status,bag,class)
+pub(super) fn sticker_card(catalog:&Catalog, layout:Option<&Layout>, template:&str, title:&str, status:Option<&effects::Catalog>, bag:&HashMap<String,f32>, class:&str, upgrade:Option<(u64,u32)>)->tooltips::card::Card {
+    preview::sticker(catalog,layout,template,title,status,bag,class,upgrade)
 }
 
 pub(super) fn preview_card(catalog:&Catalog, layout:Option<&Layout>, template:&str, item:Option<&ItemInfo>, amount:u32, advanced:bool)->tooltips::card::Card {

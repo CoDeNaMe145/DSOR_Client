@@ -209,8 +209,17 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
                 Action::System(super::systems::Request::Pick(id, _)) if catalog.is_some() && views.album.sticker(id).is_some_and(|s| !s.template.is_empty()) => {
                     let sticker = views.album.sticker(id).unwrap();
                     detail = Some(items::sticker_card(catalog.unwrap(), layouts.get(&data.tooltip), &sticker.template, &sticker.name,
-                        status_catalogs.get(&status_bar.catalog), &views.album.bag_values(), &views.album.class));
+                        status_catalogs.get(&status_bar.catalog), &views.album.bag_values(), &views.album.class, None));
                     // Fixed under the sticker (STICKER_GAP).
+                    under_sticker = true;
+                }
+                // A sticker's arrow: its next tier's card and price.
+                Action::System(super::systems::Request::Upgrade(id)) if catalog.is_some() && views.album.sticker(id).is_some_and(|s| s.next.is_some()) => {
+                    let sticker = views.album.sticker(id).unwrap();
+                    let (next, cost) = sticker.next.clone().unwrap();
+                    let have = net.as_deref().and_then(|n| n.game_currencies.get(super::systems::UPGRADE_CURRENCY)).copied().unwrap_or(0);
+                    detail = Some(items::sticker_card(catalog.unwrap(), layouts.get(&data.tooltip), &next, &sticker.name,
+                        status_catalogs.get(&status_bar.catalog), &views.album.bag_values(), &views.album.class, Some((have, cost))));
                     under_sticker = true;
                 }
                 // A quest reward: its card.

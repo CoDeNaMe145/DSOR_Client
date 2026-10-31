@@ -839,6 +839,9 @@ fn rank_tabs(controls: &WindowControls) -> (u8, u8, u8) {
 
 /// The server's part: the requests of the windows opened and of their buttons.
 #[allow(clippy::too_many_arguments)]
+/// The currency a sticker's next tier costs (Altered Crescerite).
+pub(in crate::ui) const UPGRADE_CURRENCY: &str = "currency_stickerbook_upgrade";
+
 pub(in crate::ui) fn send(
     net: Option<NonSendMut<Net>>,
     mut pointer: ResMut<Pointer>,
@@ -1080,7 +1083,16 @@ pub(in crate::ui) fn send(
             }
             Request::Banner(n) => state.album_banner = n,
             Request::Favorite(id, favorite) => commands.push(ClientCommand::SetStickerbookFavorite(proto::SetStickerbookFavorite { id, favorite })),
-            Request::Upgrade(id) => commands.push(ClientCommand::UpgradeStickerbookItem(proto::UpgradeStickerbookItem { id })),
+            // The tier owned goes up, under the name the server keeps it by
+            // (its item); not owned, or too few Altered Crescerite: nothing.
+            // FAILURE (2026-10-31): sent the sticker's id, which the server
+            //   (services/customization.py) does not own under.
+            Request::Upgrade(id) => {
+                let have = net.game_currencies.get(UPGRADE_CURRENCY).copied().unwrap_or(0);
+                if let Some(sticker) = views.album.sticker(&id).filter(|s| s.owned && s.next.as_ref().is_some_and(|(_, cost)| have >= u64::from(*cost))) {
+                    commands.push(ClientCommand::UpgradeStickerbookItem(proto::UpgradeStickerbookItem { id: sticker.server_key().to_owned() }));
+                }
+            }
             Request::AddSticker(id) => {
                 let sources = Sources { net: &net, catalog, items: None, names: None, state: &state, class: None, talents: None, bonuses: None };
                 let item = catalog.stickers.get(&id).into_iter().flat_map(album::templates).find_map(|t| sources.carried(t).first().copied());
