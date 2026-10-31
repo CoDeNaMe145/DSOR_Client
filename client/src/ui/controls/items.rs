@@ -47,7 +47,13 @@ pub struct Catalog { pub items: HashMap<String, Definition>, pub ingredients: Ve
     #[serde(default)] pub raises: HashMap<String, (String, f32)>,
     /// Such a reward's icon on its book's bar.
     #[serde(default)] pub reward_icons: HashMap<String, String>,
+    /// Such a reward's hover card: its title and lines (tools/inventory_catalog.py
+    /// reward_cards).
+    #[serde(default)] pub reward_cards: HashMap<String, RewardCard>,
     #[serde(default)] pub variables: HashMap<String, f32> }
+#[derive(Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct RewardCard { #[serde(default)] pub title: String, #[serde(default)] pub lines: Vec<String> }
+
 impl Catalog {
     /// What a cell shows: the rolled appearance's icon (a generated item's look;
     /// its template's icon is the base model's, the same for every roll), else the

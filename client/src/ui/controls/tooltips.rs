@@ -213,6 +213,20 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
                     // Fixed under the sticker (STICKER_GAP).
                     under_sticker = true;
                 }
+                // A book reward on the album's bar: its card, as the original's
+                // (title white, its bonus green, "Reward for ..." yellow, centred).
+                Action::System(super::systems::Request::Reward(n)) if views.album.reward_cards.get(*n).is_some() => {
+                    let (title, lines, footer) = &views.album.reward_cards[*n];
+                    let mut card = items::small_card(layouts.get(&data.tooltip));
+                    let title = format!("<i>{title}</>");
+                    let footer = format!("<i>{footer}</>");
+                    items::fit_small(&mut card, std::iter::once(title.as_str()).chain(lines.iter().map(String::as_str)).chain(std::iter::once(footer.as_str())));
+                    card.centered(&title, card::WHITE, false);
+                    for line in lines { card.centered(line, card::GREEN, false); }
+                    card.centered(&footer, Color::srgb(0.95, 0.85, 0.2), false);
+                    detail = Some(card);
+                    under_sticker = true;
+                }
                 // A sticker's arrow: its next tier's card and price.
                 Action::System(super::systems::Request::Upgrade(id)) if catalog.is_some() && views.album.sticker(id).is_some_and(|s| s.next.is_some()) => {
                     let sticker = views.album.sticker(id).unwrap();

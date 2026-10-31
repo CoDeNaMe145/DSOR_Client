@@ -15,6 +15,38 @@ SLOTS = {'HelmetSlot':[0], 'ShoulderSlot':[1], 'TorsoSlot':[2], 'GlovesSlot':[3]
          'AmmoSlot':[35,34]}
 
 
+def reward_cards(db, table, local):
+    """A sticker book's status-effect rewards as their hover card says them:
+    {status: {title, lines}} ("Triad of Life (Permanent)", "+ 3% health points
+    while accompanied by a pet"): its title, and each shown modifier's own text
+    (its "#key"), the value written in for a placeholder (the Andermant's
+    "+{0:s}%")."""
+    rewards = set()
+    for (encoded,) in db.execute('SELECT StickerbookRewardItems FROM _Template_Stickerbook WHERE StickerbookRewardItems IS NOT NULL'):
+        for part in (encoded or '').split(';'):
+            fields = part.strip().split(':')
+            if len(fields) >= 2:
+                rewards.add(fields[1].strip())
+    cards = {}
+    for sid, modifiers in db.execute('SELECT Id, StartModifiers FROM _Template_StatusEffect'):
+        if sid not in rewards:
+            continue
+        lines = []
+        for part in (modifiers or '').split(';'):
+            body, _, key = part.partition('#')
+            key = key.strip()
+            if not key or key == '~':
+                continue
+            text = re.sub(r'<[^>]*>', '', table.get('gui.statuseffects.modifier_' + key, ''))
+            if not text:
+                continue
+            value = re.search(r':([-0-9.]+),', body)
+            number = ('%g' % round(float(value.group(1)) * 100, 4)) if value else ''
+            lines.append(re.sub(r'\{\d+:s\}', number, text))
+        cards[sid] = dict(title=local(sid + 'Title', sid), lines=lines)
+    return cards
+
+
 def export_inventory(db, textures, loca, assets):
     table = loca.get('en', {})
     # A status effect's title loses to the item's own: both are keyed
@@ -122,6 +154,7 @@ def export_inventory(db, textures, loca, assets):
             result['raises'][sid] = [raised.group(2), round(float(raised.group(1)), 6)]
             if texture(brush):
                 result['reward_icons'][sid] = texture(brush)
+    result['reward_cards'] = reward_cards(db, table, local)
     # The actor variables' upper limits (pet_hitpoint_01 10, pet_andermant_01 0.15).
     result['variables'] = {v: round(float(hi), 6) for v, hi in db.execute('SELECT Id, UpperLimit FROM _Template_ActorVariables')}
     path = os.path.join(assets, 'interface', 'inventory.items.json')

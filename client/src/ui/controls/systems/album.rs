@@ -149,6 +149,8 @@ pub(in crate::ui) struct Album {
     /// The stickers collected of the book's, its rewards (count, icon).
     pub progress: (u32, u32),
     pub rewards: Vec<(u32, Icon)>,
+    /// Each reward's hover card (title, lines, "Reward for 3 x Pets").
+    pub reward_cards: Vec<(String, Vec<String>, String)>,
     /// The front page's banner, of how many, and the new stickers.
     pub banner: String,
     pub banner_index: usize,
@@ -276,6 +278,19 @@ pub(super) fn album(sources: &Sources) -> Album {
         book.map(|b| b.rewards.iter().map(|r| (r.at, sources.items.and_then(|i| i.reward_icons.get(&r.item))
             .map_or_else(|| sources.icon(&r.item, None), |image| Icon { image: image.clone(), ..Default::default() }))).collect()).unwrap_or_default()
     };
+    // Their cards: a bonus's title and text, else the item's name; under them
+    // "Reward for <n> x <category>" (gui.window.stickerbook rewardAmountTemplate).
+    // EVIDENCE: the original's Tamed Foes bar (the user's recording
+    //   20261031-1601-00): "Triad of Life (Permanent)" / "+ 3% health points
+    //   while accompanied by a pet" / "Reward for 15 x Pets".
+    let kind = book.and_then(|b| catalog.stickerbooks.iter().find(|t| t.category == b.category && t.subcategory < 0)).map(|t| t.title.clone()).unwrap_or_default();
+    let reward_cards = if top || front { Vec::new() } else {
+        book.map(|b| b.rewards.iter().map(|r| {
+            let card = sources.items.and_then(|i| i.reward_cards.get(&r.item));
+            let title = card.map(|c| c.title.clone()).or_else(|| sources.items.map(|i| i.name(&r.item, None).trim().to_owned())).unwrap_or_else(|| r.item.clone());
+            (title, card.map(|c| c.lines.clone()).unwrap_or_default(), format!("Reward for {} x {kind}", r.at))
+        }).collect()).unwrap_or_default()
+    };
     let mut earned: std::collections::HashMap<&str, f32> = std::collections::HashMap::new();
     if let Some(items) = sources.items {
         for book in catalog.stickerbooks.iter().filter(|b| !b.rewards.is_empty()) {
@@ -297,7 +312,7 @@ pub(super) fn album(sources: &Sources) -> Album {
         books, front,
         title: if front { "Favorites".into() } else { book.map(|b| b.title.clone()).unwrap_or_default() },
         description: if top { format!("{} of {} collected.", progress.0, progress.1) } else { book.map(|b| b.description.clone()).unwrap_or_default() },
-        stickers, page, pages, preview, progress, rewards,
+        stickers, page, pages, preview, progress, rewards, reward_cards,
         banner: catalog.album_banners.get(banner_index).cloned().unwrap_or_default(), banner_index, banners, new,
         scroll: state.scroll.get(LIST).copied().unwrap_or(0),
         bag,
@@ -509,6 +524,9 @@ pub(super) fn prepare_album(source: &Layout, album: &Album) -> Layout {
                 for mut w in clone_at(source, REWARD, &format!("{INLAY}/Categorypage/ProgressLabel/Reward{n}"), x - (root.rect[0] + root.rect[2]) / 2.0, 0.0) {
                     if w.id.ends_with("/IconHighlight") && *at > album.progress.0 { continue; }
                     if leaf(&w.id) == "Icon" { layout.widgets.extend(icon_layers(&mut w, icon)); set_text(&mut w, ""); }
+                    // Hovered, it shows its card (tooltips): its slot (the root is an
+                    // 11 x 10 label at the stem's top).
+                    if w.id.ends_with(&format!("/Reward{n}/Linie/ItemSlot")) { make_button(&mut w, &format!("Sys:Reward:{n}")); }
                     w.hidden = false;
                     layout.widgets.push(w);
                 }

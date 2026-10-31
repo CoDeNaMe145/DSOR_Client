@@ -98,6 +98,8 @@ pub(crate) enum Request {
     Banner(usize),
     Favorite(String, bool),
     Upgrade(String),
+    /// The album book's n-th reward, hovered for its card.
+    Reward(usize),
     /// Add the carried item that fills this sticker.
     AddSticker(String),
     Salvage,
@@ -547,6 +549,7 @@ pub(super) fn action(window: &str, w: &Widget) -> Option<Action> {
             "Banner" => Request::Banner(arg.parse().ok()?),
             "Favorite" => Request::Favorite(bare.to_owned(), flag),
             "Upgrade" => Request::Upgrade(arg.to_owned()),
+            "Reward" => Request::Reward(arg.parse().ok()?),
             "Add" => Request::AddSticker(arg.to_owned()),
             "Unpick" => Request::Unpick(arg.parse().ok()?),
             "Socket" => Request::Socket(arg.parse().ok()?),
@@ -760,6 +763,7 @@ pub(super) fn tooltip(request: &Request) -> Option<(&'static str, String)> {
         Request::Favorite(_, true) => ("Add to favourites", String::new()),
         Request::Favorite(_, false) => ("Remove from favourites", String::new()),
         Request::Upgrade(_) => ("Upgrade", "Raise this item's rarity with its upgrade items.".into()),
+        Request::Reward(_) => ("Reward", String::new()),
         Request::AddSticker(_) => ("Add to the album", "Adds the carried item to your collection.".into()),
         Request::Salvage => ("Melt down", "Melts the items placed here into Glyphs of Power and materials.".into()),
         Request::Unpick(_) => ("Take back", String::new()),
@@ -1106,7 +1110,7 @@ pub(in crate::ui) fn send(
                 if !items.is_empty() { commands.push(ClientCommand::Salvage(proto::Salvage { items, mode: 0 })); wait = true; }
                 state.salvage.clear();
             }
-            Request::SocketGem(_) | Request::BenchItem(_) => {}
+            Request::SocketGem(_) | Request::BenchItem(_) | Request::Reward(_) => {}
             Request::Unpick(index) => { if index < state.salvage.len() { state.salvage.remove(index); } }
             // A placed gem right-clicked goes back; a set one is taken out.
             Request::TakeGem(socket) if state.gem_preview.iter().any(|(s, _)| *s == socket) => state.gem_preview.retain(|(s, _)| *s != socket),
