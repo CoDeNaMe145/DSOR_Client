@@ -343,11 +343,12 @@ pub(in crate::ui) fn overlay(mut commands: Commands, windows: Query<(&Window2018
             let offset_of = |row: usize| { let name = if row == effects::TARGET { HOVER_WINDOW } else { "bottombar" };
                 windows.iter().find(|(w,_,v,_)| w.0 == name && **v != Visibility::Hidden).map(|(_,_,_,tf)| window_offset(tf)) };
             let effect = effects::card(p, offset_of, screen.width, &status_bar,
-                status_catalogs.get(&status_bar.catalog), &status_slots, net.as_deref(), template);
+                status_catalogs.get(&status_bar.catalog), &status_slots, net.as_deref(), template, &views.album.bag_values(), &views.album.class);
             if let Some((card, rect)) = effect {
                 detail = Some(card);
                 anchor = Some(rect);
-                above = true;
+                // Centred under its icon, as the original's (above when there is no room).
+                under_sticker = true;
             // Non-button gauges and currency amounts also explain themselves.
             } else if let Some((w,wc,_,tf)) = windows.iter().filter(|(_,c,v,tf)| **v != Visibility::Hidden && c.covers(p-window_offset(tf),screen.width))
                 .max_by(|a,b|a.3.translation.z.total_cmp(&b.3.translation.z)) {

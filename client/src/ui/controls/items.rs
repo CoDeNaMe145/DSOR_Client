@@ -849,6 +849,9 @@ pub(super) fn sticker_card(catalog:&Catalog, layout:Option<&Layout>, template:&s
     preview::sticker(catalog,layout,template,title,status,bag,class,upgrade)
 }
 
+pub(in crate::ui) fn small_card(layout:Option<&Layout>)->tooltips::card::Card { preview::small_card(layout) }
+pub(in crate::ui) fn fit_small<'a>(card:&mut tooltips::card::Card, lines:impl Iterator<Item=&'a str>) { preview::fit_small(card,lines) }
+
 pub(super) fn preview_card(catalog:&Catalog, layout:Option<&Layout>, template:&str, item:Option<&ItemInfo>, amount:u32, advanced:bool)->tooltips::card::Card {
     preview::card(&DisplayItem { item,template,amount,unlock:0,read_only:false,waiting:false },catalog,layout,advanced)
 }

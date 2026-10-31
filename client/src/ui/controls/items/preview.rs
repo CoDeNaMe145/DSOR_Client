@@ -56,6 +56,27 @@ const STICKER_WORD_SPACE: f32 = 0.31;
 /// rarity's colour, then gui.window consumableUnderTitleInfinite, its description,
 /// noSale and howToUseMount / howToUsePet.
 /// FAILURE (2026-10-24): a bare "Sticker / Shows it in the preview" line.
+/// A card in the original's small hand (the sticker and buff cards): the
+/// sticker card's letters, line spacing and word spacing, its dark background.
+pub(super) fn small_card(layout: Option<&Layout>) -> Card {
+    let mut card = Card::new(STICKER_MAX_WIDTH, layout);
+    card.scale_text(STICKER_TEXT);
+    card.scale_title(STICKER_TITLE);
+    card.set_leading(STICKER_LEADING);
+    card.set_word_space(STICKER_WORD_SPACE);
+    card.background = Color::srgba(0.01, 0.01, 0.005, 0.985);
+    card
+}
+
+/// A small card as wide as its longest line, as the original's.
+pub(super) fn fit_small<'a>(card: &mut Card, lines: impl Iterator<Item = &'a str>) {
+    let size = card.text_size();
+    let longest = |text: &str| plain(text).lines()
+        .map(|l| crate::network::chat::text_width(l, size) + l.matches(' ').count() as f32 * STICKER_WORD_SPACE * size).fold(0.0, f32::max);
+    let widest = lines.map(longest).fold(0.0, f32::max);
+    card.width = (widest.ceil() + 36.0).clamp(120.0, STICKER_MAX_WIDTH);
+}
+
 /// A sticker's card; with `upgrade` (Altered Crescerite owned, price) the card of
 /// its arrow: the next tier's, headed "Update to", its price at the bottom.
 /// EVIDENCE: the original's arrow card (the user's recording 20261031-1414-12):

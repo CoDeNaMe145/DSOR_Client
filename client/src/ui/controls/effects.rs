@@ -28,7 +28,7 @@ use bevy::asset::{io::Reader, AssetLoader, LoadContext};
 use crate::actors::monsters::{HoverInfo, Hovered};
 use crate::network::net::Net;
 use dsor_proto::commands::combat::StatusEffectElement;
-use tooltips::card::{Card, WHITE};
+use tooltips::card::{Card, WHITE, MUTED, BLUE};
 
 /// Slots per row (Slot1..Slot6).
 const SLOTS: usize = 6;
@@ -515,7 +515,8 @@ fn count(commands: &mut Commands, assets: &AssetServer, screen: &Screen, slot: E
 /// gives a row's window offset, None while it is hidden), anchored to its slot.
 #[allow(clippy::too_many_arguments)]
 pub(in crate::ui) fn card(point: Vec2, offset_of: impl Fn(usize) -> Option<Vec2>, width: f32, bar: &StatusBar,
-    catalog: Option<&Catalog>, slots: &Query<&EffectSlot>, net: Option<&Net>, template: Option<&Layout>) -> Option<(Card, [f32; 4])> {
+    catalog: Option<&Catalog>, slots: &Query<&EffectSlot>, net: Option<&Net>, template: Option<&Layout>,
+    bag: &HashMap<String, f32>, class: &str) -> Option<(Card, [f32; 4])> {
     let catalog = catalog?;
     let (slot, shown, rect) = slots.iter().find_map(|s| {
         let shown = bar.slots[s.row][s.slot]?;
@@ -531,19 +532,32 @@ pub(in crate::ui) fn card(point: Vec2, offset_of: impl Fn(usize) -> Option<Vec2>
     } else { net.map(|n| &n.stat_effects) };
     let params = effects.and_then(|e| e.values().filter(|e| e.index == shown.index).max_by_key(|e| e.instance))
         .and_then(|e| e.tail.as_ref()).map_or(&[][..], |t| t.parameters.as_slice());
-    let mut card = Card::new(300.0, template);
-    card.title(&def.name, Some(&def.icon), WHITE);
-    let lines: Vec<String> = def.lines.iter().filter_map(|l| line(l, params, shown.stacks, def.debuff)).collect();
-    if !lines.is_empty() {
-        card.rule();
-        for text in &lines { card.text(text, WHITE); }
-    }
+    // The original's buff card: the small hand of the sticker cards, its name
+    // in italics, "Effect", the headers white and the lines blue; a pet's
+    // Collector's Bag lines with the bonuses earned, the class's own resource.
+    // EVIDENCE: the original's Loving Kraken and Mortis Doll buff cards (the
+    //   user's recording 20261031-1536-17 and screenshot): lines 22 px apart at
+    //   3838 px wide, ours 45; no icon; "+ 30.00% Mana" all blue.
+    // FAILURE (2026-10-31): twice the original's size, "+ —% Health Points"
+    //   lines and "—: value unavailable" ("ours looks so big").
+    let mut card = super::items::small_card(template);
+    let headed = def.lines.iter().any(|l| l.text.contains("<WhiteStart>"));
+    let lines: Vec<(String, bool)> = if headed { card_lines(catalog, &def.id, params, bag, class) }
+        else { def.lines.iter().filter_map(|l| line(l, params, shown.stacks, def.debuff)).map(|t| (t, false)).collect() };
     let time = &bar.times[slot.row][slot.slot];
     let mut hints = Vec::new();
     if shown.stacks > 1 { hints.push(format!("Stacks: {} / {}", shown.stacks, def.stacks)); }
     if !time.is_empty() { hints.push(format!("Remaining: {time}")); }
     // As the skill cards say it (tooltips::overlay).
-    if lines.iter().any(|l| l.contains('—')) { hints.push("—: value unavailable".into()); }
+    if lines.iter().any(|(l, _)| l.contains('—')) { hints.push("—: value unavailable".into()); }
+    let title = format!("<i>{}</>", def.name);
+    super::items::fit_small(&mut card, std::iter::once(title.as_str()).chain(lines.iter().map(|(t, _)| t.as_str())).chain(hints.iter().map(String::as_str)));
+    card.text(&title, WHITE);
+    if !lines.is_empty() {
+        card.rule();
+        card.centered("Effect", MUTED, false);
+        for (text, header) in &lines { card.text(text, if *header { WHITE } else { BLUE }); }
+    }
     if !hints.is_empty() { card.gap(4.0); }
     for hint in &hints { card.hint(hint); }
     let x = slot.k * (width - BASE_W);
