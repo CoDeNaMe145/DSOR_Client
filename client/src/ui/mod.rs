@@ -1807,7 +1807,7 @@ fn update_slots(
 /// smoothly and the seconds count down as the original's ("4  s" just after a
 /// 5 s use: whole seconds left, tenths in the last one, a wide gap before the
 /// s); a sticker just used pops: a see-through copy of its icon grows to 1.3
-/// times and fades from the click, over 0.9 s.
+/// times and fades: 0.35 s after the click, already 1.1 times, over 0.45 s.
 /// EVIDENCE: the user's recording 20261031-1840-39, 30 fps (the original's
 ///   Supreme Snowman at 26.2-27.1 s; "5 s" for one frame, then "4 s"; the sweep
 ///   moving every frame).
@@ -1845,20 +1845,25 @@ fn album_overlays(mut commands: Commands, mut counts: Query<(Entity, &mut AlbumC
         c.shown = want;
     }
     for (e, mut p) in &mut pops {
-        // From the click: at its own size the copy is hidden under the icon, so
-        // it shows as it grows (the original's, 0.9 s from the countdown's start).
+        // It jumps out: 0.35 s after the click a copy appears already 1.1 times
+        // the icon, grows to 1.33 and fades over 0.45 s, then is gone.
+        // EVIDENCE: the original's Mortis Doll (the user's recording
+        //   20261031-1912-19, 30 fps): countdown at 11.73 s, the copy at
+        //   12.13-12.50 s, 1.11 -> 1.33 of the cell.
+        // FAILURE (2026-10-31): from 1.0 over 0.9 s it crept out unseen ("the
+        //   icon jumps out a bit" in the original).
         let start = pop_at.0.as_ref().filter(|(id, _)| *id == p.sticker).map(|&(_, at)| at);
-        let progress = start.map(|at| ((now - at) / 0.9) as f32).filter(|x| (0.0..1.0).contains(x));
+        let progress = start.map(|at| ((now - at - 0.35) / 0.45) as f32).filter(|x| (0.0..1.0).contains(x));
         let want = progress.map(|x| (x * 240.0) as u16);
         if want == p.shown { continue; }
         commands.entity(e).despawn_related::<Children>();
         if let (Some(x), Some(icon)) = (progress, views.album.sticker(&p.sticker).map(|s| s.icon.clone())) {
             let [l, t, r, b] = p.rect;
-            let (cx, cy, grow) = ((l + r) * 0.5, (t + b) * 0.5, 1.0 + 0.3 * x);
+            let (cx, cy, grow) = ((l + r) * 0.5, (t + b) * 0.5, 1.1 + 0.23 * x);
             let rect = [cx + (l - cx) * grow, cy + (t - cy) * grow, cx + (r - cx) * grow, cy + (b - cy) * grow];
             for (z, layer) in [&icon.background, &icon.image, &icon.frame].into_iter().enumerate().filter(|(_, l)| !l.is_empty()) {
                 let mut art = controls::template::image_art(rect, layer.clone());
-                for c in art.color.chunks_mut(4) { c[3] = 0.45 * (1.0 - x); }
+                for c in art.color.chunks_mut(4) { c[3] = 0.55 * (1.0 - 0.75 * x); }
                 let mut run = Run { k: p.k, ..default() };
                 run.push(&art, 0.0);
                 commands.spawn((Mesh2d(meshes.add(run.mesh())), MeshMaterial2d(materials.add(material(Some(assets.load(layer.clone()))))),
