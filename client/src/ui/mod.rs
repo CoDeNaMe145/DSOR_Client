@@ -646,6 +646,7 @@ impl Plugin for UiPlugin {
             .init_resource::<Settings>()
             .init_resource::<controls::hotbar::Hotbar>().init_resource::<crate::ui::controls::hotbar::ItemCooldowns>()
             .init_resource::<controls::hotbar::ItemCooldowns>()
+            .init_resource::<controls::systems::AlbumPopAt>()
             .insert_resource(local_map::MapSettings::load())
             .add_systems(Startup, (setup, controls::items::setup, dialogue::setup, controls::message::setup))
             .add_systems(Update, follow_screen)
@@ -1806,7 +1807,7 @@ fn update_slots(
 /// smoothly and the seconds count down as the original's ("4  s" just after a
 /// 5 s use: whole seconds left, tenths in the last one, a wide gap before the
 /// s); a sticker just used pops: a see-through copy of its icon grows to 1.3
-/// times and fades, starting 0.25 s after the use, over 0.65 s.
+/// times and fades from the click, over 0.9 s.
 /// EVIDENCE: the user's recording 20261031-1840-39, 30 fps (the original's
 ///   Supreme Snowman at 26.2-27.1 s; "5 s" for one frame, then "4 s"; the sweep
 ///   moving every frame).
@@ -1815,7 +1816,7 @@ fn update_slots(
 /// UNVERIFIED: the pop's exact start (the server's answer?) and alpha.
 #[allow(clippy::too_many_arguments)]
 fn album_overlays(mut commands: Commands, mut counts: Query<(Entity, &mut AlbumCount)>, mut pops: Query<(Entity, &mut AlbumPop)>,
-    item_cooldowns: Res<controls::hotbar::ItemCooldowns>, views: Res<controls::systems::Views>, state: Res<controls::systems::State>,
+    item_cooldowns: Res<controls::hotbar::ItemCooldowns>, views: Res<controls::systems::Views>, pop_at: Res<controls::systems::AlbumPopAt>,
     time: Res<Time<Real>>, assets: Res<AssetServer>, screen: Res<Screen>,
     mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<UiMaterial>>) {
     use controls::systems::album::{COUNT_SIZE, SWEEP_ALPHA};
@@ -1844,8 +1845,10 @@ fn album_overlays(mut commands: Commands, mut counts: Query<(Entity, &mut AlbumC
         c.shown = want;
     }
     for (e, mut p) in &mut pops {
-        let start = state.album_pop.as_ref().filter(|(id, _)| *id == p.sticker).map(|&(_, at)| at);
-        let progress = start.map(|at| ((now - at - 0.25) / 0.65) as f32).filter(|x| (0.0..1.0).contains(x));
+        // From the click: at its own size the copy is hidden under the icon, so
+        // it shows as it grows (the original's, 0.9 s from the countdown's start).
+        let start = pop_at.0.as_ref().filter(|(id, _)| *id == p.sticker).map(|&(_, at)| at);
+        let progress = start.map(|at| ((now - at) / 0.9) as f32).filter(|x| (0.0..1.0).contains(x));
         let want = progress.map(|x| (x * 240.0) as u16);
         if want == p.shown { continue; }
         commands.entity(e).despawn_related::<Children>();

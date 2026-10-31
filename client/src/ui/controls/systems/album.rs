@@ -107,10 +107,9 @@ pub(in crate::ui) struct Sticker {
     pub origin: String,
     pub background: String,
     pub offer: String,
-    /// Its category's cooldown running: its key.
+    /// Its cooldown key: every cell carries its countdown and pop markers, drawn
+    /// when they run (crate::ui::album_overlays), so a use needs no rebuild.
     pub countdown: Option<String>,
-    /// Just used: its icon pops.
-    pub popped: bool,
 }
 
 impl Album {
@@ -258,9 +257,7 @@ pub(super) fn album(sources: &Sources) -> Album {
             // Owned or not: the original's grey, not owned pets count down too
             // (recording 20261031-1722-23, Avians).
             countdown: tier.or(def.items.first().map(String::as_str))
-                .and_then(|t| super::super::hotbar::ItemCooldowns::key_of(sources.items, t))
-                .filter(|key| state.album_cooling.iter().any(|(k, ..)| k == key)),
-            popped: state.album_pop.as_ref().is_some_and(|(s, _)| s == id),
+                .and_then(|t| super::super::hotbar::ItemCooldowns::key_of(sources.items, t)),
         }
     };
     // The list: each category's top book; the open one's books under it.
@@ -437,7 +434,7 @@ fn grid(source: &Layout, layout: &mut Layout, page: &str, stickers: &[Sticker], 
         if let Some(icon) = clone_at(source, ENTRY, &replacement, dx, dy).find(|w| leaf(&w.id) == "TemplateIcon") {
             let mark = |id: String| { let mut m = icon.clone(); m.id = id; m.kind = "Label".into(); m.text = None; m.art = None; m.event.clear(); m.button = None; m.state = None; m.hidden = false; m };
             if let Some(key) = &sticker.countdown { layout.widgets.push(mark(format!("{page}{COUNT_MARK}{i}#{key}"))); }
-            if sticker.popped { layout.widgets.push(mark(format!("{page}{POP_MARK}{}", sticker.id))); }
+            if sticker.owned { layout.widgets.push(mark(format!("{page}{POP_MARK}{}", sticker.id))); }
         }
     }
     for i in stickers.len()..cells {

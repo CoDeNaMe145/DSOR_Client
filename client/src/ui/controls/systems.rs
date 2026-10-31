@@ -250,9 +250,7 @@ pub(crate) struct State {
     pub album_sticker: Option<String>,
     /// The item cooldowns running (hotbar::ItemCooldowns::running): what the
     /// album's stickers of their category count down (album::Sticker::countdown).
-    pub album_cooling: Vec<(String, u32, u8)>,
-    /// The sticker used last and when (Time<Real> seconds): its icon pops.
-    pub album_pop: Option<(String, f64)>,
+
     pub album_banner: usize,
     pub rank_start: u32,
     /// The grids' pages, by window.
@@ -846,6 +844,14 @@ fn rank_tabs(controls: &WindowControls) -> (u8, u8, u8) {
 
 /// The server's part: the requests of the windows opened and of their buttons.
 #[allow(clippy::too_many_arguments)]
+/// The album sticker used last and when (Time<Real> seconds): its icon pops
+/// (crate::ui::album_overlays). Kept out of State, whose changes rebuild the
+/// window: a use must show at once.
+/// FAILURE (2026-10-31): the window rebuilt on the use, the countdown and pop
+///   came a moment late ("in ours it's a delay").
+#[derive(Resource, Default)]
+pub(in crate::ui) struct AlbumPopAt(pub Option<(String, f64)>);
+
 /// The currency a sticker's next tier costs (Altered Crescerite).
 pub(in crate::ui) const UPGRADE_CURRENCY: &str = "currency_stickerbook_upgrade";
 
@@ -860,7 +866,7 @@ pub(in crate::ui) fn send(
     mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
     primary: Query<&Window, With<bevy::window::PrimaryWindow>>,
     quests: Res<super::quests::Quests>,
-    (mut item_cooldowns, items_data, items_catalogs): (ResMut<super::hotbar::ItemCooldowns>, Res<items::Data>, Res<Assets<items::Catalog>>),
+    (mut item_cooldowns, items_data, items_catalogs, mut pop_at): (ResMut<super::hotbar::ItemCooldowns>, Res<items::Data>, Res<Assets<items::Catalog>>, ResMut<AlbumPopAt>),
 ) {
     let Some(mut net) = net else { return };
     let fallback = SystemsCatalog::default();
@@ -1066,8 +1072,8 @@ pub(in crate::ui) fn send(
                         };
                         if allowed {
                             commands.push(command);
-                            // Its icon pops (crate::ui::album_overlays).
-                            state.album_pop = Some((id.clone(), time.elapsed_secs_f64()));
+                            // Its icon pops (crate::ui::album_overlays), the window untouched.
+                            pop_at.0 = Some((id.clone(), time.elapsed_secs_f64()));
                         }
                     }
                 }
@@ -1289,13 +1295,6 @@ pub(in crate::ui) fn send(
             }
         }
     }
-    // The stickers of a cooldown running count it down (album::grid), however
-    // it started (the album, the bag, a quick slot); State changes only when
-    // what they show does.
-    // Only which categories run: their sweep and seconds are drawn every frame
-    // (crate::ui::album_overlays), the window is not rebuilt as they turn.
-    let cooling: Vec<_> = item_cooldowns.running(time.elapsed_secs_f64(), 1).into_iter().map(|(key, ..)| (key, 0, 0)).collect();
-    if state.album_cooling != cooling { state.album_cooling = cooling; }
     if net.offline || commands.is_empty() { return; }
     for command in &commands { net.send(command); }
     if wait { state.pending = Some((net.inventory.revision, time.elapsed_secs_f64())); }
