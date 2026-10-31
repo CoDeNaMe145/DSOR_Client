@@ -99,6 +99,8 @@ pub(in crate::ui) struct Sticker {
     /// That next tier's item and its price in Altered Crescerite (the tier
     /// owned, else the sticker's own item, is the one it follows).
     pub next: Option<(String, u32)>,
+    /// Owned, and its next tier affordable: the arrow green, else grey.
+    pub affordable: bool,
     /// Its origin's icon, its preview background (textures), its offer.
     pub origin: String,
     pub background: String,
@@ -219,6 +221,8 @@ pub(super) fn album(sources: &Sources) -> Album {
             //   arrows over a whole Tamed Foes page owned 0 of 33).
             upgradable: next(def, tier).is_some(),
             next: next(def, tier),
+            affordable: owned && next(def, tier).is_some_and(|(_, cost)|
+                net.game_currencies.get(super::UPGRADE_CURRENCY).copied().unwrap_or(0) >= u64::from(cost)),
             origin: def.origin.clone(), background: def.background.clone(), offer: def.offer.clone(),
             countdown: owned.then(|| tier.or(def.items.first().map(String::as_str)))
                 .flatten()
@@ -338,6 +342,15 @@ fn grid(source: &Layout, layout: &mut Layout, page: &str, stickers: &[Sticker], 
                 || (has_part(&w.id, "FlagButtonFav") && !sticker.owned) || (has_part(&w.id, "FlagButtonAdd") && !sticker.addable)
                 || (has_part(&w.id, "UpgradeButton") && !sticker.upgradable) { continue; }
             if has_part(&w.id, "highlight") { w.hidden = false; }
+            // An arrow that cannot be used yet (not owned, or too few Altered
+            // Crescerite) wears its grey face, still hovered for its card: its
+            // disabled face drawn as its only one.
+            // EVIDENCE: the user's recordings 20261031-1414-12 (grey arrows on a
+            //   page owned 0 of 33) and 20261031-1506-03 (green ones on owned pets).
+            if has_part(&w.id, "UpgradeButton") && w.button.is_some() && !sticker.affordable {
+                if w.state.as_deref() != Some("disabled") { continue; }
+                w.state = Some("normal".into());
+            }
             if has_part(&w.id, "FlagButtonFav") && sticker.favourite { if let Some(art) = &mut w.art { art.tex = Some(FAVOURITE.into()); } }
             let name = leaf(&w.id).to_owned();
             match name.as_str() {

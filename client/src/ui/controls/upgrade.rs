@@ -5,9 +5,9 @@
 //! or Escape drop it.
 //!
 //! EVIDENCE: gui.window.messages stickerbookUpgradeDialogue (the question's
-//!   text); the user remembers a confirmation (2026-10-31).
-//! UNVERIFIED: the layer the original picks (Default, no "do not show again"
-//!   box, assumed) and the tier name it writes (the next tier's item name).
+//!   text); the user's recording of the original (20261031-1506-03): the
+//!   plain question with the tick and the cross, "Do you want to upgrade Blue
+//!   Dragonspawn for 5 Altered Crescerite(s)?", then 25, then 50.
 use super::*;
 use dsor_proto::commands::systems::UpgradeStickerbookItem;
 use dsor_proto::commands::ClientCommand;
@@ -16,7 +16,7 @@ use dsor_proto::commands::ClientCommand;
 pub(in crate::ui) const UPGRADE: u8 = 2;
 const QUESTION: &str = "Canvas/DialogCenter/Content/Default/Question";
 /// gui.window.messages stickerbookUpgradeDialogue.
-const TEXT: &str = "Do you want to upgrade {0:s} for {0:l} Altered Crescerite(s)";
+const TEXT: &str = "Do you want to upgrade {0:s} for {0:l} Altered Crescerite(s)?";
 
 /// A sticker tier to buy, waiting for the player's word: the name the server
 /// owns the sticker under, the next tier's name, its price.
@@ -84,6 +84,6 @@ mod tests {
     #[test]
     fn the_question_names_the_tier_and_its_price() {
         let ask = Ask { key: "pet_karabossa_uncommon".into(), name: "Karabossa Doll".into(), cost: 5 };
-        assert_eq!(question(&ask), "Do you want to upgrade Karabossa Doll for 5 Altered Crescerite(s)");
+        assert_eq!(question(&ask), "Do you want to upgrade Karabossa Doll for 5 Altered Crescerite(s)?");
     }
 }
