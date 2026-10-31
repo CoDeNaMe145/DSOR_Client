@@ -71,9 +71,13 @@ pub(super) fn sticker(catalog: &Catalog, layout: Option<&Layout>, template: &str
     // A template has no instance colour; the original writes a Mythic one red.
     // UNVERIFIED: the exact red, matched by eye on the user's Manticore shot.
     let tint = if rarity == "Mythic" { Color::srgb(0.86, 0.12, 0.08) } else { tint };
-    // The sticker's own name ("Cute Doggy"), not its item's ("Cute Doggy (Pet)").
-    // FAILURE (2026-10-30): "Hoppy Bunny (Pet)" beside the original's card.
-    let name = format!("<i>{}</>", if title.is_empty() { catalog.name(template, None) } else { title });
+    // The item's name ("Cake Boss"); the sticker's own is often its id or a
+    // shared draft ("# Cake Loving Meanie" for both cake pets), so it is only
+    // the fallback.
+    // FAILURE (2026-10-31): both cake pets "A Cake-Loving Meanie" where the
+    //   original's cards say "Cake Meanie" and "Cake Boss".
+    let item_name = catalog.name(template, None).trim();
+    let name = format!("<i>{}</>", if item_name.is_empty() || item_name == template { title } else { item_name });
     let kind = meta.filter(|m| !m.category.is_empty()).map(|m| format!("<i>{}</>", m.category));
     let description = meta.filter(|m| !m.description.is_empty())
         .map(|m| if m.description.contains('<') { m.description.clone() } else { format!("<i>{}</>", m.description) });
@@ -122,7 +126,10 @@ pub(super) fn rarity<'a>(catalog: &'a Catalog, template: &str, item: Option<&Ite
     // Epic), an instance's the game's (Extraordinary, Legendary).
     // FAILURE (2026-10-30): an Epic pet's name white where the original's
     //   Cute Doggy (Epic) is orange.
+    // EVIDENCE: Uncommon measured on the original's Magotina Doll card (the
+    //   user's recording 20261031-1414-12): (108, 225, 83).
     let tint = match rarity { "Unique" => Color::srgb(1.0,0.9,0.0), "Set" => GREEN, "Magic" => BLUE,
+        "Uncommon" => Color::srgb(0.42,0.88,0.33),
         "Extraordinary" | "Rare" => Color::srgb(0.75,0.4,1.0), "Legendary" | "Epic" => Color::srgb(1.0,0.65,0.15), _ => color(catalog,item) };
     (rarity, tint)
 }

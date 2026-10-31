@@ -17,7 +17,14 @@ SLOTS = {'HelmetSlot':[0], 'ShoulderSlot':[1], 'TorsoSlot':[2], 'GlovesSlot':[3]
 
 def export_inventory(db, textures, loca, assets):
     table = loca.get('en', {})
-    short = {k.split('_', 1)[-1]: v for k, v in table.items() if k.startswith('db.')}
+    # A status effect's title loses to the item's own: both are keyed
+    # "pet_meanie_anniversaryTitle", the pet's "Cake Meanie" (db.pet), its
+    # effect's "Cake Meanie (Pet)" (db.statuseffect); the original's card names
+    # the item.
+    # FAILURE (2026-10-31): pets named after their effect ("Karabossa Doll
+    #   (Pet)", where the original's card says "Karabossa Doll").
+    ranked = sorted((k for k in table if k.startswith('db.')), key=lambda k: not k.startswith('db.statuseffect.'))
+    short = {k.split('_', 1)[-1]: table[k] for k in ranked}
     def local(key, fallback=''):
         if not key:
             return fallback

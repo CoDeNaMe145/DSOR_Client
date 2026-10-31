@@ -234,7 +234,10 @@ pub(super) fn album(sources: &Sources) -> Album {
     // The stickers in the books' order.
     let order = |book: &str| catalog.stickerbooks.iter().position(|b| b.id == book).unwrap_or(usize::MAX);
     let mut all: Vec<(&String, &crate::gameplay::systems::StickerDef)> = catalog.stickers.iter().collect();
-    all.sort_by(|(a, x), (b, y)| order(&x.book).cmp(&order(&y.book)).then(x.priority.cmp(&y.priority)).then(a.cmp(b)));
+    // Within a book, by priority, then as the database lists them (`order`).
+    // FAILURE (2026-10-31): sorted by id, the grid's places differed from the
+    //   original's ("the placement is also wrong").
+    all.sort_by(|(a, x), (b, y)| order(&x.book).cmp(&order(&y.book)).then(x.priority.cmp(&y.priority)).then(x.order.cmp(&y.order)).then(a.cmp(b)));
     let front = chosen == FRONT_BOOK;
     let top = book_of(&chosen).is_some_and(|b| b.subcategory < 0);
     let stickers: Vec<Sticker> = all.iter().filter(|(id, def)| {

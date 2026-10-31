@@ -151,10 +151,12 @@ def export_systems(database, root, godot, assets):
                   description=text(f"db.stickerbookcategory.table_{r['Id']}Desc"), rewards=book_rewards(r["StickerbookRewardItems"]))
              for r in q("SELECT Id, StickerbookCategoryId, StickerbookSubcategoryId, StickerbookPriority, StickerbookRewardItems FROM _Template_Stickerbook ORDER BY StickerbookCategoryId, StickerbookSubcategoryId, StickerbookPriority, rowid")]
     stickers = {}
-    for r in q("SELECT Id, Name, StickerbookId, Items, RarityUpgradeItems, Priority, IconBrush, BackgroundTexture, StickerbookOffer, IsNew "
+    # `order`: its row, the album's order within a book and priority (the
+    # original's Tamed Foes grid: Molten Fire Guard, Jumpy Squire, Varnok...).
+    for r in q("SELECT rowid AS RowId, Id, Name, StickerbookId, Items, RarityUpgradeItems, Priority, IconBrush, BackgroundTexture, StickerbookOffer, IsNew "
                "FROM _Template_StickerbookItem WHERE IsLive<>0 ORDER BY StickerbookId, Priority, rowid"):
         stickers[r["Id"]] = dict(name=plain(r["Name"] or r["Id"]), book=r["StickerbookId"] or "", items=split(r["Items"]),
-                                 upgrades=split(r["RarityUpgradeItems"]), priority=int(r["Priority"] or 0),
+                                 upgrades=split(r["RarityUpgradeItems"]), priority=int(r["Priority"] or 0), order=int(r["RowId"]),
                                  origin=texture(r["IconBrush"]), background=texture(r["BackgroundTexture"]),
                                  offer=r["StickerbookOffer"] or "", new=bool(r["IsNew"]))
     # What the album's preview turns for each of a sticker's items
