@@ -377,9 +377,11 @@ pub(in crate::ui) fn card_lines(catalog: &Catalog, status: &str, params: &[f32],
     let Some(effect) = catalog.effects.values().find(|e| e.id == status) else { return Vec::new() };
     let mut out = Vec::new();
     for line in &effect.lines {
+        // A header is written white ("<WhiteStart>Pet Effect:</>"); a text of
+        // its own ("Enables auto-pickup for Mystic Cubes") is an effect line.
         if line.args.is_empty() {
-            let text = line.text.replace("<WhiteStart>", "").replace("</>", "");
-            out.push((text, true));
+            let header = line.text.contains("<WhiteStart>");
+            out.push((plain(&line.text), header));
             continue;
         }
         let decimals = if line.args.iter().any(|a| matches!(a, Arg::Text(t) if t.contains("resistance"))) { 3 } else { 2 };
@@ -399,6 +401,9 @@ pub(in crate::ui) fn card_lines(catalog: &Catalog, status: &str, params: &[f32],
             Some(Some(x)) => x < 0.0,
             _ => false,
         };
+        // A value only the server knows (the Christmas Elf's resistances, by
+        // the wearer's level) is left out rather than written as a dash.
+        if line.args.iter().zip(&args).any(|(a, v)| matches!(a, Arg::Number { .. }) && v.is_none()) { continue; }
         let text = if negative && !line.minus.is_empty() { &line.minus } else { line.classes.get(class).unwrap_or(&line.text) };
         out.push((plain(&fill(text, &args)), false));
     }

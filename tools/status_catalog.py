@@ -151,6 +151,23 @@ def lines(raw, local, variables, item_name, tick=False):
             if classes["warrior"]:
                 out.append(dict(text=classes["warrior"], minus=minus, args=[value], classes=classes))
             continue
+        # A text of its own ("Localize:pet_PRK_special_drop": "Opening a Waste
+        # Box has a 10% chance..."), the pets' special effects.
+        # FAILURE (2026-10-31): 95 pet effects dropped, a "Pet Effect:" with
+        # nothing under it (the Asar's "Reduces Boss armor values by 3%").
+        if kind == "Localize" and not key and args and args[0]:
+            text = local("gui.statuseffects.modifier_" + args[0])
+            if text:
+                out.append(dict(text=text, args=[]))
+            continue
+        # "Enables auto-pickup for Gems, Jewels, Runes and Mystic Cubes": the
+        # modifier's own text with what it picks up (gui.window.tooltip), the
+        # Summer Dog's and the Gem Gnome's pet effects.
+        if kind == "AutoPickupModifier" and not key and len(args) > 1:
+            text, what = local("gui.statuseffects.modifier_autoPickUpModifier"), local("gui.window.tooltip_" + args[1])
+            if text and what:
+                out.append(dict(text=text, args=[what]))
+            continue
         generic = _generic(kind, args, local, item_name)
         if key:
             text = local("gui.statuseffects.modifier_" + key)
@@ -159,6 +176,10 @@ def lines(raw, local, variables, item_name, tick=False):
             leading = generic[0][2] if generic else []
             needed = max((int(n) for n in re.findall(r"\{(\d+):", text)), default=-1) + 1
             numbers = [value] if value is not None and needed > len(leading) else []
+            # The number in its own place: "+ {1:s}% Coins drop stack size"
+            # names the coins itself (the parrots' ParrotStatueEffect).
+            if numbers and len(leading) < needed - 1:
+                leading = leading + [item_name(args[2]) if kind == "DropAmount" and len(args) > 2 else ""] * (needed - 1 - len(leading))
             out.append(dict(text=text, args=leading + numbers))
             continue
         for plus_key, minus_key, leading in generic:
