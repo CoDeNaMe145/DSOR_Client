@@ -44,19 +44,18 @@ const ENTRY: &str = "Canvas/Collectorsalbum/BackGroundLabel/Inlay/TemplateListEn
 ///   small in its corner (slot_anim's align 2 is our right/bottom), then a
 ///   green glow the original has not.
 const ANIM_USE_TEXT: &str = "Canvas/Collectorsalbum/BackGroundLabel/Inlay/AnimUse/slot_anim";
-const SWEEP_ALPHA: f32 = 0.42;
+pub(in crate::ui) const SWEEP_ALPHA: f32 = 0.42;
 /// The front page's text, gui.window favoritesDesc (the layout's own text is
 /// an older one: "Here you will find all your favourite items...").
 /// EVIDENCE: the user's release261_1024 recording 20261030-1714-37.
 const FAVOURITES_TEXT: &str = "Select up to thirty of your favorite items to be shown here for quick access to your most frequently used items.";
 /// The digits' size: the original's "4 s" is 0.17 of the sticker's height, ours
 /// at 15 was 0.28 (the user's recording 20261030-1714-37: "double the size").
-const COUNT_SIZE: f32 = 9.3;
-/// The sweep redraws in this many steps (the album rebuilds on each): 12 a
-/// second over a pet's 5 s, smooth as the original's.
-/// FAILURE (2026-10-31): 16 steps, a jump every 0.31 s ("ours feels so ticky",
-///   the user's recording 20261031-1722-23 beside the original's).
-pub(super) const SWEEP_STEPS: u8 = 60;
+pub(in crate::ui) const COUNT_SIZE: f32 = 9.3;
+/// The countdown's marker in a grid: `{page}/Count{i}#{cooldown key}`, drawn
+/// every frame by crate::ui::album_overlays; the pop's: `{page}/Pop#{sticker}`.
+pub(in crate::ui) const COUNT_MARK: &str = "/Count";
+pub(in crate::ui) const POP_MARK: &str = "/Pop#";
 /// A sticker cell spans 214..286 by 202..271.
 const CELL: (f32, f32) = (72.0, 69.0);
 const CELL_ORIGIN: (f32, f32) = (214.0, 202.0);
@@ -108,9 +107,10 @@ pub(in crate::ui) struct Sticker {
     pub origin: String,
     pub background: String,
     pub offer: String,
-    /// Its category's cooldown running: tenths of a second left, part left in
-    /// SWEEP_STEPS.
-    pub countdown: Option<(u32, u8)>,
+    /// Its category's cooldown running: its key.
+    pub countdown: Option<String>,
+    /// Just used: its icon pops.
+    pub popped: bool,
 }
 
 impl Album {
@@ -259,8 +259,8 @@ pub(super) fn album(sources: &Sources) -> Album {
             // (recording 20261031-1722-23, Avians).
             countdown: tier.or(def.items.first().map(String::as_str))
                 .and_then(|t| super::super::hotbar::ItemCooldowns::key_of(sources.items, t))
-                .and_then(|key| state.album_cooling.iter().find(|(k, ..)| *k == key))
-                .map(|&(_, tenths, step)| (tenths, step)),
+                .filter(|key| state.album_cooling.iter().any(|(k, ..)| k == key)),
+            popped: state.album_pop.as_ref().is_some_and(|(s, _)| s == id),
         }
     };
     // The list: each category's top book; the open one's books under it.
@@ -430,19 +430,14 @@ fn grid(source: &Layout, layout: &mut Layout, page: &str, stickers: &[Sticker], 
             if w.id.contains("/Slot/FlagLabel") { flags.push(w); } else { layout.widgets.push(w); }
         }
         layout.widgets.extend(flags);
-        if let Some((tenths, step)) = sticker.countdown {
-            for mut w in clone_at(source, ANIM_USE_TEXT, &format!("{page}/Use{i}"), dx, dy) {
-                let mut sweep = w.clone();
-                sweep.id = format!("{}/Sweep", w.id);
-                sweep.kind = "Label".into();
-                sweep.text = None;
-                sweep.art = Some(crate::ui::sweep_art(w.rect, step as f32 / SWEEP_STEPS as f32, SWEEP_ALPHA));
-                layout.widgets.push(sweep);
-                set_text(&mut w, &crate::gameplay::skills::cooldown_text(tenths));
-                if let Some(label) = &mut w.text { label.align = [1, 1]; label.size = COUNT_SIZE; }
-                w.hidden = false;
-                layout.widgets.push(w);
-            }
+        // The countdown and the pop are drawn every frame over the cell
+        // (crate::ui::album_overlays): markers with its place.
+        // FAILURE (2026-10-31): the window rebuilt for each step of the sweep,
+        //   a few times a second ("it still feels ticky, snappy").
+        if let Some(icon) = clone_at(source, ENTRY, &replacement, dx, dy).find(|w| leaf(&w.id) == "TemplateIcon") {
+            let mark = |id: String| { let mut m = icon.clone(); m.id = id; m.kind = "Label".into(); m.text = None; m.art = None; m.event.clear(); m.button = None; m.state = None; m.hidden = false; m };
+            if let Some(key) = &sticker.countdown { layout.widgets.push(mark(format!("{page}{COUNT_MARK}{i}#{key}"))); }
+            if sticker.popped { layout.widgets.push(mark(format!("{page}{POP_MARK}{}", sticker.id))); }
         }
     }
     for i in stickers.len()..cells {
@@ -641,13 +636,13 @@ mod tests {
         assert_eq!((unowned.saturation, unowned.color[3]), (0.0, 1.0), "not owned: grey, not faded");
         // Its category cooling down: drawn as it is, a sweep and the seconds
         // centred over it.
-        let counting = prepare_album(&album_source(), &Album { stickers: vec![Sticker { countdown: Some((4, 8)), ..owned.clone() }], ..album.clone() });
+        let counting = prepare_album(&album_source(), &Album { stickers: vec![Sticker { countdown: Some("Pet".into()), ..owned.clone() }], ..album.clone() });
         let used = find(&counting, &format!("{PAGE}/Sticker0/Icon/Image")).art.as_ref().unwrap();
         let plain = find(&prepared, &format!("{PAGE}/Sticker0/Icon/Image")).art.as_ref().unwrap();
         assert_eq!((used.saturation, &used.color), (plain.saturation, &plain.color));
-        assert_eq!(text_of(&counting, &format!("{PAGE}/Use0")), "0.4 s");
-        assert_eq!(find(&counting, &format!("{PAGE}/Use0")).text.as_ref().unwrap().align, [1, 1]);
-        assert_eq!(find(&counting, &format!("{PAGE}/Use0/Sweep")).art.as_ref().unwrap().color[3], SWEEP_ALPHA);
+        // A marker over the cell; the sweep and seconds are drawn every frame.
+        let mark = find(&counting, &format!("{PAGE}{COUNT_MARK}0#Pet"));
+        assert!(mark.art.is_none() && mark.text.is_none() && !mark.hidden);
         assert!(!ids.iter().any(|id| id.contains("/Use0")));
         // No empty backing over a sticker, none past a book's stickers.
         assert!(!ids.iter().any(|id| id.ends_with("/EmptyBackground")));

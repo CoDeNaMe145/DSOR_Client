@@ -34,6 +34,12 @@ impl ItemCooldowns {
     pub(in crate::ui) fn key_of(catalog: Option<&items::Catalog>, template: &str) -> Option<String> {
         catalog.and_then(|c| Self::key(c, template)).map(|(key, _)| key)
     }
+    /// The part left (1 just started) and the seconds left of `key`'s cooldown,
+    /// while it runs.
+    pub(in crate::ui) fn left(&self, key: &str, now: f64) -> Option<(f32, f64)> {
+        self.0.get(key).filter(|&&(_, ready)| now < ready)
+            .map(|&(start, ready)| ((((ready - now) / (ready - start).max(1e-6)) as f32).clamp(0.0, 1.0), ready - now))
+    }
     /// The cooldowns running: key, tenths of a second left, part left in `steps`.
     pub(in crate::ui) fn running(&self, now: f64, steps: u8) -> Vec<(String, u32, u8)> {
         let mut out: Vec<_> = self.0.iter().filter(|(_, &(_, ready))| now < ready).map(|(key, &(start, ready))| {

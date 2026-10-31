@@ -524,6 +524,16 @@ const SHEET_WIDGETS: &[&str] = &[
     "DarkMagic_Percentage",
 ];
 
+/// An album sticker's countdown (controls::systems::album COUNT_MARK): its
+/// cooldown key and icon place; what it last drew.
+#[derive(Component)]
+struct AlbumCount { key: String, k: f32, rect: [f32; 4], shown: Option<(u16, String)> }
+
+/// An album sticker just used (album POP_MARK): its id and icon place; the
+/// frame of its pop it last drew.
+#[derive(Component)]
+struct AlbumPop { sticker: String, k: f32, rect: [f32; 4], shown: Option<u16> }
+
 /// A quick slot's icon place: its wire slot and rect.
 #[derive(Component)]
 struct QuickSlot {
@@ -650,7 +660,7 @@ impl Plugin for UiPlugin {
                 .before(bevy::sprite_render::check_entities_needing_specialization::<UiMaterial>))
             .add_systems(
                 Update,
-                ((dialogue::sync, controls::party::sync, controls::quests::sync, controls::systems::sync, controls::currency::sync_bar, controls::message::sync, spawn_windows, controls::sync_chat).chain(), controls::spells::sync, controls::items::sync, (controls::items::pins::update, controls::keyboard).chain(), controls::interact, (controls::settings::sync, controls::settings::sliders, controls::hotbar::input, controls::spells::apply_drop, controls::stickers::apply_drop).chain(), read_figures, controls::edit_text, (controls::items::input, controls::items::sell_cursor, controls::consent::sync, controls::upgrade::sync).chain(), controls::order_windows, (update_fills, (update_values, fit_texts).chain(), update_slots, (local_map::update, local_map::update_markers, local_map::appearance).chain(), (controls::effects::fixture, controls::effects::sync, controls::effects::draw).chain()), controls::chat_rows, controls::sheet::rows, controls::paint, (controls::items::render, controls::items::destroy_dialog), (controls::spells::overlay, controls::items::overlay, controls::tooltips, cast_bar_window), show_hover_window, death_dialog, (controls::trade::sync, controls::social::column, controls::social::context_menu, controls::social::answer, controls::logout::dialog, controls::travel::dialog, controls::access::dialog, controls::systems::send, controls::systems::talents::dialogs, controls::social::dialogs, controls::trade::render).chain()).chain().after(crate::actors::monsters::MonsterHoverInfo).before(crate::network::net::NetSystems).run_if(crate::screens::loading::gameplay_ready),
+                ((dialogue::sync, controls::party::sync, controls::quests::sync, controls::systems::sync, controls::currency::sync_bar, controls::message::sync, spawn_windows, controls::sync_chat).chain(), controls::spells::sync, controls::items::sync, (controls::items::pins::update, controls::keyboard).chain(), controls::interact, (controls::settings::sync, controls::settings::sliders, controls::hotbar::input, controls::spells::apply_drop, controls::stickers::apply_drop).chain(), read_figures, controls::edit_text, (controls::items::input, controls::items::sell_cursor, controls::consent::sync, controls::upgrade::sync).chain(), controls::order_windows, (update_fills, (update_values, fit_texts).chain(), (update_slots, album_overlays), (local_map::update, local_map::update_markers, local_map::appearance).chain(), (controls::effects::fixture, controls::effects::sync, controls::effects::draw).chain()), controls::chat_rows, controls::sheet::rows, controls::paint, (controls::items::render, controls::items::destroy_dialog), (controls::spells::overlay, controls::items::overlay, controls::tooltips, cast_bar_window), show_hover_window, death_dialog, (controls::trade::sync, controls::social::column, controls::social::context_menu, controls::social::answer, controls::logout::dialog, controls::travel::dialog, controls::access::dialog, controls::systems::send, controls::systems::talents::dialogs, controls::social::dialogs, controls::trade::render).chain()).chain().after(crate::actors::monsters::MonsterHoverInfo).before(crate::network::net::NetSystems).run_if(crate::screens::loading::gameplay_ready),
             );
         // The 3D previews: once this frame's clicks moved the pages and the
         // views were rebuilt.
@@ -1152,6 +1162,17 @@ fn spawn_windows(
             }
             if layout.window == DEATH_WINDOW && !death_part(&w.id) {
                 continue;
+            }
+            if layout.window == controls::systems::ALBUM {
+                let mark = w.id.split_once(controls::systems::album::COUNT_MARK).and_then(|(_, rest)| rest.split_once('#')).map(|(_, key)| key.to_owned());
+                let pop = w.id.split_once(controls::systems::album::POP_MARK).map(|(_, id)| id.to_owned());
+                if mark.is_some() || pop.is_some() {
+                    let p = parent(&mut commands, w.k, true);
+                    let at = Transform::from_xyz(0.0, 0.0, WINDOW_ITEMS_DEPTH);
+                    if let Some(key) = mark { commands.spawn((AlbumCount { key, k: w.k, rect: w.rect, shown: None }, at, Visibility::Inherited, ChildOf(p))); }
+                    if let Some(sticker) = pop { commands.spawn((AlbumPop { sticker, k: w.k, rect: w.rect, shown: None }, at, Visibility::Inherited, ChildOf(p))); }
+                    continue;
+                }
             }
             if let Some(slot) = quick_slot_of(&w.id) {
                 controls.region(w.k, w.rect, Gate::default());
@@ -1778,6 +1799,70 @@ fn update_slots(
             }
         }
         s.shown = want;
+    }
+}
+
+/// The album's countdowns and pops, every frame while they run: the sweep turns
+/// smoothly and the seconds count down as the original's ("4  s" just after a
+/// 5 s use: whole seconds left, tenths in the last one, a wide gap before the
+/// s); a sticker just used pops: a see-through copy of its icon grows to 1.3
+/// times and fades, starting 0.25 s after the use, over 0.65 s.
+/// EVIDENCE: the user's recording 20261031-1840-39, 30 fps (the original's
+///   Supreme Snowman at 26.2-27.1 s; "5 s" for one frame, then "4 s"; the sweep
+///   moving every frame).
+/// FAILURE (2026-10-31): the window rebuilt for each step ("ticky, snappy"),
+///   "5 s" for the first whole second, no pop.
+/// UNVERIFIED: the pop's exact start (the server's answer?) and alpha.
+#[allow(clippy::too_many_arguments)]
+fn album_overlays(mut commands: Commands, mut counts: Query<(Entity, &mut AlbumCount)>, mut pops: Query<(Entity, &mut AlbumPop)>,
+    item_cooldowns: Res<controls::hotbar::ItemCooldowns>, views: Res<controls::systems::Views>, state: Res<controls::systems::State>,
+    time: Res<Time<Real>>, assets: Res<AssetServer>, screen: Res<Screen>,
+    mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<UiMaterial>>) {
+    use controls::systems::album::{COUNT_SIZE, SWEEP_ALPHA};
+    let now = time.elapsed_secs_f64();
+    for (e, mut c) in &mut counts {
+        let want = item_cooldowns.left(&c.key, now).map(|(part, seconds)| {
+            let text = if seconds >= 1.0 { format!("{}  s", seconds.floor() as u32) } else { format!("0.{}  s", (seconds * 10.0).floor() as u32) };
+            ((part * 720.0).ceil() as u16, text)
+        });
+        if want == c.shown && !screen.is_changed() { continue; }
+        commands.entity(e).despawn_related::<Children>();
+        if let Some((part, text)) = &want {
+            let [l, t, r, b] = c.rect;
+            let mut run = Run { k: c.k, ..default() };
+            run.push(&sweep_art(c.rect, *part as f32 / 720.0, SWEEP_ALPHA), 0.0);
+            commands.spawn((Mesh2d(meshes.add(run.mesh())), MeshMaterial2d(materials.add(material(None))),
+                Transform::from_xyz(0.0, 0.0, 0.5), RenderLayers::layer(LAYER), ChildOf(e)));
+            let font = TextFont { font: assets.load("fonts/tahoma.ttf").into(), font_size: bevy::text::FontSize::Px(COUNT_SIZE * FONT_SCALE * screen.scale), ..default() };
+            let at = Vec3::new((l + r) * 0.5, (t + b) * 0.5, 1.2);
+            for (offset, color) in [(Vec3::new(0.8, 0.8, -0.1), Color::BLACK), (Vec3::ZERO, Color::srgb(0.98, 0.93, 0.82))] {
+                commands.spawn((Text2d::new(text.clone()), font.clone(), TextColor(color), Anchor::CENTER,
+                    Transform::from_translation(at + offset).with_scale(Vec3::new(1.0, -1.0, 1.0) / screen.scale),
+                    RenderLayers::layer(LAYER), ChildOf(e)));
+            }
+        }
+        c.shown = want;
+    }
+    for (e, mut p) in &mut pops {
+        let start = state.album_pop.as_ref().filter(|(id, _)| *id == p.sticker).map(|&(_, at)| at);
+        let progress = start.map(|at| ((now - at - 0.25) / 0.65) as f32).filter(|x| (0.0..1.0).contains(x));
+        let want = progress.map(|x| (x * 240.0) as u16);
+        if want == p.shown { continue; }
+        commands.entity(e).despawn_related::<Children>();
+        if let (Some(x), Some(icon)) = (progress, views.album.sticker(&p.sticker).map(|s| s.icon.clone())) {
+            let [l, t, r, b] = p.rect;
+            let (cx, cy, grow) = ((l + r) * 0.5, (t + b) * 0.5, 1.0 + 0.3 * x);
+            let rect = [cx + (l - cx) * grow, cy + (t - cy) * grow, cx + (r - cx) * grow, cy + (b - cy) * grow];
+            for (z, layer) in [&icon.background, &icon.image, &icon.frame].into_iter().enumerate().filter(|(_, l)| !l.is_empty()) {
+                let mut art = controls::template::image_art(rect, layer.clone());
+                for c in art.color.chunks_mut(4) { c[3] = 0.55 * (1.0 - x); }
+                let mut run = Run { k: p.k, ..default() };
+                run.push(&art, 0.0);
+                commands.spawn((Mesh2d(meshes.add(run.mesh())), MeshMaterial2d(materials.add(material(Some(assets.load(layer.clone()))))),
+                    Transform::from_xyz(0.0, 0.0, 1.5 + z as f32 * 0.01), RenderLayers::layer(LAYER), ChildOf(e)));
+            }
+        }
+        p.shown = want;
     }
 }
 

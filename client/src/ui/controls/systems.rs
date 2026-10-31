@@ -19,7 +19,7 @@
 pub(super) mod boards;
 pub(super) mod shop;
 pub(super) mod events;
-pub(super) mod album;
+pub(in crate::ui) mod album;
 pub(super) mod transmog;
 pub(super) mod desks;
 pub(super) mod log;
@@ -251,6 +251,8 @@ pub(crate) struct State {
     /// The item cooldowns running (hotbar::ItemCooldowns::running): what the
     /// album's stickers of their category count down (album::Sticker::countdown).
     pub album_cooling: Vec<(String, u32, u8)>,
+    /// The sticker used last and when (Time<Real> seconds): its icon pops.
+    pub album_pop: Option<(String, f64)>,
     pub album_banner: usize,
     pub rank_start: u32,
     /// The grids' pages, by window.
@@ -1062,7 +1064,11 @@ pub(in crate::ui) fn send(
                             }
                             _ => true,
                         };
-                        if allowed { commands.push(command); }
+                        if allowed {
+                            commands.push(command);
+                            // Its icon pops (crate::ui::album_overlays).
+                            state.album_pop = Some((id.clone(), time.elapsed_secs_f64()));
+                        }
                     }
                 }
                 if state.album_sticker.as_ref() != Some(&id) { state.album_sticker = Some(id); }
@@ -1286,7 +1292,9 @@ pub(in crate::ui) fn send(
     // The stickers of a cooldown running count it down (album::grid), however
     // it started (the album, the bag, a quick slot); State changes only when
     // what they show does.
-    let cooling = item_cooldowns.running(time.elapsed_secs_f64(), album::SWEEP_STEPS);
+    // Only which categories run: their sweep and seconds are drawn every frame
+    // (crate::ui::album_overlays), the window is not rebuilt as they turn.
+    let cooling: Vec<_> = item_cooldowns.running(time.elapsed_secs_f64(), 1).into_iter().map(|(key, ..)| (key, 0, 0)).collect();
     if state.album_cooling != cooling { state.album_cooling = cooling; }
     if net.offline || commands.is_empty() { return; }
     for command in &commands { net.send(command); }
