@@ -301,8 +301,13 @@ pub(super) fn album(sources: &Sources) -> Album {
     let rewards = if top || front { Vec::new() } else {
         // A reward that is a Collector's Bag bonus (a status effect) shows its
         // own icon (items::Catalog reward_icons).
+        // On the bonus's own icon configuration, statuseffect_buff: the green
+        // glow (icons_toolkit/bg_status_buff) and the status frame.
+        // FAILURE (2026-10-31): the paw alone ("it has those lines around the icon").
+        let buff = sources.items.and_then(|i| i.icon_configs.get("statuseffect_buff"));
         book.map(|b| b.rewards.iter().map(|r| (r.at, sources.items.and_then(|i| i.reward_icons.get(&r.item))
-            .map_or_else(|| sources.icon(&r.item, None), |image| Icon { image: image.clone(), ..Default::default() }))).collect()).unwrap_or_default()
+            .map_or_else(|| sources.icon(&r.item, None), |image| Icon { image: image.clone(),
+                background: buff.map(|c| c.background.clone()).unwrap_or_default(), frame: buff.map(|c| c.frame.clone()).unwrap_or_default(), ..Default::default() }))).collect()).unwrap_or_default()
     };
     // Their cards: a bonus's title and text, else the item's name; under them
     // "Reward for <n> x <category>" (gui.window.stickerbook rewardAmountTemplate).
@@ -557,7 +562,14 @@ pub(super) fn prepare_album(source: &Layout, album: &Album) -> Layout {
                     if w.id.ends_with("/IconHighlight") && *at > album.progress.0 { continue; }
                     // An item's amount on its icon ("100" Gilded Clovers).
                     let amount = album.reward_cards.get(n).map_or(1, |r| r.amount);
-                    if leaf(&w.id) == "Icon" { layout.widgets.extend(icon_layers(&mut w, icon)); set_text(&mut w, &if amount > 1 { amount.to_string() } else { String::new() }); }
+                    // In the icon's middle, larger than a slot's count (the user, 2026-10-31:
+                    // the original's fills the icon, ours sat small in its corner;
+                    // "maybe in the middle and a bit bigger").
+                    if leaf(&w.id) == "Icon" {
+                        layout.widgets.extend(icon_layers(&mut w, icon));
+                        set_text(&mut w, &if amount > 1 { amount.to_string() } else { String::new() });
+                        if let Some(label) = &mut w.text { label.align = [1, 1]; label.size *= 1.4; }
+                    }
                     // Hovered, it shows its card (tooltips): its slot (the root is an
                     // 11 x 10 label at the stem's top).
                     if w.id.ends_with(&format!("/Reward{n}/Linie/ItemSlot")) { make_button(&mut w, &format!("Sys:Reward:{n}")); }
