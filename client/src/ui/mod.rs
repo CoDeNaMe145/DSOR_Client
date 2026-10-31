@@ -1855,11 +1855,15 @@ fn album_overlays(mut commands: Commands, mut counts: Query<(Entity, &mut AlbumC
             let rect = [cx + (l - cx) * grow, cy + (t - cy) * grow, cx + (r - cx) * grow, cy + (b - cy) * grow];
             for (z, layer) in [&icon.background, &icon.image, &icon.frame].into_iter().enumerate().filter(|(_, l)| !l.is_empty()) {
                 let mut art = controls::template::image_art(rect, layer.clone());
-                for c in art.color.chunks_mut(4) { c[3] = 0.55 * (1.0 - x); }
+                for c in art.color.chunks_mut(4) { c[3] = 0.45 * (1.0 - x); }
                 let mut run = Run { k: p.k, ..default() };
                 run.push(&art, 0.0);
                 commands.spawn((Mesh2d(meshes.add(run.mesh())), MeshMaterial2d(materials.add(material(Some(assets.load(layer.clone()))))),
-                    Transform::from_xyz(0.0, 0.0, 1.5 + z as f32 * 0.01), RenderLayers::layer(LAYER), ChildOf(e)));
+                    // Over the sweep (0.5), under the seconds (1.2): the original's
+                    // "4 s" stays sharp through its pop.
+                    // FAILURE (2026-10-31): drawn over everything, it washed the
+                    //   icon and the seconds out (recording 20261031-1857-59).
+                    Transform::from_xyz(0.0, 0.0, 0.8 + z as f32 * 0.01), RenderLayers::layer(LAYER), ChildOf(e)));
             }
         }
         p.shown = want;
