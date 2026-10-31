@@ -98,7 +98,9 @@ pub(super) fn sticker(catalog: &Catalog, layout: Option<&Layout>, template: &str
     let longest = |text: &str, size: f32| plain(text).lines()
         .map(|l| crate::network::chat::text_width(l, size) + l.matches(' ').count() as f32 * STICKER_WORD_SPACE * size).fold(0.0, f32::max);
     let size = card.text_size();
-    let price = upgrade.map(|(have, cost)| format!("Altered Crescerite: {have}/{cost}"));
+    // What is owned counts up to the price ("5/5" with more in the wallet), as
+    // the original's.
+    let price = upgrade.map(|(have, cost)| format!("Altered Crescerite: {}/{cost}", have.min(u64::from(cost))));
     let body = [kind.as_deref(), Some(used), description.as_deref(), Some("Not for sale"), Some(how), price.as_deref()];
     let widest = body.into_iter().flatten().chain(effect.iter().map(|(t, _)| t.as_str())).map(|t| longest(t, size))
         .fold(longest(&name, card.title_size()), f32::max);
@@ -143,9 +145,11 @@ pub(super) fn rarity<'a>(catalog: &'a Catalog, template: &str, item: Option<&Ite
     //   Cute Doggy (Epic) is orange.
     // EVIDENCE: Uncommon measured on the original's Magotina Doll card (the
     //   user's recording 20261031-1414-12): (108, 225, 83).
-    let tint = match rarity { "Unique" => Color::srgb(1.0,0.9,0.0), "Set" => GREEN, "Magic" => BLUE,
+    // Magic and Rare measured on the original's Blue Dragonspawn arrow cards
+    // (recording 20261031-1506-03): (19, 120, 236) and (226, 0, 236).
+    let tint = match rarity { "Unique" => Color::srgb(1.0,0.9,0.0), "Set" => GREEN, "Magic" => Color::srgb(0.07,0.47,0.93),
         "Uncommon" => Color::srgb(0.42,0.88,0.33),
-        "Extraordinary" | "Rare" => Color::srgb(0.75,0.4,1.0), "Legendary" | "Epic" => Color::srgb(1.0,0.65,0.15), _ => color(catalog,item) };
+        "Extraordinary" | "Rare" => Color::srgb(0.89,0.0,0.93), "Legendary" | "Epic" => Color::srgb(1.0,0.65,0.15), _ => color(catalog,item) };
     (rarity, tint)
 }
 
