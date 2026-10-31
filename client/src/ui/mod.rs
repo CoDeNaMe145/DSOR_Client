@@ -1807,7 +1807,7 @@ fn update_slots(
 /// smoothly and the seconds count down as the original's ("4  s" just after a
 /// 5 s use: whole seconds left, tenths in the last one, a wide gap before the
 /// s); a sticker just used pops: a see-through copy of its icon grows to 1.3
-/// times and fades from the click, gone in 0.45 s.
+/// times and fades from the click, gone in 0.95 s.
 /// EVIDENCE: the user's recording 20261031-1840-39, 30 fps (the original's
 ///   Supreme Snowman at 26.2-27.1 s; "5 s" for one frame, then "4 s"; the sweep
 ///   moving every frame).
@@ -1845,15 +1845,16 @@ fn album_overlays(mut commands: Commands, mut counts: Query<(Entity, &mut AlbumC
         c.shown = want;
     }
     for (e, mut p) in &mut pops {
-        // It jumps out at the click: a copy grows fast to 1.33 times the icon
-        // and fades, gone in 0.45 s.
-        // EVIDENCE: the original's Mortis Doll (the user's recordings
-        //   20261031-1912-19 and -1918-33, 30 fps): from its own size to 1.33
-        //   of the cell in about 0.4 s, most of the growth early.
-        // FAILURE (2026-10-31): over 0.9 s it crept out unseen; then a 0.35 s
-        //   wait before it read as a delay ("why did you go back to the delay?").
+        // It jumps out at the click: a copy grows to 1.33 times the icon, most
+        // of it early, and fades, gone in 0.95 s.
+        // EVIDENCE: the original's Mortis Doll (the user's recording
+        //   20261031-1923-29, 30 fps, the change around the cell): visible
+        //   0.9-1.07 s each time (4.63-5.57, 11.03-12.10, 24.63-25.50 s),
+        //   strongest about 0.4 s in.
+        // FAILURE (2026-10-31): 0.9 s from its own size crept out unseen; a
+        //   0.35 s wait read as a delay; 0.45 s was "too fast".
         let start = pop_at.0.as_ref().filter(|(id, _)| *id == p.sticker).map(|&(_, at)| at);
-        let progress = start.map(|at| ((now - at) / 0.45) as f32).filter(|x| (0.0..1.0).contains(x));
+        let progress = start.map(|at| ((now - at) / 0.95) as f32).filter(|x| (0.0..1.0).contains(x));
         let want = progress.map(|x| (x * 240.0) as u16);
         if want == p.shown { continue; }
         commands.entity(e).despawn_related::<Children>();
@@ -1864,7 +1865,7 @@ fn album_overlays(mut commands: Commands, mut counts: Query<(Entity, &mut AlbumC
             let rect = [cx + (l - cx) * grow, cy + (t - cy) * grow, cx + (r - cx) * grow, cy + (b - cy) * grow];
             for (z, layer) in [&icon.background, &icon.image, &icon.frame].into_iter().enumerate().filter(|(_, l)| !l.is_empty()) {
                 let mut art = controls::template::image_art(rect, layer.clone());
-                for c in art.color.chunks_mut(4) { c[3] = 0.6 * (1.0 - x); }
+                for c in art.color.chunks_mut(4) { c[3] = 0.65 * (1.0 - x); }
                 let mut run = Run { k: p.k, ..default() };
                 run.push(&art, 0.0);
                 commands.spawn((Mesh2d(meshes.add(run.mesh())), MeshMaterial2d(materials.add(material(Some(assets.load(layer.clone()))))),
