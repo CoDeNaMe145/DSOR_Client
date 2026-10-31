@@ -15,6 +15,9 @@ pub struct Definition {
     /// (_Template_Item.CoolDown / CoolDownCategory; hotbar::ItemCooldowns).
     #[serde(default)] pub cooldown: f32,
     #[serde(default)] pub cooldown_category: String,
+    /// An essence's card text: its slot's line, then its modifiers' (tools/
+    /// inventory_catalog.py modifier_lines).
+    #[serde(default)] pub card_lines: Vec<String>,
     /// Seconds it lasts once received (ItemLifeTime), 0 for ever.
     #[serde(default)] pub lifetime: u32,
     /// A pet's status effect and its values by rarity ($0..: its Pet Effect;

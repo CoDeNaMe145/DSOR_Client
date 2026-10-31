@@ -15,6 +15,32 @@ SLOTS = {'HelmetSlot':[0], 'ShoulderSlot':[1], 'TorsoSlot':[2], 'GlovesSlot':[3]
          'AmmoSlot':[35,34]}
 
 
+def modifier_lines(modifiers, table):
+    """An item's BaseModifier as its card writes it: each shown modifier's own
+    text (its "#key"), the value written in with two decimals, a relative one as
+    a percentage (the essences: "300.00% increased damage", "No effect in
+    official arenas.")."""
+    lines = []
+    for part in (modifiers or '').split(';'):
+        body, _, key = part.partition('#')
+        key = key.strip()
+        if not key or key == '~':
+            continue
+        text = re.sub(r'<[^>]*>', '', table.get('gui.statuseffects.modifier_' + key, ''))
+        if not text:
+            continue
+        fields = body.split(':', 1)[1].split(',') if ':' in body else []
+        number = ''
+        if fields:
+            try:
+                value = float(fields[0])
+                number = '%.2f' % (value * 100 if len(fields) > 1 and fields[1].strip() == 'relative' else value)
+            except ValueError:
+                pass
+        lines.append(re.sub(r'\{\d+:s\}', number, text))
+    return lines
+
+
 def reward_cards(db, table, local):
     """A sticker book's status-effect rewards as their hover card says them:
     {status: {title, lines}} ("Triad of Life (Permanent)", "+ 3% health points
@@ -105,6 +131,10 @@ def export_inventory(db, textures, loca, assets):
             # that replaces its rarity glow, if any.
             graphics=r.get('Graphics') or '', drop_sequence=r.get('DropSequenceOverride') or '',
             icon_config=r.get('IconConfiguration') or '',
+            # An essence's card text: its slot's line and its modifiers' (their
+            # description is only a "Localize:" placeholder).
+            **({'card_lines': [table.get('gui.window.tooltip_ammoSlotInfo', '')] + modifier_lines(r.get('BaseModifier'), table)}
+               if r.get('ItemCategory') == 'Ammunition' else {}),
             # Seconds it lasts once received (ItemLifeTime: Premium (2 weeks)
             # "Duration: 7d 0h 0m 0s").
             **({'lifetime': int(r['ItemLifeTime'])} if r.get('ItemLifeTime') else {}),

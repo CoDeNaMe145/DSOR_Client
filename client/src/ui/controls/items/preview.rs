@@ -206,6 +206,17 @@ pub(super) fn reward_item(catalog: &Catalog, layout: Option<&Layout>, template: 
     let description: Vec<String> = meta.filter(|m| !m.description.starts_with("Localize:")).map(|m| m.description.replace("\\n", "\n")).unwrap_or_default()
         .split('\n').map(|l| if l.is_empty() { String::new() } else { format!("<i>{l}</>") }).collect();
     let duration = (lifetime > 0).then(|| format!("Duration: {}d {}h {}m {}s", lifetime / 86400, lifetime / 3600 % 24, lifetime / 60 % 60, lifetime % 60));
+    // An essence: its slot's line white, its modifiers blue, centred (the
+    // original's Essence of Vigor reward card).
+    let essence: Vec<String> = meta.map(|m| m.card_lines.iter().map(|l| format!("<i>{l}</>")).collect()).unwrap_or_default();
+    if !essence.is_empty() {
+        fit_small(&mut card, std::iter::once(title.as_str()).chain(essence.iter().map(String::as_str)).chain(std::iter::once(footer.as_str())));
+        card.centered(&title, rarity_tint(catalog, template), false);
+        for (i, line) in essence.iter().enumerate() { card.centered(line, if i == 0 { WHITE } else { BLUE }, false); }
+        card.gap(8.0);
+        card.text(&footer, yellow);
+        return card;
+    }
     fit_small(&mut card, std::iter::once(title.as_str()).chain(std::iter::once("<i>Consumed when used</>"))
         .chain(description.iter().map(String::as_str)).chain(duration.as_deref()).chain(std::iter::once(footer.as_str())));
     card.centered(&title, rarity_tint(catalog, template), false);
