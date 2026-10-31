@@ -52,8 +52,11 @@ const FAVOURITES_TEXT: &str = "Select up to thirty of your favorite items to be 
 /// The digits' size: the original's "4 s" is 0.17 of the sticker's height, ours
 /// at 15 was 0.28 (the user's recording 20261030-1714-37: "double the size").
 const COUNT_SIZE: f32 = 9.3;
-/// The sweep redraws in this many steps (the album rebuilds on each).
-pub(super) const SWEEP_STEPS: u8 = 16;
+/// The sweep redraws in this many steps (the album rebuilds on each): 12 a
+/// second over a pet's 5 s, smooth as the original's.
+/// FAILURE (2026-10-31): 16 steps, a jump every 0.31 s ("ours feels so ticky",
+///   the user's recording 20261031-1722-23 beside the original's).
+pub(super) const SWEEP_STEPS: u8 = 60;
 /// A sticker cell spans 214..286 by 202..271.
 const CELL: (f32, f32) = (72.0, 69.0);
 const CELL_ORIGIN: (f32, f32) = (214.0, 202.0);
@@ -252,8 +255,9 @@ pub(super) fn album(sources: &Sources) -> Album {
             affordable: owned && next(def, tier).is_some_and(|(_, cost)|
                 net.game_currencies.get(super::UPGRADE_CURRENCY).copied().unwrap_or(0) >= u64::from(cost)),
             origin: def.origin.clone(), background: def.background.clone(), offer: def.offer.clone(),
-            countdown: owned.then(|| tier.or(def.items.first().map(String::as_str)))
-                .flatten()
+            // Owned or not: the original's grey, not owned pets count down too
+            // (recording 20261031-1722-23, Avians).
+            countdown: tier.or(def.items.first().map(String::as_str))
                 .and_then(|t| super::super::hotbar::ItemCooldowns::key_of(sources.items, t))
                 .and_then(|key| state.album_cooling.iter().find(|(k, ..)| *k == key))
                 .map(|&(_, tenths, step)| (tenths, step)),
